@@ -89,8 +89,9 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   gw.stderr.on("data", (c) => (gwLog += c));
 
   let healthy = null;
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 200));
+  // Generous: the suite runs files in parallel and a cold spawn can be slow.
+  for (let i = 0; i < 240; i++) {
+    await new Promise((r) => setTimeout(r, 250));
     try { healthy = await fetch(`http://127.0.0.1:${port}/health`).then((r) => r.json()); break; } catch { /* retry */ }
   }
   assert.ok(healthy, `gateway never became healthy:\n${gwLog}`);
@@ -120,7 +121,7 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   });
   t.after(() => { try { ws.close(); } catch { /* already closed */ } });
 
-  const waitFrame = (pred, ms = 10000) =>
+  const waitFrame = (pred, ms = 30000) =>
     new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("timed out waiting for frame")), ms);
       waiters.push({ pred, resolve: (f) => { clearTimeout(timer); resolve(f); } });

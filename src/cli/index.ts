@@ -20,6 +20,8 @@ commands:
   gateway              run the daemon (channels + gateway + cron)
   gateway list         show running gateways with pid, uptime and port
   gateway --restart    stop the running one and take over its port
+  setup                guided first-run setup: pick a provider, key and model
+  provider <list|add|remove|test>  manage providers
   init                 create workspace files and a gateway token
   status               show health and configuration summary
   doctor               diagnose this device
@@ -60,6 +62,10 @@ export async function main(argv: string[]): Promise<number> {
       const { Gateway } = await import("../gateway/server.js");
       return gateway(rest, Gateway);
     }
+    case "setup":
+      return (await import("./provider.js")).setupCmd();
+    case "provider":
+      return (await import("./provider.js")).providerCmd(rest);
     case "doctor":
       return (await import("./doctor.js")).doctor();
     case "init":
