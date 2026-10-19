@@ -120,6 +120,10 @@ export const CONFIG_SCHEMA: SchemaNode = {
           fields: {
             mode: { t: "enum", values: ["token", "none"], default: "token" },
             token: { t: "string", default: "" },
+            // The Control UI in the phone's own browser connects over loopback.
+            // Allowing that without a token keeps the phone flow usable; turn it
+            // off on shared machines.
+            loopbackBypass: { t: "bool", default: true },
           },
         },
         controlUi: {
@@ -217,7 +221,7 @@ export interface SuparClawConfig {
   gateway: {
     port: number;
     bind: "loopback" | "lan";
-    auth: { mode: "token" | "none"; token: string };
+    auth: { mode: "token" | "none"; token: string; loopbackBypass: boolean };
     controlUi: { enabled: boolean; basePath: string };
   };
   agents: {

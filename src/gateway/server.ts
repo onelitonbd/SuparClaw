@@ -80,12 +80,16 @@ export class Gateway {
       socket.destroy();
       return;
     }
-    void this.#ensureWss().then((wss) => wss.handleUpgrade(req, socket, head, (ws) => this.#onConnection(ws)));
+    const remote = req.socket.remoteAddress ?? "";
+    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    void this.#ensureWss().then((wss) => wss.handleUpgrade(req, socket, head, (ws) => this.#onConnection(ws, loopback)));
   }
 
-  #onConnection(ws: WebSocket): void {
-    const token = this.service.config.gateway.auth.token;
-    let authorized = this.service.config.gateway.auth.mode === "none";
+  #onConnection(ws: WebSocket, loopback: boolean): void {
+    const auth = this.service.config.gateway.auth;
+    const token = auth.token;
+    // Mode "none" trusts everything; loopback bypass trusts this device's own browser.
+    let authorized = auth.mode === "none" || (loopback && auth.loopbackBypass);
     let seenConnect = false;
     const send = (frame: unknown) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
@@ -102,7 +106,15 @@ export class Gateway {
         seenConnect = true;
         const provided = frame.params?.token ?? "";
         if (!authorized && token && provided !== token) {
-          send(errFrame("connect", "unauthorized", "bad or missing gateway token"));
+          send(
+            errFrame(
+              "connect",
+              "unauthorized",
+              loopback
+                ? "bad gateway token — run: sc token"
+                : "bad or missing gateway token — run: sc token",
+            ),
+          );
           ws.close(4401, "unauthorized");
           return;
         }

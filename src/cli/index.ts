@@ -22,6 +22,7 @@ commands:
   status               show health and configuration summary
   doctor               diagnose this device
   config <get|set|path>  read or write config values
+  token [--rotate]      show (or regenerate) the gateway token
   pair <list|approve|revoke>  manage Telegram DM access
   cron <list|add|remove>       scheduled prompts
   service <install|status|uninstall>  termux-services integration
@@ -67,6 +68,8 @@ export async function main(argv: string[]): Promise<number> {
       return pairCmd(rest);
     case "cron":
       return cronCmd(rest);
+    case "token":
+      return tokenCmd(rest);
     case "service":
       return (await import("./service.js")).serviceCmd(rest);
     case "version":
@@ -138,10 +141,17 @@ async function gateway(args: string[], GatewayCtor: typeof import("../gateway/se
   }
   await service.startChannels();
   (await import("./service.js")).writePid();
-  const token = service.config.gateway.auth.token;
+  const auth = service.config.gateway.auth;
   console.log(`suparclaw gateway listening on ws://${gw.address}/ws`);
-  console.log(`token: ${token ? `${token.slice(0, 8)}…` : "(auth disabled)"}`);
-  console.log(`health: http://${gw.address.replace("0.0.0.0", "127.0.0.1")}/health`);
+  console.log(`web ui:  http://${gw.address.replace("0.0.0.0", "127.0.0.1")}/`);
+  console.log(`health:  http://${gw.address.replace("0.0.0.0", "127.0.0.1")}/health`);
+  if (auth.mode === "none") {
+    console.log("auth:    disabled");
+  } else {
+    console.log(`token:   ${auth.token}`);
+    console.log("         (the browser on this device connects automatically;");
+    console.log("          from another machine use: sc tui --url … --token <token>)");
+  }
   console.log("press ctrl+c to stop");
 
   const shutdown = async () => {
@@ -197,6 +207,31 @@ async function configCmd(args: string[]): Promise<number> {
       console.error(`unknown config subcommand: ${sub}`);
       return 1;
   }
+}
+
+async function tokenCmd(args: string[]): Promise<number> {
+  const service = await openService();
+  const auth = service.config.gateway.auth;
+  if (args[0] === "--rotate") {
+    const next = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+    const result = service.configSvc.setPath("gateway.auth.token", next);
+    if (!result.ok) {
+      console.error(result.errors.join("\n"));
+      return 1;
+    }
+    console.log("new gateway token (restart sc gateway to use it):");
+    console.log(next);
+    return 0;
+  }
+  if (auth.mode === "none") {
+    console.log("auth is disabled (gateway.auth.mode = none) — no token needed");
+  } else if (!auth.token) {
+    console.log("no token yet — run: sc init");
+    return 1;
+  } else {
+    console.log(auth.token);
+  }
+  return 0;
 }
 
 async function pairCmd(args: string[]): Promise<number> {

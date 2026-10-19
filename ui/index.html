@@ -128,6 +128,35 @@ main { display:flex; flex-direction:column; min-height:0; }
 ::-webkit-scrollbar { width:10px; height:10px; }
 ::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:var(--radius-full); }
 ::selection { background:var(--selection-bg); color:var(--selection-fg); }
+
+/* in-app modal — never use native browser dialogs */
+#backdrop {
+  position:fixed; inset:0; background:rgba(6,7,10,.62); display:none;
+  align-items:center; justify-content:center; padding:var(--space-4); z-index:50;
+}
+#backdrop.open { display:flex; }
+.modal {
+  width:min(420px,100%); background:var(--card); border:1px solid var(--border-strong);
+  border-radius:var(--radius-lg); box-shadow:var(--shadow-xl); padding:var(--space-5);
+  display:flex; flex-direction:column; gap:var(--space-3);
+}
+.modal h4 { margin:0; font-size:var(--control-ui-text-lg); color:var(--text-strong); }
+.modal p { margin:0; color:var(--muted); font-size:var(--control-ui-text-sm); }
+.modal code {
+  background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius-sm);
+  padding:2px 6px; color:var(--accent); font-size:var(--control-ui-text-sm);
+}
+.modal input {
+  width:100%; padding:var(--space-2) var(--space-3); font-size:var(--control-ui-input-text-size);
+  background:var(--input); border:1px solid var(--border); border-radius:var(--radius-md); outline:none;
+}
+.modal input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-subtle); }
+.modal .actions { display:flex; gap:var(--space-2); justify-content:flex-end; }
+.modal .args {
+  background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--radius-md);
+  padding:var(--space-3); font-size:var(--control-ui-text-sm); color:var(--text);
+  max-height:30vh; overflow:auto; white-space:pre-wrap; word-break:break-word;
+}
 </style>
 </head>
 <body>
@@ -160,6 +189,8 @@ main { display:flex; flex-direction:column; min-height:0; }
     <div id="stats"></div>
   </aside>
 </div>
+
+<div id="backdrop"><div class="modal" id="modal"></div></div>
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
@@ -197,13 +228,76 @@ function setConn(state) {
   connPill.className = "pill " + (state === "online" ? "online" : "offline");
 }
 
+/** Styled in-app dialog. Replaces prompt()/alert()/confirm() so nothing native ever pops up. */
+function modal({ title, body, input, placeholder, confirmLabel = "Confirm", cancelLabel = "Cancel", onConfirm }) {
+  const backdrop = $("backdrop"), box = $("modal");
+  box.innerHTML =
+    `<h4>${title}</h4>${body ? `<p>${body}</p>` : ""}` +
+    (input ? `<input id="modal-input" placeholder="${placeholder || ""}" autocomplete="off" spellcheck="false">` : "") +
+    `<div class="actions">
+       <button class="btn" id="modal-cancel">${cancelLabel}</button>
+       <button class="btn primary" id="modal-ok">${confirmLabel}</button>
+     </div>`;
+  backdrop.classList.add("open");
+  const close = () => backdrop.classList.remove("open");
+  $("modal-cancel").onclick = close;
+  $("modal-ok").onclick = () => { const v = input ? $("modal-input").value.trim() : true; close(); onConfirm?.(v); };
+  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
+  if (input) setTimeout(() => $("modal-input").focus(), 40);
+  return close;
+}
+
+function askToken() {
+  modal({
+    title: "Gateway token",
+    body: "This gateway is protected. Run <code>sc token</code> on the device and paste it here.",
+    input: true,
+    placeholder: "paste token",
+    confirmLabel: "Connect",
+    cancelLabel: "Later",
+    onConfirm: (value) => {
+      if (!value) return;
+      localStorage.setItem("sc.token", value);
+      connect();
+    },
+  });
+}
+
+function askApproval(tool, args) {
+  return new Promise((resolve) => {
+    modal({
+      title: `Allow ${tool}?`,
+      body: "This action needs your approval before it runs.",
+      confirmLabel: "Allow",
+      cancelLabel: "Deny",
+      onConfirm: () => resolve(true),
+    });
+    const box = $("modal");
+    if (!box.querySelector(".args")) {
+      const pre = document.createElement("div");
+      pre.className = "args";
+      pre.textContent = JSON.stringify(args ?? {}, null, 2);
+      box.querySelector("h4").after(pre);
+    }
+    const cancel = $("modal-cancel");
+    const ok = $("modal-ok");
+    ok.onclick = () => { $("backdrop").classList.remove("open"); resolve(true); };
+    cancel.onclick = () => { $("backdrop").classList.remove("open"); resolve(false); };
+  });
+}
+
 function connect() {
-  const token = localStorage.getItem("sc.token") || prompt("Gateway token") || "";
-  localStorage.setItem("sc.token", token);
+  // On this device the gateway accepts loopback clients without a token.
+  // From another machine we need one: `sc token` prints it.
+  let token = localStorage.getItem("sc.token") || "";
   setConn("connecting");
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-  ws.onopen = () => { ws.send(JSON.stringify({ type: "connect", params: { token } })); };
-  ws.onclose = () => { setConn("offline"); setTimeout(connect, 2500); };
+  ws.onopen = () => ws.send(JSON.stringify({ type: "connect", params: token ? { token } : {} }));
+  ws.onclose = (ev) => {
+    setConn("offline");
+    if (ev.code === 4401) askToken();
+    else setTimeout(connect, 2500);
+  };
   ws.onmessage = (ev) => {
     const f = JSON.parse(ev.data);
     if (f.type === "hello-ok") { setConn("online"); refresh(); return; }
@@ -222,8 +316,8 @@ function connect() {
       const row = addTool(p.event.name, p.event.status);
       row.querySelector("b").textContent = p.event.status === "error" ? "✗" : p.event.status === "done" ? "✓" : "◐";
     } else if (f.event === "chat.approval") {
-      const ok = confirm(`Allow tool: ${p.event.tool} ${JSON.stringify(p.event.args)}`);
-      request("chat.approval", { callId: p.event.callId, approve: ok });
+      askApproval(p.event.tool, p.event.args).then((ok) =>
+        request("chat.approval", { callId: p.event.callId, approve: ok }));
     } else if (f.event === "tick") {
       health();
     }
