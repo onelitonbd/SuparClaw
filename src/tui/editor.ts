@@ -145,15 +145,21 @@ export class Editor {
     this.x = (this.lines[this.y] as string).length;
   }
 
-  /** Boxed composer: top rule, "> " prefixed lines, bottom rule. */
+  /** Prompt-style composer: "> " on the first line, two-space continuation after. */
   render(cols: number): { lines: string[]; cursor: { row: number; col: number } } {
-    const inner = Math.max(10, cols - 4);
-    const out: string[] = [theme.border(`╭${"─".repeat(inner)}╮`)];
-    for (const line of this.lines) {
-      const visible = width(line) > inner ? line.slice(0, inner) : line;
-      out.push(`${theme.border("│")} ${theme.text(visible)}${" ".repeat(Math.max(0, inner - width(visible)))} ${theme.border("│")}`);
-    }
-    out.push(theme.border(`╰${"─".repeat(inner)}╯`));
-    return { lines: out, cursor: { row: this.y + 1, col: this.x + 2 } };
+    const out: string[] = [];
+    let cursorRow = 0;
+    let cursorCol = 0;
+    this.lines.forEach((line, i) => {
+      const prefix = i === 0 ? "> " : "  ";
+      const visible = width(line) > cols - 2 ? line.slice(0, cols - 2) : line;
+      if (i === this.y) {
+        cursorRow = out.length;
+        cursorCol = Math.min(this.x, visible.length);
+      }
+      out.push(prefix + visible);
+    });
+    if (this.lines.length === 0) out.push("> ");
+    return { lines: out, cursor: { row: cursorRow, col: cursorCol + 2 } };
   }
 }

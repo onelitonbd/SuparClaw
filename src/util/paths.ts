@@ -58,25 +58,32 @@ export function isProot(): boolean {
   return isTermux() && process.env.PROOT_L2S_DIR !== undefined && process.env.PROOT_L2S_DIR !== "";
 }
 
-/**
- * Locate the Control UI next to the bundle. With code splitting the calling
- * module may live in dist/chunks/, so walk upwards until we find ui/index.html.
- */
-export function webUiRoot(): string {
-  let dir: string;
+function moduleDir(): string {
   try {
-    dir = dirname(fileURLToPath(import.meta.url));
+    return dirname(fileURLToPath(import.meta.url));
   } catch {
-    return "";
+    return process.cwd();
   }
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, "ui");
-    if (existsSync(join(candidate, "index.html"))) return candidate;
+}
+
+/**
+ * Walk upwards from this module looking for a sibling directory of the bundle.
+ * Code splitting moves modules into dist/chunks/, so a fixed "../x" guess is wrong.
+ */
+export function findBundledDir(name: string, marker: string, maxUp = 5): string {
+  let dir = moduleDir();
+  for (let i = 0; i < maxUp; i++) {
+    const candidate = join(dir, name);
+    if (existsSync(join(candidate, marker))) return candidate;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return "";
+  return join(moduleDir(), name);
+}
+
+export function webUiRoot(): string {
+  return findBundledDir("ui", "index.html");
 }
 
 export function prefixDir(): string {

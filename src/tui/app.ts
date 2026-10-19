@@ -36,12 +36,15 @@ interface Overlay {
 
 export class TuiApp {
   items: Item[] = [];
-  status = "ready";
+  status = "idle";
   approvals: Approval[] = [];
   busy = false;
   expandedTools = false;
   showThinking = false;
   tokenHint = "";
+  toolCount = 0;
+  skillCount = 0;
+  deliver = false;
 
   #screen = new Screen();
   #editor = new Editor();
@@ -81,6 +84,18 @@ export class TuiApp {
     this.markDirty();
   }
 
+  /** Replace the streaming bubble with the final text (never append it twice). */
+  completeAssistant(text: string): void {
+    const last = this.items[this.items.length - 1];
+    if (last && last.kind === "assistant" && last.streaming) {
+      last.text = text;
+      last.streaming = false;
+    } else {
+      this.items.push({ kind: "assistant", text });
+    }
+    this.markDirty();
+  }
+
   setStatus(status: string): void {
     this.status = status;
     this.markDirty();
@@ -98,60 +113,72 @@ export class TuiApp {
 
   #compose(): string[] {
     const cols = this.#screen.cols;
+    const rows = this.#screen.rows;
     const head = this.deps.header();
+    const rule = () => theme.border("─".repeat(cols));
     const out: string[] = [];
 
-    // Header
+    // 1) header — same shape as OpenClaw: "<surface> - <target> - agent X - session Y <state>"
+    const state = this.busy ? this.status : this.status;
     out.push(
-      theme.header(" suparclaw ") +
-        theme.dim(" · ") +
-        theme.accentSoft(head.agent) +
-        theme.dim(" · ") +
+      theme.header("suparclaw") +
+        theme.dim(" - ") +
+        theme.accentSoft(head.target) +
+        theme.dim(" - agent ") +
+        theme.text(head.agent) +
+        theme.dim(" - session ") +
         theme.text(head.session) +
-        theme.dim(" · ") +
-        theme.text(head.model) +
-        theme.dim(" · ") +
-        theme.dim(head.target),
+        " " +
+        (this.busy ? theme.accent(state) : this.status === "error" ? theme.error(state) : theme.dim(state)),
     );
-    out.push(theme.border("─".repeat(cols)));
 
-    // Transcript
-    for (const item of this.items) {
-      out.push(...this.#renderItem(item, cols));
+    // 2) footer — dim, pipe-joined metadata (OpenClaw's formatTuiFooter)
+    const footer = [
+      `agent ${head.agent}`,
+      `session ${head.session}`,
+      head.model && head.model !== "(unset)" ? head.model : "unknown",
+      `tools:${this.toolCount}`,
+      `skills:${this.skillCount}`,
+      `deliver:${this.deliver ? "on" : "off"}`,
+      `tokens:${this.tokenHint || "?"}`,
+    ].join(" | ");
+    out.push(theme.dim(` ${footer}`));
+
+    // 3) rules + body (transcript, or the picker overlay when one is open)
+    out.push(rule());
+    const body: string[] = this.#overlay ? this.#overlayLines(cols) : [];
+    if (!this.#overlay) {
+      for (const item of this.items) body.push(...this.#renderItem(item, cols));
     }
 
-    // Pending approvals
-    for (const approval of this.approvals) {
+    const editorLineCount = this.#editor.lines.length;
+    const statusLines = this.busy || this.status !== "idle" ? 1 : 0;
+    const budget = Math.max(1, rows - (out.length + statusLines + 1 + editorLineCount));
+    const visibleBody = body.length > budget ? body.slice(body.length - budget) : body;
+    if (body.length === 0 && !this.#overlay) {
+      out.push(theme.dim("  no messages yet — ask something to begin"));
       out.push("");
-      out.push(theme.toolPendingBg(` ⚠ approve: ${approval.tool}(${JSON.stringify(approval.args).slice(0, cols - 24)}) [y/n] `));
+    } else {
+      out.push(...visibleBody);
     }
 
-    // Status line + footer hints
-    out.push(theme.border("─".repeat(cols)));
-    const dot = this.busy ? theme.accent("●") : this.status === "error" ? theme.error("●") : theme.success("●");
-    out.push(
-      `${dot} ${theme.dim(this.status)}${this.tokenHint ? theme.dim(`  ${this.tokenHint}`) : ""}`,
-    );
-    out.push(
-      theme.dim(
-        " ⏎ send · ⇧⏎ newline · ^L model · ^P session · ^O tools · ^T thinking · ^C clear · ^D quit",
-      ),
-    );
+    // 4) pin the composer to the bottom
+    const pad = Math.max(0, rows - (out.length + statusLines + 1 + editorLineCount));
+    for (let i = 0; i < pad; i++) out.push("");
 
+    // 5) status line (only while working, like OpenClaw's loader row)
+    if (this.busy) out.push(theme.accent(` ${state}`));
+    else if (this.status !== "idle") out.push(theme.dim(` ${state}`));
+
+    // 6) composer
+    out.push(rule());
     const editor = this.#editor.render(cols);
-    out.push(...editor.lines);
-
-    if (this.#overlay) {
-      out.push("");
-      out.push(theme.header(` ${this.#overlay.title} `));
-      out.push(theme.dim(` filter: ${this.#overlay.filter}_`));
-      const matches = this.#matches();
-      matches.slice(0, 12).forEach((option, i) => {
-        out.push(`${theme.accent(i === 0 ? " ❯ " : "   ")}${theme.text(option)}`);
-      });
-      if (matches.length === 0) out.push(theme.dim("  no matches"));
-      out.push(theme.dim(" ↑↓ select · ⏎ pick · esc cancel"));
+    const hint = this.#editor.isEmpty && !this.#overlay ? theme.dim(HINTS) : "";
+    if (hint && editor.lines[0] !== undefined) {
+      const room = Math.max(1, cols - width(HINTS) - 4);
+      editor.lines[0] = `> ${this.#editor.lines[0]?.slice(2, 2 + room) ?? ""}` + " ".repeat(Math.max(1, cols - 2 - room - width(HINTS))) + hint;
     }
+    out.push(...editor.lines);
 
     return out;
   }
@@ -159,12 +186,8 @@ export class TuiApp {
   #renderItem(item: Item, cols: number): string[] {
     switch (item.kind) {
       case "user": {
-        const body = item.text.split("\n");
         const out: string[] = [];
-        for (const line of body) {
-          const padded = ` ${line} `;
-          out.push(theme.userBg(theme.userText(padded)));
-        }
+        for (const line of item.text.split("\n")) out.push(theme.userBg(theme.userText(` ${line} `)));
         out.push("");
         return out;
       }
@@ -172,31 +195,47 @@ export class TuiApp {
         const lines = renderMarkdown(item.text, cols);
         if (item.streaming && lines.length > 0) {
           const last = lines[lines.length - 1] as string;
-          lines[lines.length - 1] = last + theme.accent("▌");
+          lines[lines.length - 1] = last + theme.accent("\u258c");
         }
         lines.push("");
         return lines;
       }
       case "tool": {
-        const glyph = item.status === "running" ? theme.accent("◐") : item.status === "error" ? theme.error("✗") : theme.success("✓");
-        const bg =
+        const glyph =
+          item.status === "running" ? theme.accent("\u25d0") : item.status === "error" ? theme.error("\u2717") : theme.dim("\u2713");
+        const tint = (text: string) =>
           item.status === "running"
-            ? theme.toolPendingBg
+            ? theme.toolPendingBg(text)
             : item.status === "error"
-              ? theme.toolErrorBg
-              : theme.toolSuccessBg;
-        const head = bg(`${glyph} ${item.name} ${theme.dim(item.status)}`);
-        const out = [head];
-        if (item.detail && this.expandedTools) {
-          for (const line of item.detail.split("\n").slice(0, 12)) {
-            out.push(bg(`   ${theme.toolOutput(line.slice(0, cols - 4))}`));
+              ? theme.toolErrorBg(text)
+              : theme.dim(text);
+        const out = [tint(` ${glyph} ${item.name}`)];
+        if (this.expandedTools && item.detail) {
+          for (const line of item.detail.split("\n").slice(0, 10)) {
+            out.push(`   ${theme.dim(line.slice(0, cols - 5))}`);
           }
         }
         return out;
       }
       case "system":
-        return [theme.system(item.text), ""];
+        return item.text ? [theme.system(item.text), ""] : [];
     }
+  }
+
+  #overlayLines(cols: number): string[] {
+    const overlay = this.#overlay;
+    if (!overlay) return [];
+    const out: string[] = [
+      theme.header(` ${overlay.title} `),
+      theme.dim(` filter: ${overlay.filter}_`),
+    ];
+    const matches = this.#matches();
+    matches.slice(0, 12).forEach((option, i) => {
+      out.push(`${theme.accent(i === 0 ? "\u276f " : "   ")}${theme.text(option)}`);
+    });
+    if (matches.length === 0) out.push(theme.dim("  no matches"));
+    out.push(theme.dim(" \u2191\u2193 select \u00b7 \u23ce pick \u00b7 esc cancel"));
+    return out;
   }
 
   #matches(): string[] {
@@ -389,6 +428,8 @@ export async function runTui(deps: TuiDeps, stdin: NodeJS.ReadStream = process.s
   await app.loadHistory();
   await app.start();
 }
+
+const HINTS = "\u23ce send \u00b7 ^L model \u00b7 ^P session \u00b7 ^O tools \u00b7 ^D quit";
 
 export const tuiHelp = [
   "Commands: /help /status /tools /skills /model <id> /session <key> /new /clear /abort /quit",

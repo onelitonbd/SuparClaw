@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { findBundledDir } from "../util/paths.js";
 
 // ---------------------------------------------------------------------------
 // Skills: markdown instruction packs with YAML frontmatter, discovered from
@@ -173,8 +173,8 @@ function walkForSkills(root: string, depth = 0, out: string[] = []): string[] {
 }
 
 export function bundledSkillsRoot(): string {
-  // dist/sc.mjs -> dist/ -> repo root
-  return fileURLToPath(new URL("../skills", import.meta.url));
+  // dist/sc.js or dist/chunks/*.js -> repo root -> skills/
+  return findBundledDir("skills", "help/SKILL.md");
 }
 
 export interface DiscoverOptions {

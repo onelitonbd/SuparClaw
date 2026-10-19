@@ -18,20 +18,17 @@ export async function tuiLocal(): Promise<number> {
       target: "local",
     }),
     onSubmit: (text) => {
+      // Every visual update flows through the service subscription below, so a
+      // reply is never rendered twice.
       void service.send({
         sessionKey,
         text,
         isMainSession: true,
         source: "tui",
-        reply: async (final) => {
-          app?.push({ kind: "assistant", text: final });
-        },
-        onDelta: (delta) => app?.push({ kind: "assistant", text: delta, streaming: true }),
-        onTool: (event) =>
-          app?.push({ kind: "tool", name: event.name, status: event.status, detail: event.detail }),
-        onApproval: (event) => {
-          app?.approvals.push({ callId: event.callId, tool: event.tool, args: event.args });
-        },
+        reply: async () => {},
+        onDelta: () => {},
+        onTool: () => {},
+        onApproval: () => {},
       });
     },
     onAbort: () => service.loop.abort(sessionKey),
@@ -99,24 +96,44 @@ export async function tuiLocal(): Promise<number> {
   const { TuiApp } = await import("../tui/app.js");
   let app: InstanceType<typeof TuiApp> | null = null;
   const unsubscribe = service.subscribe((event) => {
-    if (event.type !== "chat") return;
-    const item: Item | null =
-      event.event.type === "final"
-        ? { kind: "assistant", text: event.event.text }
-        : event.event.type === "error"
-          ? { kind: "system", text: `error: ${event.event.message}` }
-          : event.event.type === "idle"
-            ? { kind: "system", text: "" }
-            : null;
-    if (item && item.kind === "system" && !item.text) {
-      app?.setStatus("idle");
-      app && (app.busy = false);
-      return;
+    if (event.type !== "chat" || !app) return;
+    const e = event.event;
+    switch (e.type) {
+      case "start":
+        app.busy = true;
+        app.setStatus("thinking…");
+        break;
+      case "delta":
+        app.busy = true;
+        app.push({ kind: "assistant", text: e.text, streaming: true });
+        break;
+      case "tool":
+        app.push({ kind: "tool", name: e.name, status: e.status, detail: e.detail });
+        break;
+      case "approval":
+        app.approvals.push({ callId: e.callId, tool: e.tool, args: e.args });
+        break;
+      case "final":
+        app.completeAssistant(e.text);
+        app.tokenHint = e.usage ? `${e.usage["total_tokens"] ?? 0}` : app.tokenHint;
+        app.busy = false;
+        app.setStatus("idle");
+        break;
+      case "error":
+        app.push({ kind: "system", text: `error: ${e.message}` });
+        app.busy = false;
+        app.setStatus("error");
+        break;
+      case "idle":
+        app.busy = false;
+        if (app.status !== "error") app.setStatus("idle");
+        break;
     }
-    if (item) app?.push(item);
   });
 
   app = new TuiApp(deps);
+  app.toolCount = service.loop.tools.length;
+  app.skillCount = service.loop.skills.length;
   await app.loadHistory();
   await app.start();
   unsubscribe();
@@ -138,7 +155,7 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
     if (event === "chat.delta" && data.delta) {
       app?.push({ kind: "assistant", text: data.delta, streaming: true });
     } else if (event === "chat.reply" && data.text) {
-      app?.push({ kind: "assistant", text: data.text });
+      app?.completeAssistant(data.text);
       if (app) app.busy = false;
     } else if (event === "chat.tool" && data.event) {
       app?.push({ kind: "tool", name: data.event.name ?? "?", status: (data.event.status as "running") ?? "done", detail: data.event.detail });
