@@ -158,6 +158,7 @@ export class Gateway {
       "cron.list",
       "config.get",
       "config.path",
+      "config.set",
     ];
   }
 
@@ -268,6 +269,22 @@ export class Gateway {
         case "config.path":
           send(okFrame(id, { path: service.configSvc.path }));
           return;
+        case "config.set": {
+          const path = String(params["path"] ?? "");
+          if (!path) {
+            send(errFrame(id, "bad_request", "path is required"));
+            return;
+          }
+          const result = service.configSvc.setPath(path, params["value"]);
+          if (!result.ok) {
+            send(errFrame(id, "bad_config", result.errors.join("; ")));
+            return;
+          }
+          // Apply live so a provider or model saved from the UI takes effect now.
+          service.applyConfig();
+          send(okFrame(id, { ok: true, config: service.config }));
+          return;
+        }
         default:
           send(errFrame(id, "unknown_method", method));
       }

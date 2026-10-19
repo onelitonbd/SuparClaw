@@ -77,24 +77,39 @@ interface StreamOptions {
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
 export class LlmClient {
+  #providers: Record<string, ProviderConfig>;
+  #defaults: { model: string; fallbacks: string[] };
+
   constructor(
-    private readonly providers: Record<string, ProviderConfig>,
-    private readonly defaults: { model: string; fallbacks: string[] },
+    providers: Record<string, ProviderConfig>,
+    defaults: { model: string; fallbacks: string[] },
     private readonly onRetry?: (info: { model: string; attempt: number; error: string }) => void,
-  ) {}
+  ) {
+    this.#providers = providers;
+    this.#defaults = defaults;
+  }
+
+  /** Hot-swap providers/defaults after a config change (e.g. saved from the Control UI). */
+  setConfig(
+    providers: Record<string, ProviderConfig>,
+    defaults: { model: string; fallbacks: string[] },
+  ): void {
+    this.#providers = providers;
+    this.#defaults = defaults;
+  }
 
   listModels(): string[] {
     const out: string[] = [];
-    for (const [name, cfg] of Object.entries(this.providers)) {
+    for (const [name, cfg] of Object.entries(this.#providers)) {
       for (const m of cfg.models ?? []) out.push(`${name}/${m}`);
     }
-    if (out.length === 0 && this.defaults.model) out.push(this.defaults.model);
+    if (out.length === 0 && this.#defaults.model) out.push(this.#defaults.model);
     return out;
   }
 
   /** Stream one completion, walking the fallback chain on retryable failures. */
   async *stream(opts: StreamOptions): AsyncGenerator<StreamEvent> {
-    const chain = [this.defaults.model, ...this.defaults.fallbacks].filter(Boolean);
+    const chain = [this.#defaults.model, ...this.#defaults.fallbacks].filter(Boolean);
     if (chain.length === 0) throw new LlmError("no model configured — set agents.defaults.model and a provider");
     let lastError: Error | null = null;
     for (const modelRef of chain) {
@@ -116,7 +131,7 @@ export class LlmClient {
   }
 
   async *#streamOnce(modelRef: string, opts: StreamOptions): AsyncGenerator<StreamEvent> {
-    const resolved = resolveModel(modelRef, this.providers);
+    const resolved = resolveModel(modelRef, this.#providers);
     const body: Record<string, unknown> = {
       model: resolved.model,
       messages: opts.messages,

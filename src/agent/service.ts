@@ -85,10 +85,11 @@ export class Service {
     return { created, token };
   }
 
-  applyConfig(next: SuparClawConfig): void {
-    this.configSvc.set("agents", next.agents);
-    this.configSvc.set("providers", next.providers);
-    this.configSvc.set("tools", next.tools);
+  /** Push a fresh config into the live components (called after any config write). */
+  applyConfig(_next?: SuparClawConfig): void {
+    const config = this.config;
+    this.loop.llm.setConfig(config.providers, config.agents.defaults);
+    this.log.info(`config applied — model ${config.agents.defaults.model || "(unset)"}`);
   }
 
   async startChannels(): Promise<void> {

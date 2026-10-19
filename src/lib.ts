@@ -13,4 +13,5 @@ export { LlmClient, resolveModel, parseToolArgs } from "./agent/llm.js";
 export { splitForTelegram } from "./channels/telegram.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
-export { Service } from "./agent/service.js";
+export { Service } from "./agent/service.js";export { renderMarkdown as renderUiMarkdown, escapeHtml } from "../ui/src/markdown.js";
+export { fuzzy } from "../ui/src/dom.js";

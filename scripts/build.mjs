@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Single-file bundle build. No native deps, no postinstall work.
-import { rm, mkdir } from "node:fs/promises";
+import { rm, mkdir, copyFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import * as esbuild from "esbuild";
@@ -50,4 +50,30 @@ if (watch) {
     }),
   );
   console.log(`[build] total ${(results.reduce((a, b) => a + b, 0) / 1024).toFixed(0)} KB`);
+}
+
+// --- Control UI: browser bundle + static assets, committed to dist/ui -------
+const uiOut = join(root, "dist/ui");
+await mkdir(uiOut, { recursive: true });
+{
+  const t0 = performance.now();
+  const res = await esbuild.build({
+    entryPoints: { app: join(root, "ui/src/main.ts") },
+    bundle: true,
+    splitting: false,
+    platform: "browser",
+    format: "esm",
+    target: ["es2022"],
+    minify: !dev,
+    sourcemap: dev ? "inline" : false,
+    legalComments: "none",
+    outdir: uiOut,
+    entryNames: "[name]",
+    logLevel: "warning",
+    metafile: true,
+  });
+  await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
+  await copyFile(join(root, "ui/styles.css"), join(uiOut, "styles.css"));
+  const bytes = Object.values(res.metafile.outputs).reduce((n, o) => n + o.bytes, 0);
+  console.log(`[build] ui: ${(bytes / 1024).toFixed(0)} KB in ${Math.round(performance.now() - t0)}ms`);
 }
