@@ -1,0 +1,167 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Some Android/proot images ship a TMPDIR that does not exist yet.
+const TEST_TMP = (() => {
+  for (const base of [process.env.SUPARCLAW_TEST_TMP, tmpdir(), "/tmp"].filter(Boolean)) {
+    try {
+      mkdirSync(base, { recursive: true });
+      return base;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return process.cwd();
+})();
+
+const scratch = (prefix) => mkdtempSync(join(TEST_TMP, prefix));
+import {
+  parseConfig,
+  validate,
+  applyDefaults,
+  emptyConfig,
+  CONFIG_SCHEMA,
+  parseFrontmatter,
+  discoverSkills,
+  matchSkills,
+  skillsCatalog,
+  Store,
+  loadWorkspaceContext,
+  writeWorkspaceTemplates,
+  todayStamp,
+  safePath,
+  buildRegistry,
+  resolveModel,
+  parseToolArgs,
+} from "../dist/lib.js";
+
+test("config defaults are applied and unknown keys rejected", () => {
+  const { config, errors } = parseConfig({ gateway: { port: 19999 } });
+  assert.equal(errors.length, 0);
+  assert.equal(config.gateway.port, 19999);
+  assert.equal(config.gateway.bind, "loopback");
+  assert.equal(config.agents.defaults.maxToolIterations, 12);
+
+  const bad = parseConfig({ gateway: { prot: 1 } });
+  assert.ok(bad.errors.some((e) => e.includes("unknown key")));
+});
+
+test("config type errors carry a path", () => {
+  const errors = validate(CONFIG_SCHEMA, { gateway: { port: "eighteen" } });
+  assert.ok(errors.some((e) => e.includes("$.gateway.port") && e.includes("integer")));
+  assert.deepEqual(applyDefaults(CONFIG_SCHEMA, {}), emptyConfig());
+});
+
+test("frontmatter parser handles scalars, lists and nested blocks", () => {
+  const { meta, body } = parseFrontmatter(
+    ["---", "name: demo", "description: A demo skill", "read_when:", "  - user asks for a demo", "---", "", "Body text"].join("\n"),
+  );
+  assert.equal(meta.name, "demo");
+  assert.equal(meta.description, "A demo skill");
+  assert.deepEqual(meta.read_when, ["user asks for a demo"]);
+  assert.equal(body.trim(), "Body text");
+});
+
+test("skill discovery honours precedence and gating", () => {
+  const dir = scratch("sc-skills-");
+  const workspace = join(dir, "workspace");
+  const state = join(dir, "state");
+  mkdirSync(join(workspace, "skills", "shared"), { recursive: true });
+  mkdirSync(join(state, "skills", "shared"), { recursive: true });
+  mkdirSync(join(workspace, "skills", "gated"), { recursive: true });
+  writeFileSync(join(workspace, "skills", "shared", "SKILL.md"), "---\nname: shared\ndescription: workspace wins\n---\nworkspace body\n");
+  writeFileSync(join(state, "skills", "shared", "SKILL.md"), "---\nname: shared\ndescription: state copy\n---\nstate body\n");
+  writeFileSync(
+    join(workspace, "skills", "gated", "SKILL.md"),
+    '---\nname: gated\ndescription: needs a binary\nmetadata:\n  openclaw:\n    requires:\n      bins: ["definitely-not-installed-xyz"]\n---\ngated body\n',
+  );
+
+  const skills = discoverSkills({
+    roots: [
+      { label: "workspace", dir: join(workspace, "skills") },
+      { label: "state", dir: join(state, "skills") },
+    ],
+  });
+  const shared = skills.find((s) => s.name === "shared");
+  assert.equal(shared.root, "workspace", "workspace skills win over state skills");
+  const gated = skills.find((s) => s.name === "gated");
+  assert.equal(gated.eligible, false);
+  assert.match(gated.reason, /missing binary/);
+
+  const catalog = skillsCatalog(skills);
+  assert.ok(catalog.includes("shared"));
+  assert.ok(!catalog.includes("gated"), "ineligible skills stay out of the prompt");
+
+  const hits = matchSkills(skills, "please run a shared demo for me");
+  assert.ok(hits.some((s) => s.name === "shared"));
+});
+
+test("workspace context injects files with budgets and honours main-session rules", () => {
+  const dir = scratch("sc-ws-");
+  const written = writeWorkspaceTemplates(dir);
+  assert.ok(written.includes("AGENTS.md"));
+  const ctx = loadWorkspaceContext(dir, { isMainSession: true });
+  assert.ok(ctx.text.startsWith("# Project Context"));
+  assert.ok(ctx.included.includes("AGENTS.md"));
+  assert.ok(ctx.text.includes("MEMORY.md"));
+
+  const groupCtx = loadWorkspaceContext(dir, { isMainSession: false });
+  assert.ok(!groupCtx.included.includes("MEMORY.md"), "groups must not load private memory");
+  assert.ok(todayStamp().length === 10);
+});
+
+test("store round-trips sessions, messages and search", () => {
+  const dir = scratch("sc-db-");
+  const store = Store.open(join(dir, "state.sqlite"));
+  const session = store.ensureSession("main:main");
+  store.appendMessage(session.id, "user", "remember the milk");
+  store.appendMessage(session.id, "assistant", "noted: milk");
+  const rows = store.recentMessages(session.id, 10);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].content, "remember the milk");
+  const found = store.searchMessages(session.id, "milk", 5);
+  assert.ok(found.length >= 1, store.fts ? "FTS search" : "LIKE fallback");
+
+  store.upsertJob({ id: "morning", name: "Morning", schedule: "0 8 * * *", prompt: "hi", session_key: "cron:morning", enabled: 1 });
+  assert.equal(store.listJobs().length, 1);
+  store.recordJobRun("morning", "done", "ok");
+  assert.equal(store.lastJobRuns(1)[0].status, "done");
+  store.close();
+});
+
+test("tool registry respects config policy", () => {
+  const config = emptyConfig();
+  const names = buildRegistry(config).map((t) => t.name);
+  assert.ok(names.includes("fs_read"));
+  assert.ok(names.includes("memory_append"));
+  assert.ok(!names.includes("exec"), "exec stays off until explicitly enabled");
+
+  config.tools.exec.enabled = true;
+  const execTool = buildRegistry(config).find((t) => t.name === "exec");
+  assert.ok(execTool?.needsApproval, "exec requires approval");
+
+  config.tools.fs = false;
+  assert.ok(!buildRegistry(config).some((t) => t.name === "fs_read"));
+});
+
+test("tool paths cannot escape the workspace", () => {
+  assert.equal(safePath("/ws", "notes/a.md"), "/ws/notes/a.md");
+  assert.throws(() => safePath("/ws", "../escape.txt"));
+  assert.throws(() => safePath("/ws", "/etc/passwd"));
+});
+
+test("model resolution and tool argument parsing", () => {
+  const resolved = resolveModel("openai/gpt-4o-mini", { openai: { baseUrl: "https://api.openai.com/v1/", apiKey: "k" } });
+  assert.equal(resolved.model, "gpt-4o-mini");
+  assert.equal(resolved.baseUrl, "https://api.openai.com/v1");
+  assert.throws(() => resolveModel("nope/x", {}));
+
+  assert.deepEqual(parseToolArgs('{"a":1}'), { a: 1 });
+  assert.deepEqual(parseToolArgs(""), {});
+  assert.ok("_parseError" in parseToolArgs("{oops"));
+});
+
+// tiny fs helpers so the test file stays dependency-free

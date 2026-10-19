@@ -1,0 +1,37 @@
+{
+  "name": "suparclaw",
+  "version": "0.1.0",
+  "description": "Termux-first personal AI gateway: one daemon, channels, tools, skills, sessions",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "sc": "dist/sc.js"
+  },
+  "engines": {
+    "node": ">=24.16.0"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "croner": "^10.0.1",
+    "grammy": "^1.46.0",
+    "json5": "^2.2.3",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.2"
+  }
+}

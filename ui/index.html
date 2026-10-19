@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en" data-theme="claw" data-theme-mode="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0e1015" />
+<title>SuparClaw</title>
+<!--
+  Design tokens below follow OpenClaw's Control UI stylesheet
+  (ui/src/styles/base.css, MIT licensed, Copyright OpenClaw contributors):
+  same surfaces, signature accent, type scale, spacing, radii and shadows.
+  SuparClaw reuses the tokens and writes a much smaller app on top of them.
+-->
+<style>
+:root {
+  --bg:#0e1015; --bg-accent:#13151b; --bg-elevated:#191c24; --bg-hover:#1f2330; --bg-muted:#1f2330;
+  --card:#161920; --card-foreground:#f0f0f2; --popover:#191c24; --panel:#0e1015; --panel-strong:#191c24;
+  --chrome:rgba(14,16,21,.96); --chrome-strong:rgba(14,16,21,.98);
+  --text:#bcbcc0; --text-strong:#f4f4f5; --chat-text:#bcbcc0; --muted:#8b8b94; --muted-strong:#898990;
+  --border:#1e2028; --border-strong:#2e3040; --border-hover:#3e4050; --input:#1e2028; --ring:#ff5c5c;
+  --accent:#ff5c5c; --accent-hover:#ff7070; --accent-subtle:rgba(255,92,92,.10); --accent-glow:rgba(255,92,92,.20);
+  --accent-foreground:#0e1015; --primary:#d13c3c; --primary-foreground:#fff; --accent-2:#14b8a6;
+  --selection-bg:#005fcc; --selection-fg:#fff; --link:color-mix(in srgb,var(--accent-hover) 85%,var(--text));
+  --exec-highlight:#f97316; --moon-highlight:#fef3c7; --inbox-attention:#e5243b;
+  --control-ui-text-scale:1;
+  --control-ui-text-xs:calc(11px*var(--control-ui-text-scale)); --control-ui-text-sm:calc(12px*var(--control-ui-text-scale));
+  --control-ui-text-md:calc(14px*var(--control-ui-text-scale)); --control-ui-text-lg:calc(16px*var(--control-ui-text-scale));
+  --control-ui-input-text-size:max(16px,calc(14px*var(--control-ui-text-scale)));
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px; --space-7:32px; --space-8:40px;
+  --radius-sm:6px; --radius-md:10px; --radius-lg:14px; --radius-xl:20px; --radius-full:9999px;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.25); --shadow-md:0 4px 16px rgba(0,0,0,.3);
+  --shadow-lg:0 12px 32px rgba(0,0,0,.4); --shadow-xl:0 24px 48px rgba(0,0,0,.5);
+  --rail-header-height:48px; --resize-handle-size:6px;
+  --chat-thread-max-width:48rem; --chat-stack-header-height:40px;
+  --font-body:"Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+:root[data-theme-mode="light"] {
+  --bg:#faf9f7; --bg-accent:#f4f1ec; --bg-elevated:#fff; --bg-hover:#f1ede7; --bg-muted:#f1ede7;
+  --card:#fff; --card-foreground:#241f1a; --popover:#fff; --panel:#faf9f7; --panel-strong:#fff;
+  --text:#4a423b; --text-strong:#241f1a; --chat-text:#4a423b; --muted:#8a7f74;
+  --border:#e6ded4; --border-strong:#d8cec2; --border-hover:#c9bcae; --input:#fff;
+  --accent:#c2410c; --accent-hover:#9a3412; --accent-subtle:rgba(194,65,12,.10); --primary:#c2410c;
+  --shadow-sm:0 1px 2px rgba(60,42,24,.05); --shadow-md:0 4px 12px rgba(60,42,24,.07);
+  --shadow-lg:0 12px 28px rgba(60,42,24,.09); --shadow-xl:0 24px 48px rgba(60,42,24,.11);
+  --accent-foreground:#fff;
+}
+* { box-sizing:border-box; }
+html,body { height:100%; margin:0; }
+body {
+  background:var(--bg); color:var(--text); font:400 var(--control-ui-text-md)/1.55 var(--font-body);
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+button,input,textarea { font:inherit; color:inherit; }
+button { cursor:pointer; }
+
+#app { display:grid; grid-template-columns:minmax(0,1fr) 288px; height:100dvh; }
+@media (max-width: 820px) { #app { grid-template-columns:1fr; } #sidebar { display:none; } }
+
+.rail {
+  height:var(--rail-header-height); display:flex; align-items:center; gap:var(--space-2);
+  padding:0 var(--space-3); border-bottom:1px solid var(--border); background:var(--bg);
+}
+.brand { display:flex; align-items:center; gap:var(--space-2); font-weight:700; color:var(--text-strong); letter-spacing:.2px; }
+.brand .dot { width:10px; height:10px; border-radius:var(--radius-full); background:var(--accent); box-shadow:0 0 12px var(--accent-glow); }
+.rail .spacer { flex:1; }
+.pill {
+  font-size:var(--control-ui-text-xs); color:var(--muted); border:1px solid var(--border);
+  padding:3px 10px; border-radius:var(--radius-full); background:var(--card);
+}
+.pill.online { color:var(--accent-2); border-color:color-mix(in srgb,var(--accent-2) 40%,var(--border)); }
+.pill.offline { color:var(--inbox-attention); border-color:color-mix(in srgb,var(--inbox-attention) 40%,var(--border)); }
+.btn {
+  background:var(--card); border:1px solid var(--border); color:var(--text);
+  padding:5px 12px; border-radius:var(--radius-sm); font-size:var(--control-ui-text-sm);
+}
+.btn:hover { background:var(--bg-hover); border-color:var(--border-hover); color:var(--text-strong); }
+.btn.primary { background:var(--primary); border-color:var(--primary); color:var(--primary-foreground); }
+.btn.primary:hover { background:var(--accent-hover); }
+
+main { display:flex; flex-direction:column; min-height:0; }
+#thread {
+  flex:1; overflow-y:auto; padding:var(--space-5) var(--space-4);
+  display:flex; flex-direction:column; gap:var(--space-3);
+}
+.row { width:100%; max-width:var(--chat-thread-max-width); margin:0 auto; }
+.msg { border-radius:var(--radius-lg); padding:var(--space-3) var(--space-4); white-space:pre-wrap; word-break:break-word; }
+.msg.user { background:var(--accent-subtle); border:1px solid color-mix(in srgb,var(--accent) 22%,transparent); }
+.msg.user .who { font-size:var(--control-ui-text-xs); color:var(--accent); font-weight:600; }
+.msg.bot { background:var(--card); border:1px solid var(--border); color:var(--chat-text); }
+.msg.bot .who { font-size:var(--control-ui-text-xs); color:var(--muted); font-weight:600; }
+.msg.bot.streaming::after { content:"▌"; color:var(--accent); animation:blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity:.25; } }
+.tool {
+  border-radius:var(--radius-md); border:1px solid var(--border); background:var(--bg-elevated);
+  padding:var(--space-2) var(--space-3); font-size:var(--control-ui-text-sm); color:var(--muted);
+}
+.tool b { color:var(--accent); font-weight:600; }
+.tool.done { border-color:color-mix(in srgb,var(--accent-2) 35%,var(--border)); }
+.tool.error { border-color:color-mix(in srgb,var(--inbox-attention) 45%,var(--border)); color:var(--inbox-attention); }
+.system { color:var(--muted); font-size:var(--control-ui-text-sm); text-align:center; }
+.empty { color:var(--muted); text-align:center; margin:auto; font-size:var(--control-ui-text-sm); }
+
+#composer { border-top:1px solid var(--border); background:var(--chrome); padding:var(--space-3); }
+#composer .inner { max-width:var(--chat-thread-max-width); margin:0 auto; }
+#input {
+  width:100%; min-height:var(--chat-stack-header-height); max-height:40vh; resize:none;
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md);
+  padding:var(--space-2) var(--space-3); font-size:var(--control-ui-input-text-size); outline:none;
+}
+#input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-subtle); }
+#hint { margin-top:6px; font-size:var(--control-ui-text-xs); color:var(--muted); display:flex; gap:var(--space-3); }
+
+#sidebar { border-left:1px solid var(--border); background:var(--bg-accent); display:flex; flex-direction:column; min-height:0; }
+#sidebar h3 { margin:0; padding:var(--space-3) var(--space-4) var(--space-2); font-size:var(--control-ui-text-xs);
+  text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+#sessions { overflow-y:auto; padding:0 var(--space-2); display:flex; flex-direction:column; gap:2px; }
+.session {
+  text-align:left; background:transparent; border:1px solid transparent; border-radius:var(--radius-sm);
+  padding:var(--space-2); display:flex; flex-direction:column; gap:2px; width:100%;
+}
+.session:hover { background:var(--bg-hover); }
+.session.active { background:var(--card); border-color:var(--border); }
+.session .key { font-size:var(--control-ui-text-sm); color:var(--text-strong); }
+.session .meta { font-size:var(--control-ui-text-xs); color:var(--muted); }
+.dot-live { width:7px; height:7px; border-radius:var(--radius-full); background:var(--accent-2); display:inline-block; margin-right:6px; }
+#stats { margin-top:auto; padding:var(--space-3) var(--space-4); border-top:1px solid var(--border);
+  font-size:var(--control-ui-text-xs); color:var(--muted); display:grid; gap:2px; }
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-thumb { background:var(--border-strong); border-radius:var(--radius-full); }
+::selection { background:var(--selection-bg); color:var(--selection-fg); }
+</style>
+</head>
+<body>
+<div id="app">
+  <main>
+    <div class="rail">
+      <div class="brand"><span class="dot"></span> SuparClaw</div>
+      <span class="pill" id="session-pill">main:main</span>
+      <div class="spacer"></div>
+      <span class="pill" id="model-pill">model</span>
+      <span class="pill" id="conn-pill">connecting…</span>
+      <button class="btn" id="theme-btn" title="Toggle theme">◐</button>
+    </div>
+
+    <div id="thread"><div class="empty">No messages yet. Say hello.</div></div>
+
+    <div id="composer">
+      <div class="inner">
+        <textarea id="input" placeholder="Message SuparClaw…  (Enter to send, Shift+Enter for a newline)"></textarea>
+        <div id="hint">
+          <span>Enter send</span><span>Shift+Enter newline</span><span>Esc abort</span><span id="tok"></span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <aside id="sidebar">
+    <h3>Sessions</h3>
+    <div id="sessions"></div>
+    <div id="stats"></div>
+  </aside>
+</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const thread = $("thread"), input = $("input"), connPill = $("conn-pill");
+let ws = null, sessionKey = localStorage.getItem("sc.session") || "main:main", sending = false;
+
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+function addMessage(who, text, cls = "") {
+  const empty = thread.querySelector(".empty");
+  if (empty) empty.remove();
+  const row = document.createElement("div");
+  row.className = "row";
+  const msg = document.createElement("div");
+  msg.className = "msg " + cls;
+  msg.innerHTML = `<div class="who">${esc(who)}</div><div class="body"></div>`;
+  msg.querySelector(".body").textContent = text;
+  row.appendChild(msg);
+  thread.appendChild(row);
+  thread.scrollTop = thread.scrollHeight;
+  return msg.querySelector(".body");
+}
+
+function addTool(name, status) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<div class="tool ${status}"><b>◐</b> ${esc(name)} <span class="state">${status}</span></div>`;
+  thread.appendChild(row);
+  thread.scrollTop = thread.scrollHeight;
+  return row;
+}
+
+function setConn(state) {
+  connPill.textContent = state === "online" ? "connected" : state === "connecting" ? "connecting…" : "disconnected";
+  connPill.className = "pill " + (state === "online" ? "online" : "offline");
+}
+
+function connect() {
+  const token = localStorage.getItem("sc.token") || prompt("Gateway token") || "";
+  localStorage.setItem("sc.token", token);
+  setConn("connecting");
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onopen = () => { ws.send(JSON.stringify({ type: "connect", params: { token } })); };
+  ws.onclose = () => { setConn("offline"); setTimeout(connect, 2500); };
+  ws.onmessage = (ev) => {
+    const f = JSON.parse(ev.data);
+    if (f.type === "hello-ok") { setConn("online"); refresh(); return; }
+    if (f.type !== "event") return;
+    const p = f.payload ?? {};
+    if (f.event === "chat.delta") {
+      sending = true;
+      if (!addMessage._live) addMessage._live = addMessage("suparclaw", "", "bot streaming");
+      addMessage._live.textContent += p.delta;
+      thread.scrollTop = thread.scrollHeight;
+    } else if (f.event === "chat.reply") {
+      addMessage._live = null;
+      sending = false;
+      addMessage("suparclaw", p.text, "bot");
+    } else if (f.event === "chat.tool") {
+      const row = addTool(p.event.name, p.event.status);
+      row.querySelector("b").textContent = p.event.status === "error" ? "✗" : p.event.status === "done" ? "✓" : "◐";
+    } else if (f.event === "chat.approval") {
+      const ok = confirm(`Allow tool: ${p.event.tool} ${JSON.stringify(p.event.args)}`);
+      request("chat.approval", { callId: p.event.callId, approve: ok });
+    } else if (f.event === "tick") {
+      health();
+    }
+  };
+}
+
+function request(method, params = {}) {
+  return new Promise((resolve, reject) => {
+    const id = "r" + Math.random().toString(36).slice(2);
+    const onMsg = (ev) => {
+      const f = JSON.parse(ev.data);
+      if (f.type === "res" && f.id === id) {
+        ws.removeEventListener("message", onMsg);
+        f.ok ? resolve(f.payload) : reject(new Error(f.error?.message));
+      }
+    };
+    ws.addEventListener("message", onMsg);
+    ws.send(JSON.stringify({ type: "req", id, method, params }));
+  });
+}
+
+async function refresh() {
+  try {
+    const [sessions, models, stats] = await Promise.all([
+      request("sessions.list", { limit: 25 }),
+      request("models.list"),
+      request("status"),
+    ]);
+    const list = $("sessions");
+    list.innerHTML = "";
+    for (const s of sessions.sessions) {
+      const b = document.createElement("button");
+      b.className = "session" + (s.key === sessionKey ? " active" : "");
+      b.innerHTML = `<span class="key">${esc(s.key)}</span><span class="meta">${new Date(s.last_msg_at).toLocaleString()}</span>`;
+      b.onclick = () => { sessionKey = s.key; localStorage.setItem("sc.session", sessionKey); $("session-pill").textContent = sessionKey; refresh(); loadHistory(); };
+      list.appendChild(b);
+    }
+    $("model-pill").textContent = stats.model || "no model";
+    $("stats").innerHTML =
+      `<div>model: ${esc(stats.model)}</div><div>tools: ${stats.tools.length}</div>` +
+      `<div>skills: ${stats.skills.length}</div><div>telegram: ${stats.telegram.enabled ? "on" : "off"}</div>` +
+      `<div>cron jobs: ${stats.cron.enabled ? stats.cron.jobs : "off"}</div>`;
+  } catch (err) { /* gateway busy */ }
+}
+
+async function health() {
+  try {
+    const h = await fetch("/health").then((r) => r.json());
+    $("tok").textContent = `${h.sessions} sessions · up ${Math.round(h.uptimeMs / 1000)}s`;
+  } catch {}
+}
+
+async function loadHistory() {
+  thread.innerHTML = "";
+  addMessage._live = null;
+  try {
+    const res = await request("chat.history", { sessionKey, limit: 40 });
+    if (!res.messages.length) { thread.innerHTML = '<div class="empty">No messages yet. Say hello.</div>'; return; }
+    for (const m of res.messages) {
+      if (m.role === "user") addMessage("you", m.content, "user");
+      else if (m.role === "assistant") addMessage("suparclaw", m.content, "bot");
+    }
+  } catch {}
+}
+
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    addMessage("you", text, "user");
+    input.value = "";
+    request("chat.send", { sessionKey, text, isMainSession: true, key: crypto.randomUUID() }).catch(() => {});
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") request("chat.abort", { sessionKey });
+});
+
+$("theme-btn").onclick = () => {
+  const root = document.documentElement;
+  const light = root.dataset.themeMode === "light";
+  root.dataset.themeMode = light ? "dark" : "light";
+  localStorage.setItem("sc.theme", root.dataset.themeMode);
+};
+if (localStorage.getItem("sc.theme")) document.documentElement.dataset.themeMode = localStorage.getItem("sc.theme");
+
+$("session-pill").textContent = sessionKey;
+connect();
+health();
+</script>
+</body>
+</html>
