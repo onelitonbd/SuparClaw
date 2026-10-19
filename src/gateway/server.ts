@@ -289,8 +289,13 @@ export class Gateway {
 
     const cfg = this.service.config;
     if (!cfg.gateway.controlUi.enabled || !this.webRoot || !existsSync(this.webRoot)) {
-      res.writeHead(404, { "content-type": "text/plain" });
-      res.end("SuparClaw gateway. Control UI bundle not installed (run: npm run build:ui)");
+      const looked = this.webRoot ? `looked in ${this.webRoot}` : "no ui/ directory found next to the install";
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end(
+        `SuparClaw gateway is running (${cfg.gateway.controlUi.enabled ? "web UI disabled or missing" : "web UI disabled in config"}).\n${looked}\n` +
+          "The Control UI is plain HTML — there is no build step. Re-run the installer:\n" +
+          "  curl -fsSL https://raw.githubusercontent.com/onelitonbd/SuparClaw/main/install.sh | bash\n",
+      );
       return;
     }
 

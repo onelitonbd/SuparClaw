@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { join, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
 
 export const APP = "suparclaw";
 export const DEFAULT_PORT = 18790;
@@ -58,13 +58,25 @@ export function isProot(): boolean {
   return isTermux() && process.env.PROOT_L2S_DIR !== undefined && process.env.PROOT_L2S_DIR !== "";
 }
 
-/** dist/sc.mjs -> repo root -> ui/ */
+/**
+ * Locate the Control UI next to the bundle. With code splitting the calling
+ * module may live in dist/chunks/, so walk upwards until we find ui/index.html.
+ */
 export function webUiRoot(): string {
+  let dir: string;
   try {
-    return fileURLToPath(new URL("../ui", import.meta.url));
+    dir = dirname(fileURLToPath(import.meta.url));
   } catch {
     return "";
   }
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, "ui");
+    if (existsSync(join(candidate, "index.html"))) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return "";
 }
 
 export function prefixDir(): string {
