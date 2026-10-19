@@ -165,6 +165,8 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   assert.equal(sent.accepted, true);
 
   await waitFrame((f) => f.type === "event" && f.event === "chat" && f.payload?.event?.type === "final");
+  // idle arrives just after final; wait for it so the assertion is not a race
+  await waitFrame((f) => f.type === "event" && f.event === "chat" && f.payload?.event?.type === "idle");
   const kinds = events.filter((e) => e.event === "chat").map((e) => e.payload.event.type);
   for (const want of ["start", "delta", "final", "idle"]) {
     assert.ok(kinds.includes(want), `"${want}" is broadcast`);
