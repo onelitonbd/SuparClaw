@@ -18,9 +18,12 @@ usage: sc <command> [options]
 commands:
   chat, tui            open the terminal UI (default)
   gateway              run the daemon (channels + gateway + cron)
+  gateway list         show running gateways with pid, uptime and port
+  gateway --restart    stop the running one and take over its port
   init                 create workspace files and a gateway token
   status               show health and configuration summary
   doctor               diagnose this device
+  stop                    stop a running gateway (pid file)
   config <get|set|path>  read or write config values
   token [--rotate]      show (or regenerate) the gateway token
   pair <list|approve|revoke>  manage Telegram DM access
@@ -53,6 +56,7 @@ export async function main(argv: string[]): Promise<number> {
       return tuiLocal();
     }
     case "gateway": {
+      if (rest[0] === "list") return gatewayList();
       const { Gateway } = await import("../gateway/server.js");
       return gateway(rest, Gateway);
     }
@@ -72,6 +76,8 @@ export async function main(argv: string[]): Promise<number> {
       return tokenCmd(rest);
     case "service":
       return (await import("./service.js")).serviceCmd(rest);
+    case "stop":
+      return stopCmd(rest);
     case "version":
     case "--version":
     case "-v":
@@ -121,8 +127,79 @@ async function status(): Promise<number> {
   return 0;
 }
 
+async function stopCmd(args: string[]): Promise<number> {
+  const { stopService } = await import("./service.js");
+  const arg = args[0]?.trim();
+  const pid = arg ? Number.parseInt(arg, 10) : undefined;
+  if (arg && !Number.isFinite(pid)) {
+    console.error(`'${arg}' is not a pid — see: sc gateway list`);
+    return 1;
+  }
+  const result = await stopService(pid);
+  console.log(result.message);
+  return result.ok ? 0 : 1;
+}
+
+async function gatewayList(): Promise<number> {
+  const { listGateways, formatUptime } = await import("./service.js");
+  const procs = await listGateways();
+  if (procs.length === 0) {
+    console.log("no SuparClaw gateway is running");
+    return 0;
+  }
+  console.log("PID      UPTIME     PORT    STATUS      COMMAND");
+  for (const p of procs) {
+    const up = p.uptimeSec === null ? "?" : formatUptime(p.uptimeSec);
+    const port = p.port ? String(p.port) : "-";
+    const status = p.healthy ? "healthy" : p.port ? "unresponsive" : "unknown";
+    console.log(`${String(p.pid).padEnd(9)}${up.padEnd(11)}${port.padEnd(8)}${status.padEnd(12)}${p.cmd}`);
+  }
+  console.log("\nstop one with: sc stop <pid>");
+  return 0;
+}
+
+/** Is something healthy answering on our port? */
+async function probeHealth(port: number): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1500) });
+    return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForPort(port: number, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (!(await probeHealth(port))) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+
 async function gateway(args: string[], GatewayCtor: typeof import("../gateway/server.js").Gateway): Promise<number> {
   const port = flag(args, "--port");
+  const restart = args.includes("--restart");
+  const targetPort = port ? Number.parseInt(port, 10) : 18790;
+  const existing = await probeHealth(targetPort);
+
+  if (existing && !restart) {
+    console.error(`a SuparClaw gateway is already running on port ${targetPort}`);
+    console.error("  stop it:   sc stop");
+    console.error("  or restart: sc gateway --restart");
+    console.error(`  it has been up ${Math.round(Number(existing["uptimeMs"] ?? 0) / 1000)}s`);
+    return 1;
+  }
+  if (existing && restart) {
+    console.log("stopping the running gateway…");
+    const result = await (await import("./service.js")).stopService();
+    console.log(`  ${result.message}`);
+    if (!(await waitForPort(targetPort, 6000))) {
+      console.error("the old daemon is still holding the port — try: pkill -f 'sc.js gateway'");
+      return 1;
+    }
+  }
+
   const service = await openService();
   if (port) {
     const result = service.configSvc.setPath("gateway.port", Number.parseInt(port, 10));
@@ -136,11 +213,18 @@ async function gateway(args: string[], GatewayCtor: typeof import("../gateway/se
   try {
     await gw.start();
   } catch (err) {
-    console.error(`gateway failed to start: ${(err as Error).message}`);
+    const message = (err as Error).message;
+    if (/EADDRINUSE/.test(message)) {
+      console.error(`port ${service.config.gateway.port} is already in use by another process.`);
+      console.error("  find it:  lsof -i :${service.config.gateway.port}   (pkg install lsof)");
+      console.error("  or stop ours: sc stop");
+    } else {
+      console.error(`gateway failed to start: ${message}`);
+    }
     return 1;
   }
   await service.startChannels();
-  (await import("./service.js")).writePid();
+  (await import("./service.js")).writePid(service.config.gateway.port);
   const auth = service.config.gateway.auth;
   console.log(`suparclaw gateway listening on ws://${gw.address}/ws`);
   console.log(`web ui:  http://${gw.address.replace("0.0.0.0", "127.0.0.1")}/`);
