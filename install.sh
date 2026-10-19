@@ -78,19 +78,26 @@ ok "node $(node -v)"
 # ------------------------------------------------------------------- fetch
 command -v curl >/dev/null 2>&1 || { fail "curl is required"; exit 1; }
 mkdir -p "$PREFIX_DIR"
-TARBALL_URL="https://codeload.github.com/${REPO}/tar.gz/refs/heads/${REF}"
+TARBALL_URL="${SUPARCLAW_TARBALL_URL:-https://codeload.github.com/${REPO}/tar.gz/refs/heads/${REF}}"
+
+# Private repos need a token. Pass it as SUPARCLAW_GITHUB_TOKEN (a public repo needs nothing).
+AUTH_ARGS=()
+if [ -n "${SUPARCLAW_GITHUB_TOKEN:-}" ]; then
+  AUTH_ARGS=(-H "Authorization: token ${SUPARCLAW_GITHUB_TOKEN}")
+  info "using a GitHub token (private repo mode)"
+fi
 
 info "downloading ${REPO}@${REF} …"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-if curl -fsSL "$TARBALL_URL" -o "$TMP/sc.tgz" && tar -xzf "$TMP/sc.tgz" -C "$TMP" 2>/dev/null; then
+if curl -fsSL "${AUTH_ARGS[@]}" "$TARBALL_URL" -o "$TMP/sc.tgz" && tar -xzf "$TMP/sc.tgz" -C "$TMP" 2>/dev/null; then
   SRC="$(find "$TMP" -maxdepth 1 -type d -name 'SuparClaw-*' | head -1)"
 elif command -v git >/dev/null 2>&1 && git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$TMP/repo" 2>/dev/null; then
   SRC="$TMP/repo"
 else
   fail "download failed"
-  info "check your network, then retry"
+  info "private repo? re-run with SUPARCLAW_GITHUB_TOKEN=<your token>"
   exit 1
 fi
 [ -n "$SRC" ] || { fail "could not unpack archive"; exit 1; }
