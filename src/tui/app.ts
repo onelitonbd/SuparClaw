@@ -52,6 +52,7 @@ export class TuiApp {
   #dirty = true;
   #running = true;
   #resolveDone: (() => void) | null = null;
+  #lastCtrlC = 0;
   #stdin: NodeJS.ReadStream;
 
   constructor(
@@ -105,8 +106,12 @@ export class TuiApp {
     this.#dirty = true;
   }
 
-  /** Stop the render loop (deps.quit is invoked separately by the caller if needed). */
+  /** Stop the render loop, aborting any in-flight run first (deps.quit is invoked separately). */
   quit(): void {
+    if (this.busy) {
+      this.busy = false;
+      this.deps.onAbort();
+    }
     this.#running = false;
     this.#resolveDone?.();
   }
@@ -282,7 +287,7 @@ export class TuiApp {
     this.markDirty();
 
     if (this.#overlay) {
-      if (key.name === "escape") {
+      if (key.name === "escape" || (key.name === "ctrl-c")) {
         this.#overlay = null;
         return;
       }
@@ -307,7 +312,7 @@ export class TuiApp {
       if (pending) this.deps.onApproval(pending.callId, true);
       return;
     }
-    if (this.approvals.length > 0 && (key.name === "char" && (key.ch === "n" || key.ch === "N") || key.name === "escape")) {
+    if (this.approvals.length > 0 && (key.name === "char" && (key.ch === "n" || key.ch === "N") || key.name === "escape" || key.name === "ctrl-c")) {
       const pending = this.approvals.shift();
       if (pending) this.deps.onApproval(pending.callId, false);
       return;
@@ -383,16 +388,36 @@ export class TuiApp {
       case "ctrl-u":
         this.#editor.clearLine();
         return;
-      case "ctrl-c":
-        if (this.#editor.isEmpty) {
-          this.items = [];
-          this.markDirty();
-        } else {
+      case "ctrl-c": {
+        // Esc/modal keys close first, then a live run stops, then — on a
+        // double press — the TUI itself closes.
+        const now = Date.now();
+        const double = now - this.#lastCtrlC < 700;
+        this.#lastCtrlC = now;
+        if (this.busy) {
+          this.busy = false;
+          this.deps.onAbort();
+          this.setStatus("stopped");
+          this.push({ kind: "system", text: "stopped — ctrl+c again to exit" });
+          return;
+        }
+        if (!this.#editor.isEmpty) {
           this.#editor.clear();
+          return;
+        }
+        if (double) {
+          this.quit();
+          return;
+        }
+        const last = this.items[this.items.length - 1];
+        const hint = "ctrl+c again to exit · esc stops a running reply";
+        if (!(last && last.kind === "system" && last.text === hint)) {
+          this.push({ kind: "system", text: hint });
         }
         return;
+      }
       case "ctrl-d":
-        this.#running = false;
+        this.quit();
         return;
       case "char":
         if (key.ch) this.#editor.insert(key.ch);
