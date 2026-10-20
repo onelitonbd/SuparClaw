@@ -32,17 +32,29 @@ termux-wake-lock            # keep it alive while the screen is off
 
 ## Configure a model
 
+The guided path discovers the provider's live model list and sets the default:
+
+```bash
+sc setup                   # pick provider → paste key → choose from its models
+sc provider add openrouter --api-key sk-or-…   # discovers and saves the model list
+sc models --refresh        # re-fetch model lists from every provider
+```
+
 SuparClaw speaks the OpenAI chat-completions API, so any compatible endpoint works:
 
 ```bash
-sc config set agents.defaults.model "openai/gpt-4o-mini"
 sc config set providers.openai.baseUrl "https://api.openai.com/v1"
 sc config set providers.openai.apiKey  "sk-..."
+sc config set agents.defaults.model "openai/gpt-4o-mini"
 
 # local models on the phone
-sc config set agents.defaults.model "local/qwen2.5"
 sc config set providers.local.baseUrl  "http://127.0.0.1:8080/v1"
+sc config set agents.defaults.model "local/qwen2.5"
 ```
+
+Model references are validated on write — `sc config set agents.defaults.model`
+rejects a reference that does not resolve against the configured providers
+(exactly like OpenClaw's `config set`).
 
 ## Commands
 
@@ -51,6 +63,9 @@ sc config set providers.local.baseUrl  "http://127.0.0.1:8080/v1"
 | `sc chat` / `sc tui` | terminal UI (embedded runtime, no sockets) |
 | `sc tui --url ws://host:port --token …` | terminal UI against a remote daemon |
 | `sc gateway` | run the daemon: gateway, channels, cron — prints a readiness checklist proving every subsystem is connected |
+| `sc setup` | guided provider setup — fetches the provider's model list and sets a default |
+| `sc provider add\|list\|remove\|test` | manage providers (add discovers models from `…/models`) |
+| `sc models [--refresh]` | model inventory — live fetch from providers with `--refresh` |
 | `sc doctor` | node / sqlite / FTS5 / config / port / disk / skills checks |
 | `sc security audit` | security posture: bind, auth, origins, exec, channels, file perms |
 | `sc status` | subsystem readiness + effective config — probes the **running** gateway when one is up (`live: true`), offline view otherwise |

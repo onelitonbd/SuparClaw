@@ -4,6 +4,7 @@
 
 import { ConfigService } from "./load.js";
 import type { SuparClawConfig } from "./schema.js";
+import { resolveModel, type ProviderConfig } from "../agent/llm.js";
 
 export interface Preset {
   name: string;
@@ -40,6 +41,119 @@ export async function fetchModels(baseUrl: string, apiKey: string): Promise<{ mo
     return { models };
   } catch (err) {
     return { models: [], error: (err as Error).message };
+  }
+}
+
+// ── live model fetching ─────────────────────────────────────────────────────
+// OpenClaw's inventory contract at our scale: reads never wait on the network,
+// saved rows are served immediately, stale providers refresh in the background
+// (or synchronously with {refresh:true}), and a failed refresh keeps the saved
+// rows and reports the failure as a warning.
+
+const DEFAULT_TTL_MS = 10 * 60_000;
+const cache = new Map<string, { at: number }>();
+
+const ttlMs = (): number => {
+  const raw = Number(process.env["SUPARCLAW_MODELS_TTL_MS"] ?? "");
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_TTL_MS;
+};
+
+export interface ModelsResult {
+  /** "<provider>/<model>" refs: configured rows plus any discovered ones. */
+  models: string[];
+  /** Providers whose live fetch failed — saved rows are still served. */
+  warning?: string;
+  /** A background fetch is in flight; call again soon for fresh rows. */
+  refreshing?: boolean;
+}
+
+/**
+ * Merge a provider's live /models listing into its configured rows and persist
+ * (append-only: configured rows keep their position and metadata; cap 200).
+ * Returns the merged list even when the fetch fails (then = saved rows).
+ */
+export async function refreshProviderModels(
+  cfg: ConfigService,
+  name: string,
+): Promise<{ models: string[]; error?: string }> {
+  const p = cfg.current.providers?.[name] as ProviderRecord | undefined;
+  if (!p) return { models: [], error: `no such provider: ${name}` };
+  const key = `${name}@${p.baseUrl}`;
+  const saved = (p.models ?? []).filter(Boolean);
+  const found = await fetchModels(p.baseUrl ?? "", p.apiKey ?? "");
+  if (found.error || found.models.length === 0) {
+    return { models: saved, error: found.error ?? "empty listing" };
+  }
+  cache.set(key, { at: Date.now() });
+  const merged = [...new Set([...saved, ...found.models])].slice(0, 200);
+  if (merged.length !== saved.length || merged.some((m, i) => m !== saved[i])) {
+    cfg.setPath(`providers.${name}.models`, merged);
+  }
+  return { models: merged };
+}
+
+/**
+ * Model inventory for pickers (UI, TUI, Telegram, `sc models`).
+ *
+ * refresh: true  → fetch every provider now (OpenClaw's explicit Refresh)
+ * refresh: false → serve saved rows; TTL-stale providers refresh in background
+ */
+export async function discoverModels(cfg: ConfigService, opts: { refresh?: boolean } = {}): Promise<ModelsResult> {
+  const providers = cfg.current.providers ?? {};
+  const names = Object.keys(providers);
+  const warnings: string[] = [];
+  let refreshing = false;
+
+  const stale = names.filter((name) => {
+    const p = providers[name] as ProviderRecord;
+    const at = cache.get(`${name}@${p.baseUrl}`)?.at ?? 0;
+    return Date.now() - at > ttlMs();
+  });
+
+  if (opts.refresh) {
+    const results = await Promise.all(names.map(async (name) => ({ name, ...(await refreshProviderModels(cfg, name)) })));
+    for (const r of results) {
+      if (r.error) warnings.push(`${r.name}: ${r.error}`);
+    }
+  } else {
+    for (const name of stale) {
+      refreshing = true;
+      void refreshProviderModels(cfg, name).then((r) => {
+        if (r.error) cache.delete(`${name}@${(providers[name] as ProviderRecord).baseUrl}`);
+      });
+    }
+  }
+
+  const out: string[] = [];
+  for (const [name, p] of Object.entries(cfg.current.providers ?? {})) {
+    for (const m of (p as ProviderRecord).models ?? []) out.push(`${name}/${m}`);
+  }
+  if (out.length === 0) {
+    const model = cfg.current.agents?.defaults?.model;
+    if (model) out.push(model);
+  }
+  const result: ModelsResult = { models: out };
+  if (warnings.length > 0) result.warning = `saved rows shown — ${warnings.join("; ")}`;
+  if (refreshing) result.refreshing = true;
+  return result;
+}
+
+/**
+ * Can this model reference be resolved against the configured providers?
+ * Returns an error message, or null when the ref is acceptable. Mirrors
+ * OpenClaw's `config set` strictness, with its escape hatch: when no provider
+ * exists yet, ownership cannot be verified and the ref is allowed.
+ */
+export function validateModelRef(config: SuparClawConfig, ref: string): string | null {
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  const providers = config.providers ?? {};
+  if (Object.keys(providers).length === 0) return null; // cannot verify yet
+  try {
+    resolveModel(trimmed, providers as Record<string, ProviderConfig>);
+    return null;
+  } catch (err) {
+    return (err as Error).message;
   }
 }
 
@@ -120,8 +234,10 @@ export async function addProvider(
 
   let models = (opts.models ?? []).map((m) => m.trim()).filter(Boolean);
   let discovered = false;
+  let discoverError: string | undefined;
   if (models.length === 0) {
     const found = await fetchModels(baseUrl, (opts.apiKey ?? "").trim());
+    discoverError = found.error;
     if (found.models.length > 0) {
       models = found.models.slice(0, 200);
       discovered = true;
@@ -138,6 +254,7 @@ export async function addProvider(
   const parts = [`provider "${clean}" saved`];
   if (discovered) parts.push(`discovered ${models.length} models`);
   else if (models.length > 0) parts.push(`${models.length} models`);
+  else if (discoverError) parts.push(`no models found (${discoverError}) — add some with: --models <a,b,c>`);
   else parts.push("no models found — add some with: --models <a,b,c>");
   parts.push(`default: /model ${clean}/${models[0] ?? "<model>"}`);
   return { ok: true, message: parts.join("\n") };

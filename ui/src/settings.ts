@@ -53,11 +53,13 @@ export class Settings {
 
     let config: any = {};
     let models: string[] = [];
+    let modelsWarning: string | undefined;
     let tools = 0, skills = 0;
     try {
       const [cfg, modelRes, toolRes, skillRes] = await this.#load();
       config = (cfg as any).config ?? {};
       models = (modelRes as any).models ?? [];
+      modelsWarning = (modelRes as any).warning;
       tools = ((toolRes as any).tools ?? []).length;
       skills = ((skillRes as any).skills ?? []).length;
     } catch (err) {
@@ -69,7 +71,7 @@ export class Settings {
     const gw = config.gateway ?? {};
 
     this.#root.innerHTML = "";
-    if (this.#tab === "model") this.#renderModel(defaults, models);
+    if (this.#tab === "model") this.#renderModel(defaults, models, modelsWarning);
     else if (this.#tab === "providers") this.#renderProviders(providers);
     else if (this.#tab === "gateway") this.#renderGateway(gw);
     else this.#renderRuntime(config, { tools, skills, models: models.length });
@@ -93,7 +95,7 @@ export class Settings {
 
   /* ---------------- model ---------------- */
 
-  #renderModel(defaults: any, models: string[]): void {
+  #renderModel(defaults: any, models: string[], warning?: string): void {
     const input = el("input", {
       class: "inp mono",
       id: "default-model",
@@ -153,7 +155,30 @@ export class Settings {
         ]),
       ]),
       el("div", { class: "card", style: "padding:8px 16px" }, [
-        el("div", { class: "cap", style: "padding:8px 0" }, ["Available models"]),
+        el("div", { class: "cap", style: "padding:8px 0;display:flex;align-items:center;gap:8px" }, [
+          el("span", {}, ["Available models"]),
+          (() => {
+            const refresh = el("button", { class: "btn sm", type: "button", style: "margin-left:auto" }, [
+              "↻ Refresh",
+            ]);
+            refresh.onclick = async () => {
+              try {
+                const res = (await gateway.request("models.list", { refresh: true })) as any;
+                toast(
+                  res.warning ? `saved rows shown — ${res.warning}` : `${(res.models ?? []).length} models`,
+                  res.warning ? "info" : "ok",
+                );
+                await this.render();
+              } catch (err) {
+                toast((err as Error).message, "err");
+              }
+            };
+            return refresh;
+          })(),
+        ]),
+        warning
+          ? el("p", { class: "hint", style: "color:var(--warn)" }, [warning])
+          : el("span", {}),
         saved,
       ]),
       save,
@@ -311,19 +336,25 @@ export class Settings {
       onConfirm: async (v) => {
         const providerName = ((v.name ?? "") || name || "").trim();
         if (!providerName) { toast("name is required", "err"); return; }
-        const next: Record<string, Provider> = { ...providers };
-        if (name && name !== providerName) delete next[name];
         const typedKey = (v.apiKey ?? "").trim();
-        next[providerName] = {
-          baseUrl: (v.baseUrl ?? "").trim(),
-          // Blank on edit = keep the stored key (the wire only ever carries the
-          // redaction sentinel — see src/config/redact.ts).
-          apiKey: typedKey || (name ? providers[name]?.apiKey ?? "" : ""),
-          models: (v.models ?? "").split(",").map((s) => s.trim()).filter(Boolean),
-        };
+        // Blank key on edit = keep the stored key (the wire only ever carries
+        // the redaction sentinel — see src/config/redact.ts).
+        const apiKey = typedKey || (name ? providers[name]?.apiKey ?? "" : "");
+        const models = (v.models ?? "").split(",").map((s) => s.trim()).filter(Boolean);
         try {
-          await gateway.request("config.set", { path: "providers", value: next });
-          toast(name ? `${providerName} updated` : `${providerName} added`, "ok");
+          // The shared path (same as CLI/TUI/Telegram): when the models field
+          // is left empty, the gateway discovers the provider's live list.
+          const res = (await gateway.request("providers.add", {
+            name: providerName,
+            previousName: name ?? "",
+            baseUrl: (v.baseUrl ?? "").trim(),
+            apiKey,
+            models,
+          })) as any;
+          if (name && name !== providerName) {
+            await gateway.request("providers.remove", { name });
+          }
+          toast(String(res.message ?? (name ? `${providerName} updated` : `${providerName} added`)).split("\n")[0] ?? "saved", "ok");
           done();
           this.#onChanged();
         } catch (err) {
@@ -340,11 +371,9 @@ export class Settings {
       confirmLabel: "Remove",
       danger: true,
       onConfirm: async () => {
-        const next = { ...providers };
-        delete next[name];
         try {
-          await gateway.request("config.set", { path: "providers", value: next });
-          toast(`${name} removed`, "ok");
+          const res = (await gateway.request("providers.remove", { name })) as any;
+          toast(String(res.message ?? `${name} removed`).split("\n")[0] ?? "removed", "ok");
           done();
           this.#onChanged();
         } catch (err) {

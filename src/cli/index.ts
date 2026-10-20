@@ -23,6 +23,7 @@ commands:
   gateway --restart    stop the running one and take over its port
   setup                guided first-run setup: pick a provider, key and model
   provider <list|add|remove|test>  manage providers
+  models [--refresh]     list available models (live fetch with --refresh)
   init                 create workspace files and a gateway token
   status               show health and configuration summary
   doctor               diagnose this device
@@ -68,6 +69,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./provider.js")).setupCmd();
     case "provider":
       return (await import("./provider.js")).providerCmd(rest);
+    case "models":
+      return (await import("./provider.js")).modelsCmd(rest);
     case "doctor":
       return (await import("./doctor.js")).doctor();
     case "security":
@@ -332,6 +335,23 @@ async function configCmd(args: string[]): Promise<number> {
         value = JSON.parse(raw);
       } catch {
         /* keep string */
+      }
+      // Strict model refs (OpenClaw's `config set` contract): a reference that
+      // cannot be resolved against the configured providers is rejected, not
+      // silently stored. Empty is allowed (clears the setting).
+      const { validateModelRef } = await import("../config/providers.js");
+      const refs: string[] =
+        path === "agents.defaults.model" && typeof value === "string"
+          ? [value]
+          : path === "agents.defaults.fallbacks" && Array.isArray(value)
+            ? value.filter((m): m is string => typeof m === "string")
+            : [];
+      for (const ref of refs) {
+        const invalid = validateModelRef(service.config, ref);
+        if (invalid) {
+          console.error(`invalid model reference: ${invalid}`);
+          return 1;
+        }
       }
       const result = service.configSvc.setPath(path, value);
       if (!result.ok) {

@@ -4,7 +4,14 @@ import { extname, join, normalize } from "node:path";
 import type { WebSocketServer as WsServer, WebSocket } from "ws";
 import type { Service } from "../agent/service.js";
 import type { Logger } from "../util/log.js";
-import { canonicalModelRef } from "../config/providers.js";
+import {
+  addProvider,
+  canonicalModelRef,
+  discoverModels,
+  removeProvider,
+  testProvider,
+  validateModelRef,
+} from "../config/providers.js";
 import { redactSecrets, resolveRedacted } from "../config/redact.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
@@ -193,6 +200,9 @@ export class Gateway {
       "sessions.list",
       "sessions.rename",
       "models.list",
+      "providers.add",
+      "providers.remove",
+      "providers.test",
       "tools.list",
       "skills.list",
       "cron.list",
@@ -280,9 +290,61 @@ export class Gateway {
           send(okFrame(id, { renamed: true }));
           return;
         }
-        case "models.list":
-          send(okFrame(id, { models: service.loop.llm.listModels() }));
+        case "models.list": {
+          // Live inventory: saved rows served immediately, TTL-stale providers
+          // refresh in the background; {refresh:true} fetches now (OpenClaw's
+          // explicit Refresh). Failed refreshes keep saved rows + a warning.
+          const result = await discoverModels(service.configSvc, {
+            refresh: params["refresh"] === true,
+          });
+          send(okFrame(id, result));
           return;
+        }
+        case "providers.add": {
+          const name = String(params["name"] ?? "");
+          // The UI edits keys through redaction sentinels; a rename carries the
+          // sentinel from the OLD record, so resolve against that one.
+          const prev =
+            typeof params["previousName"] === "string" && params["previousName"]
+              ? params["previousName"]
+              : name;
+          const stored = service.config.providers[prev.trim().toLowerCase()] as
+            | { apiKey?: string }
+            | undefined;
+          const apiKeyRaw = typeof params["apiKey"] === "string" ? params["apiKey"] : undefined;
+          const result = await addProvider(service.configSvc, name, {
+            baseUrl: typeof params["baseUrl"] === "string" ? params["baseUrl"] : undefined,
+            apiKey:
+              apiKeyRaw !== undefined
+                ? (resolveRedacted(stored?.apiKey ?? "", apiKeyRaw) as string)
+                : undefined,
+            models: Array.isArray(params["models"])
+              ? (params["models"] as unknown[]).filter((m): m is string => typeof m === "string")
+              : undefined,
+          });
+          if (!result.ok) {
+            send(errFrame(id, "bad_request", result.message));
+            return;
+          }
+          service.applyConfig();
+          send(okFrame(id, { ok: true, message: result.message, config: redactSecrets(service.config) }));
+          return;
+        }
+        case "providers.remove": {
+          const result = removeProvider(service.configSvc, String(params["name"] ?? ""));
+          if (!result.ok) {
+            send(errFrame(id, "bad_request", result.message));
+            return;
+          }
+          service.applyConfig();
+          send(okFrame(id, { ok: true, message: result.message, config: redactSecrets(service.config) }));
+          return;
+        }
+        case "providers.test": {
+          const result = await testProvider(service.config, String(params["name"] ?? ""));
+          send(okFrame(id, { ok: result.ok, message: result.message }));
+          return;
+        }
         case "tools.list":
           send(okFrame(id, { tools: service.loop.tools.map((t) => ({ name: t.name, description: t.description })) }));
           return;
@@ -327,10 +389,23 @@ export class Gateway {
           // instead of split on its first slash.
           if (path === "agents.defaults.model" && typeof value === "string") {
             value = canonicalModelRef(service.config, value) ?? value;
+            const invalid = value.trim() ? validateModelRef(service.config, value) : null;
+            if (invalid) {
+              send(errFrame(id, "bad_model", invalid));
+              return;
+            }
           } else if (path === "agents.defaults.fallbacks" && Array.isArray(value)) {
             value = value.map((m) =>
               typeof m === "string" ? (canonicalModelRef(service.config, m) ?? m) : m,
             );
+            for (const m of value) {
+              if (typeof m !== "string" || !m.trim()) continue;
+              const invalid = validateModelRef(service.config, m);
+              if (invalid) {
+                send(errFrame(id, "bad_model", invalid));
+                return;
+              }
+            }
           }
           const result = service.configSvc.setPath(path, value);
           if (!result.ok) {

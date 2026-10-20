@@ -60,6 +60,9 @@ export async function tuiLocal(): Promise<number> {
           // a bare model id ("kilo/nvidia/x") becomes "<provider>/<id>"
           const ref = save ? (canonicalModelRef(service.config, typed) ?? typed) : typed;
           if (save) {
+            const { validateModelRef } = await import("../config/providers.js");
+            const invalid = validateModelRef(service.config, ref);
+            if (invalid) return `invalid model reference: ${invalid}`;
             const result = service.configSvc.setPath("agents.defaults.model", ref);
             if (!result.ok) return result.errors.join("; ");
             service.applyConfig();
