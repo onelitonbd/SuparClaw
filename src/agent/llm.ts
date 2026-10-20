@@ -46,20 +46,58 @@ export function resolveModel(
   modelRef: string,
   providers: Record<string, ProviderConfig>,
 ): ResolvedModel {
-  const slash = modelRef.indexOf("/");
-  const provider = slash > 0 ? modelRef.slice(0, slash) : "";
-  const model = slash > 0 ? modelRef.slice(slash + 1) : modelRef;
-  const cfg = provider ? providers[provider] : undefined;
-  if (!cfg) {
-    const available = Object.keys(providers);
+  const ref = modelRef.trim();
+  const available = Object.keys(providers);
+  const slash = ref.indexOf("/");
+  const head = slash > 0 ? ref.slice(0, slash) : "";
+  const tail = slash > 0 ? ref.slice(slash + 1) : ref;
+
+  // 1. the normal form: "<provider>/<model>"
+  const direct = head ? providers[head] : undefined;
+  if (direct) {
+    return build(head, direct, tail || direct.models?.[0] || "");
+  }
+
+  // 2. a bare model id that exactly one provider offers. Model ids often
+  //    contain slashes ("kilo/nvidia/nemotron-3"), so a bare id is ambiguous
+  //    unless we look it up instead of splitting on the first slash.
+  const exact = available.filter((name) => (providers[name]?.models ?? []).includes(ref));
+  if (exact.length === 1) {
+    return build(exact[0] as string, providers[exact[0] as string] as ProviderConfig, ref);
+  }
+  if (exact.length > 1) {
     throw new LlmError(
-      `unknown provider "${provider || "(default)"}" — configured providers: ${available.length > 0 ? available.join(", ") : "none"}`,
+      `model "${ref}" is offered by several providers (${exact.join(", ")}) — use "<provider>/<model>"`,
     );
   }
+
+  // 3. "<something>/<model>" where <model> is the tail of a provider's id
+  for (const name of available) {
+    const models = providers[name]?.models ?? [];
+    const hit = models.find((m) => m.endsWith(`/${tail}`));
+    if (hit) return build(name, providers[name] as ProviderConfig, hit);
+  }
+
+  // 4. one provider configured: the whole ref is that provider's model id
+  if (available.length === 1) {
+    return build(available[0] as string, providers[available[0] as string] as ProviderConfig, ref);
+  }
+
+  const hint = available.length > 0 ? ` — configured providers: ${available.join(", ")}` : " — no providers configured";
+  throw new LlmError(
+    `model "${ref}" does not match any configured provider${hint}. Use "<provider>/<model>", e.g. "${available[0] ? `${available[0]}/` : ""}<model>"`,
+  );
+}
+
+function build(
+  provider: string,
+  cfg: ProviderConfig,
+  model: string,
+): ResolvedModel {
   const baseUrl = (cfg.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
   return {
     provider,
-    model: model || (cfg.models?.[0] ?? ""),
+    model,
     baseUrl,
     apiKey: cfg.apiKey,
     headers: cfg.headers ?? {},

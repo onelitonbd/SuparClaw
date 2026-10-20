@@ -3,6 +3,7 @@ import { GatewayClient } from "../gateway/ws-client.js";
 import { TuiApp, tuiHelp, type TuiDeps, type Item } from "../tui/app.js";
 import {
   addProvider,
+  canonicalModelRef,
   formatProviders,
   parseProviderAddArgs,
   removeProvider,
@@ -55,7 +56,9 @@ export async function tuiLocal(): Promise<number> {
           const raw = args.trim();
           if (!raw) return `model: ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"}`;
           const save = /\s--save$/.test(raw);
-          const ref = save ? raw.replace(/\s--save$/, "").trim() : raw;
+          const typed = save ? raw.replace(/\s--save$/, "").trim() : raw;
+          // a bare model id ("kilo/nvidia/x") becomes "<provider>/<id>"
+          const ref = save ? (canonicalModelRef(service.config, typed) ?? typed) : typed;
           if (save) {
             const result = service.configSvc.setPath("agents.defaults.model", ref);
             if (!result.ok) return result.errors.join("; ");

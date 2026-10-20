@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import type { WebSocketServer as WsServer, WebSocket } from "ws";
 import type { Service } from "../agent/service.js";
 import type { Logger } from "../util/log.js";
+import { canonicalModelRef } from "../config/providers.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
 
 const MIME: Record<string, string> = {
@@ -277,7 +278,18 @@ export class Gateway {
             send(errFrame(id, "bad_request", "path is required"));
             return;
           }
-          const result = service.configSvc.setPath(path, params["value"]);
+          // A model reference is stored canonically as "<provider>/<model>".
+          // Model ids often contain slashes, so a bare id has to be looked up
+          // instead of split on its first slash.
+          let value = params["value"];
+          if (path === "agents.defaults.model" && typeof value === "string") {
+            value = canonicalModelRef(service.config, value) ?? value;
+          } else if (path === "agents.defaults.fallbacks" && Array.isArray(value)) {
+            value = value.map((m) =>
+              typeof m === "string" ? (canonicalModelRef(service.config, m) ?? m) : m,
+            );
+          }
+          const result = service.configSvc.setPath(path, value);
           if (!result.ok) {
             send(errFrame(id, "bad_config", result.errors.join("; ")));
             return;

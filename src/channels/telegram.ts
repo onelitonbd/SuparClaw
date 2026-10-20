@@ -3,6 +3,7 @@ import type { Service } from "../agent/service.js";
 import type { Logger } from "../util/log.js";
 import {
   addProvider,
+  canonicalModelRef,
   defaultModelLine,
   formatProviders,
   parseProviderAddArgs,
@@ -205,10 +206,17 @@ export class TelegramChannel {
 
       case "model": {
         if (!sub) return reply(defaultModelLine(this.service.config));
-        const result = cfgSvc.setPath("agents.defaults.model", sub);
+        // a bare model id ("kilo/nvidia/x") is stored as "<provider>/<id>"
+        const canonical = canonicalModelRef(this.service.config, sub) ?? sub;
+        const result = cfgSvc.setPath("agents.defaults.model", canonical);
         if (!result.ok) return reply(`could not set model: ${result.errors.join("; ")}`);
         this.service.applyConfig();
-        return reply(`default model: ${sub}`);
+        const names = Object.keys(this.service.config.providers ?? {});
+        const hint =
+          canonical === sub && names.length && !names.includes(sub.split("/")[0] ?? "")
+            ? `\nheads up: "${sub}" does not start with a provider name (${names.join(", ")})`
+            : "";
+        return reply(`default model: ${canonical}${hint}`);
       }
 
       case "provider": {

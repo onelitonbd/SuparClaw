@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { Service } from "../agent/service.js";
+import { resolveModel } from "../agent/llm.js";
 import { isProot, isTermux, stateDir, workspaceDir, logsDir, prefixDir, DEFAULT_PORT } from "../util/paths.js";
 import { bundledSkillsRoot } from "../agent/skills.js";
 import { discoverSkills } from "../agent/skills.js";
@@ -126,16 +127,26 @@ export async function doctor(): Promise<number> {
   // model
   const model = load.config.agents.defaults.model;
   const providers = Object.keys(load.config.providers);
-  checks.push(
-    model && providers.length > 0
-      ? { name: "model", status: "ok", detail: `${model} via ${providers.join(", ")}` }
-      : {
-          name: "model",
-          status: model ? "warn" : "fail",
-          detail: model ? `no providers configured for ${model}` : "agents.defaults.model is empty",
-          fix: 'sc config set agents.defaults.model "openai/gpt-4o-mini"',
-        },
-  );
+  if (model && providers.length > 0) {
+    // resolve it the way the agent does, so a bare model id still counts
+    let detail = `${model} via ${providers.join(", ")}`;
+    let status: "ok" | "warn" = "ok";
+    try {
+      const resolved = resolveModel(model, load.config.providers as Record<string, { baseUrl: string; apiKey: string; models?: string[] }>);
+      detail = `${resolved.model} via ${resolved.provider}`;
+    } catch (err) {
+      status = "warn";
+      detail = (err as Error).message;
+    }
+    checks.push({ name: "model", status, detail });
+  } else {
+    checks.push({
+      name: "model",
+      status: model ? "warn" : "fail",
+      detail: model ? `no providers configured for ${model}` : "agents.defaults.model is empty",
+      fix: 'sc config set agents.defaults.model "openai/gpt-4o-mini"',
+    });
+  }
 
   // workspace
   const ws = workspaceDir();

@@ -48,6 +48,37 @@ export function maskKey(key: string | undefined): string {
   return key.length <= 10 ? "••••" : `${key.slice(0, 6)}…${key.slice(-4)}`;
 }
 
+/**
+ * Normalise a model reference to "<provider>/<model>".
+ *
+ * Model ids often contain slashes ("kilo/nvidia/nemotron-3-super"), so a bare
+ * id like "kilo/nvidia/nemotron-3-super" must not be split on its first
+ * slash — that would read "kilo" as a provider name. Instead we look the id up
+ * in the providers that are configured.
+ *
+ * Returns the canonical reference, or null when nothing matches.
+ */
+export function canonicalModelRef(config: SuparClawConfig, ref: string): string | null {
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  const providers = config.providers ?? {};
+  const names = Object.keys(providers);
+  if (names.length === 0) return null;
+
+  // already canonical?
+  const slash = trimmed.indexOf("/");
+  if (slash > 0 && providers[trimmed.slice(0, slash)]) return trimmed;
+
+  // a bare id exactly one provider offers
+  const owners = names.filter((name) => (providers[name]?.models ?? []).includes(trimmed));
+  if (owners.length === 1) return `${owners[0]}/${trimmed}`;
+  if (owners.length > 1) return null;
+
+  // one provider configured: the whole ref is that provider's model id
+  if (names.length === 1) return `${names[0]}/${trimmed}`;
+  return null;
+}
+
 export type ProviderRecord = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
 /** Human-readable block for a surface without tables (TUI, Telegram). */

@@ -15,7 +15,7 @@ export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/an
 export { AgentLoop } from "./agent/loop.js";
 export { Service } from "./agent/service.js";export { renderMarkdown as renderUiMarkdown, escapeHtml } from "../ui/src/markdown.js";
 export { fuzzy } from "../ui/src/dom.js";
-export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, testProvider, maskKey, defaultModelLine, parseProviderAddArgs } from "./config/providers.js";
+export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, testProvider, maskKey, defaultModelLine, parseProviderAddArgs, canonicalModelRef } from "./config/providers.js";
 export { ConfigService } from "./config/load.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";

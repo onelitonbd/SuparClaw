@@ -35,6 +35,7 @@ import {
   safePath,
   buildRegistry,
   resolveModel,
+  canonicalModelRef,
   parseToolArgs,
   AgentLoop,
   createLogger,
@@ -164,6 +165,72 @@ test("model resolution and tool argument parsing", () => {
   assert.deepEqual(parseToolArgs('{"a":1}'), { a: 1 });
   assert.deepEqual(parseToolArgs(""), {});
   assert.ok("_parseError" in parseToolArgs("{oops"));
+});
+
+test("model refs with slashes in the model id resolve to the right provider", () => {
+  // the case that broke: a bare model id whose id itself contains slashes
+  const providers = {
+    MultiRouter: {
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "k",
+      models: ["kilo/nvidia/nemotron-3-super-120b-a12b:free", "gpt-4o-mini"],
+    },
+  };
+
+  // bare id -> the provider that offers it
+  const bare = resolveModel("kilo/nvidia/nemotron-3-super-120b-a12b:free", providers);
+  assert.equal(bare.provider, "MultiRouter");
+  assert.equal(bare.model, "kilo/nvidia/nemotron-3-super-120b-a12b:free");
+  assert.equal(bare.baseUrl, "https://openrouter.ai/api/v1");
+
+  // canonical form still wins
+  const canonical = resolveModel("MultiRouter/gpt-4o-mini", providers);
+  assert.equal(canonical.provider, "MultiRouter");
+  assert.equal(canonical.model, "gpt-4o-mini");
+
+  // one provider: any id is that provider's model (the cached list can be stale)
+  const lenient = resolveModel("nope/x", providers);
+  assert.equal(lenient.provider, "MultiRouter");
+  assert.equal(lenient.model, "nope/x");
+
+  // two providers offering the same id is ambiguous, not a crash
+  const two = {
+    a: { baseUrl: "http://a", apiKey: "", models: ["shared/model"] },
+    b: { baseUrl: "http://b", apiKey: "", models: ["shared/model"] },
+  };
+  assert.throws(() => resolveModel("shared/model", two), /several providers/);
+
+  // an unknown ref with several providers explains what to do
+  const many = { a: { baseUrl: "http://a", apiKey: "", models: [] }, b: { baseUrl: "http://b", apiKey: "", models: [] } };
+  assert.throws(() => resolveModel("nope/x", many), /does not match any configured provider/);
+  assert.throws(() => resolveModel("nope/x", many), /a, b/);
+});
+
+test("a bare model id is stored canonically as <provider>/<model>", () => {
+  const config = {
+    providers: {
+      MultiRouter: { baseUrl: "https://openrouter.ai/api/v1", apiKey: "k", models: ["kilo/nvidia/x"] },
+    },
+  };
+  assert.equal(
+    canonicalModelRef(config, "kilo/nvidia/x"),
+    "MultiRouter/kilo/nvidia/x",
+  );
+  assert.equal(
+    canonicalModelRef(config, "MultiRouter/kilo/nvidia/x"),
+    "MultiRouter/kilo/nvidia/x",
+  );
+  // one provider configured: any id belongs to it
+  assert.equal(canonicalModelRef(config, "some/other-model"), "MultiRouter/some/other-model");
+  // two providers offering the same id is ambiguous
+  assert.equal(
+    canonicalModelRef(
+      { providers: { a: { baseUrl: "", apiKey: "", models: ["shared"] }, b: { baseUrl: "", apiKey: "", models: ["shared"] } } },
+      "shared",
+    ),
+    null,
+  );
+  assert.equal(canonicalModelRef({ providers: {} }, "anything"), null);
 });
 
 // tiny fs helpers so the test file stays dependency-free
