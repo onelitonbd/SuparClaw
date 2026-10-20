@@ -74,7 +74,10 @@ await mkdir(uiOut, { recursive: true });
   });
   await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
   // Stylesheet = the SuparClaw design system + the vendored webfonts.
-  const fontCss = await readFile(join(root, "ui/fonts/fonts.css"), "utf8");
+  // The font faces live in ui/fonts/, but the sheet ships as dist/ui/styles.css,
+  // so the URLs have to be re-pointed at dist/ui/fonts/.
+  const fontCss = (await readFile(join(root, "ui/fonts/fonts.css"), "utf8"))
+    .replace(/url\((['"])\.\/([^'"]+)\1\)/g, "url($1./fonts/$2$1)");
   const appCss = await readFile(join(root, "ui/styles.css"), "utf8");
   const css = `${fontCss}\n${appCss}`;
   const min = await esbuild.transform(css, { loader: "css", minify: !dev });
