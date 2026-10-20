@@ -29,16 +29,33 @@ export class Settings {
   async render(): Promise<void> {
     this.#renderTabs();
 
+    // The gateway answers over the WebSocket. If it is not connected yet
+    // (page just loaded, or reconnecting) every request would reject with
+    // "not connected to gateway" — show a waiting state instead, and let
+    // main.ts call render() again once the socket is up.
+    if (gateway.state !== "online") {
+      this.#root.innerHTML = "";
+      this.#root.append(el("div", { class: "card" }, [
+        el("div", { class: "row" }, [
+          el("span", { class: "row__label" }, ["Gateway"]),
+          el("span", { class: "row__value", style: "color:var(--warn)" }, [
+            gateway.state === "unauthorized" ? "unauthorized" : "connecting…",
+          ]),
+        ]),
+        el("p", { class: "hint" }, [
+          gateway.state === "unauthorized"
+            ? "The gateway rejected the connection. Reconnect and this page will reload."
+            : "Waiting for the gateway to answer. This page fills in as soon as it does.",
+        ]),
+      ]));
+      return;
+    }
+
     let config: any = {};
     let models: string[] = [];
     let tools = 0, skills = 0;
     try {
-      const [cfg, modelRes, toolRes, skillRes] = await Promise.all([
-        gateway.request("config.get"),
-        gateway.request("models.list"),
-        gateway.request("tools.list"),
-        gateway.request("skills.list"),
-      ]);
+      const [cfg, modelRes, toolRes, skillRes] = await this.#load();
       config = (cfg as any).config ?? {};
       models = (modelRes as any).models ?? [];
       tools = ((toolRes as any).tools ?? []).length;
@@ -249,6 +266,25 @@ export class Settings {
   }
 
   /* ---------------- helpers ---------------- */
+
+  /** The four calls the settings page needs, with one retry for a socket that
+   *  is still settling. */
+  async #load(): Promise<any[]> {
+    const call = () =>
+      Promise.all([
+        gateway.request("config.get"),
+        gateway.request("models.list"),
+        gateway.request("tools.list"),
+        gateway.request("skills.list"),
+      ]);
+    try {
+      return await call();
+    } catch (err) {
+      await new Promise((r) => setTimeout(r, 400));
+      if (gateway.state !== "online") throw err;
+      return await call();
+    }
+  }
 
   async #setMany(pairs: [string, unknown][], message: string): Promise<void> {
     try {

@@ -13,6 +13,18 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/** Each boot needs its own module instance: ESM caches by URL. */
+let bootId = 0;
+
+/** Collect the text of a stub node tree. */
+function textOf(node) {
+  if (node === null || node === undefined) return "";
+  if (typeof node === "string") return node;
+  const own = typeof node.textContent === "string" ? node.textContent : "";
+  const kids = (node.children ?? []).map(textOf).join(" ");
+  return `${own} ${kids}`;
+}
+
 /** Minimal element: enough DOM surface for the Control UI to boot. */
 class El {
   constructor(tag = "div") {
@@ -71,7 +83,12 @@ async function boot() {
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
 
   const make = (tag) => new El(tag);
-  const byId = (id) => (ids.has(id) ? make("div") : null);
+  const cache = new Map();
+  const byId = (id) => {
+    if (!ids.has(id)) return null;
+    if (!cache.has(id)) cache.set(id, make("div"));
+    return cache.get(id);
+  };
   El.resolve = (sel) => (typeof sel === "string" && sel.startsWith("#") ? byId(sel.slice(1)) : null);
 
   const document = {
@@ -95,10 +112,11 @@ async function boot() {
     removeEventListener() {},
   };
 
+  const winListeners = new Map();
   const win = {
     innerWidth: 1280,
     innerHeight: 800,
-    addEventListener() {},
+    addEventListener(type, fn) { winListeners.set(type, fn); },
     removeEventListener() {},
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     location: { hash: "", href: "http://127.0.0.1:18790/", reload() {} },
@@ -140,13 +158,18 @@ async function boot() {
   globalThis.requestAnimationFrame = win.requestAnimationFrame;
   globalThis.matchMedia = win.matchMedia;
 
-  return { ids, restore: () => { Object.assign(globalThis, prev); El.resolve = null; } };
+  return {
+    ids,
+    byId,
+    fire(type) { winListeners.get(type)?.({ type }); },
+    restore: () => { Object.assign(globalThis, prev); El.resolve = null; },
+  };
 }
 
 test("the Control UI bundle boots and every element it looks up exists", async () => {
   const { ids, restore } = await boot();
   try {
-    const mod = await import(pathToFileURL(join(root, "dist/ui/app.js")).href);
+    const mod = await import(pathToFileURL(join(root, "dist/ui/app.js")).href + `?boot=${bootId++}`);
     assert.ok(mod, "bundle loaded");
   } finally {
     restore();
@@ -165,4 +188,23 @@ test("the Control UI bundle boots and every element it looks up exists", async (
   ];
   const missing = required.filter((id) => !ids.has(id));
   assert.deepEqual(missing, [], `index.html is missing: ${missing.join(", ")}`);
+});
+
+test("opening settings before the gateway answers waits instead of erroring", async () => {
+  const { byId, fire, restore } = await boot();
+  try {
+    await import(pathToFileURL(join(root, "dist/ui/app.js")).href + `?boot=${bootId++}`);
+    // navigate to the settings page while the socket is still connecting
+    globalThis.location.hash = "#/settings";
+    fire("hashchange");
+    await new Promise((r) => setTimeout(r, 30));
+
+    const body = byId("settings-body");
+    assert.ok(body, "settings body exists");
+    assert.ok(body.children.length > 0, "settings renders a waiting state, not an empty page");
+    const text = textOf(body);
+    assert.match(text, /connecting/i, "the waiting state says it is connecting");
+  } finally {
+    restore();
+  }
 });

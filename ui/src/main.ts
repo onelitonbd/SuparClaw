@@ -13,6 +13,7 @@ let currentModel = "";
 let busy = false;
 let models: string[] = [];
 let toolCount = 0;
+let settings: Settings | null = null;
 
 /* ---------------- chat ---------------- */
 
@@ -103,7 +104,13 @@ gateway.onState = (state: ConnState) => {
     state === "online" ? " dot--ok" :
     state === "connecting" ? " dot--warn" :
     state === "unauthorized" ? " dot--err" : " dot--err");
-  if (state === "online") { void refresh(); void loadHistory(); }
+  if (state === "online") {
+    void refresh();
+    void loadHistory();
+  }
+  // the settings page needs live data — re-render it whenever the connection
+  // state changes so it shows the waiting/offline state instead of stale cards
+  if (settings && !$("settings-view").hidden) void settings.render();
   if (state === "unauthorized") askToken();
 };
 
@@ -302,12 +309,13 @@ $("session-btn").onclick = () => { void loadHistory(); };
 /* ---------------- routing ---------------- */
 
 function route(): void {
-  const settings = location.hash === "#/settings";
-  $("chat-view").hidden = settings;
-  $("settings-view").hidden = !settings;
-  $("settings-btn").classList.toggle("is-on", settings);
-  if (settings) {
-    new Settings($("settings-body"), () => { void refresh(); }).render();
+  const settingsOpen = location.hash === "#/settings";
+  $("chat-view").hidden = settingsOpen;
+  $("settings-view").hidden = !settingsOpen;
+  $("settings-btn").classList.toggle("is-on", settingsOpen);
+  if (settingsOpen) {
+    settings = new Settings($("settings-body"), () => { void refresh(); });
+    void settings.render();
     closeDrawer();
   }
 }
