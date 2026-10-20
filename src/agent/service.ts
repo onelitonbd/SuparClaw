@@ -19,6 +19,8 @@ export interface ChatPayload {
   source: "tui" | "gateway" | "telegram" | "cron" | "cli";
   /** Per-run model override (surface-level choice); unset means the default. */
   model?: string;
+  /** Per-run thinking effort override; unset means session/default policy. */
+  reasoning?: string;
   reply: (text: string) => void | Promise<void>;
   onDelta?: (delta: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
@@ -163,6 +165,7 @@ export class Service {
       text: payload.text,
       isMainSession: payload.isMainSession,
       model: payload.model,
+      reasoning: payload.reasoning,
       onEvent: (event) => {
         this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event } satisfies ServiceEvent);
         if (event.type === "delta") void payload.onDelta?.(event.text);

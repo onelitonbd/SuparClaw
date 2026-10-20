@@ -72,6 +72,15 @@
             <span class="mono" id="model-name">model…</span>
             <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
           </button>
+          <label class="think mono" id="think-wrap" title="Thinking effort (session)">
+            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a5 5 0 0 1 5 5c0 1.5-.7 2.6-1.5 3.5-.6.7-1 1.3-1 2.5v1a3 3 0 0 1-3 3h-1"/><path d="M12 3a5 5 0 0 0-5 5c0 1.5.7 2.6 1.5 3.5.6.7 1 1.3 1 2.5v1a3 3 0 0 0 3 3h1"/><path d="M9 21h6"/></svg>
+            <select id="think" class="think__select" aria-label="Thinking effort">
+              <option value="inherit">auto</option>
+            </select>
+          </label>
+          <button class="model-btn" id="think-view" type="button" aria-label="Toggle thinking preview" title="View → Reasoning" aria-pressed="true">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
           <span class="mono composer__tokens" id="tok"></span>
           <button class="sendbtn sendbtn--stop" id="stop-btn" type="button" aria-label="Stop" hidden>
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>

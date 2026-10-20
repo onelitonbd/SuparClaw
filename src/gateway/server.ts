@@ -16,6 +16,11 @@ import { redactSecrets, resolveRedacted } from "../config/redact.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
 
+// The thinking ladder the UI renders. OpenClaw keeps this provider-profile
+// driven; SuparClaw has one OpenAI-compatible transport, so one ladder is the
+// single source of truth (mirrors agents.defaults.reasoningEffort's values).
+export const THINKING_LEVELS = ["inherit", "off", "low", "medium", "high", "xhigh", "max"] as const;
+
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -198,6 +203,7 @@ export class Gateway {
       "chat.abort",
       "chat.approval",
       "sessions.list",
+      "sessions.patch",
       "sessions.rename",
       "models.list",
       "providers.add",
@@ -225,9 +231,20 @@ export class Gateway {
         case "health":
           send(okFrame(id, service.health()));
           return;
-        case "status":
-          send(okFrame(id, service.status()));
+        case "status": {
+          const status = service.status() as Record<string, unknown>;
+          const main = service.store.getSessionByKey("main:main");
+          send(
+            okFrame(id, {
+              ...status,
+              thinkingLevels: THINKING_LEVELS,
+              thinkingDefault: String(service.config.agents.defaults.reasoningEffort ?? "inherit"),
+              reasoningView: String(service.config.agents.defaults.reasoningView ?? "on"),
+              thinking: main?.thinking ?? null,
+            }),
+          );
           return;
+        }
         case "chat.send": {
           const sessionKey = String(params["sessionKey"] ?? "main:main");
           const text = String(params["text"] ?? "");
@@ -255,6 +272,8 @@ export class Gateway {
             isMainSession: params["isMainSession"] === true,
             source: "gateway",
             model: typeof params["model"] === "string" && params["model"] ? params["model"] : undefined,
+            reasoning:
+              typeof params["reasoning"] === "string" && params["reasoning"] ? params["reasoning"] : undefined,
             reply: async () => {
               /* final text rides the "chat" envelope (event.type === "final") */
             },
@@ -294,6 +313,25 @@ export class Gateway {
         case "sessions.list":
           send(okFrame(id, { sessions: service.store.listSessions(Number(params["limit"] ?? 50)) }));
           return;
+        case "sessions.patch": {
+          // Thinking-level picker writes here immediately (OpenClaw's model):
+          // an explicit per-session override, cleared by passing null. The
+          // saved choice survives reloads and applies to later turns.
+          const key = String(params["sessionKey"] ?? params["key"] ?? "");
+          const thinking = params["thinking"] === null ? null : String(params["thinkingLevel"] ?? params["thinking"] ?? "");
+          service.store.setSessionThinking(key, thinking === "" ? null : thinking);
+          const row = service.store.getSessionByKey(key);
+          send(
+            okFrame(id, {
+              patched: true,
+              sessionKey: key,
+              thinking: row?.thinking ?? null,
+              thinkingLevels: THINKING_LEVELS,
+              thinkingDefault: String(service.config.agents.defaults.reasoningEffort ?? "inherit"),
+            }),
+          );
+          return;
+        }
         case "sessions.rename": {
           // The web UI renames a session KEY ({sessionKey, newKey}) — the
           // messages follow the row. The old handler read {id, name} which the

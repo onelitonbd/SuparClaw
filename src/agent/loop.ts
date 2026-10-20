@@ -11,6 +11,7 @@ import { skillsDir, workspaceDir } from "../util/paths.js";
 export type RunEvent =
   | { type: "start"; runId: string; sessionKey: string }
   | { type: "delta"; text: string }
+  | { type: "reasoning"; text: string }
   | { type: "tool"; callId: string; name: string; status: "running" | "done" | "error"; detail?: string; ms?: number }
   | { type: "final"; runId: string; text: string; usage?: Record<string, number> }
   | { type: "error"; runId: string; message: string }
@@ -22,6 +23,8 @@ export interface RunInput {
   text: string;
   isMainSession?: boolean;
   model?: string;
+  /** Per-run thinking effort override ("low"…/"max", "off", "inherit"). */
+  reasoning?: string;
   onEvent: (event: RunEvent) => void;
 }
 
@@ -151,13 +154,21 @@ export class AgentLoop {
       for (let turn = 0; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
         let text = "";
         let toolCalls: { id: string; name: string; args: string }[] = [];
+        let thought = "";
         for await (const event of this.llm.stream({
           messages,
           tools: schema.length > 0 ? schema : undefined,
           signal: controller.signal,
           model: input.model,
+          reasoning:
+            input.reasoning ??
+            session.thinking ??
+            (this.deps.config.agents.defaults.reasoningEffort as string | undefined),
         })) {
-          if (event.type === "text") {
+          if (event.type === "reasoning") {
+            thought += event.text;
+            onEvent({ type: "reasoning", text: event.text });
+          } else if (event.type === "text") {
             text += event.text;
             answer += event.text;
             onEvent({ type: "delta", text: event.text });
@@ -166,6 +177,13 @@ export class AgentLoop {
           } else if (event.type === "usage") {
             usage = event.usage;
           }
+        }
+        // Persist each thinking segment at its boundary (before any tool step,
+        // again before the final) so a reload can show the reasoning that
+        // preceded every step — and nothing is ever lost.
+        if (thought.trim()) {
+          this.deps.store.appendMessage(session.id, "reasoning", thought.trim(), runId);
+          thought = "";
         }
 
         if (toolCalls.length === 0) break;

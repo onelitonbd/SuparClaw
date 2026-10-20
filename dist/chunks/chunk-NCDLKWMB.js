@@ -1,0 +1,179 @@
+import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
+import{a as se}from"./chunk-2QZIRX3M.js";import{a as te}from"./chunk-YTJZCNNH.js";import{a as ne,b as R,c as re,k as oe,l as ie,m as ae,n as le,o as ce,p as de,q as I}from"./chunk-NOCARJ7J.js";import{d as ee}from"./chunk-M2MAVQUI.js";import{b as H,d as z,e as w,f as V,g as X,i as Z,l as Q}from"./chunk-ZBHLCQUE.js";import{EventEmitter as st}from"node:events";import{existsSync as Re}from"node:fs";import{join as J}from"node:path";import{randomUUID as Ve}from"node:crypto";import{existsSync as ue,readFileSync as Te,writeFileSync as Ee,mkdirSync as Le}from"node:fs";import{join as S}from"node:path";var Ae=[{name:"AGENTS.md",budget:8e3},{name:"SOUL.md",budget:6e3},{name:"USER.md",budget:4e3},{name:"IDENTITY.md",budget:1500},{name:"TOOLS.md",budget:4e3},{name:"MEMORY.md",budget:8e3,mainSessionOnly:!0}],De=3e3,je=2;function W(o,e){if(!ue(o))return null;let t="";try{t=Te(o,"utf8")}catch{return null}return t.trim().length===0?null:t.length<=e?{body:t.trim(),truncated:!1}:{body:t.slice(0,e).trim()+`
+
+[truncated]`,truncated:!0}}function Oe(o,e=new Date){let t=S(o,"memory"),s=[];for(let n=0;n<je;n++){let a=`memory/${new Date(e.getTime()-n*864e5).toISOString().slice(0,10)}.md`,i=W(S(o,a),De);i&&s.push(`## ${a}
+
+${i.body}`)}return s}function pe(o,e={isMainSession:!0}){let t=[],s=[],n=[];for(let i of Ae){if(i.mainSessionOnly&&!e.isMainSession)continue;let l=W(S(o,i.name),i.budget);l&&(t.push(i.name),l.truncated&&s.push(i.name),n.push(`## ${i.name}
+
+${l.body}`))}let r=W(S(o,"BOOTSTRAP.md"),4e3);r&&(t.push("BOOTSTRAP.md"),n.unshift(`## BOOTSTRAP.md (first-run setup \u2014 follow it, then delete the file)
+
+`+r.body));let a=Oe(o,e.today);return a.length>0&&(t.push("memory/*.md"),n.push(`## Recent daily notes
+
+${a.join(`
+
+`)}`)),{text:n.length>0?`# Project Context
+
+${n.join(`
+
+`)}`:"",included:t,truncated:s}}function x(o=new Date){return o.toISOString().slice(0,10)}var qe={"AGENTS.md":`# AGENTS.md - Workspace Rules
+
+Keep workspace conventions here. Personality belongs in SOUL.md.
+
+## Session Startup
+
+Runtime-provided startup context already includes these files. Re-read a file only when
+the user asks, context is missing, or a deeper follow-up read is needed.
+
+## Memory
+
+- Daily notes: \`memory/YYYY-MM-DD.md\` holds raw logs.
+- USER.md holds stable user preferences as dated directives.
+- MEMORY.md holds curated durable facts. Main session only - never in groups.
+- Read a memory file before writing it. Concrete updates only, never placeholders.
+
+## Red Lines
+
+- Never leak private data to people or services the user did not ask for.
+- Confirm destructive or irreversible actions that were not requested.
+- Inspect existing state before changing config or schedulers.
+- Prefer moving to trash over deleting.
+
+## External vs Internal
+
+- Do freely: what the user asked for, plus reading files, searching, organizing.
+- Ask first: public or outbound actions nobody requested.
+
+## Automations
+
+Use scheduled jobs for recurring checks. Stay quiet (reply exactly NO_REPLY) when
+nothing needs the user's attention, during quiet hours, or when a check ran recently.
+`,"SOUL.md":`# SOUL.md - Who You Are
+
+_You're not a chatbot. You're becoming someone._
+
+## Core Truths
+
+- Be genuinely helpful, not performatively helpful. Skip filler, just help.
+- Have opinions. Disagree, prefer things, notice what is amusing or boring.
+- Be resourceful before asking: read the file, check the context, then answer.
+- Earn trust through competence: do what was asked, fully.
+- Remember you're a guest in someone's device, files, and messages.
+
+## Boundaries
+
+- Don't leak private things into shared spaces.
+- Never send half-baked replies.
+- Speak as yourself unless asked to post on the user's behalf.
+
+## Vibe
+
+Concise when needed, thorough when it matters. Not a corporate drone, not a sycophant.
+
+## Continuity
+
+Each session you wake up fresh. These files are your memory. Read them, update them.
+If you change this file, tell the user.
+`,"USER.md":`# USER.md - User Model
+
+Store stable preferences and profile facts as directives.
+
+    <!-- observed: YYYY-MM-DD | status: active -->
+
+    - Prefer concise progress updates during implementation work.
+
+- Begin each directive with an imperative: Always, Never, Prefer.
+- When a preference changes, mark the old entry superseded and rewrite the active one.
+- Never append two contradictory active directives.
+- Main session loads ~4,000 characters of this file; keep it tight.
+
+## Directives
+
+<!-- observed: YYYY-MM-DD | status: active -->
+
+- Prefer ...
+`,"IDENTITY.md":`# IDENTITY.md - Who Am I?
+
+Filled in during your first conversation.
+
+- **Name:**
+  _(pick something you like)_
+- **Creature:**
+  _(AI? robot? familiar? ghost in the machine?)_
+- **Vibe:**
+  _(sharp? warm? chaotic? calm?)_
+- **Emoji:**
+  _(your signature)_
+`,"MEMORY.md":`# MEMORY.md - Durable Facts and Decisions
+
+Curated, not raw. Main session only.
+
+- Record decisions, lessons, and durable facts here.
+- Keep it short enough that it stays useful.
+`,"TOOLS.md":`# TOOLS.md - Local Notes
+
+Device-specific notes the skills cannot know: camera names, SSH hosts, preferred
+voices, device nicknames, app shortcuts.
+`};function me(o){Le(S(o,"memory"),{recursive:!0});let e=[];for(let[t,s]of Object.entries(qe)){let n=S(o,t);ue(n)||(Ee(n,s,"utf8"),e.push(t))}return e}import{readdirSync as Ie,readFileSync as ge,existsSync as N,statSync as We}from"node:fs";import{join as _}from"node:path";function he(o){if(!o.startsWith("---"))return{meta:{},body:o};let e=o.indexOf(`
+---`,3);if(e===-1)return{meta:{},body:o};let t=o.slice(o.indexOf(`
+`)+1,e),s=o.slice(e+4).replace(/^\n/,""),n=t.split(`
+`).filter(a=>a.trim().length>0&&!a.trim().startsWith("#")).map(a=>({indent:a.length-a.trimStart().length,text:a.trim()})),[r]=fe(n,0,n[0]?.indent??0);return{meta:r&&typeof r=="object"?r:{},body:s}}function fe(o,e,t){if(e>=o.length)return[{},e];if(o[e].text.startsWith("- ")){let a=[],i=e;for(;i<o.length&&o[i].indent>=t&&o[i].text.startsWith("- ");)a.push(B(o[i].text.slice(2))),i++;return[a,i]}let n={},r=e;for(;r<o.length;){let a=o[r];if(a.indent<t)break;let i=/^([A-Za-z0-9_.-]+):\s*(.*)$/.exec(a.text);if(!i){r++;continue}let l=i[1],d=(i[2]??"").trim();if(d.length>0){n[l]=Be(d),r++;continue}let c=o[r+1];if(c&&(c.indent>a.indent||c.indent===a.indent&&c.text.startsWith("- "))){let[u,m]=fe(o,r+1,c.indent);n[l]=u,r=m}else n[l]="",r++}return[n,r]}function Be(o){if(o.startsWith("{"))try{return JSON.parse(o)}catch{return o}if(o.startsWith("[")){let e=o.replace(/^\[|\]$/g,"");return e.trim()===""?[]:e.split(",").map(t=>B(t.trim())).filter(Boolean)}return B(o)}function B(o){return o.replace(/^["']|["']$/g,"")}function Ne(o){let e=new Set;for(let t of(process.env.PATH??"").split(":"))if(t)for(let s of o)N(_(t,s))&&e.add(s);return e}function Ye(o){if(o.os?.length&&!(o.os.includes(`${process.platform}-${process.arch}`)||o.os.includes(process.platform)))return{ok:!1,reason:`os ${o.os.join("/")} required, running ${process.platform}`};if(o.env?.length){let e=o.env.filter(t=>!process.env[t]);if(e.length>0)return{ok:!1,reason:`missing env ${e.join(", ")}`}}if(o.bins?.length){let e=o.bins.filter(t=>!Ne([t]).has(t));if(e.length>0)return{ok:!1,reason:`missing binary ${e.join(", ")}`}}return{ok:!0}}function ye(o,e=0,t=[]){if(e>6||t.length>500)return t;let s=[];try{s=Ie(o)}catch{return t}for(let n of s){if(n.startsWith(".")||n==="node_modules")continue;let r=_(o,n),a=!1;try{a=We(r).isDirectory()}catch{continue}if(a){if(N(_(r,"SKILL.md"))){t.push(r);continue}ye(r,e+1,t)}}return t}function we(){return Q("skills","help/SKILL.md")}function ve(o){let e=new Map;for(let t of o.roots)if(N(t.dir))for(let s of ye(t.dir)){let n=_(s,"SKILL.md"),r;try{r=he(ge(n,"utf8"))}catch{continue}let a=r.meta,i=typeof a.name=="string"?a.name:s.split("/").pop()??s;if(e.has(i))continue;let l=a.metadata??{},d=l.openclaw??{},c=a.read_when??a.readWhen,u=Array.isArray(c)?c.map(String):typeof c=="string"?[c]:[],m={...d.requires??{},...typeof l.requires=="object"?l.requires:{}},g=Ye(m);e.set(i,{name:i,description:typeof a.description=="string"?a.description:"",readWhen:u,userInvocable:a["user-invocable"]!==!1,disableModelInvocation:a["disable-model-invocation"]===!0,requires:m,root:t.label,dir:s,path:n,eligible:g.ok,reason:g.reason})}return[...e.values()].sort((t,s)=>t.name.localeCompare(s.name))}function P(o){try{let{body:e}=he(ge(o.path,"utf8"));return e.trim()}catch{return""}}function Y(o){let e=o.filter(s=>s.eligible&&!s.disableModelInvocation);return e.length===0?"":`## Available skills
+
+Call \`skill_read\` with the skill name when a task matches one.
+
+${e.map(s=>{let n=s.readWhen.length>0?` \u2014 use when: ${s.readWhen.join("; ")}`:"";return`- **${s.name}**: ${s.description}${n}`}).join(`
+`)}`}function be(o,e){let t=e.toLowerCase(),s=[];for(let n of o){if(!n.eligible||n.disableModelInvocation)continue;let r=0;new RegExp(`(^|\\s)/${n.name}(\\s|$)`).test(t)&&(r+=10),t.includes(n.name.toLowerCase())&&(r+=3);for(let a of n.readWhen){let i=a.toLowerCase().split(/\s+/).filter(l=>l.length>3)[0];i&&t.includes(i)&&(r+=2)}r>0&&s.push({skill:n,score:r})}return s.sort((n,r)=>r.score-n.score).slice(0,2).map(n=>n.skill)}import{readFileSync as U,writeFileSync as ke,readdirSync as $e,mkdirSync as Se,appendFileSync as Ue,statSync as Fe,renameSync as Ke,existsSync as Je}from"node:fs";import{join as $,resolve as xe,relative as K,dirname as Ge}from"node:path";var f=o=>({type:"string",description:o}),v=o=>({type:"integer",description:o});function T(o,e){let t=xe(o,e.replace(/^~\//,"")),s=K(o,t);if(s.startsWith("..")||s.startsWith("/")||xe(t)!==t)throw new Error(`path escapes workspace: ${e}`);return t}var F=6e4;function He(o){try{return $e($(o,"memory")).filter(e=>/^\d{4}-\d{2}-\d{2}\.md$/.test(e)).sort().reverse().map(e=>`memory/${e}`)}catch{return[]}}function ze(){let o=[process.env.PREFIX?`${process.env.PREFIX}/bin/bash`:"","/data/data/com.termux/files/usr/bin/bash","/bin/bash","/usr/bin/bash","/bin/sh"];for(let e of o)if(e&&Je(e))return e;return"/bin/sh"}function Me(o){let e=[];return o.tools.fs&&e.push({name:"fs_read",description:"Read a UTF-8 text file from the workspace. Paths are workspace-relative.",parameters:{type:"object",properties:{path:f("Workspace-relative file path"),offset:v("1-based first line"),limit:v("Max lines to read (default 400)")},required:["path"]},async run(t,s){let n=T(s.workspace,String(t.path)),r=U(n,"utf8"),a=Number(t.offset??1),i=Number(t.limit??400);return(a>1||i!==400)&&(r=r.split(`
+`).slice(a-1,a-1+i).join(`
+`)),r.length>F&&(r=r.slice(0,F)+`
+
+[truncated at ${F} chars \u2014 use offset/limit to continue]`),r}},{name:"fs_write",description:"Create or overwrite a workspace file. Creates parent directories.",parameters:{type:"object",properties:{path:f("Workspace-relative file path"),content:f("Full file content")},required:["path","content"]},async run(t,s){let n=T(s.workspace,String(t.path));return Se(Ge(n),{recursive:!0}),ke(n,String(t.content),"utf8"),`wrote ${t.path} (${String(t.content).length} chars)`}},{name:"fs_edit",description:"Replace an exact string in a workspace file. Fails if the string is not found or ambiguous.",parameters:{type:"object",properties:{path:f("Workspace-relative file path"),old:f("Exact text to replace"),new:f("Replacement text")},required:["path","old","new"]},async run(t,s){let n=T(s.workspace,String(t.path)),r=String(t.old),a=String(t.new),i=U(n,"utf8"),l=i.indexOf(r);return l===-1?"error: old string not found":i.indexOf(r,l+1)!==-1?"error: old string appears more than once \u2014 add more context":(ke(n+".tmp",i.slice(0,l)+a+i.slice(l+r.length),"utf8"),Ke(n+".tmp",n),`edited ${t.path}`)}},{name:"fs_list",description:"List files in the workspace.",parameters:{type:"object",properties:{path:f("Workspace-relative directory (default '.')"),depth:v("Recursion depth, default 2")}},async run(t,s){let n=T(s.workspace,String(t.path??".")),r=Number(t.depth??2),a=[],i=(l,d)=>{if(d>r)return;let c=[];try{c=$e(l)}catch{return}for(let u of c){if(u.startsWith("."))continue;let m=$(l,u),g=null;try{g=Fe(m)}catch{continue}g.isDirectory()?(a.push(`${K(s.workspace,m)}/`),i(m,d+1)):a.push(`${K(s.workspace,m)} (${g.size}b)`)}};return i(n,0),a.length>0?a.join(`
+`):"(empty)"}}),o.tools.memory&&e.push({name:"memory_append",description:`Append a note to today's daily memory file (memory/${x()}.md).`,parameters:{type:"object",properties:{note:f("Markdown note to append")},required:["note"]},async run(t,s){let n=x();return Se($(s.workspace,"memory"),{recursive:!0}),Ue($(s.workspace,"memory",`${n}.md`),`
+- ${String(t.note).replace(/\n/g," ")}
+`,"utf8"),`noted in memory/${n}.md`}},{name:"memory_search",description:"Search memory notes (MEMORY.md, memory/*.md) and past transcripts across all sessions. Returns dated, source-labelled snippets.",parameters:{type:"object",properties:{query:f("Search terms"),limit:v("Max results (default 8)")},required:["query"]},async run(t,s){let n=String(t.query??"").trim();if(!n)return"error: empty query";let r=Math.min(Math.max(Number(t.limit??8),1),20),a=n.toLowerCase(),i=[],l=["MEMORY.md",...He(s.workspace)];for(let d of l){if(i.length>=r)break;let c;try{c=U($(s.workspace,d),"utf8")}catch{continue}let u=c.toLowerCase().indexOf(a);if(u===-1)continue;let m=Math.max(0,u-70),g=c.slice(m,u+a.length+130).replace(/\s+/g," ").trim();i.push(`[memory/${d}] \u2026${g}\u2026`)}if(i.length<r){let d=s.store.searchMessagesAll(n,r-i.length);for(let c of d){let u=c.content.toLowerCase().indexOf(a),m=u===-1?c.content.slice(0,160).replace(/\s+/g," "):c.content.slice(Math.max(0,u-70),u+a.length+130).replace(/\s+/g," ").trim(),g=new Date(c.created_at).toISOString().slice(0,10);i.push(`[${g} \xB7 ${c.session_key} \xB7 ${c.role}] \u2026${m}\u2026`)}}return i.length>0?i.join(`
+
+`):"no matches"}}),o.tools.web.fetch&&e.push({name:"web_fetch",description:"Fetch a URL and return readable text (tags/scripts stripped, truncated).",parameters:{type:"object",properties:{url:f("Absolute http(s) URL"),maxChars:v("Max characters to return (default 12000)")},required:["url"]},async run(t,s){let n=String(t.url);if(!/^https?:\/\//i.test(n))return"error: only http(s) URLs are allowed";let r=await fetch(n,{signal:s.signal,headers:{"user-agent":"SuparClaw/0.1 (+fetch)",accept:"text/html,text/plain,*/*"},redirect:"follow"});if(!r.ok)return`error: HTTP ${r.status}`;let i=(await r.text()).slice(0,4e5).replace(/<script[\s\S]*?<\/script>/gi," ").replace(/<style[\s\S]*?<\/style>/gi," ").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/\s+/g," ").trim(),l=Number(t.maxChars??12e3);return i.length>l?i.slice(0,l)+`
+
+[truncated]`:i}}),o.tools.web.search&&e.push({name:"web_search",description:"Search the web (DuckDuckGo HTML endpoint) and return result titles, URLs and snippets.",parameters:{type:"object",properties:{query:f("Search query"),limit:v("Max results (default 6)")},required:["query"]},async run(t,s){let n=encodeURIComponent(String(t.query)),r=await fetch(`https://html.duckduckgo.com/html/?q=${n}`,{signal:s.signal,headers:{"user-agent":"Mozilla/5.0 (Linux; Android) SuparClaw/0.1"}});if(!r.ok)return`error: HTTP ${r.status}`;let a=await r.text(),i=[],l=/<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g,d;for(;(d=l.exec(a))!==null&&i.length<Number(t.limit??6);){let c=(d[2]??"").replace(/<[^>]+>/g,"").trim(),u=(d[3]??"").replace(/<[^>]+>/g,"").trim(),m=decodeURIComponent(/uddg=([^&]+)/.exec(d[1]??"")?.[1]??d[1]??"");i.push(`${c}
+${m}
+${u}`)}return i.length>0?i.join(`
+
+`):"no results"}}),e.push({name:"time_now",description:"Current local date and time.",parameters:{type:"object",properties:{}},async run(){let t=new Date;return`${t.toISOString()} \xB7 local ${t.toString()}`}}),e.push({name:"skill_list",description:"List installed skills with their descriptions and when to use them.",parameters:{type:"object",properties:{}},async run(t,s){let n=s.skills.filter(r=>!r.disableModelInvocation);return n.length===0?"no skills installed":n.map(r=>`${r.eligible?"":"(unavailable) "}${r.name}: ${r.description}${r.readWhen.length?` [use when: ${r.readWhen.join("; ")}]`:""}`).join(`
+`)}},{name:"skill_read",description:"Load a skill's full instructions by name. Call this before following a skill's workflow.",parameters:{type:"object",properties:{name:f("Skill name")},required:["name"]},async run(t,s){let n=s.skills.find(r=>r.name===String(t.name));return n?n.eligible?`# Skill: ${n.name}
+
+${P(n)}`:`error: skill ${n.name} is unavailable (${n.reason})`:`error: no skill named ${t.name}`}}),o.tools.exec.enabled&&e.push({name:"exec",description:"Run a shell command inside the workspace. Requires user approval. Disabled by default.",parameters:{type:"object",properties:{command:f("Command line to run"),timeoutMs:v("Timeout in ms")},required:["command"]},needsApproval:!0,async run(t,s){if(o.tools.exec.approvals&&!s.approved)return"error: execution needs approval \u2014 ask the user to approve, then retry";let{execFile:n}=await import("node:child_process"),r=Math.min(Number(t.timeoutMs??o.tools.exec.timeoutMs),6e5);return await new Promise(a=>{n(ze(),["-lc",String(t.command)],{cwd:s.workspace,timeout:r,maxBuffer:1e6},(i,l,d)=>{let c=[];l&&c.push(l),d&&c.push(`[stderr] ${d}`),i&&c.push(`[exit ${typeof i.code=="number"?i.code:1}] ${i.message}`),a(c.join(`
+`).slice(0,6e4)||"(no output)")})})}}),e}function Ce(o){return o.map(e=>({type:"function",function:{name:e.name,description:e.description,parameters:e.parameters}}))}var Xe=`You are SuparClaw, a personal AI agent running on the user's own device.
+
+Operating rules:
+- Be genuinely helpful, not performatively helpful. Skip filler, just help.
+- Be resourceful before asking: read the file, check context, then answer.
+- Prefer doing the task over describing the task. Use tools instead of guessing.
+- Tools run on a phone: prefer one or two targeted calls over broad scans.
+- Never claim a tool result you did not receive. If a tool fails, say so plainly.
+- Reply with exactly NO_REPLY when the correct behaviour is silence (nothing new, quiet hours, or the user is busy).
+- Keep replies conversational and compact. This is a chat surface, not a report.`,E=class{constructor(e){this.deps=e;this.workspace=w(),this.tools=e.tools??Me(e.config),this.skills=ve({roots:[{label:"workspace",dir:`${this.workspace}/skills`},{label:"state",dir:V()},{label:"bundled",dir:we()}]}),this.llm=e.llm??new R(e.config.providers,{model:e.config.agents.defaults.model,fallbacks:e.config.agents.defaults.fallbacks},t=>e.log.warn(`llm retry ${t.model} #${t.attempt}: ${t.error}`))}deps;tools;skills;llm;workspace;#e=new Map;#t=new Map;#s=new Map;isBusy(e){return this.#e.has(e)}busySessions(){return[...this.#e.keys()]}abort(e){let t=this.#e.get(e);return t?(t.controller.abort(),!0):!1}async run(e){let{sessionKey:t,onEvent:s}=e,n=this.deps.config.agents.defaults.queueMode;if(this.isBusy(t)){if(n==="followup"){let d=this.#t.get(t)??[];d.push(e.text),this.#t.set(t,d),this.deps.log.info(`queued message for ${t} (${d.length} pending)`),s({type:"idle",sessionKey:t});return}this.abort(t)}let r=Ve(),a=new AbortController;this.#e.set(t,{runId:r,controller:a}),s({type:"start",runId:r,sessionKey:t});let l=(this.#s.get(t)??Promise.resolve()).then(()=>this.#n(e,r,a));this.#s.set(t,l.then(()=>{},()=>{})),await l}async#n(e,t,s){let{sessionKey:n,onEvent:r}=e,a=this.deps.store.ensureSession(n),i=e.isMainSession??n.endsWith(":main");this.deps.store.appendMessage(a.id,"user",e.text,t),this.deps.store.startRun(a.id,t);let l="",d;try{let c=this.#r(a.id,n,e,i),u=Ce(this.tools),m={workspace:this.workspace,stateDir:this.deps.store.getMeta("state_dir")??w(),skills:this.skills,store:this.deps.store,log:this.deps.log,config:this.deps.config,approved:!1,signal:s.signal};for(let h=0;h<this.deps.config.agents.defaults.maxToolIterations;h++){let y="",M=[],C="";for await(let p of this.llm.stream({messages:c,tools:u.length>0?u:void 0,signal:s.signal,model:e.model,reasoning:e.reasoning??a.thinking??this.deps.config.agents.defaults.reasoningEffort}))p.type==="reasoning"?(C+=p.text,r({type:"reasoning",text:p.text})):p.type==="text"?(y+=p.text,l+=p.text,r({type:"delta",text:p.text})):p.type==="tool_calls"?M=p.calls:p.type==="usage"&&(d=p.usage);if(C.trim()&&(this.deps.store.appendMessage(a.id,"reasoning",C.trim(),t),C=""),M.length===0)break;c.push({role:"assistant",content:y.length>0?y:null,tool_calls:M});for(let p of M){let D=this.tools.find(k=>k.name===p.name),j=Date.now();if(!D){let k=`error: unknown tool ${p.name}`;c.push({role:"tool",tool_call_id:p.id,name:p.name,content:k}),this.deps.store.appendMessage(a.id,"tool",`\u2192 ${p.name}
+${k}`,t),r({type:"tool",callId:p.id,name:p.name,status:"error",detail:"unknown tool"});continue}let O=re(p.args);r({type:"tool",callId:p.id,name:p.name,status:"running"});let q=!0;D.needsApproval&&this.deps.config.tools.exec.approvals&&(r({type:"approval",callId:p.id,tool:p.name,args:O}),q=await this.deps.requestApproval?.(p.id,p.name,O)??!1);let b;try{b=q?await D.run(O,{...m,approved:!0}):"error: user declined this action",this.deps.store.logTool(t,p.name,q?"ok":"declined",Date.now()-j)}catch(k){b=`error: ${k.message}`,this.deps.store.logTool(t,p.name,"error",Date.now()-j)}let G=Date.now()-j;this.deps.store.appendMessage(a.id,"tool",`\u2192 ${p.name} \xB7 ${G}ms
+${b.slice(0,4e3)}`,t);let Pe=b.startsWith("error");r({type:"tool",callId:p.id,name:p.name,status:Pe?"error":"done",detail:b.slice(0,200),ms:G}),c.push({role:"tool",tool_call_id:p.id,name:p.name,content:b})}}let g=l.trim()||"(no response)";this.deps.store.appendMessage(a.id,"assistant",g,t),this.deps.store.finishRun(t,"done",d),r({type:"final",runId:t,text:g,usage:d})}catch(c){let u=c.message,m=c.name==="AbortError";this.deps.store.finishRun(t,m?"aborted":"error",d,u),m||(this.deps.log.error(`run ${t} failed: ${u}`),this.deps.store.appendMessage(a.id,"error",u,t),r({type:"error",runId:t,message:u}))}finally{this.#e.get(n)?.runId===t&&(this.#e.delete(n),r({type:"idle",sessionKey:n}));let u=this.#t.get(n);if(u&&u.length>0){let[m,...g]=u;this.#t.set(n,g),this.run({...e,text:m}).catch(h=>this.deps.log.error(`queued run failed: ${h.message}`))}}}#r(e,t,s,n){let r=this.deps.config.agents.defaults.contextBudgetChars,a=this.deps.store.recentMessages(e,80),i=[],l=0;for(let g=a.length-1;g>=0;g--){let h=a[g];if(h.role==="tool")continue;let y=h.role==="user"?{role:"user",content:h.content}:{role:"assistant",content:h.content};if(l+y.content.length>r)break;l+=y.content.length,i.unshift(y)}i.length>0&&i[i.length-1]?.role==="user"&&i.pop();let d=pe(this.workspace,{isMainSession:n}),u=be(this.skills,s.text).filter(g=>g.eligible).map(g=>`# Skill: ${g.name}
+
+${P(g)}`);return[{role:"system",content:[Xe,`Current date: ${new Date().toString()}`,`Session: ${t}`,Y(this.skills),u.length>0?`## Skills loaded for this turn
+
+${u.join(`
+
+`)}`:"",d.text,`Today's note file: memory/${x()}.md`].filter(Boolean).join(`
+
+`)},...i,{role:"user",content:s.text}]}};async function Ze(o){let{Bot:e}=await import("./mod-WMKNEDXV.js");return new e(o)}function Qe(o){let e=/^\/([A-Za-z][\w]*)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(o.trim());return e?{name:e[1].toLowerCase(),args:(e[2]??"").trim()}:null}var L=class{constructor(e,t){this.service=e;this.log=t}service;log;#e=null;#t=new Map;#s="";running=!1;get username(){return this.#s}async start(){let e=this.service.config.channels.telegram;if(!e.token)throw new Error("telegram.token is empty");let t=await Ze(e.token);this.#e=t,t.on("message",n=>{this.#i(n).catch(r=>this.log.error(`telegram message failed: ${r.message}`))});let s=await t.api.getMe();this.#s=s.username,this.running=!0,this.log.info(`telegram online as @${s.username}`),t.start({drop_pending_updates:!1,onStart:n=>this.log.info(`telegram polling @${n.username}`)}).catch(n=>{this.running=!1,this.log.error(`telegram polling stopped: ${n.message}`)})}async stop(){for(let e of this.#t.values())clearTimeout(e.timer);this.#t.clear();try{await this.#e?.stop()}catch{}this.running=!1}#n(e){return this.service.config.channels.telegram.allowFrom.includes(String(e))}#r(e){let t=this.service.config.channels.telegram;return t.groupPolicy==="open"||t.groupAllowFrom.includes(String(e))}async#i(e){let t=this.service.config.channels.telegram,s=e.message;if(!s)return;let n=e.chat?.id,r=e.from?.id;if(n===void 0||r===void 0)return;let a=e.chat?.type==="group"||e.chat?.type==="supergroup",i=s.text??s.caption??"",l=this.#s.length>0&&i.includes(`@${this.#s}`),d=s.reply_to_message?await this.#l(e,s.reply_to_message.from?.id):!1;if(a){if(t.groupPolicy==="off"||!this.#r(n)||t.mentionGated&&!l&&!d)return}else{if(t.dmPolicy==="allowlist"&&!this.#n(r)){await e.reply(`Not allowed yet. Ask the owner to run:
+
+  sc pair approve ${r}`);return}if(t.dmPolicy==="pairing"&&!this.#n(r)){await e.reply(`Pairing required for this account.
+
+Owner command:
+  sc pair approve ${r}
+
+Your Telegram id: ${r}`);return}}if(!i.trim())return;let c=Qe(i);if(c){await this.#a(e,c);return}let u=`${n}`,m=s.message_thread_id,g=`telegram:${n}${m?`:topic:${m}`:a?":group":""}`,h=this.#t.get(u);if(h){h.texts.push(i),clearTimeout(h.timer),h.timer=setTimeout(()=>{this.#o(u)},t.batchMs);return}let y={texts:[i],firstAt:Date.now(),timer:setTimeout(()=>{this.#o(u)},t.batchMs)};this.#t.set(u,y)}async#a(e,t){let s=async i=>{await e.reply(i.slice(0,4e3),{link_preview_options:{is_disabled:!0}}).catch(l=>this.log.warn(`telegram reply failed: ${l.message}`))},n=this.service.configSvc,[r="",...a]=t.args.split(/\s+/).filter(Boolean);switch(t.name){case"start":case"help":return s(["SuparClaw commands","","/status \u2014 model, providers, tools","/model \u2014 current default model","/model <provider>/<model> \u2014 switch the default model","/provider \u2014 list providers","/provider add <name> [url|key] [key] [models,a,b]","/provider test <name> \xB7 /provider remove <name>","","Anything else is sent to the agent."].join(`
+`));case"status":{let i=this.service.config;return s([I(i),`providers: ${Object.keys(i.providers??{}).join(", ")||"none"}`,`tools: ${this.service.loop.tools.length} \xB7 skills: ${this.service.loop.skills.length}`,`cron: ${i.cron.enabled?"on":"off"}`].join(`
+`))}case"model":{if(!r)return s(I(this.service.config));let i=oe(this.service.config,r)??r,l=n.setPath("agents.defaults.model",i);if(!l.ok)return s(`could not set model: ${l.errors.join("; ")}`);this.service.applyConfig();let d=Object.keys(this.service.config.providers??{}),c=i===r&&d.length&&!d.includes(r.split("/")[0]??"")?`
+heads up: "${r}" does not start with a provider name (${d.join(", ")})`:"";return s(`default model: ${i}${c}`)}case"provider":switch(r){case"":case"list":return s(ie(this.service.config));case"add":{let i=ce(t.args.split(/\s+/).filter(Boolean).slice(1));if(!i.name)return s("usage: /provider add <name> [baseUrl|apiKey] [apiKey] [models,a,b]");let l=await ae(n,i.name,i);return l.ok&&this.service.applyConfig(),s(l.message)}case"remove":{if(!a[0])return s("usage: /provider remove <name>");let i=le(n,a[0]);return i.ok&&this.service.applyConfig(),s(i.message)}case"test":{if(!a[0])return s("usage: /provider test <name>");let i=await de(this.service.config,a[0]);return s(i.message)}default:return s(`unknown /provider ${r} \u2014 try: list, add, remove, test`)}default:return s(`unknown command /${t.name} \u2014 try /help`)}}async#l(e,t){if(t===void 0)return!1;try{let s=await e.api.getMe();return t===s.id}catch{return!1}}async#o(e){let t=this.#t.get(e);if(!t)return;this.#t.delete(e);let s=this.#e;if(!s)return;let n=t.texts.join(`
+
+`).slice(0,8e3),r=Number(e),a=await s.api.sendMessage(r,"\u2026",{link_preview_options:{is_disabled:!0}}).catch(()=>null),i=0,l=[],d=this.service.config.channels.telegram;await this.service.send({sessionKey:e.startsWith("telegram:")?e:`telegram:${e}`,text:n,isMainSession:!1,source:"telegram",onDelta:async()=>{if(!a||d.streaming==="off")return;let c=Date.now();c-i<2e3||(i=c,await s.api.editMessageText(r,a.message_id,"\u258C working\u2026",{link_preview_options:{is_disabled:!0}}).catch(()=>{}))},onTool:async c=>{!a||d.streaming==="off"||(l=[...l.slice(-4),`\xB7 ${c.name}`],await s.api.editMessageText(r,a.message_id,`\u258C working\u2026
+${l.join(`
+`)}`).catch(()=>{}))},reply:async c=>{let u=et(c);if(!a){for(let m of u)await s.api.sendMessage(r,m).catch(()=>{});return}await s.api.editMessageText(r,a.message_id,u[0]??"(empty)",{link_preview_options:{is_disabled:!0}}).catch(()=>{});for(let m of u.slice(1))await s.api.sendMessage(r,m).catch(()=>{})}})}};function et(o,e=4e3){if(o.length<=e)return[o];let t=[],s=o;for(;s.length>e;){let n=s.slice(0,e),r=Math.max(n.lastIndexOf(`
+
+`),n.lastIndexOf(`
+`),n.lastIndexOf(" ")),a=r>e*.5?r:e;t.push(s.slice(0,a).trim()),s=s.slice(a).trimStart()}return s.length>0&&t.push(s),t}async function tt(o,e,t){let{Cron:s}=await import("./croner-3P7MMEQK.js");return new s(o,{protect:t},e)}var A=class{#e=new Map;store;log;fire;constructor(e,t,s){this.store=e,this.log=t,this.fire=s}get count(){return this.#e.size}async start(){for(let e of this.store.listJobs())e.enabled&&await this.#t(e)}async#t(e){let t=this.#e.get(e.id);if(t?.schedule!==e.schedule){t?.handle.stop();try{let s=await tt(e.schedule,async()=>{try{await this.fire(e)}catch(n){this.store.recordJobRun(e.id,"error",n.message),this.log.error(`cron ${e.name} failed: ${n.message}`)}},!0);this.#e.set(e.id,{handle:s,schedule:e.schedule}),this.log.info(`cron armed: ${e.name} (${e.schedule})`)}catch(s){this.log.error(`cron ${e.name} has an invalid schedule: ${s.message}`)}}}async reconcile(){let e=new Map(this.store.listJobs().map(t=>[t.id,t]));for(let[t,s]of this.#e){let n=e.get(t);(!n||!n.enabled)&&(s.handle.stop(),this.#e.delete(t))}for(let t of e.values())t.enabled&&await this.#t(t)}async reload(){this.stop(),await this.start()}async upsert(e){let t=this.store.upsertJob(e);return t.enabled?await this.#t(t):(this.#e.get(t.id)?.handle.stop(),this.#e.delete(t.id)),t}remove(e){let t=this.store.getJob(e)!==void 0;return this.#e.get(e)?.handle.stop(),this.#e.delete(e),this.store.deleteJob(e),t}stop(){for(let e of this.#e.values())e.handle.stop();this.#e.clear()}};var nt=9e4,_e=class{log;configSvc;store;loop;events=new st;startedAt=Date.now();#e=null;#t=null;#s=new Map;#n=!1;constructor(e){Z(),this.log=se({file:J(X(),"suparclaw.log")}),this.configSvc=new ee(this.log,e),this.store=te.open(z()),this.store.setMeta("state_dir",H());let t=this.configSvc.current,s=new R(t.providers,{model:t.agents.defaults.model,fallbacks:t.agents.defaults.fallbacks},n=>this.log.warn(`llm retry ${n.model} #${n.attempt}: ${n.error}`));this.loop=new E({config:t,store:this.store,log:this.log,llm:s,requestApproval:(n,r,a)=>this.requestApproval(n,r,a)}),this.events.setMaxListeners(64)}get config(){return this.configSvc.current}bootstrap(){let e=[],t=w();Re(J(t,"AGENTS.md"))||e.push(...me(t));let s=this.config.gateway.auth.token;if(this.config.gateway.auth.mode==="token"&&!s){s=crypto.randomUUID().replace(/-/g,"")+crypto.randomUUID().replace(/-/g,"");let n=this.configSvc.setPath("gateway.auth.token",s);n.ok||this.log.error(`could not persist gateway token: ${n.errors[0]}`),e.push("config.json5 (gateway token)")}return{created:e,token:s}}applyConfig(e){let t=this.config;this.loop.llm.setConfig(t.providers,t.agents.defaults),this.log.info(`config applied \u2014 model ${t.agents.defaults.model||"(unset)"}`)}watchConfig(){let e=this.config.channels.telegram;this.configSvc.watchForChanges(t=>{this.applyConfig(t);let s=t.channels.telegram,n=s.enabled!==e.enabled||s.token!==e.token;e=s,n&&this.#e?.running?this.#e.stop().then(()=>{s.enabled&&s.token&&this.#r()}):n&&s.enabled&&s.token&&!this.#e?.running&&this.#r(),this.#t&&this.#t.reconcile(),this.log.info("config hot-reloaded")})}async#r(){this.#e=new L(this,this.log);try{await this.#e.start()}catch(e){this.log.error(`telegram failed to start: ${e.message}`)}}async cronReconcile(){this.#t&&await this.#t.reconcile()}async startChannels(){let e=this.config;e.cron.enabled&&(this.#t=new A(this.store,this.log,t=>this.send({sessionKey:t.session_key,text:t.prompt,isMainSession:!1,source:"cron",reply:async s=>{this.store.recordJobRun(t.id,"done",s.slice(0,2e3))}})),await this.#t.start(),this.log.info(`cron scheduler started (${this.#t.count} jobs)`)),e.channels.telegram.enabled&&e.channels.telegram.token&&await this.#r(),this.watchConfig()}async send(e){await this.loop.run({sessionKey:e.sessionKey,text:e.text,isMainSession:e.isMainSession,model:e.model,reasoning:e.reasoning,onEvent:t=>{this.events.emit("event",{type:"chat",sessionKey:e.sessionKey,event:t}),t.type==="delta"?e.onDelta?.(t.text):t.type==="tool"?e.onTool?.(t):t.type==="approval"?e.onApproval?.(t):t.type==="final"?e.reply(t.text):t.type==="error"&&e.reply(`\u26A0 ${t.message}`)}})}requestApproval(e,t,s){return this.log.info(`approval requested: ${t} ${JSON.stringify(s).slice(0,200)}`),new Promise(n=>{let r=setTimeout(()=>{this.#s.delete(e),n(!1)},nt);this.#s.set(e,a=>{clearTimeout(r),n(a)})})}resolveApproval(e,t){let s=this.#s.get(e);return s?(s(t),!0):!1}subscribe(e){return this.events.on("event",e),()=>this.events.off("event",e)}health(){return{ok:!0,version:"0.1.0",uptimeMs:Date.now()-this.startedAt,sessions:this.store.listSessions(200).length,busy:this.loop.busySessions()}}readiness(){let e=[],t=this.config;e.push(this.configSvc.errors.length===0?{name:"config",status:"ok",detail:"valid"}:{name:"config",status:"fail",detail:this.configSvc.errors[0]??"invalid"});try{this.store.getMeta("schema_version"),e.push({name:"store",status:"ok",detail:`sqlite open \xB7 fts ${this.store.fts?"on":"like-fallback"}`})}catch(l){e.push({name:"store",status:"fail",detail:l.message})}let s=t.agents.defaults.model;if(!s)e.push({name:"model",status:"warn",detail:"no default model \u2014 run: sc setup"});else try{let l=ne(s,t.providers);e.push({name:"model",status:"ok",detail:`${s} \u2192 ${l.provider} \xB7 ${l.model}`})}catch(l){e.push({name:"model",status:"fail",detail:l.message})}let n=this.loop.tools.length;e.push({name:"tools",status:n>0?"ok":"fail",detail:`${n} registered`});let r=this.loop.skills.filter(l=>l.eligible).length;e.push({name:"skills",status:"ok",detail:`${r}/${this.loop.skills.length} ready`});let a=w();if(e.push(Re(J(a,"AGENTS.md"))?{name:"workspace",status:"ok",detail:a}:{name:"workspace",status:"warn",detail:"no AGENTS.md \u2014 run: sc init"}),t.cron.enabled){let l=this.#t?.count??0,d=this.store.listJobs().filter(c=>c.enabled).length;e.push({name:"cron",status:l===d?"ok":"warn",detail:l===d?`${l} job${l===1?"":"s"} armed`:`${l}/${d} armed \u2014 reconciling`})}else e.push({name:"cron",status:"ok",detail:"disabled"});return t.channels.telegram.enabled?this.#e?.running?e.push({name:"telegram",status:"ok",detail:`online${this.#e.username?` as @${this.#e.username}`:""}`}):e.push({name:"telegram",status:"fail",detail:"enabled but not connected \u2014 check channels.telegram.token"}):e.push({name:"telegram",status:"ok",detail:"disabled"}),e}status(){let e=this.config;return{model:e.agents.defaults.model||"(unset)",fallbacks:e.agents.defaults.fallbacks,providers:Object.keys(e.providers),tools:this.loop.tools.map(t=>t.name),skills:this.loop.skills.map(t=>({name:t.name,root:t.root,eligible:t.eligible})),telegram:{enabled:e.channels.telegram.enabled,running:this.#e?.running??!1,dmPolicy:e.channels.telegram.dmPolicy},cron:{enabled:e.cron.enabled,jobs:this.#t?.count??0},workspace:w(),checks:this.readiness()}}async stop(){this.#n||(this.#n=!0,this.configSvc.stop(),this.#t?.stop(),await this.#e?.stop(),this.store.close(),this.log.info("service stopped"))}};export{we as a,ve as b,_e as c};

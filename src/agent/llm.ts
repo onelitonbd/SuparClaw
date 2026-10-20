@@ -16,6 +16,7 @@ export type ChatMessage =
 
 export type StreamEvent =
   | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
   | { type: "tool_calls"; calls: ToolCall[] }
   | { type: "usage"; usage: Record<string, number> }
   | { type: "done"; finishReason: string };
@@ -127,6 +128,12 @@ interface StreamOptions {
   maxTokens?: number;
   /** Per-run override; falls back to agents.defaults.model. */
   model?: string;
+  /**
+   * Thinking effort for this request ("inherit"/"off"/"low"/…/"max"). Sent as
+   * OpenAI-compatible `reasoning_effort` when it names a real level; "inherit"
+   * and "off" omit the field (custom endpoints reject an explicit off).
+   */
+  reasoning?: string;
 }
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
@@ -214,6 +221,8 @@ export class LlmClient {
     if (opts.tools?.length) body["tools"] = opts.tools;
     if (opts.temperature !== undefined) body["temperature"] = opts.temperature;
     if (opts.maxTokens !== undefined) body["max_tokens"] = opts.maxTokens;
+    const effort = opts.reasoning;
+    if (effort && effort !== "inherit" && effort !== "off") body["reasoning_effort"] = effort;
 
     let res: Response;
     try {
@@ -265,6 +274,13 @@ export class LlmClient {
         if (!choice) continue;
         if (choice.finish_reason) finishReason = choice.finish_reason;
         const delta = choice.delta ?? {};
+        // Thinking deltas, whatever the vendor calls them: DeepSeek/Nvidia NIM
+        // send `reasoning_content`, OpenAI-style backends `reasoning`, some
+        // stacks `thinking`. They arrive before/around the answer text.
+        const thinking = delta["reasoning_content"] ?? delta["reasoning"] ?? delta["thinking"];
+        if (typeof thinking === "string" && thinking.length > 0) {
+          yield { type: "reasoning", text: thinking };
+        }
         const content = delta["content"];
         if (typeof content === "string" && content.length > 0) {
           yield { type: "text", text: content };

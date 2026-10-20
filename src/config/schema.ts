@@ -155,6 +155,18 @@ export const CONFIG_SCHEMA: SchemaNode = {
             maxToolIterations: { t: "int", min: 1, max: 40, default: 12 },
             contextBudgetChars: { t: "int", min: 2000, default: 60000 },
             queueMode: { t: "enum", values: ["steer", "followup"], default: "followup" },
+            // Thinking effort sent to the provider (reasoning_effort).
+            // "inherit" = don't send the field at all (the provider/model keeps
+            // its own default); "off" omits it too on custom routes (many
+            // OpenAI-compatible endpoints reject an explicit off).
+            reasoningEffort: {
+              t: "enum",
+              values: ["inherit", "off", "low", "medium", "high", "xhigh", "max"],
+              default: "inherit",
+            },
+            // Whether thinking blocks are visible in the UI. The blocks are
+            // always persisted either way — "off" only hides them from view.
+            reasoningView: { t: "enum", values: ["on", "off"], default: "on" },
           },
         },
       },
@@ -239,6 +251,8 @@ export interface SuparClawConfig {
       maxToolIterations: number;
       contextBudgetChars: number;
       queueMode: "steer" | "followup";
+      reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
+      reasoningView: "on" | "off";
     };
   };
   providers: Record<

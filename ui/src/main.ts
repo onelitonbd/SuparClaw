@@ -60,6 +60,9 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
     case "delta":
       chat.delta(String(e.text ?? ""));
       break;
+    case "reasoning":
+      chat.reasoningDelta(String(e.text ?? ""));
+      break;
     case "tool":
       chat.tool(
         String(e.name ?? "tool"),
@@ -156,8 +159,63 @@ async function refresh(): Promise<void> {
     currentModel = status.model || models[0] || "";
     $("model-name").textContent = currentModel || "model…";
     renderSessions((sessionRes as any).sessions ?? []);
+    syncThinking(status, (sessionRes as any).sessions ?? []);
   } catch { /* gateway reconnecting */ }
 }
+
+/* ---------------- thinking level + preview ---------------- */
+
+function syncThinking(status: any, sessions: { key: string; thinking?: string | null }[]): void {
+  const select = $("think") as HTMLSelectElement;
+  const levels: string[] =
+    status?.thinkingLevels ?? ["inherit", "off", "low", "medium", "high", "xhigh", "max"];
+  const current = select.querySelectorAll("option");
+  if (current.length !== levels.length) {
+    select.innerHTML = "";
+    for (const level of levels) {
+      const opt = document.createElement("option");
+      opt.value = level;
+      opt.textContent = level === "inherit" ? "auto" : level;
+      select.append(opt);
+    }
+  }
+  // Explicit session override, or "auto" when inheriting — selecting a level
+  // patches the session immediately (survives refresh); the choice applies to
+  // later turns and never interrupts one in flight.
+  const row = (sessions ?? []).find((s) => s.key === sessionKey);
+  const desired = row?.thinking ?? "inherit";
+  // Attribute first (works in every DOM), then the value setter where it
+  // exists — a throwing setter must never skip the selection.
+  for (const opt of Array.from(select.querySelectorAll("option"))) {
+    if (opt.getAttribute("value") === desired) opt.setAttribute("selected", "");
+    else opt.removeAttribute("selected");
+  }
+  try {
+    select.value = desired;
+  } catch { /* getter-only DOM */ }
+}
+
+$("think").addEventListener("change", async () => {
+  const select = $("think") as HTMLSelectElement;
+  const value = select.value === "inherit" ? null : select.value;
+  try {
+    await gateway.request("sessions.patch", { sessionKey, thinking: value });
+    toast(value ? `thinking: ${value}` : "thinking: inherited", "ok");
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+});
+
+const savedThinkView = localStorage.getItem("sc.reasoningView") === "off" ? "off" : "on";
+chat.setThinkingView(savedThinkView);
+$("think-view").setAttribute("aria-pressed", String(savedThinkView === "on"));
+$("think-view").addEventListener("click", () => {
+  const next = localStorage.getItem("sc.reasoningView") === "off" ? "on" : "off";
+  localStorage.setItem("sc.reasoningView", next);
+  chat.setThinkingView(next);
+  $("think-view").setAttribute("aria-pressed", String(next === "on"));
+  toast(`thinking preview: ${next}`, "ok");
+});
 
 async function health(): Promise<void> {
   try {

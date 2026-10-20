@@ -10,6 +10,8 @@ export interface SessionRow {
   created_at: number;
   last_msg_at: number;
   meta: string | null;
+  /** Session thinking-level override ("low"…/"max", "off"); null = inherited. */
+  thinking?: string | null;
 }
 
 export interface MessageRow {
@@ -123,6 +125,13 @@ export class Store {
         throw err;
       }
     }
+    // Idempotent column additions (pre-thinking DBs upgrade in place).
+    const sessionCols = new Set(
+      (db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!sessionCols.has("thinking")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN thinking TEXT");
+    }
     return new Store(db, fts);
   }
 
@@ -176,6 +185,16 @@ export class Store {
 
   renameSession(id: string, name: string): void {
     this.db.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(name, id);
+  }
+
+  /**
+   * Set (or clear with null) the session's thinking-level override. Creates
+   * the session when missing — the picker must work on a fresh session that
+   * has not sent its first message yet.
+   */
+  setSessionThinking(key: string, thinking: string | null): void {
+    const row = this.ensureSession(key);
+    this.db.prepare("UPDATE sessions SET thinking = ? WHERE id = ?").run(thinking, row.id);
   }
 
   /**

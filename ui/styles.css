@@ -1120,6 +1120,76 @@ textarea:focus-visible {
 
 .spin { animation: spin .8s linear infinite; }
 
+/* ---- thinking level picker + preview ---- */
+.think {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: var(--tap);
+  padding: 0 8px;
+  border-radius: var(--r-md);
+  color: var(--ink2);
+  cursor: pointer;
+}
+
+.think:hover { background: var(--hover); }
+
+.think__select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  max-width: 72px;
+}
+
+.thought {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+  opacity: .92;
+}
+
+.thought__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--ink2);
+  font-size: 12px;
+}
+
+.thought__title { font-weight: 600; }
+.thought__status { opacity: .7; font-size: 11px; }
+.thought__row svg:last-child { margin-left: auto; transition: transform .15s ease; }
+.thought__row[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
+
+.thought__body {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink2);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.thought__body pre {
+  overflow-x: auto;
+  padding: 8px;
+  border-radius: var(--r-sm);
+  background: var(--hover);
+  font-size: 12px;
+}
+
+.stack--no-thought .thought { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;

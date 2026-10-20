@@ -47,7 +47,15 @@ interface Live {
   status: HTMLElement;
   tools: HTMLElement;
   body: HTMLElement;
+  thought?: ThoughtBlock;
   startedAt: number;
+}
+
+interface ThoughtBlock {
+  root: HTMLElement;
+  body: HTMLElement;
+  status: HTMLElement;
+  text: string;
 }
 
 export class Chat {
@@ -191,6 +199,11 @@ export class Chat {
           // user saw live — errors were live-only and vanished on refresh.
           this.fail(row.content);
           rendered++;
+        } else if (row.role === "reasoning" && row.content) {
+          // Saved thinking segments reload as reviewable blocks — nothing
+          // the model produced is ever lost from the transcript.
+          this.reasoning(row.content);
+          rendered++;
         }
       } catch {
         /* one bad message must not take the thread with it */
@@ -250,6 +263,7 @@ export class Chat {
     live.body.innerHTML = renderMarkdown(this.#streamText);
     live.status.textContent = "Done";
     live.status.classList.remove("is-live");
+    if (live.thought) live.thought.status.textContent = "";
     this.#live = null;
     this.#streamText = "";
     this.setBusy(false);
@@ -353,6 +367,87 @@ export class Chat {
       ]));
     }
     this.#scrollToBottom();
+  }
+
+  /* ---- thinking preview ---- */
+
+  /** Collapsible thinking block shared by live streams and history replay. */
+  #thought(initial = ""): ThoughtBlock {
+    const body = el("div", { class: "thought__body", hidden: "" });
+    if (initial) body.append(el("div", {}, [initial]));
+    const status = el("span", { class: "thought__status mono" }, [initial ? "" : "Thinking…"]);
+    const toggle = el(
+      "button",
+      { class: "thought__row", type: "button", "aria-expanded": initial ? "false" : "true" },
+      [icon(SPARKLE), el("span", { class: "thought__title" }, ["Thinking"]), status, icon(CHEVRON)],
+    );
+    if (initial) body.hidden = true;
+    const root = el("div", { class: "thought" }, [toggle, body]);
+    toggle.onclick = () => {
+      const open = toggle.getAttribute("aria-expanded") !== "true";
+      toggle.setAttribute("aria-expanded", String(open));
+      body.hidden = !open;
+      this.#scrollToBottom();
+    };
+    return { root, body, status, text: initial };
+  }
+
+  /**
+   * Stream a thinking fragment. Lands in the live bubble's thought block
+   * (positioned above the tools/answer), or as its own block if the run has
+   * not opened a bubble yet.
+   */
+  reasoningDelta(text: string): void {
+    if (!this.#live) {
+      const block = this.#thought("");
+      this.#clearEmpty();
+      this.stack.append(block.root);
+      block.text += text;
+      block.body.innerHTML = renderMarkdown(block.text);
+      this.#scrollToBottom();
+      return;
+    }
+    const live = this.#live;
+    if (!live.thought) {
+      const block = this.#thought("");
+      live.thought = block;
+      live.root.insertBefore(block.root, live.tools);
+    }
+    const block = live.thought;
+    block.text += text;
+    block.status.textContent = "Thinking…";
+    this.#scheduleThoughtRender(block);
+  }
+
+  #thoughtPending = new Set<ThoughtBlock>();
+  #thoughtFrame = 0;
+
+  #scheduleThoughtRender(block: ThoughtBlock): void {
+    this.#thoughtPending.add(block);
+    if (this.#thoughtFrame) return;
+    this.#thoughtFrame = requestAnimationFrame(() => {
+      this.#thoughtFrame = 0;
+      for (const b of this.#thoughtPending) {
+        b.body.hidden = false;
+        b.body.innerHTML = renderMarkdown(b.text);
+        b.root.querySelector<HTMLElement>(".thought__row")?.setAttribute("aria-expanded", "true");
+      }
+      this.#thoughtPending.clear();
+      this.#scrollToBottom();
+    });
+  }
+
+  /** A complete, saved thinking segment (history replay) — collapsed by default. */
+  reasoning(text: string): void {
+    this.#clearEmpty();
+    const block = this.#thought(text);
+    this.stack.append(block.root);
+    this.#scrollToBottom();
+  }
+
+  /** View → Reasoning: hides thinking blocks without ever discarding them. */
+  setThinkingView(view: "on" | "off"): void {
+    this.stack.classList.toggle("stack--no-thought", view === "off");
   }
 
   /** ---- approvals ---- */
