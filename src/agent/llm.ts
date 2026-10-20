@@ -178,6 +178,113 @@ class ReasoningAccumulator {
   }
 }
 
+/**
+ * Split thinking folded into `content` as bracket/angle think-tag blocks
+ * (Google's OpenAI-compat does this on some model routes; DeepSeek-style
+ * routers too). Streaming-safe: markers split across chunks are reassembled.
+ * Only the exact marker sequences are treated as thinking - ordinary
+ * markdown links/arrays in content are left alone.
+ */
+const THINK_TAGS: [string, string][] = [
+  ["[" + "th" + "ink]", "[/" + "th" + "ink]"],
+  ["<" + "th" + "ink>", "</" + "th" + "ink>"],
+  ["<" + "th" + "ought>", "</" + "th" + "ought>"],
+  ["[" + "th" + "ought]", "[/" + "th" + "ought]"],
+];
+
+function partialSuffix(buf: string, marker: string): string {
+  const max = Math.min(buf.length, marker.length - 1);
+  for (let n = max; n > 0; n--) {
+    if (marker.startsWith(buf.slice(buf.length - n))) return buf.slice(buf.length - n);
+  }
+  return "";
+}
+
+class ThinkSplitter {
+  #buf = "";
+  #close: string | null = null;
+
+  push(chunk: string): { thinking: string[]; content: string[] } {
+    this.#buf += chunk;
+    const thinking: string[] = [];
+    const content: string[] = [];
+    while (this.#buf.length > 0) {
+      const lower = this.#buf.toLowerCase();
+      if (this.#close) {
+        const closeAt = lower.indexOf(this.#close);
+        if (closeAt < 0) {
+          const hold = partialSuffix(lower, this.#close);
+          const emit = this.#buf.slice(0, this.#buf.length - hold.length);
+          if (emit) thinking.push(emit);
+          this.#buf = hold;
+          break;
+        }
+        const inner = this.#buf.slice(0, closeAt);
+        if (inner) thinking.push(inner);
+        this.#buf = this.#buf.slice(closeAt + this.#close.length);
+        this.#close = null;
+        continue;
+      }
+      let openAt = -1;
+      let openTag: [string, string] | null = null;
+      for (const tag of THINK_TAGS) {
+        const at = lower.indexOf(tag[0]);
+        if (at >= 0 && (openAt < 0 || at < openAt)) {
+          openAt = at;
+          openTag = tag;
+        }
+      }
+      if (!openTag || openAt < 0) {
+        let hold = "";
+        for (const tag of THINK_TAGS) {
+          const s = partialSuffix(lower, tag[0]);
+          if (s.length > hold.length) hold = s;
+        }
+        const emit = this.#buf.slice(0, this.#buf.length - hold.length);
+        if (emit) content.push(emit);
+        this.#buf = hold;
+        break;
+      }
+      const before = this.#buf.slice(0, openAt);
+      if (before) content.push(before);
+      this.#buf = this.#buf.slice(openAt + openTag[0].length);
+      this.#close = openTag[1];
+    }
+    return { thinking, content };
+  }
+
+  flush(): { thinking: string[]; content: string[] } {
+    const out = this.#close
+      ? { thinking: this.#buf ? [this.#buf] : [], content: [] }
+      : { thinking: [], content: this.#buf ? [this.#buf] : [] };
+    this.#buf = "";
+    this.#close = null;
+    return out;
+  }
+}
+
+/** Reasoning/thought tokens in a usage block, whatever the vendor calls them. */
+export function reasoningTokens(usage: Record<string, unknown> | null | undefined): number {
+  if (!usage) return 0;
+  const details = [
+    usage["completion_tokens_details"],
+    usage["output_tokens_details"],
+    usage["prompt_tokens_details"],
+  ];
+  for (const v of [
+    usage["reasoning_tokens"],
+    usage["thoughts_tokens"],
+    ...details.flatMap((d) =>
+      d && typeof d === "object"
+        ? [(d as Record<string, unknown>)["reasoning_tokens"], (d as Record<string, unknown>)["thoughts_tokens"]]
+        : [],
+    ),
+  ]) {
+    if (typeof v === "number" && v > 0) return v;
+  }
+  return 0;
+}
+
 function wireMessages(messages: ChatMessage[], opts?: { signToolCalls?: boolean }): unknown[] {
   return messages.map((m) => {
     if (m.role === "assistant") {
@@ -471,6 +578,31 @@ export class LlmClient {
     if (opts.maxTokens !== undefined) body["max_tokens"] = opts.maxTokens;
     const effort = opts.reasoning;
     if (effort && effort !== "inherit" && effort !== "off") body["reasoning_effort"] = effort;
+    if (signToolCalls) {
+      // Gemini's OpenAI-compat extension: ask for thought summaries explicitly.
+      // On Gemini 3.x summaries are gated behind thinking_config; the bare
+      // reasoning_effort field is ignored on some routes and the stream then
+      // carries reasoning tokens but no preview text. Both key casings — the
+      // shim variants differ; other backends ignore the whole `google` key.
+      const cfg: Record<string, unknown> = {};
+      if (effort === "off") {
+        cfg["thinking_budget"] = 0;
+        cfg["include_thoughts"] = false;
+        cfg["includeThoughts"] = false;
+      } else {
+        cfg["include_thoughts"] = true;
+        cfg["includeThoughts"] = true;
+        const level =
+          effort && effort !== "inherit"
+            ? (({ xhigh: "high", max: "high" } as Record<string, string>)[effort] ?? effort)
+            : undefined;
+        if (level) {
+          cfg["thinking_level"] = level;
+          cfg["thinkingLevel"] = level;
+        }
+      }
+      body["google"] = { thinking_config: cfg };
+    }
 
     let res: Response;
     try {
@@ -521,6 +653,8 @@ export class LlmClient {
     };
     let finishReason = "stop";
     let usage: Record<string, number> | null = null;
+    const thinkSplit = new ThinkSplitter();
+    let sawReasoningText = false;
 
     try {
       for await (const chunk of iterateSse(res.body)) {
@@ -561,6 +695,7 @@ export class LlmClient {
           thinking = parts.join("");
         }
         if (typeof thinking === "string" && thinking.length > 0) {
+          sawReasoningText = true;
           yield { type: "reasoning", text: thinking };
         } else {
           // Providers that stream thinking ONLY as reasoning_details fragments
@@ -572,6 +707,7 @@ export class LlmClient {
             for (const raw of frag as Record<string, unknown>[]) {
               const piece = raw?.["text"] ?? raw?.["summary"];
               if (typeof piece === "string" && piece.length > 0) {
+                sawReasoningText = true;
                 yield { type: "reasoning", text: piece };
               }
             }
@@ -579,7 +715,16 @@ export class LlmClient {
         }
         const content = delta["content"];
         if (typeof content === "string" && content.length > 0) {
-          yield { type: "text", text: content };
+          // Thinking folded into content as think-tag blocks is split out —
+          // the answer stream must stay clean and the preview must see it.
+          const parts = thinkSplit.push(content);
+          for (const t of parts.thinking) {
+            sawReasoningText = true;
+            yield { type: "reasoning", text: t };
+          }
+          for (const c of parts.content) {
+            if (c.length > 0) yield { type: "text", text: c };
+          }
         }
         const deltaCalls = delta["tool_calls"];
         if (Array.isArray(deltaCalls)) {
@@ -644,6 +789,24 @@ export class LlmClient {
       // once output has been delivered).
       if ((err as Error).name === "AbortError") throw err;
       throw new LlmError(`stream interrupted: ${(err as Error).message}`, undefined, true);
+    }
+
+    const tail = thinkSplit.flush();
+    for (const t of tail.thinking) {
+      sawReasoningText = true;
+      yield { type: "reasoning", text: t };
+    }
+    for (const c of tail.content) {
+      if (c.length > 0) yield { type: "text", text: c };
+    }
+    // Some Gemini 3.x OpenAI-compat routes bill reasoning tokens but stream no
+    // preview text at all (reasoning_content never appears). Say so honestly
+    // instead of silently showing nothing.
+    if (!sawReasoningText && reasoningTokens(usage as Record<string, unknown> | null) > 0) {
+      yield {
+        type: "reasoning",
+        text: "Thinking ran (reasoning tokens billed) but this provider route exposed no preview text.",
+      };
     }
 
     const finished = [...calls.values()].filter((c) => c.name.length > 0);

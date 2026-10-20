@@ -403,3 +403,151 @@ test("llm: thinking streamed only as reasoning_details still reaches the preview
   const both = events2.filter((e) => e.type === "reasoning").map((e) => e.text).join("");
   assert.equal(both, "dup.", "string + details on one chunk emits once — no double blocks");
 });
+
+test("llm: thinking folded into content as think tags is split out, streaming-safe", async (t) => {
+  const { LlmClient } = await import("../dist/lib.js");
+  const OPEN = "[" + "th" + "ink]";
+  const CLOSE = "[/" + "th" + "ink]";
+  // Markers split across chunk boundaries must reassemble; the answer stream
+  // must stay clean (no tag leakage) and the preview must see the thinking.
+  const pieces = [
+    "Intro [" + "th", // open marker split mid-token
+    "ink]thinking one" + CLOSE.slice(0, 3), // inner text + close marker split
+    CLOSE.slice(3) + "After." + " " + "<" + "th", // close completes; angle open split
+    "ink>angle thought</" + "th" + "ink>Done.", // angle pair closed too
+  ];
+  let round = 0;
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      round += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (round === 1) {
+        for (const p of pieces) {
+          res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+        }
+      } else {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "plain [brackets] stay" } }] })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      res.end();
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => server.listen(port, "127.0.0.1", r));
+  t.after(() => server.close());
+  const llm = new LlmClient(
+    { mock: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["m1"] }, other: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["z"] } },
+    { model: "mock/m1", fallbacks: [] },
+  );
+
+  const events = [];
+  for await (const e of llm.stream({ messages: [{ role: "user", content: "hi" }] })) events.push(e);
+  const thought = events.filter((e) => e.type === "reasoning").map((e) => e.text).join("");
+  const answer = events.filter((e) => e.type === "text").map((e) => e.text).join("");
+  assert.equal(thought, "thinking oneangle thought", "both tag forms land in the preview");
+  assert.equal(answer, "Intro After. Done.", "answer stream is clean — no tag leakage");
+  assert.ok(!answer.includes("th" + "ink"), "no marker remnants in the answer");
+
+  const plain = [];
+  for await (const e of llm.stream({ messages: [{ role: "user", content: "hi" }] })) plain.push(e);
+  const plainText = plain.filter((e) => e.type === "text").map((e) => e.text).join("");
+  assert.equal(plainText, "plain [brackets] stay", "ordinary brackets are never eaten");
+});
+
+test("llm: reasoning tokens with no preview text surface an honest marker", async (t) => {
+  const { LlmClient, reasoningTokens } = await import("../dist/lib.js");
+  assert.equal(reasoningTokens({ completion_tokens_details: { reasoning_tokens: 64 } }), 64);
+  assert.equal(reasoningTokens({ thoughts_tokens: 7 }), 7);
+  assert.equal(reasoningTokens({ completion_tokens: 10 }), 0);
+
+  let round = 0;
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      round += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "hello" } }] })}\n\n`);
+      if (round === 1) {
+        // Gemini 3.x route: billed reasoning, zero preview fields
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {} }], usage: { completion_tokens: 20, completion_tokens_details: { reasoning_tokens: 64 } } })}\n\n`);
+      } else {
+        // preview text DID arrive — no marker spam
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "real thought" } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {} }], usage: { completion_tokens_details: { reasoning_tokens: 64 } } })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      res.end();
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => server.listen(port, "127.0.0.1", r));
+  t.after(() => server.close());
+  const llm = new LlmClient(
+    { mock: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["m1"] }, other: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["z"] } },
+    { model: "mock/m1", fallbacks: [] },
+  );
+
+  const events1 = [];
+  for await (const e of llm.stream({ messages: [{ role: "user", content: "hi" }] })) events1.push(e);
+  const marks = events1.filter((e) => e.type === "reasoning");
+  assert.equal(marks.length, 1, "exactly one honest marker");
+  assert.match(marks[0].text, /no preview/, "the marker says the preview is missing");
+
+  const events2 = [];
+  for await (const e of llm.stream({ messages: [{ role: "user", content: "hi" }] })) events2.push(e);
+  const real = events2.filter((e) => e.type === "reasoning");
+  assert.equal(real.map((e) => e.text).join(""), "real thought", "real preview wins — no marker on top");
+});
+
+test("llm: gemini requests ask for thought summaries via google.thinking_config", async (t) => {
+  const { LlmClient } = await import("../dist/lib.js");
+  const bodies = [];
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      bodies.push(JSON.parse(raw));
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      res.end();
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => server.listen(port, "127.0.0.1", r));
+  t.after(() => server.close());
+  const llm = new LlmClient(
+    {
+      mock: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["gemini-3-flash-preview", "m1"] },
+      other: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["z"] },
+    },
+    { model: "mock/gemini-3-flash-preview", fallbacks: [] },
+  );
+  const run = async (model, reasoning) => {
+    for await (const _ of llm.stream({ messages: [{ role: "user", content: "hi" }], model, reasoning })) {
+      // drain
+    }
+    return bodies.at(-1);
+  };
+
+  const high = await run("mock/gemini-3-flash-preview", "xhigh");
+  assert.equal(high["reasoning_effort"], "xhigh", "the standard field still rides");
+  assert.equal(high.google.thinking_config.include_thoughts, true, "thought summaries requested");
+  assert.equal(high.google.thinking_config.thinking_level, "high", "xhigh clamps to Gemini's high level");
+  assert.equal(high.google.thinking_config.thinkingLevel, "high", "both key casings sent");
+
+  const inherit = await run("mock/gemini-3-flash-preview", "inherit");
+  assert.equal(inherit.google.thinking_config.include_thoughts, true, "summaries even at provider-default thinking");
+  assert.equal(inherit.google.thinking_config.thinking_level, undefined, "no level invented");
+  assert.equal("reasoning_effort" in inherit, false);
+
+  const off = await run("mock/gemini-3-flash-preview", "off");
+  assert.equal(off.google.thinking_config.thinking_budget, 0, "off disables thinking on Gemini");
+
+  const plain = await run("mock/m1", "high");
+  assert.equal(plain.google, undefined, "non-Gemini bodies stay untouched");
+  assert.equal(plain.reasoning_effort, "high");
+});
