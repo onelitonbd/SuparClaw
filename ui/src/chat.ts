@@ -19,6 +19,7 @@ export function prettyError(message: string): string {
   for (let pass = 0; pass < 3; pass++) {
     const start = text.search(/[{[]/);
     if (start < 0) break;
+    let found: string | null = null;
     try {
       const parsed: unknown = JSON.parse(text.slice(start));
       const extract = (value: unknown): string | null => {
@@ -28,12 +29,21 @@ export function prettyError(message: string): string {
         const inner = obj["error"] ?? (Array.isArray(obj["errors"]) ? obj["errors"][0] : undefined);
         return extract(inner);
       };
-      const found = Array.isArray(parsed) ? extract(parsed[0]) : extract(parsed);
-      if (!found || found === text.slice(start)) break;
-      text = (start > 0 ? text.slice(0, start).trim().replace(/[:\s]+$/, "") + ": " : "") + found;
+      found = Array.isArray(parsed) ? extract(parsed[0]) : extract(parsed);
     } catch {
-      break; // not JSON after all
+      // Truncated blob (providers cap error bodies mid-JSON): pull the first
+      // "message" string out of the debris instead of showing the wall.
+      const m = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"?/.exec(text.slice(start));
+      if (m?.[1]) {
+        try {
+          found = JSON.parse(`"${m[1]}"`);
+        } catch {
+          found = m[1];
+        }
+      }
     }
+    if (!found || found === text.slice(start)) break;
+    text = (start > 0 ? text.slice(0, start).trim().replace(/[:\s]+$/, "") + ": " : "") + found;
   }
   return text;
 }

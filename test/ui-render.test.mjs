@@ -195,6 +195,25 @@ test("prettyError turns provider JSON walls into the human message", async () =>
   assert.ok(pretty.includes("All providers failed"), "human message extracted");
   assert.ok(!pretty.includes('{"error"'), `JSON wall gone: ${pretty}`);
   assert.equal(prettyError("HTTP 400 from X: plain text"), "HTTP 400 from X: plain text", "plain text passes through");
+
+  // Google's own error shape: a pretty-printed JSON ARRAY body (the
+  // thought_signature 400 the user hit on mobile).
+  const googleBlob = JSON.stringify(
+    [{ error: { code: 400, message: "Function call is missing a thought_signature in functionCall parts. Additional data, function call `default_api:fs_read` , position 31.", status: "INVALID_ARGUMENT" } }],
+    null,
+    2,
+  );
+  const fromArray = prettyError(`error: HTTP 400 from MultiRouter: ${googleBlob}`);
+  assert.ok(fromArray.includes("HTTP 400 from MultiRouter"), "prefix kept on the array blob");
+  assert.ok(fromArray.includes("Function call is missing a thought_signature"), "message extracted from [{error:{message}}]");
+  assert.ok(fromArray.includes("position 31"), "full message kept");
+  assert.ok(!fromArray.includes('"code"'), `array wall gone: ${fromArray.slice(0, 80)}`);
+
+  // Truncated blob (providers cap bodies mid-JSON): the message string in the
+  // debris must still surface instead of the raw wall.
+  const fromDebris = prettyError(`error: HTTP 400 from MultiRouter: ${googleBlob.slice(0, 120)}`);
+  assert.ok(fromDebris.includes("Function call is missing a thought_signature"), `debris yields the message: ${fromDebris.slice(0, 80)}`);
+  assert.ok(!fromDebris.includes('"error"'), `debris wall gone: ${fromDebris.slice(0, 80)}`);
 });
 
 test("styles keep long errors and tokens inside the thread", () => {

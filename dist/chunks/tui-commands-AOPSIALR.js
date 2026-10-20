@@ -1,0 +1,2 @@
+import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
+import{a,b}from"./chunk-IAWFXVFR.js";import"./chunk-3K5A7EX7.js";import"./chunk-7VVEKLUK.js";import"./chunk-OAUQDZ5L.js";import"./chunk-2QZIRX3M.js";import"./chunk-YTJZCNNH.js";import"./chunk-MK5MKGEG.js";import"./chunk-M2MAVQUI.js";import"./chunk-ZBHLCQUE.js";import"./chunk-V4764KWF.js";import"./chunk-EEEC4TXW.js";export{a as tuiLocal,b as tuiRemote};

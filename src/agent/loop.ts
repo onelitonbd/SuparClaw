@@ -5,7 +5,7 @@ import type { Logger } from "../util/log.js";
 import { loadWorkspaceContext, todayStamp } from "./workspace.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
 import { buildRegistry, toolsToSchema, type ToolContext, type ToolSpec } from "./tools.js";
-import { LlmClient, parseToolArgs, type ChatMessage } from "./llm.js";
+import { LlmClient, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
 import { skillsDir, workspaceDir } from "../util/paths.js";
 
 export type RunEvent =
@@ -153,10 +153,11 @@ export class AgentLoop {
 
       for (let turn = 0; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
         let text = "";
-        let toolCalls: { id: string; name: string; args: string }[] = [];
+        let toolCalls: ToolCall[] = [];
         let thought = "";
         let replayDetails: Record<string, unknown>[] = [];
         let replaySignatures: Record<string, string> = {};
+        let replayExtraContent: Record<string, unknown> | undefined;
         for await (const event of this.llm.stream({
           messages,
           tools: schema.length > 0 ? schema : undefined,
@@ -178,6 +179,7 @@ export class AgentLoop {
             toolCalls = event.calls;
             replayDetails = event.reasoningDetails ?? [];
             replaySignatures = event.messageSignatures ?? {};
+            replayExtraContent = event.messageExtraContent;
           } else if (event.type === "usage") {
             usage = event.usage;
           }
@@ -199,11 +201,14 @@ export class AgentLoop {
           tool_calls: toolCalls,
           // Signed thinking rides back with the calls (Gemini 3 rejects
           // functionCall parts without their thought_signature); the plain
-          // text is only a fallback when no signed blocks exist.
+          // text is only a fallback when no signed blocks exist. Per-call
+          // signatures live in tool_calls[].extraContent (the wire's
+          // extra_content.google.thought_signature) and are echoed verbatim.
           reasoning_details: replayDetails.length > 0 ? replayDetails : undefined,
           reasoning_content: replayDetails.length === 0 && segmentThought ? segmentThought : undefined,
           thinking_signature: replaySignatures["thinking_signature"],
           thought_signature: replaySignatures["thought_signature"],
+          extraContent: replayExtraContent,
         });
 
         for (const call of toolCalls) {

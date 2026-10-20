@@ -6,6 +6,87 @@ export interface ToolCall {
   id: string;
   name: string;
   args: string;
+  /**
+   * Provider vendor extension, captured verbatim from the wire. Google's
+   * OpenAI-compat layer hangs each call's thought_signature here as
+   * `extra_content.google.thought_signature` and 400s the next turn when a
+   * replayed functionCall part loses it ("Function call is missing a
+   * thought_signature in functionCall parts" — ai.google.dev/gemini-api/
+   * docs/thought-signatures). It must round-trip unchanged.
+   */
+  extraContent?: Record<string, unknown>;
+}
+
+/** Google's documented stand-in for history that arrived without signatures
+ * (imported transcripts, other-provider turns, sessions from before capture
+ * existed). The validator skips signature checking for this exact value. */
+export const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
+
+/** The signature Google hangs off one call, or "" when absent. */
+export function googleThoughtSignature(call: {
+  extraContent?: Record<string, unknown>;
+}): string {
+  const g = call.extraContent?.["google"];
+  const sig = g && typeof g === "object" ? (g as Record<string, unknown>)["thought_signature"] : undefined;
+  return typeof sig === "string" ? sig : "";
+}
+
+/** First-non-empty merge for vendor-extension objects (structural keys never
+ * concatenate — same rule as reasoning_details fragments). */
+function mergeExtraContent(into: Record<string, unknown>, src: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(src)) {
+    if (value === null || value === undefined) continue;
+    const cur = into[key];
+    if (
+      cur &&
+      typeof cur === "object" &&
+      !Array.isArray(cur) &&
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
+      mergeExtraContent(cur as Record<string, unknown>, value as Record<string, unknown>);
+    } else if (cur === null || cur === undefined || cur === "") {
+      into[key] = value;
+    }
+  }
+}
+
+/**
+ * Pull the human sentence out of a provider error body. Bodies arrive as
+ * JSON blobs ({"error":{"message":...}}, [{"error":{...}}], nested routers)
+ * and MultiRouter/Google pretty-print them, so a length cap truncates the
+ * JSON mid-string and JSON.parse fails — fall back to pulling the first
+ * "message" value out of the debris.
+ */
+export function providerErrorText(raw: string): string {
+  const text = raw.trim();
+  if (!text) return "";
+  const extract = (value: unknown): string | null => {
+    if (!value || typeof value !== "object") return null;
+    const obj = value as Record<string, unknown>;
+    if (typeof obj["message"] === "string" && (obj["message"] as string).trim()) {
+      return obj["message"] as string;
+    }
+    const inner = obj["error"] ?? (Array.isArray(obj["errors"]) ? obj["errors"][0] : undefined);
+    return extract(inner);
+  };
+  try {
+    const parsed: unknown = JSON.parse(text);
+    const found = Array.isArray(parsed) ? extract(parsed[0]) : extract(parsed);
+    if (found && found.trim() && found !== text) return found.trim();
+  } catch {
+    /* not valid JSON — maybe truncated mid-string; try the regex below */
+  }
+  const m = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"?/.exec(text);
+  if (m?.[1]) {
+    try {
+      return JSON.parse(`"${m[1]}"`);
+    } catch {
+      return m[1];
+    }
+  }
+  return text;
 }
 
 /* ---- wire serialization (strict OpenAI chat format) ---- */
@@ -97,16 +178,37 @@ class ReasoningAccumulator {
   }
 }
 
-function wireMessages(messages: ChatMessage[]): unknown[] {
+function wireMessages(messages: ChatMessage[], opts?: { signToolCalls?: boolean }): unknown[] {
   return messages.map((m) => {
     if (m.role === "assistant") {
       const out: Record<string, unknown> = { role: "assistant" };
       if (m.tool_calls?.length) {
-        out["tool_calls"] = m.tool_calls.map((c) => ({
-          id: c.id,
-          type: "function",
-          function: { name: c.name, arguments: c.args.trim() ? c.args : "{}" },
-        }));
+        out["tool_calls"] = m.tool_calls.map((c) => {
+          const call: Record<string, unknown> = {
+            id: c.id,
+            type: "function",
+            function: { name: c.name, arguments: c.args.trim() ? c.args : "{}" },
+          };
+          // Echo the vendor extension verbatim (Google's thought_signature
+          // lives here; losing it 400s the next turn).
+          if (c.extraContent && Object.keys(c.extraContent).length > 0) {
+            call["extra_content"] = c.extraContent;
+          }
+          return call;
+        });
+        // Gemini's validator demands a signature on every functionCall part
+        // of the current turn. Calls that genuinely carry none (history from
+        // another model, sessions predating capture) get Google's documented
+        // stand-in so tool loops survive instead of 400ing. Real signatures
+        // always win. Non-Google models see byte-identical bodies.
+        if (opts?.signToolCalls) {
+          for (const call of out["tool_calls"] as Record<string, unknown>[]) {
+            const extra = call["extra_content"] as Record<string, unknown> | undefined;
+            const google = (extra?.["google"] ?? {}) as Record<string, unknown>;
+            if (typeof google["thought_signature"] === "string" && google["thought_signature"]) continue;
+            call["extra_content"] = { ...extra, google: { ...google, thought_signature: SKIP_THOUGHT_SIGNATURE } };
+          }
+        }
         if (m.content) out["content"] = m.content;
         // Signed thinking must ride back with the tool calls (Gemini 3
         // rejects "functionCall parts" without a thought_signature).
@@ -114,8 +216,10 @@ function wireMessages(messages: ChatMessage[]): unknown[] {
         else if (m.reasoning_content) out["reasoning_content"] = m.reasoning_content;
         if (m.thinking_signature) out["thinking_signature"] = m.thinking_signature;
         if (m.thought_signature) out["thought_signature"] = m.thought_signature;
+        if (m.extraContent) out["extra_content"] = m.extraContent;
       } else {
         out["content"] = m.content ?? "";
+        if (m.extraContent) out["extra_content"] = m.extraContent;
       }
       return out;
     }
@@ -140,6 +244,8 @@ export type ChatMessage =
       /** Message-level Gemini signature aliases (some proxies use these). */
       thinking_signature?: string;
       thought_signature?: string;
+      /** Message-level vendor extension (a text turn's signature lands here). */
+      extraContent?: Record<string, unknown>;
     }
   | { role: "tool"; content: string; tool_call_id: string; name?: string };
 
@@ -153,6 +259,8 @@ export type StreamEvent =
       reasoningDetails?: Record<string, unknown>[];
       /** Message-level signature aliases (thinking_signature/thought_signature). */
       messageSignatures?: Record<string, string>;
+      /** Message-level vendor extension (extra_content) captured with this turn. */
+      messageExtraContent?: Record<string, unknown>;
     }
   | { type: "usage"; usage: Record<string, number> }
   | { type: "done"; finishReason: string };
@@ -348,9 +456,13 @@ export class LlmClient {
 
   async *#streamOnce(modelRef: string, opts: StreamOptions): AsyncGenerator<StreamEvent> {
     const resolved = resolveModel(modelRef, this.#providers);
+    // Gemini/Vertex tool rounds need their functionCall parts signed (real
+    // signature or Google's documented stand-in); other backends must see
+    // unchanged bodies.
+    const signToolCalls = /gemini|vertex/i.test(`${modelRef} ${resolved.model}`);
     const body: Record<string, unknown> = {
       model: resolved.model,
-      messages: wireMessages(opts.messages),
+      messages: wireMessages(opts.messages, { signToolCalls }),
       stream: true,
       stream_options: { include_usage: true },
     };
@@ -381,7 +493,7 @@ export class LlmClient {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new LlmError(
-        `HTTP ${res.status} from ${resolved.provider}: ${text.slice(0, 300) || res.statusText}`,
+        `HTTP ${res.status} from ${resolved.provider}: ${providerErrorText(text).slice(0, 500) || res.statusText}`,
         res.status,
         RETRYABLE_STATUS.has(res.status),
         RETRYABLE_STATUS.has(res.status) ? parseRetryAfter(res.headers.get("retry-after")) : undefined,
@@ -394,10 +506,17 @@ export class LlmClient {
     let lastSlot = 0;
     const reasoning = new ReasoningAccumulator();
     const messageSignatures: Record<string, string> = {};
+    const messageExtraContent: Record<string, unknown> = {};
     const captureSignatures = (src: Record<string, unknown>): void => {
       for (const key of ["thinking_signature", "thought_signature"]) {
         const value = src[key];
         if (typeof value === "string" && value.length > 0) messageSignatures[key] = value;
+      }
+    };
+    const captureExtra = (src: Record<string, unknown>): void => {
+      const extra = src["extra_content"];
+      if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+        mergeExtraContent(messageExtraContent, extra as Record<string, unknown>);
       }
     };
     let finishReason = "stop";
@@ -422,10 +541,12 @@ export class LlmClient {
         const delta = choice.delta ?? {};
         reasoning.add(delta["reasoning_details"]);
         captureSignatures(delta);
+        captureExtra(delta);
         const message = (choice as { message?: Record<string, unknown> }).message;
         if (message) {
           reasoning.add(message["reasoning_details"]);
           captureSignatures(message);
+          captureExtra(message);
         }
         // Thinking deltas, whatever the vendor calls them: DeepSeek/Nvidia NIM
         // send `reasoning_content`, OpenAI-style backends `reasoning`, some
@@ -448,6 +569,9 @@ export class LlmClient {
             index?: number;
             id?: string;
             function?: { name?: string; arguments?: string };
+            extra_content?: Record<string, unknown>;
+            thought_signature?: string;
+            thoughtSignature?: string;
           }[]) {
             let slot: number | undefined;
             if (raw.id) {
@@ -470,6 +594,23 @@ export class LlmClient {
             }
             if (raw.function?.name) existing.name += raw.function.name;
             if (raw.function?.arguments) existing.args += raw.function.arguments;
+            // Keep the per-call vendor extension (Google's thought_signature
+            // rides here, sometimes on later chunks with no id — match by slot).
+            const extra = raw.extra_content;
+            if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+              existing.extraContent ??= {};
+              mergeExtraContent(existing.extraContent, extra);
+            }
+            // Some proxies hoist the signature to a top-level tool_call key;
+            // give it the canonical home so replay finds it in one place.
+            const hoisted = raw.thought_signature ?? raw.thoughtSignature;
+            if (typeof hoisted === "string" && hoisted.length > 0) {
+              existing.extraContent ??= {};
+              const google = (existing.extraContent["google"] ??= {});
+              if (google && typeof google === "object" && !(google as Record<string, unknown>)["thought_signature"]) {
+                (google as Record<string, unknown>)["thought_signature"] = hoisted;
+              }
+            }
             calls.set(slot, existing);
             lastSlot = slot;
           }
@@ -490,6 +631,7 @@ export class LlmClient {
         calls: normalizeCallIds(finished),
         reasoningDetails: reasoning.blocks(),
         messageSignatures,
+        messageExtraContent,
       };
     }
     if (usage) yield { type: "usage", usage };
