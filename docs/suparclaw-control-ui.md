@@ -1,110 +1,108 @@
 # Control UI (web)
 
 SuparClaw's web UI is served by the gateway at `http://127.0.0.1:18790/`.
-It is a hand-written TypeScript app (no framework) that renders into OpenClaw's
-own design system, so the SuparClaw web UI and the OpenClaw Control UI look and
-behave the same.
+It is a hand-written TypeScript app (no framework) built on the **SuperClaw
+Mobile** design system: warm neutral surfaces, one blue accent, 44px touch
+targets, Instrument Sans + JetBrains Mono.
 
-## How it is put together
+## Layout
+
+The app is a single column, phone first — the same shape the design reference
+uses (390 × 844) — and grows into a centred column on wider screens.
+
+```
+.rail                     60px top bar: sessions, connection, settings, theme
+├── .view--chat
+│   ├── .scroll > .stack  transcript (messages, tool cards, notices)
+│   └── .dock             approval card, jump-to-latest, composer
+└── .view--settings       back button, tab strip, cards
+```
+
+Overlays (all with a scrim, all dismissable with Esc or a tap outside):
+
+- `#drawer-overlay` — sessions drawer, slides in from the left (316px)
+- `#sheet-overlay` — model picker, slides up from the bottom
+- `#modal-overlay` — confirmations, token entry, provider forms
+
+## Design tokens
+
+`ui/styles.css` holds the whole system. Light is the default; the dark set is
+the same file under `html[data-theme-mode='dark']` (the toggle in the rail
+persists the choice in `localStorage` under `sc.theme`).
+
+| Token | Light | Dark | Used for |
+| --- | --- | --- | --- |
+| `--bg` | `#F4F3EF` | `#0E0E11` | app background, tool detail panels |
+| `--panel` | `#FBFAF8` | `#131316` | top rail, drawer, modal footer |
+| `--surface` | `#FFFFFF` | `#19191D` | cards, composer, sheet, toasts |
+| `--ink` / `--ink2` / `--ink3` | `#17171A` / `#55555C` / `#6B6B73` | `#EDEDF0` / `#A9A9B2` / `#8F8F99` | text |
+| `--line` | `#E3E1DB` | `#2A2A31` | borders, dividers |
+| `--hover` | `#ECEAE4` | `#222228` | pressed / hovered rows |
+| `--accent` | `#2B50F0` | `#8EA0FF` | user bubble, send button, focus ring |
+| `--accsoft` | `#E8ECFF` | `#1F2550` | assistant avatar, active tab |
+| `--ok` / `--oksoft` | `#1B7F4F` / `#E2F3EA` | `#4CC38A` / `#14301F` | tool success, connected dot |
+| `--warn` / `--warnsoft` / `--warnline` | `#8F5A00` / `#FFF4DC` / `#EBCB8A` | `#E5A93D` / `#2E2410` / `#5A4515` | approvals |
+| `--err` / `--errsoft` | `#C23A2B` / `#FBE6E3` | `#F2766A` / `#3A1A17` | tool failure, remove |
+| `--shadow` | `0 1px 2px …, 0 12px 32px …` | same, darker | composer, sheet, modal, toasts |
+
+Type: **Instrument Sans** (400/500/600/700) for UI text, **JetBrains Mono**
+(400/500) for model names, tool names, durations and code. Both are vendored as
+woff2 in `ui/fonts/` (SIL OFL) so the UI keeps its typography with no network.
+
+## Components
+
+| Class | What it is |
+| --- | --- |
+| `.ibtn` | 44×44 icon button, 12px radius |
+| `.btn` / `.btn.pri` / `.btn.danger` | 44px button; `.pri` filled with the accent |
+| `.inp` | 44px input, 16px text (no iOS zoom) |
+| `.card` | 16px padding, 14px radius, hairline border |
+| `.chip` | suggestion chip in the empty state |
+| `.bubble` | user message, accent filled, `18px 18px 4px 18px` |
+| `.msg--assistant` | assistant turn: `.msg__head` (avatar, name, status) + `.msg__body` |
+| `.tool` | tool card: `.tool__row` (status icon, name, summary, duration) + `.tool__body` |
+| `.composer` | message box with model button, token hint, send/stop |
+| `.approval` | approval card above the composer (warn palette) |
+| `.sheet` / `.drawer` / `.modal` | bottom sheet, sessions drawer, dialog |
+| `.toast` | transient message with a status dot |
+
+Animations mirror the reference: `fadeUp`, `fadeIn`, `fadeDown`, `pop`,
+`slideR`, `slideU`, `toastDown`, plus the `spin`, `blink`, `dot` and `pulse`
+loops. `prefers-reduced-motion: reduce` turns all of them off.
+
+## Source layout
 
 ```
 ui/
-  index.html          shell markup (OpenClaw anatomy)
-  sc-overlay.css      SuparClaw-only rules, appended after the vendored sheets
-  vendor/openclaw/    37 stylesheets copied from OpenClaw (MIT) + MANIFEST.txt
+  index.html          markup
+  styles.css          the design system
+  fonts/              Instrument Sans + JetBrains Mono (woff2 + @font-face)
   src/
-    main.ts           shell, sidebar, drawer, routing, event wiring
-    chat.ts           transcript groups, streaming, tool cards, approvals
-    settings.ts       model / providers / gateway / runtime
-    picker.ts         model chooser
+    main.ts           rail, drawer, routing, event wiring
+    chat.ts           transcript, streaming, tool cards, approvals
+    settings.ts       Model / Providers / Gateway / Runtime tabs
+    picker.ts         model sheet
     markdown.ts       safe markdown → HTML
+    dom.ts            element helpers, modal, toasts
     rpc.ts            gateway WebSocket client
-scripts/build.mjs     bundles the app and assembles + minifies the stylesheet
+scripts/build.mjs     bundles the app, minifies the stylesheet, copies fonts
 ```
 
-`scripts/build.mjs` concatenates the vendored sheets in `MANIFEST.txt` order
-(dependencies first), inlines their `@import`s, appends `ui/sc-overlay.css`,
-minifies the result with esbuild and writes `dist/ui/styles.css`. The phone
-never runs a build step: `dist/` is committed and the installer copies it.
-
-## The visual system
-
-OpenClaw is MIT licensed, so its Control UI stylesheets are vendored verbatim
-(`ui/vendor/openclaw/NOTICE.md` keeps the attribution). The parts we use:
-
-| Sheet | What it styles |
-| --- | --- |
-| `styles_base.css` | design tokens, resets, markdown base |
-| `styles_theme-backgrounds.css` | palette hooks (artwork is disabled in our overlay) |
-| `styles_layout.css`, `styles_layout.mobile.css` | shell grid, sidebar, drawer, settings mode |
-| `styles_components.css` | buttons, pills, toasts, avatars, chips |
-| `styles_chat_*.css` | transcript, bubbles, tool cards, composer, code blocks |
-| `styles_settings*.css` | settings rows, inputs, sections |
-| `components_solid_overlay.css`, `components_solid_modal-dialog.css` | menus and dialogs |
-
-SuparClaw's own rules live in `ui/sc-overlay.css` and are always last, so they
-win over the vendored cascade. They cover what OpenClaw does not have: the
-session chip, the connection pill, the stats block, the jump-to-latest pill,
-the streaming caret, the empty state, the model picker rows and the settings
-rows.
-
-## DOM anatomy
-
-The markup follows OpenClaw's class names so their CSS applies unchanged.
-
-```
-#app.shell.shell--chat
-├── header.topbar                  narrow viewports only
-├── .shell-nav
-│   ├── aside.sidebar              sessions, stats, theme + settings buttons
-│   └── section.settings-sidebar   shown in settings mode
-├── button.shell-nav-backdrop      mobile drawer scrim
-└── main.content.content--chat
-    ├── .chat.chat--bubbles
-    │   ├── header.chat-pane__header
-    │   ├── .chat-thread > .chat-thread-inner
-    │   │   └── .chat-group(.user|.assistant|.tool).chat-group--with-footer
-    │   │       ├── .chat-avatar
-    │   │       ├── .chat-group-messages > .chat-bubble > .chat-text
-    │   │       └── .chat-group-footer > .chat-group-footer__meta / -actions
-    │   └── footer.chat-footer
-    │       └── .agent-chat__input > .agent-chat__composer-shell
-    │           ├── .agent-chat__composer-status     approvals, token hint
-    │           └── .agent-chat__composer-footer     model, send, stop
-    └── section#settings-view
-```
-
-Tool calls are rendered as a bubble shell with a disclosure:
-
-```
-.chat-bubble.chat-bubble--tool-shell
-├── .chat-tools-inline > button.chat-inline-disclosure[aria-expanded]
-│   └── .chat-tool-msg-summary (__icon, __label, __preview)
-└── .chat-tool-msg-body                 (opened by the disclosure)
-```
-
-Dialogs are a native `<dialog class="oc-modal-dialog">` — the browser gives us
-focus trapping, Esc handling and the `::backdrop` for free. Toasts are
-`.app-toast` nodes appended to `#toasts`.
-
-## Responsive behaviour
-
-`main.ts` mirrors the viewport onto the shell: below 900px the shell gets
-`shell--mobile-nav shell--nav-collapsed`, the topbar appears and the sidebar
-becomes an overlay drawer (`.shell--nav-drawer-open` + `.shell-nav-backdrop`).
-The settings route adds `shell--settings`, which swaps the sidebar for the
-settings sidebar and widens the navigation column to 288px.
+The build concatenates `ui/fonts/fonts.css` with `ui/styles.css`, minifies
+with esbuild and writes `dist/ui/styles.css`; the woff2 files are copied to
+`dist/ui/fonts/`. The gateway serves them with `font/woff2`.
 
 ## Adding a feature
 
-1. Emit OpenClaw's class names where they exist — the vendored CSS already
-   styles them.
-2. Add anything new to `ui/sc-overlay.css` (never edit `ui/vendor/openclaw/`).
+1. Use the tokens — never hard-code a colour.
+2. Reuse the component classes above; the design already has a slot for most
+   things.
 3. Rebuild: `npm run build`. `dist/ui` is committed, so the phone picks the
    change up on the next `sc gateway` start (or reinstall).
 
-## Theme
+## History
 
-`data-theme="claw"` selects the palette, `data-theme-mode="dark|light"` flips
-between the two token sets, and the toggle in the sidebar footer persists the
-choice in `localStorage` under `sc.theme`.
+The first version of this UI was built on OpenClaw's own Control UI
+stylesheets (vendored under `ui/vendor/openclaw`, MIT). That approach was
+replaced by the SuperClaw Mobile design system in `bf4f550` — the vendored
+sheets are gone, and the stylesheet went from 665 KB to 19 KB.

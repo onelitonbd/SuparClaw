@@ -16,6 +16,7 @@ const MIME: Record<string, string> = {
   ".png": "image/png",
   ".webp": "image/webp",
   ".ico": "image/x-icon",
+  ".woff2": "font/woff2",
 };
 
 /** One daemon, one port: HTTP for the web UI + /health, WS for every client. */

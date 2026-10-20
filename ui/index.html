@@ -1,167 +1,157 @@
 <!doctype html>
-<html lang="en" data-theme="claw" data-theme-mode="dark">
+<html lang="en" data-theme-mode="light">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
-<meta name="color-scheme" content="dark light" />
-<meta name="theme-color" content="#0e1015" />
+<meta name="color-scheme" content="light dark" />
+<meta name="theme-color" content="#F4F3EF" />
 <title>SuparClaw</title>
-<!--
-  Shell + visual system follow OpenClaw's Control UI
-  (ui/src/styles/**, MIT licensed, Copyright OpenClaw contributors):
-  same tokens, shell grid, bubbles, tool cards, composer and settings
-  controls — vendored in ui/vendor/openclaw (see NOTICE.md there).
-  SuparClaw writes its own, much smaller app on top of that system.
--->
 <link rel="stylesheet" href="./styles.css" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='10' fill='%23ff5c5c'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232B50F0'/%3E%3Cpath d='M8 20l4-10 4 6 4-6 4 10' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 <style>
-  /* First paint before styles.css arrives: never flash white on a dark theme. */
-  html { background: #0e1015; color-scheme: dark; }
-  html[data-theme-mode="light"] { background: #faf9f7; color-scheme: light; }
-  html, body { min-height: 100%; }
-  body { margin: 0; background: inherit; color-scheme: inherit; }
+  /* First paint before styles.css arrives: never flash the wrong theme. */
+  html { background: #F4F3EF; }
+  html[data-theme-mode="dark"] { background: #0E0E11; }
+  html, body { height: 100%; }
+  body { margin: 0; }
 </style>
 </head>
 <body>
-<div id="app" class="shell shell--chat">
+<div class="app" id="app">
 
-  <!-- Narrow-viewport header (desktop hides it; the sidebar owns navigation) -->
-  <header class="topbar">
-    <div class="topnav-shell">
-      <button class="topbar-icon-btn topbar-nav-toggle" id="drawer-btn" type="button"
-              aria-label="Open sessions" aria-expanded="false">
-        <span class="nav-collapse-toggle__icon" aria-hidden="true">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
-        </span>
-        <span class="gateway-status-dot" id="brand-dot" aria-hidden="true"></span>
-      </button>
-      <div class="topnav-shell__content">
-        <div class="topbar-brand">
-          <span class="topbar-brand__title">SuparClaw</span>
-        </div>
-      </div>
-      <div class="topnav-shell__actions">
-        <button class="topbar-icon-btn" id="settings-btn" type="button" aria-label="Settings">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-      </div>
-    </div>
+  <!-- Top rail: sessions, connection, settings, theme -->
+  <header class="rail">
+    <button class="ibtn" id="drawer-btn" type="button" aria-label="Sessions" aria-expanded="false">
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <button class="rail-session" id="session-btn" type="button">
+      <span class="rail-session__title" id="session-title">main:main</span>
+      <span class="rail-session__status">
+        <span class="dot" id="conn-dot" aria-hidden="true"></span>
+        <span id="conn-label">connecting…</span>
+      </span>
+    </button>
+    <button class="ibtn" id="settings-btn" type="button" aria-label="Settings">
+      <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg>
+    </button>
+    <button class="ibtn" id="theme-btn" type="button" aria-label="Toggle theme">
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>
+    </button>
   </header>
 
-  <!-- Navigation column: sidebar on desktop, off-canvas drawer on mobile -->
-  <div class="shell-nav" id="shell-nav">
-    <aside class="sidebar" id="sidebar">
-      <div class="sidebar-shell">
-        <div class="sidebar-shell__content">
-          <div class="sidebar-workspace-header">
-            <span class="sidebar-workspace-header__mark" aria-hidden="true">S</span>
-            <span class="sidebar-workspace-header__main">SuparClaw</span>
-            <button class="btn btn--icon btn--sm" id="new-session" type="button" title="New session" aria-label="New session">＋</button>
-          </div>
-          <div class="sidebar-recent-sessions">
-            <div class="sidebar-recent-sessions__group">
-              <div class="sidebar-recent-sessions__head">
-                <span class="sidebar-recent-sessions__label-text">Sessions</span>
-              </div>
-              <div class="sidebar-recent-sessions__list" id="sessions"></div>
-            </div>
-          </div>
-        </div>
-        <div class="sidebar-shell__footer">
-          <div class="sc-stats" id="stats"></div>
-          <div class="sidebar-footer-bar">
-            <div class="sidebar-footer-actions">
-              <button class="btn btn--ghost btn--sm" id="theme-btn" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
-              <button class="btn btn--ghost btn--sm" id="settings-btn-side" type="button" title="Settings" aria-label="Settings">⚙</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Settings replaces the sidebar while the settings route is open -->
-    <section class="settings-sidebar" id="settings-sidebar" hidden>
-      <div class="settings-sidebar__header">
-        <button class="settings-sidebar__back" id="settings-back" type="button">
-          <span class="settings-sidebar__back-icon" aria-hidden="true">←</span>
-          <span>Back</span>
-          <kbd class="settings-sidebar__esc">esc</kbd>
-        </button>
-        <h1 class="settings-sidebar__title">Settings</h1>
-      </div>
-      <nav class="settings-sidebar__nav" id="settings-nav"></nav>
-    </section>
-  </div>
-  <button class="shell-nav-backdrop" id="nav-backdrop" type="button" tabindex="-1" aria-hidden="true"></button>
-
-  <main class="content content--chat" id="content">
-
-    <!-- Chat -->
-    <div class="chat chat--bubbles" id="chat-view">
-      <header class="chat-pane__header">
-        <div class="chat-pane__header-leading">
-          <button class="sc-session-chip" id="session-pill" type="button" title="Current session">
-            <span class="sc-session-chip__key" id="session-key">main:main</span>
-          </button>
-        </div>
-        <div class="chat-pane__header-trailing">
-          <span class="sc-conn" id="conn-pill" data-state="connecting">connecting…</span>
-          <button class="btn btn--icon btn--sm" id="clear-btn" type="button" title="Clear transcript" aria-label="Clear transcript">⌫</button>
-        </div>
-      </header>
-
-      <div class="chat-thread" id="thread" tabindex="0" aria-label="Transcript">
-        <div class="chat-thread-inner" id="thread-inner">
-          <div id="empty-state" class="sc-empty">
-            <div class="sc-empty__mark" aria-hidden="true">✳</div>
-            <div class="sc-empty__title">No messages yet</div>
-            <div class="sc-empty__sub">Ask anything — it can read your workspace and run tools.</div>
-            <div class="agent-chat__suggestions" id="suggestions"></div>
-          </div>
-        </div>
-      </div>
-      <button id="jump" class="sc-jump" type="button" hidden>↓ latest</button>
-
-      <footer class="chat-footer" id="composer">
-        <div class="agent-chat__input agent-chat__input--chat">
-          <div class="agent-chat__composer-status" id="approval-bar" data-tone="warn" hidden></div>
-          <div class="agent-chat__composer-shell">
-            <div class="agent-chat__composer-input-row">
-              <div class="agent-chat__composer-combobox">
-                <textarea id="input" rows="1" placeholder="Message SuparClaw…" spellcheck="false" autocomplete="off"></textarea>
-              </div>
-            </div>
-            <div class="agent-chat__composer-footer">
-              <div class="agent-chat__composer-lead agent-chat__composer-meta">
-                <span class="hint" id="hint">Enter send · Shift+Enter newline · Esc stop</span>
-              </div>
-              <div class="agent-chat__composer-trail">
-                <div class="agent-chat__composer-meta agent-chat__composer-context" id="tok"></div>
-                <div class="agent-chat__composer-controls">
-                  <button class="chat-controls__inline-select-trigger" id="model-btn" type="button" title="Choose model (⌘L)">
-                    <span class="chat-controls__model-option-name" id="model-name">model…</span>
-                  </button>
-                </div>
-                <div class="agent-chat__composer-actions">
-                  <button class="btn sc-stop" id="stop-btn" type="button" hidden>■ Stop</button>
-                  <button class="btn primary" id="send-btn" type="button" disabled>Send</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </footer>
+  <!-- Chat -->
+  <section class="view view--chat" id="chat-view">
+    <div class="scroll" id="thread">
+      <div class="stack" id="stack"></div>
     </div>
 
-    <!-- Settings (shell switches to .shell--settings while open) -->
-    <section id="settings-view" class="sc-settings" hidden></section>
-  </main>
-</div>
+    <div class="dock">
+      <div class="dock__fade" aria-hidden="true"></div>
+      <button class="jump" id="jump" type="button" hidden>
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+        Jump to latest
+      </button>
 
-<!-- Modal + toasts: styled in-app, native prompt/confirm/alert are banned -->
-<dialog id="modal" class="oc-modal-dialog" aria-modal="true"></dialog>
-<div id="toasts" aria-live="polite"></div>
+      <div class="approval" id="approval" role="alert" hidden>
+        <div class="approval__head">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/></svg>
+          <span><b id="approval-tool">run_command</b> <span class="approval__what">wants to run</span></span>
+        </div>
+        <code class="mono approval__args" id="approval-args"></code>
+        <div class="approval__row">
+          <button class="btn" id="approval-deny" type="button">Deny</button>
+          <button class="btn pri" id="approval-allow" type="button">Approve</button>
+        </div>
+      </div>
+
+      <div class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Message the agent…" aria-label="Message"></textarea>
+        <div class="composer__row">
+          <button class="model-btn" id="model-btn" type="button" aria-haspopup="dialog" aria-label="Choose model">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>
+            <span class="mono" id="model-name">model…</span>
+            <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
+          </button>
+          <span class="mono composer__tokens" id="tok"></span>
+          <button class="sendbtn sendbtn--stop" id="stop-btn" type="button" aria-label="Stop" hidden>
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>
+          </button>
+          <button class="sendbtn sendbtn--go" id="send-btn" type="button" aria-label="Send message" disabled>
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section class="view view--settings" id="settings-view" hidden>
+    <div class="scroll">
+      <div class="settings">
+        <div class="settings__head">
+          <button class="btn" id="settings-back" type="button">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            Chat
+          </button>
+          <h1>Settings</h1>
+        </div>
+        <nav class="tabs" id="settings-tabs" aria-label="Settings sections"></nav>
+        <div class="settings__body" id="settings-body"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sessions drawer -->
+  <div class="overlay" id="drawer-overlay" hidden>
+    <button class="overlay__scrim" id="drawer-scrim" type="button" aria-label="Close sessions"></button>
+    <aside class="drawer" id="drawer" aria-label="Sessions">
+      <div class="drawer__head">
+        <span>Sessions</span>
+        <button class="ibtn" id="drawer-close" type="button" aria-label="Close sessions">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="drawer__sub">
+        <span class="cap">Recent</span>
+        <button class="ibtn" id="new-session" type="button" aria-label="New session">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <nav class="drawer__list" id="sessions" aria-label="Session list"></nav>
+    </aside>
+  </div>
+
+  <!-- Model sheet -->
+  <div class="overlay" id="sheet-overlay" hidden>
+    <button class="overlay__scrim" id="sheet-scrim" type="button" aria-label="Close model picker"></button>
+    <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Choose model">
+      <div class="sheet__grab" aria-hidden="true"></div>
+      <div class="sheet__head">
+        <input class="inp" id="model-filter" type="text" placeholder="Filter models…" aria-label="Filter models" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="sheet__list" id="model-list"></div>
+      <div class="sheet__foot">
+        <button class="sheet__add" id="sheet-add-provider" type="button">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          Add provider…
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="overlay" id="modal-overlay" hidden>
+    <button class="overlay__scrim" id="modal-scrim" type="button" aria-label="Close dialog"></button>
+    <div class="modal" id="modal" role="dialog" aria-modal="true">
+      <div class="modal__head"><h2 id="modal-title"></h2></div>
+      <div class="modal__body" id="modal-body"></div>
+      <div class="modal__foot" id="modal-foot"></div>
+    </div>
+  </div>
+
+  <!-- Toasts -->
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</div>
 <script type="module" src="./app.js"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Single-file bundle build. No native deps, no postinstall work.
-import { rm, mkdir, copyFile, readFile, writeFile } from "node:fs/promises";
+import { rm, mkdir, copyFile, readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import * as esbuild from "esbuild";
@@ -73,28 +73,24 @@ await mkdir(uiOut, { recursive: true });
     metafile: true,
   });
   await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
-  // Stylesheet = OpenClaw's vendored cascade (assembly order in MANIFEST.txt)
-  // + SuparClaw's own overlay, inlined and minified.
-  const vendorDir = join(root, "ui/vendor/openclaw");
-  const manifest = (await readFile(join(vendorDir, "MANIFEST.txt"), "utf8"))
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const sheets = [
-    `/* SuparClaw stylesheet.
-       Portions: OpenClaw Control UI styles (MIT, © OpenClaw contributors,
-       https://github.com/openclaw/openclaw — see ui/vendor/openclaw/NOTICE.md).
-       Assembled from ${manifest.length} vendored sheets + ui/sc-overlay.css. */`,
-  ];
-  for (const file of manifest) sheets.push(await readFile(join(vendorDir, file), "utf8"));
-  sheets.push(await readFile(join(root, "ui/sc-overlay.css"), "utf8"));
-  let css = sheets.join("\n");
-  css = css.replace(/^[ \t]*@import[^;]*;[ \t]*$/gm, ""); // already inlined above
+  // Stylesheet = the SuparClaw design system + the vendored webfonts.
+  const fontCss = await readFile(join(root, "ui/fonts/fonts.css"), "utf8");
+  const appCss = await readFile(join(root, "ui/styles.css"), "utf8");
+  const css = `${fontCss}\n${appCss}`;
   const min = await esbuild.transform(css, { loader: "css", minify: !dev });
   await writeFile(join(uiOut, "styles.css"), min.code, "utf8");
+  // fonts next to the stylesheet
+  const fontOut = join(uiOut, "fonts");
+  await mkdir(fontOut, { recursive: true });
+  let fontBytes = 0;
+  for (const file of await readdir(join(root, "ui/fonts"))) {
+    if (!file.endsWith(".woff2")) continue;
+    await copyFile(join(root, "ui/fonts", file), join(fontOut, file));
+    fontBytes += (await stat(join(root, "ui/fonts", file))).size;
+  }
   const bytes = Object.values(res.metafile.outputs).reduce((n, o) => n + o.bytes, 0);
   console.log(
     `[build] ui: js ${(bytes / 1024).toFixed(0)} KB + css ${(Buffer.byteLength(min.code) / 1024).toFixed(0)} KB ` +
-      `(${manifest.length} vendored sheets) in ${Math.round(performance.now() - t0)}ms`,
+      `+ fonts ${(fontBytes / 1024).toFixed(0)} KB in ${Math.round(performance.now() - t0)}ms`,
   );
 }

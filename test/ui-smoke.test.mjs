@@ -154,11 +154,14 @@ test("the Control UI bundle boots and every element it looks up exists", async (
 
   // The ids the app reaches for — keep in sync with ui/src/*.ts.
   const required = [
-    "app", "content", "chat-view", "settings-view", "shell-nav", "sidebar", "settings-sidebar",
-    "settings-back", "settings-btn", "settings-btn-side", "theme-btn", "new-session", "sessions",
-    "stats", "session-pill", "conn-pill", "brand-dot", "clear-btn", "drawer-btn", "nav-backdrop",
-    "thread", "thread-inner", "empty-state", "suggestions", "jump", "composer", "input",
-    "send-btn", "stop-btn", "tok", "approval-bar", "model-btn", "model-name", "modal", "toasts",
+    "app", "chat-view", "thread", "stack", "jump", "composer", "input", "send-btn", "stop-btn",
+    "tok", "model-btn", "model-name", "approval", "approval-tool", "approval-args",
+    "approval-deny", "approval-allow", "drawer-btn", "drawer-close", "drawer-scrim", "drawer",
+    "sessions", "new-session", "sheet-overlay", "sheet-scrim", "sheet", "model-filter",
+    "model-list", "sheet-add-provider", "modal-overlay", "modal-scrim", "modal", "modal-title",
+    "modal-body", "modal-foot", "toasts", "settings-view", "settings-tabs", "settings-body",
+    "settings-back", "settings-btn", "theme-btn", "session-btn", "session-title", "conn-dot",
+    "conn-label",
   ];
   const missing = required.filter((id) => !ids.has(id));
   assert.deepEqual(missing, [], `index.html is missing: ${missing.join(", ")}`);

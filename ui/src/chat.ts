@@ -1,14 +1,12 @@
-// Chat surface: transcript groups, streaming, tool cards, approvals, composer.
+// Chat surface: transcript, streaming, tool cards, approvals, composer.
 //
-// The DOM follows OpenClaw's Control UI anatomy (ui/src/pages/chat/**):
-//   .chat-group(.user|.assistant|.tool).chat-group--with-footer
-//     > .chat-avatar
-//     > .chat-group-messages > .chat-bubble > .chat-text
-//     > .chat-group-footer > .chat-group-footer__meta / .chat-group-footer-actions
-// Tool calls render as .chat-bubble--tool-shell > .chat-tools-inline with a
-// .chat-inline-disclosure toggle and a .chat-tool-msg-body panel.
+// Markup follows the "SuperClaw Mobile" design reference:
+//   .msg.msg--user      > .bubble
+//   .msg.msg--assistant > .msg__head (.msg__avatar, .msg__name, .msg__status)
+//                       > .msg__tools (.tool > .tool__row + .tool__body)
+//                       > .msg__body
 
-import { el, esc, fmtDuration, fmtTime, toast } from "./dom.js";
+import { el, fmtDuration, toast } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
 
 export interface ChatHandlers {
@@ -17,34 +15,49 @@ export interface ChatHandlers {
   approve(callId: string, approve: boolean): void;
 }
 
-type ToolStatus = "running" | "done" | "error";
+type ToolStatus = "running" | "done" | "error" | "pending";
 
-const GLYPH: Record<ToolStatus, string> = { running: "◌", done: "✓", error: "✗" };
+const SPARKLE =
+  '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>';
 
-const SUGGESTIONS = [
-  "What can you do?",
-  "Summarise my workspace",
-  "List the files here",
-  "Set a reminder in 10 minutes",
+const CHECK =
+  '<svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+
+const CROSS =
+  '<svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+
+const PAUSE =
+  '<svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="M9 6v12M15 6v12"/></svg>';
+
+const SPINNER =
+  '<svg class="spin" aria-label="Running" role="img" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>';
+
+const CHEVRON =
+  '<svg class="tool__chev" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+
+const CHIPS = [
+  "Explain this repository",
+  "Find and fix a failing test",
+  "Review my last diff",
 ];
 
 interface Live {
-  group: HTMLElement;
-  messages: HTMLElement;
-  bubble: HTMLElement;
-  text: HTMLElement | null;
-  stamp: HTMLElement;
+  root: HTMLElement;
+  head: HTMLElement;
+  status: HTMLElement;
+  tools: HTMLElement;
+  body: HTMLElement;
   startedAt: number;
 }
 
 export class Chat {
-  readonly thread: HTMLElement;
-  #empty: HTMLElement;
+  readonly stack: HTMLElement;
+  #thread: HTMLElement;
   #input: HTMLTextAreaElement;
   #sendBtn: HTMLButtonElement;
   #stopBtn: HTMLButtonElement;
-  #composerShell: HTMLElement;
-  #approvalBar: HTMLElement;
+  #composer: HTMLElement;
+  #approval: HTMLElement;
   #jump: HTMLElement;
   #tok: HTMLElement;
   #handlers: ChatHandlers;
@@ -54,30 +67,22 @@ export class Chat {
   #streamDirty = false;
   #raf = 0;
   #autoScroll = true;
+  #toolStart = new Map<string, number>();
   #pendingApprovals = new Map<string, { tool: string; args: unknown }>();
 
   constructor(root: HTMLElement, handlers: ChatHandlers) {
     this.#handlers = handlers;
-    this.thread = root.querySelector("#thread") as HTMLElement;
-    this.#empty = root.querySelector("#empty-state") as HTMLElement;
+    this.stack = root.querySelector("#stack") as HTMLElement;
+    this.#thread = root.querySelector("#thread") as HTMLElement;
     this.#input = root.querySelector("#input") as HTMLTextAreaElement;
     this.#sendBtn = root.querySelector("#send-btn") as HTMLButtonElement;
     this.#stopBtn = root.querySelector("#stop-btn") as HTMLButtonElement;
-    this.#composerShell = root.querySelector(".agent-chat__composer-shell") as HTMLElement;
-    this.#approvalBar = root.querySelector("#approval-bar") as HTMLElement;
+    this.#composer = root.querySelector("#composer") as HTMLElement;
+    this.#approval = root.querySelector("#approval") as HTMLElement;
     this.#jump = root.querySelector("#jump") as HTMLElement;
     this.#tok = root.querySelector("#tok") as HTMLElement;
 
-    const suggestions = root.querySelector("#suggestions") as HTMLElement;
-    for (const s of SUGGESTIONS) {
-      const btn = el("button", { class: "agent-chat__suggestion", type: "button" }, [s]);
-      btn.onclick = () => {
-        this.#input.value = s;
-        this.#autosize();
-        this.submit();
-      };
-      suggestions.append(btn);
-    }
+    this.#renderEmpty();
 
     this.#input.addEventListener("input", () => {
       this.#autosize();
@@ -92,43 +97,28 @@ export class Chat {
     this.#sendBtn.onclick = () => this.submit();
     this.#stopBtn.onclick = () => this.#handlers.abort();
 
-    this.thread.addEventListener("scroll", () => {
-      const nearBottom = this.thread.scrollHeight - this.thread.scrollTop - this.thread.clientHeight < 90;
+    this.#thread.addEventListener("scroll", () => {
+      const nearBottom = this.#thread.scrollHeight - this.#thread.scrollTop - this.#thread.clientHeight < 80;
       this.#autoScroll = nearBottom;
       this.#jump.hidden = nearBottom;
     });
     this.#jump.onclick = () => {
       this.#autoScroll = true;
-      this.thread.scrollTop = this.thread.scrollHeight;
+      this.#thread.scrollTop = this.#thread.scrollHeight;
       this.#jump.hidden = true;
     };
 
-    // code block chrome: soft wrap + expand, message copy
-    this.thread.addEventListener("click", (e) => {
+    // copy a message
+    this.stack.addEventListener("click", (e) => {
       const target = e.target as HTMLElement;
-      const wrap = target.closest<HTMLElement>(".code-block-wrap");
-      if (wrap) {
-        const box = wrap.closest<HTMLElement>(".code-block-wrapper");
-        box?.classList.toggle("is-wrapped");
-        return;
-      }
-      const expand = target.closest<HTMLElement>(".code-block-expand");
-      if (expand) {
-        const box = expand.closest<HTMLElement>(".code-block-wrapper");
-        if (!box) return;
-        const open = box.classList.toggle("is-expanded");
-        expand.firstChild!.textContent = open ? "show less" : "show more";
-        return;
-      }
-      const copy = target.closest<HTMLElement>(".chat-copy-btn");
-      if (copy) {
-        const group = copy.closest<HTMLElement>(".chat-group");
-        const text = group?.querySelector<HTMLElement>(".chat-text")?.innerText ?? "";
-        void navigator.clipboard?.writeText(text).then(
-          () => toast("copied to clipboard"),
-          () => toast("copy failed", "error"),
-        );
-      }
+      const copy = target.closest<HTMLElement>("[data-copy]");
+      if (!copy) return;
+      const msg = copy.closest<HTMLElement>(".msg");
+      const text = msg?.querySelector<HTMLElement>(".msg__body, .bubble")?.innerText ?? "";
+      void navigator.clipboard?.writeText(text).then(
+        () => toast("copied to clipboard", "ok"),
+        () => toast("copy failed", "err"),
+      );
     });
   }
 
@@ -143,7 +133,8 @@ export class Chat {
 
   setBusy(busy: boolean): void {
     this.#stopBtn.hidden = !busy;
-    this.#composerShell.classList.toggle("sc-busy", busy);
+    this.#sendBtn.hidden = busy;
+    this.#sendBtn.disabled = busy || this.#input.value.trim().length === 0;
     if (busy) this.#input.focus();
   }
 
@@ -152,42 +143,38 @@ export class Chat {
   }
 
   clear(): void {
-    this.thread.querySelectorAll(".chat-group, .sc-system").forEach((n) => n.remove());
+    this.stack.innerHTML = "";
     this.#live = null;
     this.#streamText = "";
-    this.#empty.hidden = false;
+    this.#renderEmpty();
   }
 
   /** ---- transcript writers ---- */
 
   user(text: string): void {
-    this.#hideEmpty();
-    const { group, messages } = this.#makeGroup("user");
-    const bubble = el("div", { class: "chat-bubble chat-bubble--first" });
-    const body = el("div", { class: "chat-text" });
-    body.innerHTML = text.split("\n").map((l) => esc(l)).join("<br>");
-    bubble.append(body);
-    messages.append(bubble);
-    this.#stampFooter(group);
-    this.thread.append(group);
+    this.#clearEmpty();
+    const bubble = el("div", { class: "bubble" });
+    bubble.textContent = text;
+    this.stack.append(el("div", { class: "msg msg--user" }, [bubble]));
     this.#scrollToBottom();
   }
 
   assistantStart(): void {
-    this.#hideEmpty();
+    this.#clearEmpty();
     if (this.#live) return;
-    const { group, messages } = this.#makeGroup("assistant");
-    const bubble = el("div", { class: "chat-bubble chat-bubble--first" });
-    const thinking = el("div", { class: "chat-thinking" }, [
-      el("span", { class: "chat-bubble-dots chat-bubble-dots--working" }, [
+    const head = this.#head("Thinking");
+    const tools = el("div", { class: "msg__tools" });
+    const body = el("div", { class: "msg__body" }, [
+      el("div", { class: "dots", role: "status", "aria-label": "Thinking" }, [
         el("span"), el("span"), el("span"),
       ]),
     ]);
-    bubble.append(thinking);
-    messages.append(bubble);
-    const stamp = this.#stampFooter(group);
-    this.thread.append(group);
-    this.#live = { group, messages, bubble, text: null, stamp, startedAt: Date.now() };
+    const root = el("div", { class: "msg msg--assistant" }, [head, tools, body]);
+    this.stack.append(root);
+    this.#live = {
+      root, head, status: head.querySelector(".msg__status") as HTMLElement,
+      tools, body, startedAt: Date.now(),
+    };
     this.#scrollToBottom();
   }
 
@@ -198,7 +185,6 @@ export class Chat {
     this.#scheduleStreamRender();
   }
 
-  /** Replace the live bubble with the final text (never appended twice). */
   finish(text?: string): void {
     if (!this.#live) {
       if (text) this.assistant(text);
@@ -206,9 +192,9 @@ export class Chat {
     }
     if (text !== undefined) this.#streamText = text;
     const live = this.#live;
-    this.#renderStream(live, true);
-    live.stamp.classList.remove("sc-live");
-    live.stamp.textContent = `${fmtTime(live.startedAt)} · ${fmtDuration(Date.now() - live.startedAt)}`;
+    live.body.innerHTML = renderMarkdown(this.#streamText);
+    live.status.textContent = "Done";
+    live.status.classList.remove("is-live");
     this.#live = null;
     this.#streamText = "";
     this.setBusy(false);
@@ -216,75 +202,82 @@ export class Chat {
   }
 
   assistant(text: string): void {
-    this.#hideEmpty();
-    const { group, messages } = this.#makeGroup("assistant");
-    const bubble = el("div", { class: "chat-bubble chat-bubble--first" });
-    const body = el("div", { class: "chat-text" });
+    this.#clearEmpty();
+    const head = this.#head("Done");
+    const body = el("div", { class: "msg__body" });
     body.innerHTML = renderMarkdown(text);
-    bubble.append(body);
-    messages.append(bubble);
-    this.#stampFooter(group);
-    this.thread.append(group);
+    this.stack.append(el("div", { class: "msg msg--assistant" }, [head, body]));
     this.#scrollToBottom();
   }
 
-  system(text: string, kind: "info" | "error" = "info"): void {
-    if (!text) return;
-    const notice = el("div", { class: "sc-system" }, [
-      el("div", { class: `chat-notice${kind === "error" ? " sc-error" : ""}` }, [text]),
-    ]);
-    this.thread.append(notice);
+  notice(text: string): void {
+    this.#clearEmpty();
+    this.stack.append(el("div", { class: "notice mono" }, [text]));
     this.#scrollToBottom();
   }
 
   tool(name: string, status: ToolStatus, detail?: string): void {
-    this.#hideEmpty();
+    this.#clearEmpty();
     const key = `${name}`;
-    const live = this.#live;
-    let shell = live
-      ? live.messages.querySelector<HTMLElement>(`.chat-bubble--tool-shell[data-tool="${CSS.escape(key)}"]`)
-      : null;
-
-    if (!shell) {
-      const { group, messages } = live
-        ? { group: live.group, messages: live.messages }
-        : this.#makeGroup("tool");
-      shell = el("div", { class: "chat-bubble chat-bubble--tool-shell", "data-tool": key });
-      const tools = el("div", { class: "chat-tools-inline" });
-      const toggle = el("button", { class: "chat-inline-disclosure", type: "button", "aria-expanded": "false" });
-      const summary = el("span", { class: "chat-tool-msg-summary" }, [
-        el("span", { class: "chat-tool-msg-summary__icon" }, [GLYPH.running]),
-        el("span", { class: "chat-tool-msg-summary__label" }, [name]),
-        el("span", { class: "chat-tool-msg-summary__preview" }, [""]),
+    let card = this.stack.querySelector<HTMLElement>(`.tool[data-tool="${CSS.escape(key)}"]`);
+    if (!card) {
+      const started = Date.now();
+      this.#toolStart.set(key, started);
+      const row = el("button", { class: "tool__row", type: "button", "aria-expanded": "false" }, [
+        el("span", { class: "tool__icon tool__icon--run" }, [SPINNER]),
+        el("span", { class: "tool__name" }, [name]),
+        el("span", { class: "tool__summary" }, [""]),
+        el("span", { class: "tool__dur" }, ["…"]),
+        el("span", {}, [CHEVRON]),
       ]);
-      const chevron = el("span", { class: "chat-tool-row__chevron" }, ["▸"]);
-      toggle.append(summary, chevron);
-      const body = el("div", { class: "chat-tool-msg-body", hidden: "" });
-      toggle.onclick = () => {
-        const open = toggle.getAttribute("aria-expanded") !== "true";
-        toggle.setAttribute("aria-expanded", String(open));
+      const body = el("div", { class: "tool__body", hidden: "" });
+      row.onclick = () => {
+        const open = row.getAttribute("aria-expanded") !== "true";
+        row.setAttribute("aria-expanded", String(open));
         body.hidden = !open;
       };
-      tools.append(toggle);
-      shell.append(tools, body);
-      messages.append(shell);
-      if (!live) {
-        this.#stampFooter(group);
-        this.thread.append(group);
+      card = el("div", { class: "tool", "data-tool": key }, [row, body]);
+      const host = this.#live?.tools ?? null;
+      if (host) {
+        host.append(card);
+      } else {
+        const head = this.#head("Tools");
+        const tools = el("div", { class: "msg__tools" }, [card]);
+        this.stack.append(el("div", { class: "msg msg--assistant" }, [head, tools]));
       }
     }
 
-    const icon = shell.querySelector(".chat-tool-msg-summary__icon") as HTMLElement;
-    const preview = shell.querySelector(".chat-tool-msg-summary__preview") as HTMLElement;
-    const body = shell.querySelector(".chat-tool-msg-body") as HTMLElement;
-    icon.textContent = GLYPH[status];
-    shell.dataset.status = status;
+    const icon = card.querySelector(".tool__icon") as HTMLElement;
+    const summary = card.querySelector(".tool__summary") as HTMLElement;
+    const dur = card.querySelector(".tool__dur") as HTMLElement;
+    const body = card.querySelector(".tool__body") as HTMLElement;
+
+    const elapsed = Date.now() - (this.#toolStart.get(key) ?? Date.now());
+    if (status === "running") {
+      icon.className = "tool__icon tool__icon--run";
+      icon.innerHTML = SPINNER;
+      dur.textContent = "…";
+    } else if (status === "done") {
+      icon.className = "tool__icon tool__icon--ok";
+      icon.innerHTML = CHECK;
+      dur.textContent = fmtDuration(elapsed);
+    } else if (status === "pending") {
+      icon.className = "tool__icon tool__icon--wait";
+      icon.innerHTML = PAUSE;
+      dur.textContent = "waiting";
+    } else {
+      icon.className = "tool__icon tool__icon--err";
+      icon.innerHTML = CROSS;
+      dur.textContent = "failed";
+    }
+
     if (detail) {
-      preview.textContent = detail.split("\n")[0]!.slice(0, 80);
-      const out = el("div", { class: "chat-text" });
-      out.textContent = detail;
+      summary.textContent = detail.split("\n")[0]!.slice(0, 80);
       body.innerHTML = "";
-      body.append(out);
+      body.append(el("div", {}, [
+        el("div", { class: "tool__label" }, ["Output"]),
+        el("pre", {}, [detail]),
+      ]));
     }
     this.#scrollToBottom();
   }
@@ -297,66 +290,64 @@ export class Chat {
   }
 
   #renderApprovals(): void {
-    this.#approvalBar.innerHTML = "";
     const first = this.#pendingApprovals.entries().next().value as
       | [string, { tool: string; args: unknown }]
       | undefined;
     if (!first) {
-      this.#approvalBar.hidden = true;
+      this.#approval.hidden = true;
+      this.#composer.classList.remove("composer--attached");
       return;
     }
     const [callId, pending] = first;
-    this.#approvalBar.hidden = false;
-    this.#approvalBar.dataset.tone = "warn";
-    const band = el("div", { class: "agent-chat__composer-status-band" }, [
-      el("span", { class: "agent-chat__composer-status-icon" }, ["!"]),
-      el("span", { class: "agent-chat__composer-status-text" }, [`Allow ${pending.tool}?`]),
-      el("span", { class: "sc-approval-args" }, [JSON.stringify(pending.args ?? {})]),
-    ]);
-    const actions = el("span", { class: "sc-approval-actions" });
-    const deny = el("button", { class: "btn btn--sm", type: "button" }, ["Deny"]);
-    const allow = el("button", { class: "btn primary btn--sm", type: "button" }, ["Allow"]);
-    deny.onclick = () => this.#resolveApproval(callId, false);
-    allow.onclick = () => this.#resolveApproval(callId, true);
-    actions.append(deny, allow);
-    band.append(actions);
-    this.#approvalBar.append(band);
+    this.#approval.hidden = false;
+    this.#composer.classList.add("composer--attached");
+    (document.getElementById("approval-tool") as HTMLElement).textContent = pending.tool;
+    (document.getElementById("approval-args") as HTMLElement).textContent =
+      typeof pending.args === "string" ? pending.args : JSON.stringify(pending.args ?? {});
+    (document.getElementById("approval-deny") as HTMLElement).onclick = () => this.#resolve(callId, false);
+    (document.getElementById("approval-allow") as HTMLElement).onclick = () => this.#resolve(callId, true);
   }
 
-  #resolveApproval(callId: string, approve: boolean): void {
+  #resolve(callId: string, approve: boolean): void {
     this.#pendingApprovals.delete(callId);
     this.#renderApprovals();
     this.#handlers.approve(callId, approve);
-    this.system(approve ? "approved" : "denied");
+    this.notice(approve ? "approved" : "denied");
   }
 
   /** ---- internals ---- */
 
-  #makeGroup(kind: "user" | "assistant" | "tool"): { group: HTMLElement; messages: HTMLElement } {
-    const avatar =
-      kind === "user"
-        ? el("span", { class: "chat-avatar user" }, ["Y"])
-        : kind === "tool"
-          ? el("span", { class: "chat-avatar tool" }, ["⚙"])
-          : el("span", { class: "chat-avatar assistant" }, ["✳"]);
-    const messages = el("div", { class: "chat-group-messages" });
-    const group = el("div", { class: `chat-group ${kind} chat-group--with-footer chat-group--turn-block` }, [
-      avatar,
-      messages,
+  #head(status: string): HTMLElement {
+    const statusEl = el("span", { class: "msg__status mono" }, [status]);
+    return el("div", { class: "msg__head" }, [
+      el("span", { class: "msg__avatar" }, [SPARKLE]),
+      el("span", { class: "msg__name" }, ["Assistant"]),
+      statusEl,
     ]);
-    return { group, messages };
   }
 
-  #stampFooter(group: HTMLElement): HTMLElement {
-    const stamp = el("span", { class: "chat-group-timestamp" }, [fmtTime(Date.now())]);
-    const footer = el("div", { class: "chat-group-footer" }, [
-      el("div", { class: "chat-group-footer__meta" }, [stamp]),
-      el("div", { class: "chat-group-footer-actions" }, [
-        el("button", { class: "btn btn--icon btn--xs chat-copy-btn", type: "button", title: "Copy" }, ["⧉"]),
-      ]),
-    ]);
-    group.append(footer);
-    return stamp;
+  #renderEmpty(): void {
+    const chips = el("div", { class: "chips" });
+    for (const label of CHIPS) {
+      const chip = el("button", { class: "chip", type: "button" }, [label]);
+      chip.onclick = () => {
+        this.#input.value = label;
+        this.#autosize();
+        this.#sendBtn.disabled = false;
+        this.#input.focus();
+      };
+      chips.append(chip);
+    }
+    this.stack.append(el("div", { class: "empty" }, [
+      mark(),
+      el("h1", {}, ["What are we building?"]),
+      el("p", {}, ["Ask anything, or pick a starting point. Tools ask before they run."]),
+      chips,
+    ]));
+  }
+
+  #clearEmpty(): void {
+    this.stack.querySelector(".empty")?.remove();
   }
 
   #scheduleStreamRender(): void {
@@ -365,34 +356,13 @@ export class Chat {
       this.#raf = 0;
       if (!this.#streamDirty || !this.#live) return;
       this.#streamDirty = false;
-      this.#renderStream(this.#live, false);
-      if (this.#autoScroll) this.thread.scrollTop = this.thread.scrollHeight;
+      const live = this.#live;
+      live.body.innerHTML = renderMarkdown(this.#streamText);
+      live.body.append(el("span", { class: "caret" }));
+      live.status.textContent = `Streaming · ${mmss(Date.now() - live.startedAt)}`;
+      live.status.classList.add("is-live");
+      if (this.#autoScroll) this.#thread.scrollTop = this.#thread.scrollHeight;
     });
-  }
-
-  #renderStream(live: Live, final: boolean): void {
-    if (!live.text) {
-      live.bubble.innerHTML = "";
-      live.text = el("div", { class: "chat-text" });
-      live.bubble.append(live.text);
-    }
-    live.text.innerHTML = renderMarkdown(this.#streamText);
-    if (!final) {
-      live.text.append(el("span", { class: "caret" }));
-      live.stamp.classList.add("sc-live");
-      live.stamp.textContent = `${fmtTime(live.startedAt)} · ${fmtDuration(Date.now() - live.startedAt)}`;
-    }
-    // mark code blocks that scroll horizontally so the wrap toggle shows up
-    for (const box of live.text.querySelectorAll<HTMLElement>(".code-block-wrapper")) {
-      const code = box.querySelector("code");
-      if (!code) continue;
-      const overflow = code.scrollWidth > code.clientWidth + 2;
-      box.classList.toggle("has-horizontal-overflow", overflow);
-    }
-  }
-
-  #hideEmpty(): void {
-    this.#empty.hidden = true;
   }
 
   #scrollToBottom(): void {
@@ -400,15 +370,27 @@ export class Chat {
       this.#jump.hidden = false;
       return;
     }
-    requestAnimationFrame(() => { this.thread.scrollTop = this.thread.scrollHeight; });
+    requestAnimationFrame(() => { this.#thread.scrollTop = this.#thread.scrollHeight; });
   }
 
   #autosize(): void {
     this.#input.style.height = "auto";
-    this.#input.style.height = `${Math.min(this.#input.scrollHeight, window.innerHeight * 0.38)}px`;
+    this.#input.style.height = `${Math.min(this.#input.scrollHeight, 140)}px`;
   }
 
   get input(): HTMLTextAreaElement {
     return this.#input;
   }
+}
+
+function mark(): HTMLElement {
+  const node = el("div", { class: "empty__mark" });
+  node.innerHTML =
+    '<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h5l3-8 3 16 3-8h4"/></svg>';
+  return node;
+}
+
+function mmss(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }

@@ -1,24 +1,33 @@
-// Settings: model defaults, providers, gateway, runtime — laid out with
-// OpenClaw's settings vocabulary (.settings-workspace > .settings-group >
-// .settings-section__header + .settings-row > .settings-row__control).
+// Settings: Model, Providers, Gateway, Runtime — tabbed, one card per block.
 
-import { el, esc, modal, toast } from "./dom.js";
+import { el, modal, toast } from "./dom.js";
 import { gateway } from "./rpc.js";
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
+type TabId = "model" | "providers" | "gateway" | "runtime";
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: "model", label: "Model" },
+  { id: "providers", label: "Providers" },
+  { id: "gateway", label: "Gateway" },
+  { id: "runtime", label: "Runtime" },
+];
+
 export class Settings {
   #root: HTMLElement;
+  #tabs: HTMLElement;
   #onChanged: () => void;
+  #tab: TabId = "model";
 
   constructor(root: HTMLElement, onChanged: () => void) {
     this.#root = root;
+    this.#tabs = document.getElementById("settings-tabs") as HTMLElement;
     this.#onChanged = onChanged;
   }
 
   async render(): Promise<void> {
-    this.#root.innerHTML = "";
-    const wrap = el("div", { class: "settings-workspace" });
+    this.#renderTabs();
 
     let config: any = {};
     let models: string[] = [];
@@ -35,173 +44,237 @@ export class Settings {
       tools = ((toolRes as any).tools ?? []).length;
       skills = ((skillRes as any).skills ?? []).length;
     } catch (err) {
-      toast(`could not load config: ${(err as Error).message}`, "error");
+      toast(`could not load config: ${(err as Error).message}`, "err");
     }
 
     const providers: Record<string, Provider> = config.providers ?? {};
     const defaults = config.agents?.defaults ?? {};
     const gw = config.gateway ?? {};
 
-    // On phones the settings sidebar (which owns the back button) lives in the
-    // off-canvas drawer, so the workspace carries its own way out.
-    const back = el("button", { class: "btn btn--xs sc-settings-back", id: "settings-back-inline" }, ["← back to chat"]);
-    back.onclick = () => { location.hash = ""; };
-    wrap.append(back);
+    this.#root.innerHTML = "";
+    if (this.#tab === "model") this.#renderModel(defaults, models);
+    else if (this.#tab === "providers") this.#renderProviders(providers);
+    else if (this.#tab === "gateway") this.#renderGateway(gw);
+    else this.#renderRuntime(config, { tools, skills, models: models.length });
+  }
 
-    // ---- defaults ----
-    const modelInput = el("input", {
-      class: "settings-input", value: defaults.model ?? "", placeholder: "provider/model", list: "model-list",
-    });
-    const datalist = el("datalist", { id: "model-list" });
-    for (const m of models) datalist.append(el("option", { value: m }));
-    const fallbackInput = el("input", {
-      class: "settings-input", value: (defaults.fallbacks ?? []).join(", "), placeholder: "provider/model, provider/model",
-    });
-
-    const defaultsCard = el("section", { class: "settings-group" }, [
-      header("Model", "Used for every new message. Type to pick an existing model or write any provider/model reference.",
-        [el("button", { class: "btn primary", id: "save-model" }, ["Save"])]),
-      row("default model", modelInput),
-      row("fallbacks (comma separated)", fallbackInput),
-    ]);
-    wrap.append(defaultsCard, datalist);
-
-    // ---- providers ----
-    const table = el("table", { class: "sc-table" }, [
-      el("thead", {}, [el("tr", {}, [
-        el("th", {}, ["provider"]), el("th", {}, ["base url"]), el("th", {}, ["models"]), el("th", {}, [""]),
-      ])]),
-    ]);
-    const tbody = el("tbody");
-    table.append(tbody);
-
-    const renderProviders = () => {
-      tbody.innerHTML = "";
-      const names = Object.keys(providers);
-      if (names.length === 0) {
-        tbody.append(el("tr", {}, [
-          el("td", { colspan: "4", class: "sc-empty-row" }, ["no providers yet — add one below"]),
-        ]));
-      }
-      for (const name of names) {
-        const p = providers[name] as Provider;
-        const tr = el("tr", {}, [
-          el("td", { class: "mono" }, [name]),
-          el("td", { class: "mono" }, [esc(p.baseUrl ?? "")]),
-          el("td", {}, [String((p.models ?? []).length)]),
-        ]);
-        const actions = el("td", { class: "sc-actions" });
-        const edit = el("button", { class: "btn btn--xs" }, ["Edit"]);
-        edit.onclick = () => this.#providerForm(name, providers, renderProviders);
-        const del = el("button", { class: "btn btn--xs danger" }, ["Remove"]);
-        del.onclick = () => this.#removeProvider(name, providers, renderProviders);
-        actions.append(edit, del);
-        tr.append(actions);
-        tbody.append(tr);
-      }
-    };
-    renderProviders();
-
-    const providersCard = el("section", { class: "settings-group" }, [
-      header("Providers",
-        "Any OpenAI-compatible endpoint: OpenAI, OpenRouter, Groq, Ollama, LM Studio, or your own server. Changes apply live — no restart.",
-        [
-          el("button", { class: "btn btn--xs", id: "test-models" }, ["Test models"]),
-          el("button", { class: "btn btn--xs primary", id: "add-provider" }, ["＋ Add provider"]),
-        ]),
-      table,
-    ]);
-    wrap.append(providersCard);
-
-    // ---- gateway ----
-    const modeSelect = el("select", { class: "settings-select" });
-    for (const m of ["token", "none"]) modeSelect.append(el("option", { value: m }, [m]));
-    modeSelect.value = gw.auth?.mode ?? "token";
-    const bypassSelect = el("select", { class: "settings-select" });
-    for (const [v, label] of [["true", "on (this phone needs no token)"], ["false", "off (always require token)"]] as const) {
-      bypassSelect.append(el("option", { value: v }, [label]));
+  #renderTabs(): void {
+    this.#tabs.innerHTML = "";
+    for (const t of TABS) {
+      const btn = el("button", {
+        class: `tab${t.id === this.#tab ? " is-active" : ""}`,
+        type: "button",
+        id: `tab-${t.id}`,
+      }, [t.label]);
+      btn.onclick = () => {
+        this.#tab = t.id;
+        void this.render();
+      };
+      this.#tabs.append(btn);
     }
-    bypassSelect.value = String(gw.auth?.loopbackBypass ?? true);
+  }
 
-    const gwCard = el("section", { class: "settings-group" }, [
-      header("Gateway", `Listening on 127.0.0.1:${gw.port ?? 18790}. Remote clients need the token printed by sc token.`,
-        [el("button", { class: "btn primary", id: "save-gw" }, ["Save"])]),
-      row("auth mode", modeSelect),
-      row("loopback bypass", bypassSelect),
-    ]);
-    wrap.append(gwCard);
+  /* ---------------- model ---------------- */
 
-    // ---- runtime ----
-    wrap.append(el("section", { class: "settings-group" }, [
-      header("Runtime", "What this gateway is running right now."),
-      el("div", { class: "sc-stat-row" }, [
-        stat("tools", String(tools)),
-        stat("skills", String(skills)),
-        stat("models", String(models.length)),
-        stat("telegram", config.channels?.telegram?.enabled ? "on" : "off"),
-        stat("cron", config.cron?.enabled ? "on" : "off"),
-      ]),
-    ]));
+  #renderModel(defaults: any, models: string[]): void {
+    const input = el("input", {
+      class: "inp mono",
+      id: "default-model",
+      value: defaults.model ?? "",
+      placeholder: "provider/model",
+      autocomplete: "off",
+      spellcheck: "false",
+    });
+    const fallback = el("input", {
+      class: "inp mono",
+      id: "fallback-models",
+      value: (defaults.fallbacks ?? []).join(", "),
+      placeholder: "provider/model, provider/model",
+      autocomplete: "off",
+      spellcheck: "false",
+    });
 
-    this.#root.append(wrap);
+    const saved = el("div", { class: "list" });
+    for (const m of models.slice(0, 20)) {
+      const isDef = m === defaults.model;
+      const action = isDef
+        ? el("span", { class: "sheet__check", style: "font-size:12px;font-weight:600;color:var(--accent);background:var(--accsoft);padding:3px 10px;border-radius:999px" }, ["Default"])
+        : el("button", { class: "btn sm", type: "button" }, ["Set default"]);
+      if (!isDef) {
+        (action as HTMLElement).onclick = () => {
+          input.value = m;
+          toast("default model updated — save to apply", "info");
+        };
+      }
+      saved.append(el("div", { class: "row" }, [
+        el("span", { class: "session__text" }, [
+          el("span", { class: "session__title mono" }, [m]),
+          el("span", { class: "session__meta" }, [m.includes("/") ? (m.split("/")[0] ?? "default") : "default"]),
+        ]),
+        action,
+      ] as Node[]));
+    }
 
-    // ---- wiring ----
-    (wrap.querySelector("#add-provider") as HTMLElement).onclick = () =>
-      this.#providerForm(null, providers, renderProviders);
-    (wrap.querySelector("#save-model") as HTMLElement).onclick = async () => {
-      const fb = fallbackInput.value.split(",").map((s) => s.trim()).filter(Boolean);
+    const save = el("button", { class: "btn pri", type: "button" }, ["Save changes"]);
+    save.onclick = async () => {
+      const fb = fallback.value.split(",").map((s) => s.trim()).filter(Boolean);
       await this.#setMany([
-        ["agents.defaults.model", modelInput.value.trim()],
+        ["agents.defaults.model", input.value.trim()],
         ["agents.defaults.fallbacks", fb],
       ], "model saved");
     };
-    (wrap.querySelector("#test-models") as HTMLElement).onclick = async () => {
-      try {
-        const res = await gateway.request("models.list");
-        const list = (res as any).models ?? [];
-        toast(list.length ? `${list.length} models available` : "no models — add a provider first");
-      } catch (err) {
-        toast((err as Error).message, "error");
-      }
-    };
-    (wrap.querySelector("#save-gw") as HTMLElement).onclick = async () => {
+
+    this.#root.append(
+      el("div", { class: "card" }, [
+        el("label", { class: "lbl", for: "default-model" }, ["Default model"]),
+        input,
+        el("p", { class: "hint" }, ["Used for every new session."]),
+        el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: "fallback-models" }, ["Fallbacks"]),
+          fallback,
+          el("p", { class: "hint" }, ["Tried in order when the default model fails."]),
+        ]),
+      ]),
+      el("div", { class: "card", style: "padding:8px 16px" }, [
+        el("div", { class: "cap", style: "padding:8px 0" }, ["Available models"]),
+        saved,
+      ]),
+      save,
+    );
+  }
+
+  /* ---------------- providers ---------------- */
+
+  #renderProviders(providers: Record<string, Provider>): void {
+    const body = el("div", { class: "settings__body" });
+    for (const [name, p] of Object.entries(providers)) {
+      const edit = el("button", { class: "btn", type: "button" }, ["Edit"]);
+      edit.onclick = () => this.#providerForm(name, providers, () => void this.render());
+      const remove = el("button", { class: "btn danger", type: "button" }, ["Remove"]);
+      remove.onclick = () => this.#removeProvider(name, providers, () => void this.render());
+
+      body.append(el("div", { class: "card" }, [
+        el("div", { class: "prov" }, [
+          el("div", { class: "prov__head" }, [
+            el("span", { class: "prov__name" }, [name]),
+            el("span", { class: "prov__count" }, [`${(p.models ?? []).length} models`]),
+          ]),
+          el("div", { class: "prov__url" }, [p.baseUrl ?? ""]),
+          el("div", { class: "prov__key" }, [maskKey(p.apiKey ?? "")]),
+          el("div", { class: "prov__row" }, [edit, remove]),
+        ]),
+      ]));
+    }
+
+    const plus = el("span");
+    plus.innerHTML = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+    const add = el("button", { class: "btn pri", type: "button" }, [plus, "Add provider"]);
+    add.onclick = () => this.#providerForm(null, providers, () => void this.render());
+
+    this.#root.append(body, add);
+  }
+
+  /* ---------------- gateway ---------------- */
+
+  #renderGateway(gw: any): void {
+    const port = el("input", {
+      class: "inp mono", id: "gw-port", value: String(gw.port ?? 18790), inputmode: "numeric",
+    });
+    const mode = el("input", {
+      class: "inp mono", id: "gw-mode", value: gw.auth?.mode ?? "token",
+    });
+    const rawToken = String(gw.auth?.token ?? "");
+    const token = el("div", { class: "inp mono" }, [rawToken ? "••••••••" + rawToken.slice(-4) : "Not set"]);
+
+    const save = el("button", { class: "btn pri", type: "button" }, ["Save and restart gateway"]);
+    save.onclick = async () => {
       await this.#setMany([
-        ["gateway.auth.mode", modeSelect.value],
-        ["gateway.auth.loopbackBypass", bypassSelect.value === "true"],
+        ["gateway.port", Number(port.value) || (gw.port ?? 18790)],
+        ["gateway.auth.mode", mode.value.trim() || "token"],
       ], "gateway saved — reconnecting");
       location.reload();
     };
+
+    this.#root.append(
+      el("div", { class: "card" }, [
+        el("div", {}, [
+          el("label", { class: "lbl", for: "gw-port" }, ["Port"]),
+          port,
+        ]),
+        el("div", { class: "modal__field" }, [
+          el("span", { class: "lbl" }, ["Auth token"]),
+          token,
+          el("p", { class: "hint" }, ["Clients send this token when they connect."]),
+        ]),
+        el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: "gw-mode" }, ["Auth mode"]),
+          mode,
+          el("p", { class: "hint" }, ["token requires a secret; none allows any local client."]),
+        ]),
+      ]),
+      save,
+    );
   }
+
+  /* ---------------- runtime ---------------- */
+
+  #renderRuntime(config: any, counts: { tools: number; skills: number; models: number }): void {
+    const rows: [string, string, string?][] = [
+      ["Status", "Running", "color:var(--ok)"],
+      ["Version", "0.1.0"],
+      ["Tools", String(counts.tools)],
+      ["Skills", String(counts.skills)],
+      ["Models", String(counts.models)],
+      ["Telegram", config.channels?.telegram?.enabled ? "on" : "off"],
+      ["Cron", config.cron?.enabled ? `${config.cron.jobs ?? 0} jobs` : "off"],
+      ["Providers", String(Object.keys(config.providers ?? {}).length)],
+    ];
+
+    const list = el("div", { class: "card", style: "padding:0;overflow:hidden" });
+    for (const [k, v, style] of rows) {
+      list.append(el("div", { class: "row", style: "padding:14px 16px" }, [
+        el("span", { class: "row__label" }, [k]),
+        el("span", { class: "row__value", style }, [v]),
+      ]));
+    }
+
+    const tiles = el("div", { class: "tiles" }, [
+      tile(String(counts.tools), "tools"),
+      tile(String(counts.skills), "skills"),
+      tile(String(counts.models), "models"),
+      tile(String(Object.keys(config.providers ?? {}).length), "providers"),
+    ]);
+
+    this.#root.append(tiles, list);
+  }
+
+  /* ---------------- helpers ---------------- */
 
   async #setMany(pairs: [string, unknown][], message: string): Promise<void> {
     try {
       for (const [path, value] of pairs) {
         await gateway.request("config.set", { path, value });
       }
-      toast(message);
+      toast(message, "ok");
       this.#onChanged();
     } catch (err) {
-      toast((err as Error).message, "error");
+      toast((err as Error).message, "err");
     }
   }
 
-  #providerForm(
-    name: string | null,
-    providers: Record<string, Provider>,
-    done: () => void,
-  ): void {
+  #providerForm(name: string | null, providers: Record<string, Provider>, done: () => void): void {
     modal({
       title: name ? `Edit ${name}` : "Add provider",
       fields: [
-        { name: "name", label: "name", value: name ?? "", placeholder: "openrouter", },
-        { name: "baseUrl", label: "base url", value: name ? providers[name]?.baseUrl ?? "" : "", placeholder: "https://openrouter.ai/api/v1" },
-        { name: "apiKey", label: "api key", value: name ? providers[name]?.apiKey ?? "" : "", placeholder: "sk-…" },
-        { name: "models", label: "models (comma separated)", value: name ? (providers[name]?.models ?? []).join(", ") : "", placeholder: "gpt-4o-mini, claude-3.5-sonnet" },
+        { name: "name", label: "Name", value: name ?? "", placeholder: "openrouter" },
+        { name: "baseUrl", label: "Base URL", value: name ? providers[name]?.baseUrl ?? "" : "", placeholder: "https://openrouter.ai/api/v1" },
+        { name: "apiKey", label: "API key", type: "password", value: name ? providers[name]?.apiKey ?? "" : "", placeholder: "sk-…" },
+        { name: "models", label: "Models (comma separated)", value: name ? (providers[name]?.models ?? []).join(", ") : "", placeholder: "gpt-4o-mini, claude-3.5-sonnet" },
       ],
       confirmLabel: name ? "Save" : "Add",
       onConfirm: async (v) => {
         const providerName = ((v.name ?? "") || name || "").trim();
-        if (!providerName) { toast("provider name is required", "error"); return; }
+        if (!providerName) { toast("name is required", "err"); return; }
         const next: Record<string, Provider> = { ...providers };
         if (name && name !== providerName) delete next[name];
         next[providerName] = {
@@ -211,24 +284,20 @@ export class Settings {
         };
         try {
           await gateway.request("config.set", { path: "providers", value: next });
-          toast(name ? `${providerName} updated` : `${providerName} added`);
+          toast(name ? `${providerName} updated` : `${providerName} added`, "ok");
           done();
           this.#onChanged();
         } catch (err) {
-          toast((err as Error).message, "error");
+          toast((err as Error).message, "err");
         }
       },
     });
   }
 
-  #removeProvider(
-    name: string,
-    providers: Record<string, Provider>,
-    done: () => void,
-  ): void {
+  #removeProvider(name: string, providers: Record<string, Provider>, done: () => void): void {
     modal({
-      title: `Remove ${name}?`,
-      body: "Models from this provider stop working immediately.",
+      title: "Remove provider?",
+      body: `This removes ${name} and its ${(providers[name]?.models ?? []).length} models. Sessions using them fall back to the default model.`,
       confirmLabel: "Remove",
       danger: true,
       onConfirm: async () => {
@@ -236,36 +305,25 @@ export class Settings {
         delete next[name];
         try {
           await gateway.request("config.set", { path: "providers", value: next });
-          toast(`${name} removed`);
+          toast(`${name} removed`, "ok");
           done();
           this.#onChanged();
         } catch (err) {
-          toast((err as Error).message, "error");
+          toast((err as Error).message, "err");
         }
       },
     });
   }
 }
 
-/* ---- layout helpers ---- */
-
-function header(title: string, desc: string, actions: HTMLElement[] = []): HTMLElement {
-  return el("div", { class: "settings-section__header" }, [
-    el("div", { class: "settings-section__copy" }, [
-      el("h2", { class: "settings-section__heading" }, [title]),
-      el("p", { class: "settings-section__desc" }, [desc]),
-    ]),
-    el("div", { class: "settings-section__actions" }, actions),
+function tile(value: string, label: string): HTMLElement {
+  return el("div", { class: "card tile" }, [
+    el("div", { class: "tile__v" }, [value]),
+    el("div", { class: "tile__k" }, [label]),
   ]);
 }
 
-function row(label: string, control: HTMLElement): HTMLElement {
-  return el("div", { class: "settings-row" }, [
-    el("span", { class: "settings-row__text" }, [label]),
-    el("div", { class: "settings-row__control" }, [control]),
-  ]);
-}
-
-function stat(label: string, value: string): HTMLElement {
-  return el("span", { class: "sc-stat" }, [`${label} `, el("b", {}, [value])]);
+function maskKey(key: string): string {
+  if (!key) return "—";
+  return key.length > 8 ? `${key.slice(0, 3)}••••••••${key.slice(-4)}` : "••••••••";
 }

@@ -1,8 +1,4 @@
-// SuparClaw Control UI — app shell: sidebar, drawer, routing, event wiring.
-//
-// Layout follows OpenClaw's shell: a CSS grid (.shell) with a nav column
-// (.shell-nav > .sidebar) and a content column (.content). Below 900px the
-// shell switches to .shell--mobile-nav and the nav becomes an overlay drawer.
+// SuparClaw Control UI — app shell: rail, drawer, sheet, routing, wiring.
 
 import { Chat } from "./chat.js";
 import { el, esc, fmtTime, modal, toast } from "./dom.js";
@@ -16,8 +12,7 @@ let sessionKey = localStorage.getItem("sc.session") || "main:main";
 let currentModel = "";
 let busy = false;
 let models: string[] = [];
-
-const app = $("app");
+let toolCount = 0;
 
 /* ---------------- chat ---------------- */
 
@@ -29,7 +24,8 @@ const chat = new Chat(document.body, {
     gateway.request("chat.send", { sessionKey, text, isMainSession: true }).catch((err) => {
       busy = false;
       chat.setBusy(false);
-      chat.system(`not sent: ${err.message}`, "error");
+      chat.notice(`not sent: ${err.message}`);
+      toast((err as Error).message, "err");
     });
   },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
@@ -73,16 +69,17 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       break;
     case "final": {
       const usage = e.usage as Record<string, number> | undefined;
-      if (usage?.["total_tokens"]) chat.setTokenHint(`${usage["total_tokens"]} tokens last run`);
+      if (usage?.["total_tokens"]) chat.setTokenHint(`${usage["total_tokens"]} tokens`);
       chat.finish(String(e.text ?? ""));
       busy = false;
       break;
     }
     case "error":
       chat.finish();
-      chat.system(`error: ${e.message}`, "error");
+      chat.notice(`error: ${e.message}`);
       busy = false;
       chat.setBusy(false);
+      toast(String(e.message ?? "error"), "err");
       break;
     case "idle":
       busy = false;
@@ -93,32 +90,35 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
 
 /* ---------------- connection ---------------- */
 
-const connPill = $("conn-pill");
-const brandDot = $("brand-dot");
+const connDot = $("conn-dot");
+const connLabel = $("conn-label");
 
 gateway.onState = (state: ConnState) => {
   const label =
-    state === "online" ? "connected" :
-    state === "connecting" ? "connecting…" :
-    state === "unauthorized" ? "unauthorized" : "disconnected";
-  connPill.textContent = label;
-  connPill.dataset.state = state;
-  brandDot.dataset.state = state;
+    state === "online" ? "Online" :
+    state === "connecting" ? "Connecting…" :
+    state === "unauthorized" ? "Unauthorized" : "Offline";
+  connLabel.textContent = label;
+  connDot.className = "dot" + (
+    state === "online" ? " dot--ok" :
+    state === "connecting" ? " dot--warn" :
+    state === "unauthorized" ? " dot--err" : " dot--err");
   if (state === "online") { void refresh(); void loadHistory(); }
   if (state === "unauthorized") askToken();
 };
 
 function askToken(): void {
   modal({
-    title: "Gateway token",
-    body: "This gateway requires a token. Run `sc token` on the device and paste it here.",
-    fields: [{ name: "token", label: "token", placeholder: "paste token" }],
+    title: "Authentication required",
+    body: "The gateway rejected the connection (code 4401). Enter a valid auth token.",
+    fields: [{ name: "token", label: "Auth token", type: "password", placeholder: "paste token" }],
     confirmLabel: "Connect",
     cancelLabel: "Later",
     onConfirm: (v) => {
-      if (!v.token) return;
+      if (!v.token) { toast("Enter a token first", "err"); return; }
       gateway.setToken(v.token);
       gateway.connect();
+      toast("Token saved. Reconnecting…", "info");
     },
   });
 }
@@ -133,18 +133,18 @@ async function refresh(): Promise<void> {
       gateway.request("sessions.list", { limit: 30 }),
     ]);
     const status = statusRes as any;
+    toolCount = (status.tools ?? []).length;
     models = (modelRes as any).models ?? [];
     currentModel = status.model || models[0] || "";
-    $("model-name").textContent = currentModel || "choose model…";
+    $("model-name").textContent = currentModel || "model…";
     renderSessions((sessionRes as any).sessions ?? []);
-    renderStats(status);
   } catch { /* gateway reconnecting */ }
 }
 
 async function health(): Promise<void> {
   try {
     const h = await fetch("/health").then((r) => r.json());
-    $("tok").textContent = `${h.sessions} session${h.sessions === 1 ? "" : "s"} · up ${Math.round(h.uptimeMs / 1000)}s`;
+    $("tok").textContent = `${h.sessions} session${h.sessions === 1 ? "" : "s"}`;
   } catch { /* ignore */ }
 }
 
@@ -157,33 +157,28 @@ function renderSessions(list: { key: string; last_msg_at?: number; title?: strin
     if (seen.has(s.key)) continue;
     seen.add(s.key);
     const btn = el("button", {
-      class: `sidebar-recent-session${s.key === sessionKey ? " sidebar-recent-session--active" : ""}`,
+      class: `session${s.key === sessionKey ? " is-active" : ""}`,
       type: "button",
-      title: `${s.key} — long-press to rename`,
     }, [
-      el("span", { class: "sidebar-recent-session__name" }, [s.key]),
-      el("span", { class: "sidebar-recent-session__subtitle" }, [
-        s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
+      el("span", { class: "session__text" }, [
+        el("span", { class: "session__title" }, [s.title || s.key]),
+        el("span", { class: "session__meta" }, [
+          s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
+        ]),
       ]),
-    ]);
+      busy && s.key === sessionKey ? el("span", { class: "dot dot--live" }) : null,
+    ].filter(Boolean) as Node[]);
     btn.onclick = () => void switchSession(s.key);
     btn.oncontextmenu = (e) => { e.preventDefault(); renameSession(s.key); };
     host.append(btn);
   }
 }
 
-function renderStats(status: any): void {
-  $("stats").innerHTML =
-    `<div>model <b>${esc(currentModel || "unset")}</b></div>` +
-    `<div>tools <b>${status.tools?.length ?? 0}</b> · skills <b>${status.skills?.length ?? 0}</b></div>` +
-    `<div>telegram <b>${status.telegram?.enabled ? "on" : "off"}</b> · cron <b>${status.cron?.enabled ? `${status.cron.jobs} jobs` : "off"}</b></div>`;
-}
-
 async function switchSession(key: string): Promise<void> {
   if (key === sessionKey) return;
   sessionKey = key;
   localStorage.setItem("sc.session", key);
-  $("session-key").textContent = key;
+  $("session-title").textContent = key;
   closeDrawer();
   await loadHistory();
   void refresh();
@@ -193,17 +188,25 @@ async function loadHistory(): Promise<void> {
   chat.clear();
   try {
     const res = await gateway.request("chat.history", { sessionKey, limit: 60 });
-    for (const m of (res as any).messages ?? []) {
+    const messages = (res as any).messages ?? [];
+    for (const m of messages) {
       if (m.role === "user") chat.user(String(m.content ?? ""));
       else if (m.role === "assistant" && m.content) chat.assistant(String(m.content));
     }
+    if (messages.length === 0) {
+      chat.notice(`Session started · ${statusTools()} tools enabled`);
+    }
   } catch { /* ignore */ }
+}
+
+function statusTools(): number {
+  return toolCount;
 }
 
 function renameSession(key: string): void {
   modal({
     title: "Rename session",
-    fields: [{ name: "name", label: "session name", value: key.includes(":") ? key.split(":").slice(1).join(":") : key }],
+    fields: [{ name: "name", label: "Session name", value: key.includes(":") ? key.split(":").slice(1).join(":") : key }],
     confirmLabel: "Rename",
     onConfirm: async (v) => {
       if (!v.name) return;
@@ -211,10 +214,10 @@ function renameSession(key: string): void {
       const next = `${prefix}:${v.name}`;
       try {
         await gateway.request("sessions.rename", { sessionKey: key, newKey: next });
-        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); }
-        toast("session renamed");
+        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); $("session-title").textContent = next; }
+        toast("session renamed", "ok");
         void refresh();
-      } catch (err) { toast((err as Error).message, "error"); }
+      } catch (err) { toast((err as Error).message, "err"); }
     },
   });
 }
@@ -222,7 +225,7 @@ function renameSession(key: string): void {
 function newSession(): void {
   modal({
     title: "New session",
-    fields: [{ name: "name", label: "name", placeholder: "fix-bug" }],
+    fields: [{ name: "name", label: "Session name", placeholder: "fix-bug" }],
     confirmLabel: "Create",
     onConfirm: async (v) => {
       const name = (v.name || `s${Date.now().toString(36)}`).replace(/\s+/g, "-");
@@ -231,14 +234,37 @@ function newSession(): void {
         await gateway.request("sessions.rename", { sessionKey: key, newKey: key }); // ensure row exists
       } catch { /* ignore */ }
       await switchSession(key);
-      chat.system(`session ${key}`);
+      chat.notice(`session ${key}`);
     },
   });
 }
 
-/* ---------------- model + chrome ---------------- */
+/* ---------------- drawer ---------------- */
 
-function openModelPicker(): void {
+const drawerOverlay = $("drawer-overlay");
+
+function openDrawer(): void {
+  drawerOverlay.hidden = false;
+  $("drawer-btn").classList.add("is-on");
+  $("drawer-btn").setAttribute("aria-expanded", "true");
+}
+
+function closeDrawer(): void {
+  drawerOverlay.hidden = true;
+  $("drawer-btn").classList.remove("is-on");
+  $("drawer-btn").setAttribute("aria-expanded", "false");
+}
+
+$("drawer-btn").onclick = () => {
+  if (drawerOverlay.hidden) openDrawer(); else closeDrawer();
+};
+$("drawer-close").onclick = closeDrawer;
+$("drawer-scrim").onclick = closeDrawer;
+$("new-session").onclick = newSession;
+
+/* ---------------- model sheet ---------------- */
+
+$("model-btn").onclick = () => {
   pickModel({
     current: currentModel,
     models,
@@ -247,82 +273,42 @@ function openModelPicker(): void {
       try {
         await gateway.request("config.set", { path: "agents.defaults.model", value: ref });
         currentModel = ref;
-        toast(`model → ${ref}`);
+        toast(`model → ${ref}`, "ok");
         void refresh();
       } catch (err) {
-        toast((err as Error).message, "error");
+        toast((err as Error).message, "err");
       }
     },
   });
-}
+};
 
-$("model-btn").onclick = openModelPicker;
+/* ---------------- chrome ---------------- */
 
 $("theme-btn").onclick = () => {
   const root = document.documentElement;
-  const light = root.dataset.themeMode === "light";
-  root.dataset.themeMode = light ? "dark" : "light";
+  const dark = root.dataset.themeMode === "dark";
+  root.dataset.themeMode = dark ? "light" : "dark";
   localStorage.setItem("sc.theme", root.dataset.themeMode);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#F4F3EF" : "#0E0E11");
 };
 
-$("clear-btn").onclick = () => {
-  chat.clear();
-  toast("transcript cleared");
+$("settings-btn").onclick = () => {
+  location.hash = location.hash === "#/settings" ? "" : "#/settings";
 };
-
-$("new-session").onclick = newSession;
-$("settings-btn").onclick = () => { location.hash = "#/settings"; };
-$("settings-btn-side").onclick = () => { location.hash = "#/settings"; };
 $("settings-back").onclick = () => { location.hash = ""; };
-$("session-pill").onclick = () => { void loadHistory(); };
-
-/* ---------------- drawer (mobile nav) ---------------- */
-
-const drawerBtn = $("drawer-btn");
-
-function isMobile(): boolean {
-  return window.matchMedia("(max-width: 900px)").matches;
-}
-
-function applyLayout(): void {
-  const mobile = isMobile();
-  app.classList.toggle("shell--mobile-nav", mobile);
-  app.classList.toggle("shell--nav-collapsed", mobile);
-  if (!mobile) closeDrawer();
-}
-
-function openDrawer(): void {
-  app.classList.add("shell--nav-drawer-open");
-  drawerBtn.setAttribute("aria-expanded", "true");
-}
-
-function closeDrawer(): void {
-  app.classList.remove("shell--nav-drawer-open");
-  drawerBtn.setAttribute("aria-expanded", "false");
-}
-
-drawerBtn.onclick = () => {
-  if (app.classList.contains("shell--nav-drawer-open")) closeDrawer();
-  else openDrawer();
-};
-$("nav-backdrop").onclick = closeDrawer;
-window.addEventListener("resize", applyLayout);
+$("session-btn").onclick = () => { void loadHistory(); };
 
 /* ---------------- routing ---------------- */
 
 function route(): void {
   const settings = location.hash === "#/settings";
-  app.classList.toggle("shell--settings", settings);
-  $("content").classList.toggle("content--chat", !settings);
   $("chat-view").hidden = settings;
   $("settings-view").hidden = !settings;
-  $("sidebar").hidden = settings;
-  $("settings-sidebar").hidden = !settings;
+  $("settings-btn").classList.toggle("is-on", settings);
   if (settings) {
-    new Settings($("settings-view"), () => { void refresh(); }).render();
+    new Settings($("settings-body"), () => { void refresh(); }).render();
     closeDrawer();
-  } else {
-    $("settings-sidebar").innerHTML = "";
   }
 }
 window.addEventListener("hashchange", route);
@@ -330,17 +316,17 @@ window.addEventListener("hashchange", route);
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "l") {
     e.preventDefault();
-    openModelPicker();
+    $("model-btn").click();
   }
   if (e.key === "Escape" && busy) void gateway.request("chat.abort", { sessionKey });
 });
 
 /* ---------------- boot ---------------- */
 
-if (localStorage.getItem("sc.theme")) document.documentElement.dataset.themeMode = localStorage.getItem("sc.theme")!;
-$("session-key").textContent = sessionKey;
-$("session-pill").title = `session ${sessionKey}`;
-applyLayout();
+const savedTheme = localStorage.getItem("sc.theme");
+if (savedTheme) document.documentElement.dataset.themeMode = savedTheme;
+$("session-title").textContent = sessionKey;
 route();
 gateway.connect();
 void health();
+void refresh();

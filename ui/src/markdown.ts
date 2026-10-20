@@ -42,19 +42,7 @@ export function renderMarkdown(src: string): string {
         i++;
       }
       i++; // closing fence
-      const code = body.join("\n");
-      const collapsible = body.length > 8;
-      out.push(
-        `<div class="code-block-wrapper${collapsible ? " is-collapsible" : ""}" data-lang="${lang}">` +
-          `<div class="code-block-viewport"><pre data-lang="${lang}"><code>${code}</code></pre></div>` +
-          `<button class="code-block-wrap" type="button" title="Toggle soft wrap">` +
-            `<span class="code-block-wrap__enable"></span><span class="code-block-wrap__disable"></span>` +
-          `</button>` +
-          (collapsible
-            ? `<button class="code-block-expand" type="button">show more<span class="code-block-chevron"></span></button>`
-            : "") +
-        `</div>`,
-      );
+      out.push(`<pre data-lang="${lang}"><code>${body.join("\n")}</code></pre>`);
       continue;
     }
 
@@ -90,9 +78,7 @@ export function renderMarkdown(src: string): string {
       }
       const thead = head.map((c) => `<th>${c}</th>`).join("");
       const tbody = rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
-      out.push(
-        `<div class="markdown-table"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`,
-      );
+      out.push(`<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`);
       continue;
     }
 

@@ -1,12 +1,11 @@
-// Tiny DOM helpers + the in-app dialog stack. Native prompt/confirm/alert are
-// banned here: they break the design and are ugly on mobile.
+// Tiny DOM helpers + the in-app dialog/toast layer. Native prompt/confirm/alert
+// are banned here: they break the design and are unusable on a phone.
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   attrs?: Record<string, string | undefined>,
   children?: (Node | string)[],
 ): HTMLElementTagNameMap[K];
-/** Custom elements (OpenClaw uses a few: openclaw-modal-actions, …). */
 export function el(
   tag: string,
   attrs?: Record<string, string | undefined>,
@@ -30,18 +29,23 @@ export function el(
 export const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
 
-export function toast(text: string, kind: "info" | "error" = "info"): void {
+export type Tone = "ok" | "err" | "info";
+
+/** Toast: a dot + message, stacked under the rail. */
+export function toast(text: string, tone: Tone = "info"): void {
   const host = document.getElementById("toasts");
   if (!host) return;
-  const node = el("div", { class: `app-toast${kind === "error" ? " app-toast--error" : ""}` }, [
-    el("span", { class: "app-toast__icon" }, [kind === "error" ? "!" : "✓"]),
-    el("span", { class: "app-toast__message" }, [text]),
+  const node = el("div", { class: `toast toast--${tone}` }, [
+    el("span", { class: "toast__dot" }),
+    el("span", {}, [text]),
   ]);
   host.append(node);
   setTimeout(() => {
-    node.classList.add("is-leaving");
+    node.style.opacity = "0";
+    node.style.transform = "translateY(-6px)";
+    node.style.transition = "opacity .2s ease, transform .2s ease";
     setTimeout(() => node.remove(), 220);
-  }, 3200);
+  }, 3000);
 }
 
 export interface ModalSpec {
@@ -55,71 +59,75 @@ export interface ModalSpec {
   render?: (box: HTMLElement, close: () => void) => void;
 }
 
-/** Styled modal. Returns a close() function; Esc and backdrop click close it. */
+/** Styled modal. Returns a close() function; Esc and the scrim close it. */
 export function modal(spec: ModalSpec): () => void {
-  const dlg = document.getElementById("modal") as HTMLDialogElement | null;
-  if (!dlg) return () => {};
-  dlg.innerHTML = "";
+  const overlay = document.getElementById("modal-overlay") as HTMLElement | null;
+  const box = document.getElementById("modal") as HTMLElement | null;
+  const title = document.getElementById("modal-title") as HTMLElement | null;
+  const body = document.getElementById("modal-body") as HTMLElement | null;
+  const foot = document.getElementById("modal-foot") as HTMLElement | null;
+  if (!overlay || !box || !body || !foot || !title) return () => {};
+
+  title.textContent = spec.title;
+  body.innerHTML = "";
+  foot.innerHTML = "";
 
   const close = () => {
-    if (dlg.open) dlg.close();
+    overlay.hidden = true;
     document.removeEventListener("keydown", onKey, true);
   };
-  // Esc is handled natively by <dialog>; we only stop it from reaching the app
-  // (which would abort a running turn behind the dialog).
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") e.stopPropagation();
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
   };
-  dlg.addEventListener("close", () => document.removeEventListener("keydown", onKey, true), { once: true });
-  // A click on the ::backdrop lands on the dialog element itself.
-  dlg.addEventListener("click", (e) => {
-    if (e.target === dlg) close();
-  });
 
-  const body = el("div", { class: "oc-modal-dialog__body" });
-  body.append(el("h4", {}, [spec.title]));
   if (spec.body) {
-    body.append(typeof spec.body === "string" ? el("p", { class: "sc-dialog-body" }, [spec.body]) : spec.body);
+    body.append(typeof spec.body === "string" ? el("p", {}, [spec.body]) : spec.body);
   }
 
   const inputs: Record<string, HTMLInputElement> = {};
   for (const f of spec.fields ?? []) {
     const input = el("input", {
-      id: `f-${f.name}`, type: f.type ?? "text", value: f.value ?? "", placeholder: f.placeholder ?? "",
-      autocomplete: "off", spellcheck: "false", class: "settings-input",
+      id: `f-${f.name}`,
+      type: f.type ?? "text",
+      value: f.value ?? "",
+      placeholder: f.placeholder ?? "",
+      autocomplete: "off",
+      spellcheck: "false",
+      class: f.type === "password" ? "inp mono" : "inp",
     });
     inputs[f.name] = input;
-    body.append(el("div", { class: "field" }, [el("label", { for: `f-${f.name}` }, [f.label]), input]));
+    body.append(el("div", { class: "modal__field" }, [
+      el("label", { class: "lbl", for: `f-${f.name}` }, [f.label]),
+      input,
+    ]));
   }
 
   if (spec.render) spec.render(body, close);
 
-  const actions = el("openclaw-modal-actions");
-  actions.append(el("button", { class: "btn", id: "modal-cancel" }, [spec.cancelLabel ?? "Cancel"]));
-  if (spec.confirmLabel !== "") {
-    actions.append(
-      el("button", { class: `btn primary${spec.danger ? " danger" : ""}`, id: "modal-ok" }, [spec.confirmLabel ?? "Confirm"]),
-    );
-  }
-  dlg.append(body, actions);
+  const cancel = el("button", { class: "btn", type: "button" }, [spec.cancelLabel ?? "Cancel"]);
+  cancel.onclick = close;
+  foot.append(cancel);
 
-  (actions.querySelector("#modal-cancel") as HTMLElement).onclick = close;
-  const ok = actions.querySelector("#modal-ok") as HTMLElement | null;
-  if (ok) {
+  if (spec.confirmLabel !== "") {
+    const ok = el("button", {
+      class: spec.danger ? "btn danger-pri" : "btn pri",
+      type: "button",
+    }, [spec.confirmLabel ?? "Confirm"]);
     ok.onclick = () => {
       const values: Record<string, string> = {};
       for (const [name, input] of Object.entries(inputs)) values[name] = input.value.trim();
       void spec.onConfirm?.(values);
       if (!spec.render) close();
     };
-    dlg.addEventListener("keydown", (e) => {
+    body.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement)) { e.preventDefault(); ok.click(); }
     });
+    foot.append(ok);
   }
 
+  overlay.hidden = false;
   document.addEventListener("keydown", onKey, true);
-  dlg.showModal();
-  setTimeout(() => (body.querySelector("input") as HTMLInputElement | null)?.focus(), 30);
+  setTimeout(() => (body.querySelector("input") as HTMLInputElement | null)?.focus(), 40);
   return close;
 }
 
