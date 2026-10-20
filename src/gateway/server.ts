@@ -5,6 +5,8 @@ import type { WebSocketServer as WsServer, WebSocket } from "ws";
 import type { Service } from "../agent/service.js";
 import type { Logger } from "../util/log.js";
 import { canonicalModelRef } from "../config/providers.js";
+import { redactSecrets, resolveRedacted } from "../config/redact.js";
+import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
 
 const MIME: Record<string, string> = {
@@ -41,8 +43,18 @@ export class Gateway {
   async #ensureWss(): Promise<WsServer> {
     if (this.#wss) return this.#wss;
     const { WebSocketServer } = await import("ws");
-    this.#wss = new WebSocketServer({ noServer: true });
+    // 1 MB is generous for chat frames; the default (100 MB) is a DoS surface.
+    this.#wss = new WebSocketServer({ noServer: true, maxPayload: 1_000_000 });
     return this.#wss;
+  }
+
+  get #trust(): TrustPolicy {
+    const cfg = this.service.config.gateway;
+    return {
+      bind: cfg.bind,
+      allowedHosts: cfg.allowedHosts,
+      allowedOrigins: cfg.allowedOrigins,
+    };
   }
 
   get address(): string {
@@ -64,9 +76,11 @@ export class Gateway {
     this.#unsubscribe = this.service.subscribe((event) => {
       this.#broadcast(event.type === "chat" ? "chat" : event.type, event);
     });
-    this.#timer = setInterval(() => this.#broadcast("tick", { at: Date.now() }), 30_000);
-
-    for (const [key, at] of this.#dedupe) if (Date.now() - at > 300_000) this.#dedupe.delete(key);
+    this.#timer = setInterval(() => {
+      // keep the send-dedupe map from growing on a long-lived daemon
+      for (const [key, at] of this.#dedupe) if (Date.now() - at > 300_000) this.#dedupe.delete(key);
+      this.#broadcast("tick", { at: Date.now() });
+    }, 30_000);
   }
 
   stop(): Promise<void> {
@@ -78,7 +92,18 @@ export class Gateway {
 
   #onUpgrade(req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer): void {
     const url = req.url ?? "/";
-    if (!url.startsWith("/ws")) {
+    const host = req.headers.host ?? "";
+    const origin = req.headers.origin;
+    if (!url.startsWith("/ws") || !hostAllowed(host, this.#trust)) {
+      socket.destroy();
+      return;
+    }
+    // CSWSH defense: a browser connection must be same-origin (or explicitly
+    // allowlisted). No-Origin clients are native (TUI, scripts) and continue
+    // to the connect-frame token check.
+    if (!originAllowed(origin, host, this.#trust)) {
+      this.log.warn(`ws upgrade refused: origin ${origin ?? "(none)"} for host ${host}`);
+      socket.write("HTTP/1.1 403 Forbidden\r\nconnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -90,7 +115,10 @@ export class Gateway {
   #onConnection(ws: WebSocket, loopback: boolean): void {
     const auth = this.service.config.gateway.auth;
     const token = auth.token;
-    // Mode "none" trusts everything; loopback bypass trusts this device's own browser.
+    // Mode "none" trusts everything. Loopback bypass trusts this device's own
+    // browser/native clients (Origin policy already held at the upgrade).
+    // Token matching is fail-closed: an empty token in token mode can never
+    // authorize a client that is not covered by the bypass.
     let authorized = auth.mode === "none" || (loopback && auth.loopbackBypass);
     let seenConnect = false;
     const send = (frame: unknown) => {
@@ -107,20 +135,24 @@ export class Gateway {
       if (frame.type === "connect") {
         seenConnect = true;
         const provided = frame.params?.token ?? "";
-        if (!authorized && token && provided !== token) {
+        if (!authorized && token && provided === token) {
+          authorized = true;
+        }
+        if (!authorized) {
           send(
             errFrame(
               "connect",
               "unauthorized",
               loopback
-                ? "bad gateway token — run: sc token"
+                ? token
+                  ? "bad gateway token — run: sc token"
+                  : "gateway token is not set — run: sc init (token auth is fail-closed)"
                 : "bad or missing gateway token — run: sc token",
             ),
           );
           ws.close(4401, "unauthorized");
           return;
         }
-        authorized = true;
         send({ type: "hello-ok", payload: { version: "0.1.0", methods: this.#methods() } });
         return;
       }
@@ -267,7 +299,9 @@ export class Gateway {
           send(okFrame(id, { jobs: service.store.listJobs(), runs: service.store.lastJobRuns(10) }));
           return;
         case "config.get":
-          send(okFrame(id, { config: service.config, path: service.configSvc.path }));
+          // Never serialize raw secrets on the wire — the UI edits through
+          // sentinels (see config/redact.ts).
+          send(okFrame(id, { config: redactSecrets(service.config), path: service.configSvc.path }));
           return;
         case "config.path":
           send(okFrame(id, { path: service.configSvc.path }));
@@ -278,10 +312,11 @@ export class Gateway {
             send(errFrame(id, "bad_request", "path is required"));
             return;
           }
+          // Sentinels sent back by an editor mean "keep the stored value".
+          let value = resolveRedacted(service.configSvc.get(path), params["value"]);
           // A model reference is stored canonically as "<provider>/<model>".
           // Model ids often contain slashes, so a bare id has to be looked up
           // instead of split on its first slash.
-          let value = params["value"];
           if (path === "agents.defaults.model" && typeof value === "string") {
             value = canonicalModelRef(service.config, value) ?? value;
           } else if (path === "agents.defaults.fallbacks" && Array.isArray(value)) {
@@ -296,7 +331,7 @@ export class Gateway {
           }
           // Apply live so a provider or model saved from the UI takes effect now.
           service.applyConfig();
-          send(okFrame(id, { ok: true, config: service.config }));
+          send(okFrame(id, { ok: true, config: redactSecrets(service.config) }));
           return;
         }
         default:
@@ -318,14 +353,22 @@ export class Gateway {
   #onHttp(req: IncomingMessage, res: ServerResponse): void {
     const url = (req.url ?? "/").split("?")[0] ?? "/";
 
+    // DNS-rebinding defense: a browser tricked into resolving attacker.com to
+    // 127.0.0.1 still sends Host: attacker.com — refused here.
+    if (!hostAllowed(req.headers.host ?? "", this.#trust)) {
+      res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+      res.end("forbidden host\n");
+      return;
+    }
+
     if (url === "/health" || url === "/api/health") {
       const body = JSON.stringify(this.service.health());
-      res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
+      res.writeHead(200, { "content-type": "application/json" });
       res.end(body);
       return;
     }
     if (url === "/api/status") {
-      res.writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" });
+      res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(this.service.status()));
       return;
     }

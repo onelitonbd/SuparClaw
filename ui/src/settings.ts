@@ -304,7 +304,7 @@ export class Settings {
       fields: [
         { name: "name", label: "Name", value: name ?? "", placeholder: "openrouter" },
         { name: "baseUrl", label: "Base URL", value: name ? providers[name]?.baseUrl ?? "" : "", placeholder: "https://openrouter.ai/api/v1" },
-        { name: "apiKey", label: "API key", type: "password", value: name ? providers[name]?.apiKey ?? "" : "", placeholder: "sk-…" },
+        { name: "apiKey", label: "API key", type: "password", value: "", placeholder: name ? "leave blank to keep current key" : "sk-…" },
         { name: "models", label: "Models (comma separated)", value: name ? (providers[name]?.models ?? []).join(", ") : "", placeholder: "gpt-4o-mini, claude-3.5-sonnet" },
       ],
       confirmLabel: name ? "Save" : "Add",
@@ -313,9 +313,12 @@ export class Settings {
         if (!providerName) { toast("name is required", "err"); return; }
         const next: Record<string, Provider> = { ...providers };
         if (name && name !== providerName) delete next[name];
+        const typedKey = (v.apiKey ?? "").trim();
         next[providerName] = {
           baseUrl: (v.baseUrl ?? "").trim(),
-          apiKey: (v.apiKey ?? "").trim(),
+          // Blank on edit = keep the stored key (the wire only ever carries the
+          // redaction sentinel — see src/config/redact.ts).
+          apiKey: typedKey || (name ? providers[name]?.apiKey ?? "" : ""),
           models: (v.models ?? "").split(",").map((s) => s.trim()).filter(Boolean),
         };
         try {
@@ -361,5 +364,7 @@ function tile(value: string, label: string): HTMLElement {
 
 function maskKey(key: string): string {
   if (!key) return "—";
+  // The gateway already redacts secrets on the wire ("__redacted__:••••1234").
+  if (key.startsWith("__redacted__:")) return key.slice("__redacted__:".length) || "••••";
   return key.length > 8 ? `${key.slice(0, 3)}••••••••${key.slice(-4)}` : "••••••••";
 }

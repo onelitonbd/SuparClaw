@@ -134,6 +134,11 @@ export const CONFIG_SCHEMA: SchemaNode = {
             basePath: { t: "string", default: "" },
           },
         },
+        // Transport trust policy (see src/gateway/trust.ts). Hosts listed here
+        // bypass the built-in loopback/private allowlist; origins listed here
+        // may open the WebSocket cross-origin (e.g. a reverse-proxied UI).
+        allowedHosts: { t: "array", of: { t: "string" }, default: [] },
+        allowedOrigins: { t: "array", of: { t: "string" }, default: [] },
       },
     },
     agents: {
@@ -223,6 +228,8 @@ export interface SuparClawConfig {
     bind: "loopback" | "lan";
     auth: { mode: "token" | "none"; token: string; loopbackBypass: boolean };
     controlUi: { enabled: boolean; basePath: string };
+    allowedHosts: string[];
+    allowedOrigins: string[];
   };
   agents: {
     defaults: {

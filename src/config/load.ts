@@ -11,7 +11,9 @@ export const STARTER_CONFIG = `// SuparClaw config (JSON5: comments allowed)
     port: 18790,
     bind: "loopback",        // "loopback" = this phone only; "lan" = also reachable on wifi
     auth: { mode: "token", token: "" },   // empty token is auto-generated on first run
-    controlUi: { enabled: true }
+    controlUi: { enabled: true },
+    // allowedHosts: ["ui.example.com"],   // extra Host headers (reverse proxies)
+    // allowedOrigins: ["https://ui.example.com"],  // cross-origin web UIs
   },
   agents: {
     defaults: {
