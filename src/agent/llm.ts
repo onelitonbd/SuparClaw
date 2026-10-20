@@ -34,6 +34,69 @@ function normalizeCallIds(calls: ToolCall[]): ToolCall[] {
  * some backends), empty arguments become "{}", and tool messages carry the
  * function name (Gemini enforces it).
  */
+/**
+ * Merge one streamed reasoning_details fragment into a detail block.
+ * Text-ish fields concatenate; structural fields (type/format/id/signature)
+ * take the first non-empty value — concatenating `format` is a known bug
+ * class (langchainjs #11699).
+ */
+function mergeReasoningFragment(into: Record<string, unknown>, frag: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(frag)) {
+    if (value === null || value === undefined) continue;
+    if (key === "text" || key === "data" || key === "summary") {
+      into[key] = String(into[key] ?? "") + String(value);
+    } else if (into[key] === null || into[key] === undefined || into[key] === "") {
+      into[key] = value;
+    }
+  }
+}
+
+/**
+ * Accumulates one response's streamed reasoning_details into replayable
+ * blocks: fragments merge per `index` (or per non-empty `id`), a fragment
+ * whose non-empty id differs from its block's starts a new block, and
+ * index-less/id-less fragments stand alone. Gemini 3 rejects tool rounds
+ * whose signed thinking is missing or split ("missing a thought_signature
+ * in functionCall parts" — cline #7551), so blocks must be whole and the
+ * signatures kept.
+ */
+class ReasoningAccumulator {
+  #byIndex = new Map<number, Record<string, unknown>>();
+  #loose: Record<string, unknown>[] = [];
+
+  add(frags: unknown): void {
+    if (!Array.isArray(frags)) return;
+    for (const raw of frags) {
+      if (!raw || typeof raw !== "object") continue;
+      const frag = raw as Record<string, unknown>;
+      const fragId = typeof frag["id"] === "string" ? (frag["id"] as string) : "";
+      const index = typeof frag["index"] === "number" ? (frag["index"] as number) : undefined;
+      let target: Record<string, unknown> | undefined;
+      if (index !== undefined) {
+        const cand = this.#byIndex.get(index);
+        const candId = cand && typeof cand["id"] === "string" ? (cand["id"] as string) : "";
+        if (cand && (!fragId || !candId || fragId === candId)) target = cand;
+      } else if (fragId) {
+        target = [...this.#byIndex.values(), ...this.#loose].find((d) => d["id"] === fragId);
+      }
+      if (!target) {
+        target = {};
+        if (index !== undefined) this.#byIndex.set(index, target);
+        else this.#loose.push(target);
+      }
+      mergeReasoningFragment(target, frag);
+    }
+  }
+
+  blocks(): Record<string, unknown>[] {
+    return [...this.#byIndex.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, block]) => block)
+      .concat(this.#loose)
+      .filter((block) => Object.keys(block).length > 0);
+  }
+}
+
 function wireMessages(messages: ChatMessage[]): unknown[] {
   return messages.map((m) => {
     if (m.role === "assistant") {
@@ -45,6 +108,12 @@ function wireMessages(messages: ChatMessage[]): unknown[] {
           function: { name: c.name, arguments: c.args.trim() ? c.args : "{}" },
         }));
         if (m.content) out["content"] = m.content;
+        // Signed thinking must ride back with the tool calls (Gemini 3
+        // rejects "functionCall parts" without a thought_signature).
+        if (m.reasoning_details?.length) out["reasoning_details"] = m.reasoning_details;
+        else if (m.reasoning_content) out["reasoning_content"] = m.reasoning_content;
+        if (m.thinking_signature) out["thinking_signature"] = m.thinking_signature;
+        if (m.thought_signature) out["thought_signature"] = m.thought_signature;
       } else {
         out["content"] = m.content ?? "";
       }
@@ -60,13 +129,31 @@ function wireMessages(messages: ChatMessage[]): unknown[] {
 export type ChatMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
-  | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
+  | {
+      role: "assistant";
+      content: string | null;
+      tool_calls?: ToolCall[];
+      /** OpenRouter-style signed reasoning, replayed verbatim with tool calls. */
+      reasoning_details?: Record<string, unknown>[];
+      /** Plain-text fallback when no details exist (OpenRouter alias). */
+      reasoning_content?: string;
+      /** Message-level Gemini signature aliases (some proxies use these). */
+      thinking_signature?: string;
+      thought_signature?: string;
+    }
   | { role: "tool"; content: string; tool_call_id: string; name?: string };
 
 export type StreamEvent =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
-  | { type: "tool_calls"; calls: ToolCall[] }
+  | {
+      type: "tool_calls";
+      calls: ToolCall[];
+      /** Merged signed reasoning blocks to replay with these calls. */
+      reasoningDetails?: Record<string, unknown>[];
+      /** Message-level signature aliases (thinking_signature/thought_signature). */
+      messageSignatures?: Record<string, string>;
+    }
   | { type: "usage"; usage: Record<string, number> }
   | { type: "done"; finishReason: string };
 
@@ -305,6 +392,14 @@ export class LlmClient {
     const calls = new Map<number, ToolCall>();
     const callIds = new Map<string, number>();
     let lastSlot = 0;
+    const reasoning = new ReasoningAccumulator();
+    const messageSignatures: Record<string, string> = {};
+    const captureSignatures = (src: Record<string, unknown>): void => {
+      for (const key of ["thinking_signature", "thought_signature"]) {
+        const value = src[key];
+        if (typeof value === "string" && value.length > 0) messageSignatures[key] = value;
+      }
+    };
     let finishReason = "stop";
     let usage: Record<string, number> | null = null;
 
@@ -325,6 +420,13 @@ export class LlmClient {
         if (!choice) continue;
         if (choice.finish_reason) finishReason = choice.finish_reason;
         const delta = choice.delta ?? {};
+        reasoning.add(delta["reasoning_details"]);
+        captureSignatures(delta);
+        const message = (choice as { message?: Record<string, unknown> }).message;
+        if (message) {
+          reasoning.add(message["reasoning_details"]);
+          captureSignatures(message);
+        }
         // Thinking deltas, whatever the vendor calls them: DeepSeek/Nvidia NIM
         // send `reasoning_content`, OpenAI-style backends `reasoning`, some
         // stacks `thinking`. They arrive before/around the answer text.
@@ -382,7 +484,14 @@ export class LlmClient {
     }
 
     const finished = [...calls.values()].filter((c) => c.name.length > 0);
-    if (finished.length > 0) yield { type: "tool_calls", calls: normalizeCallIds(finished) };
+    if (finished.length > 0) {
+      yield {
+        type: "tool_calls",
+        calls: normalizeCallIds(finished),
+        reasoningDetails: reasoning.blocks(),
+        messageSignatures,
+      };
+    }
     if (usage) yield { type: "usage", usage };
     yield { type: "done", finishReason };
   }

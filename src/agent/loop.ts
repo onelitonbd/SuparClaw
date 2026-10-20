@@ -155,6 +155,8 @@ export class AgentLoop {
         let text = "";
         let toolCalls: { id: string; name: string; args: string }[] = [];
         let thought = "";
+        let replayDetails: Record<string, unknown>[] = [];
+        let replaySignatures: Record<string, string> = {};
         for await (const event of this.llm.stream({
           messages,
           tools: schema.length > 0 ? schema : undefined,
@@ -174,6 +176,8 @@ export class AgentLoop {
             onEvent({ type: "delta", text: event.text });
           } else if (event.type === "tool_calls") {
             toolCalls = event.calls;
+            replayDetails = event.reasoningDetails ?? [];
+            replaySignatures = event.messageSignatures ?? {};
           } else if (event.type === "usage") {
             usage = event.usage;
           }
@@ -181,8 +185,9 @@ export class AgentLoop {
         // Persist each thinking segment at its boundary (before any tool step,
         // again before the final) so a reload can show the reasoning that
         // preceded every step — and nothing is ever lost.
-        if (thought.trim()) {
-          this.deps.store.appendMessage(session.id, "reasoning", thought.trim(), runId);
+        const segmentThought = thought.trim();
+        if (segmentThought) {
+          this.deps.store.appendMessage(session.id, "reasoning", segmentThought, runId);
           thought = "";
         }
 
@@ -192,6 +197,13 @@ export class AgentLoop {
           role: "assistant",
           content: text.length > 0 ? text : null,
           tool_calls: toolCalls,
+          // Signed thinking rides back with the calls (Gemini 3 rejects
+          // functionCall parts without their thought_signature); the plain
+          // text is only a fallback when no signed blocks exist.
+          reasoning_details: replayDetails.length > 0 ? replayDetails : undefined,
+          reasoning_content: replayDetails.length === 0 && segmentThought ? segmentThought : undefined,
+          thinking_signature: replaySignatures["thinking_signature"],
+          thought_signature: replaySignatures["thought_signature"],
         });
 
         for (const call of toolCalls) {
@@ -289,10 +301,13 @@ export class AgentLoop {
     const rows = this.deps.store.recentMessages(sessionId, 80);
     const history: ChatMessage[] = [];
     let used = 0;
-    // Walk backwards until the character budget is spent; keep order.
+    // Walk backwards until the character budget is spent; keep order. Only
+    // real conversation turns enter the prompt: tool rows, persisted thinking
+    // (role:"reasoning") and error rows are display-only — sending them as
+    // assistant turns would both waste tokens and corrupt the transcript.
     for (let i = rows.length - 1; i >= 0; i--) {
       const row = rows[i]!;
-      if (row.role === "tool") continue;
+      if (row.role !== "user" && row.role !== "assistant") continue;
       const entry =
         row.role === "user"
           ? ({ role: "user", content: row.content } as ChatMessage)

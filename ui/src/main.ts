@@ -36,7 +36,7 @@ const chat = new Chat(document.body, {
 /* ---------------- events ---------------- */
 
 gateway.on((event, payload) => {
-  if (event === "tick") { void health(); return; }
+  if (event === "tick") return;
   if (event === "chat") {
     const p = payload ?? {};
     if (p.sessionKey && p.sessionKey !== sessionKey) return;
@@ -217,12 +217,7 @@ $("think-view").addEventListener("click", () => {
   toast(`thinking preview: ${next}`, "ok");
 });
 
-async function health(): Promise<void> {
-  try {
-    const h = await fetch("/health").then((r) => r.json());
-    $("tok").textContent = `${h.sessions} session${h.sessions === 1 ? "" : "s"}`;
-  } catch { /* ignore */ }
-}
+/* ---------------- sessions drawer ---------------- */
 
 function renderSessions(list: { key: string; last_msg_at?: number; title?: string }[]): void {
   const host = $("sessions");
@@ -412,5 +407,4 @@ if (savedTheme) document.documentElement.dataset.themeMode = savedTheme;
 $("session-title").textContent = sessionKey;
 route();
 gateway.connect();
-void health();
 void refresh();

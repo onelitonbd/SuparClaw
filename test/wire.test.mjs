@@ -47,12 +47,37 @@ test("tool rounds serialize to strict OpenAI wire format (the Gemini 400 fix)", 
       res.writeHead(200, { "content-type": "text/event-stream" });
       if (round === 1) {
         // Gemini-style: distinct ids ("0","1"), NO index fields, one call with
-        // empty-string arguments — all documented real-world quirks.
+        // empty-string arguments — plus signed reasoning_details fragments
+        // split across chunks (the thought_signature class, cline #7551).
         const calls = [
           { id: "0", function: { name: "echo_tool", arguments: "" } },
           { id: "1", function: { name: "echo_tool", arguments: '{"x":1}' } },
         ];
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: calls } }] })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{
+              delta: {
+                thinking_signature: "sig-message-level",
+                reasoning_details: [
+                  { type: "reasoning.text", text: "First half ", id: "r1", format: "google-gemini-v1", index: 0, signature: null },
+                ],
+                tool_calls: [calls[0]],
+              },
+            }],
+          })}\n\n`,
+        );
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{
+              delta: {
+                reasoning_details: [
+                  { type: "reasoning.text", text: "second half.", index: 0, signature: "sig-block-1" },
+                ],
+                tool_calls: [calls[1]],
+              },
+            }],
+          })}\n\n`,
+        );
         res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
       } else {
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "all done" } }] })}\n\n`);
@@ -139,4 +164,58 @@ test("tool rounds serialize to strict OpenAI wire format (the Gemini 400 fix)", 
   // first request untouched where it should be
   const firstAssistant = bodies[0].messages.find((m) => m.role === "assistant");
   assert.equal(firstAssistant, undefined, "no assistant replay on turn one");
+
+  // ── signed thinking rides back with the tool calls (thought_signature fix)
+  const details = assistant.reasoning_details;
+  assert.ok(Array.isArray(details) && details.length === 1, `fragments merged into one block: ${JSON.stringify(details)}`);
+  assert.equal(details[0].text, "First half second half.", "fragment text concatenated in order");
+  assert.equal(details[0].format, "google-gemini-v1", "structural fields NOT concatenated (langchain #11699)");
+  assert.equal(details[0].signature, "sig-block-1", "block signature preserved for replay");
+  assert.equal(details[0].id, "r1");
+  assert.equal(assistant.thinking_signature, "sig-message-level", "message-level signature alias replayed");
+  assert.equal(typeof assistant.reasoning_content, "undefined", "no duplicate plaintext when signed blocks exist");
+});
+
+test("plain thinking without signed blocks replays as reasoning_content fallback", async (t) => {
+  const { AgentLoop, LlmClient, Store, createLogger, emptyConfig } = await import("../dist/lib.js");
+  const bodies = [];
+  let round = 0;
+  const mock = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      bodies.push(JSON.parse(raw));
+      round += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (round === 1) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "thinking hard" } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ id: "t1", function: { name: "echo_tool", arguments: "{}" } }] } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      }
+      res.end();
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => mock.listen(port, "127.0.0.1", r));
+  t.after(() => mock.close());
+  const dir = mkdtempSync(join(TEST_TMP, "sc-wire2-"));
+  const store = Store.open(join(dir, "state.sqlite"));
+  t.after(() => store.close());
+  const llm = new LlmClient(
+    { mock: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["m1"] }, other: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["z"] } },
+    { model: "mock/m1", fallbacks: [] },
+  );
+  const loop = new AgentLoop({
+    config: emptyConfig(),
+    store,
+    log: createLogger({ level: "error" }),
+    llm,
+    tools: [{ name: "echo_tool", description: "e", parameters: { type: "object", properties: { x: { type: "string" } } }, needsApproval: false, run: async () => "ok" }],
+  });
+  await loop.run({ sessionKey: "main:wire2", text: "go", onEvent: () => {} });
+  const assistant = bodies[1].messages.find((m) => m.role === "assistant" && m.tool_calls);
+  assert.equal(assistant.reasoning_content, "thinking hard", "plaintext thinking replayed as the documented alias");
+  assert.equal(assistant.reasoning_details, undefined, "no invented signed blocks");
 });

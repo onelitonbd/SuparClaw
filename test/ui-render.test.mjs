@@ -171,3 +171,10 @@ test("loadHistory replaces via replaceThread and never clears before the fetch",
   assert.ok(!fn.includes("chat.clear()"), "no clear-before-fetch (the blank-screen failure mode)");
   assert.ok(fn.indexOf("gateway.request") < fn.indexOf("chat.replaceThread"), "fetch first, replace after");
 });
+
+test("composer carries no session counter (removed by request)", () => {
+  const src = readFileSync(join(ROOT, "ui/src/main.ts"), "utf8");
+  assert.ok(!src.includes("function health"), "health() session-count writer is gone");
+  assert.ok(!/sessions\} session/.test(src), "no 'N sessions' label anywhere");
+  assert.ok(src.includes("setTokenHint"), "#tok still shows token hints");
+});

@@ -185,8 +185,23 @@ test("loop: thinking persists per step, previews live, and never re-enters the p
   assert.deepEqual(seenPrompts[0], ["system", "user"], `first prompt clean: ${seenPrompts[0]}`);
   assert.deepEqual(seenPrompts[1], ["system", "user", "assistant", "tool"], `second prompt clean: ${seenPrompts[1]}`);
 
-  // the configured effort rides the provider request
-  assert.deepEqual(seenEffort, ["high", "high"], `reasoning level resolved per call: ${seenEffort}`);
+  // CROSS-TURN hygiene: a later run must not send persisted reasoning or
+  // error rows as fake assistant turns (they used to fall through to the
+  // assistant branch of buildMessages).
+  await loop.run({ sessionKey: "main:think", text: "again please", onEvent: (e) => events.push(e) });
+  assert.deepEqual(
+    seenPrompts[2],
+    ["system", "user", "assistant", "user"],
+    `later-turn prompt has only real turns: ${seenPrompts[2]}`,
+  );
+  assert.deepEqual(
+    seenPrompts[3],
+    ["system", "user", "assistant", "user", "assistant", "tool"],
+    `later tool round stays clean: ${seenPrompts[3]}`,
+  );
+
+  // the configured effort rides the provider request (2 runs × 2 llm calls)
+  assert.deepEqual(seenEffort, ["high", "high", "high", "high"], `reasoning level resolved per call: ${seenEffort}`);
 });
 
 test("gateway: session thinking level persists across refresh and reasoning saves", async (t) => {
