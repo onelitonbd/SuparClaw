@@ -266,7 +266,9 @@ export const CONFIG_SCHEMA: SchemaNode = {
           fields: {
             enabled: { t: "bool", default: false },
             approvals: { t: "bool", default: true },
-            timeoutMs: { t: "int", min: 1000, max: 600000, default: 30000 },
+            // No time limits on the agent's work — this is only a safety cap
+            // so a hung command cannot block a session forever (10 minutes).
+            timeoutMs: { t: "int", min: 1000, max: 600000, default: 600000 },
           },
         },
       },

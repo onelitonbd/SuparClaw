@@ -13,6 +13,7 @@ export type RunEvent =
   | { type: "delta"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "tool"; callId: string; name: string; status: "running" | "done" | "error"; detail?: string; ms?: number }
+  | { type: "retry"; model: string; attempt: number; max: number; error: string }
   | { type: "final"; runId: string; text: string; usage?: Record<string, number> }
   | { type: "error"; runId: string; message: string }
   | { type: "approval"; callId: string; tool: string; args: Record<string, unknown> }
@@ -202,11 +203,17 @@ export class AgentLoop {
         // A request may name a curated profile id or a bare provider ref; the
         // profile contributes its wire ref plus per-model tuning.
         const profile = modelProfile(this.deps.config, input.model ?? "");
+        // Fallbacks may also name profile ids — resolve each to its wire ref
+        // (10+ entries supported, tried in order).
+        const fallbackRefs = (this.deps.config.agents.defaults.fallbacks ?? [])
+          .map((f) => modelProfile(this.deps.config, f).ref)
+          .filter((r): r is string => Boolean(r) && r !== profile.ref);
         for await (const event of this.llm.stream({
           messages,
           tools: schema.length > 0 ? schema : undefined,
           signal: controller.signal,
           model: profile.ref || undefined,
+          fallbacks: fallbackRefs,
           temperature: profile.temperature,
           maxTokens: profile.maxTokens,
           reasoning:
@@ -214,6 +221,8 @@ export class AgentLoop {
             session.thinking ??
             (profile.reasoningEffort !== "inherit" ? profile.reasoningEffort : undefined) ??
             (this.deps.config.agents.defaults.reasoningEffort as string | undefined),
+          onRetry: (info) =>
+            onEvent({ type: "retry", model: info.model, attempt: info.attempt, max: info.max, error: info.error }),
         })) {
           if (event.type === "reasoning") {
             thought += event.text;

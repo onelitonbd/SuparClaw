@@ -120,75 +120,109 @@ export class Settings {
   /* ---------------- model ---------------- */
 
   #renderModel(defaults: any, selected: any[], _warning?: string): void {
-    const input = el("input", {
-      class: "inp mono",
-      id: "default-model",
-      value: defaults.model ?? "",
-      placeholder: "provider/model",
-      autocomplete: "off",
-      spellcheck: "false",
-    });
-    const fallback = el("input", {
-      class: "inp mono",
-      id: "fallback-models",
-      value: (defaults.fallbacks ?? []).join(", "),
-      placeholder: "provider/model, provider/model",
-      autocomplete: "off",
-      spellcheck: "false",
-    });
+    // Pure selection: every choice comes from the models checked in the Models
+    // tab — no typing refs. The fallback list is ordered and uncapped (10+).
+    const options = (selected as any[]).map((m) => ({
+      value: String(m.id ?? m.ref ?? ""),
+      label: String(m.label || m.ref || m.id),
+    }));
 
-    const saved = el("div", { class: "list" });
-    if (selected.length === 0) {
-      saved.append(el("p", { class: "hint" }, [
-        "No models selected yet — open the Models tab and check the models you want in the system.",
-      ]));
-    }
-    for (const m of selected as any[]) {
-      const shown = String(m.id ?? m.ref ?? "");
-      const isDef = shown === defaults.model || m.ref === defaults.model;
-      const action = isDef
-        ? el("span", { class: "sheet__check", style: "font-size:12px;font-weight:600;color:var(--accent);background:var(--accsoft);padding:3px 10px;border-radius:999px" }, ["Default"])
-        : el("button", { class: "btn sm", type: "button" }, ["Set default"]);
-      if (!isDef) {
-        (action as HTMLElement).onclick = () => {
-          input.value = shown;
-          toast("default model updated — save to apply", "info");
-        };
+    const makeSelect = (value: string, emptyLabel: string): HTMLSelectElement => {
+      const sel = el("select", { class: "inp mono" }) as HTMLSelectElement;
+      const empty = el("option", { value: "" }, [emptyLabel]) as HTMLOptionElement;
+      if (!value) empty.selected = true;
+      sel.append(empty);
+      for (const o of options) {
+        const opt = el("option", { value: o.value }, [o.label]) as HTMLOptionElement;
+        if (o.value === value) opt.selected = true;
+        sel.append(opt);
       }
-      saved.append(el("div", { class: "row" }, [
-        el("span", { class: "session__text" }, [
-          el("span", { class: "session__title mono" }, [m.label || m.ref || shown]),
-          el("span", { class: "session__meta" }, [m.ref ? String(m.ref) : shown]),
-        ]),
-        action,
-      ] as Node[]));
-    }
+      // Keep a stored value visible even when its model is no longer selected.
+      if (value && !options.some((o) => o.value === value)) {
+        const opt = el("option", { value }, [`${value} (not selected)`]) as HTMLOptionElement;
+        opt.selected = true;
+        sel.append(opt);
+      }
+      return sel;
+    };
+
+    const defaultSel = makeSelect(String(defaults.model ?? ""), "— choose a model —");
+
+    const fbRows = el("div", { class: "list" });
+    const fallbackValues: string[] = [...(defaults.fallbacks ?? [])];
+    const redrawFallbacks = (): void => {
+      fbRows.innerHTML = "";
+      fallbackValues.forEach((val, i) => {
+        const sel = makeSelect(val, "— choose a model —");
+        sel.onchange = () => {
+          fallbackValues[i] = sel.value;
+        };
+        const up = el("button", { class: "btn sm", type: "button", "aria-label": "Move up" }, ["↑"]) as HTMLButtonElement;
+        up.disabled = i === 0;
+        up.onclick = () => {
+          const t = fallbackValues[i - 1] as string;
+          fallbackValues[i - 1] = fallbackValues[i] as string;
+          fallbackValues[i] = t;
+          redrawFallbacks();
+        };
+        const down = el("button", { class: "btn sm", type: "button", "aria-label": "Move down" }, ["↓"]) as HTMLButtonElement;
+        down.disabled = i === fallbackValues.length - 1;
+        down.onclick = () => {
+          const t = fallbackValues[i + 1] as string;
+          fallbackValues[i + 1] = fallbackValues[i] as string;
+          fallbackValues[i] = t;
+          redrawFallbacks();
+        };
+        const rm = el("button", { class: "btn sm danger", type: "button" }, ["✕"]) as HTMLButtonElement;
+        rm.onclick = () => {
+          fallbackValues.splice(i, 1);
+          redrawFallbacks();
+        };
+        fbRows.append(el("div", { class: "row", style: "padding:8px 16px;gap:8px" }, [
+          el("span", { class: "row__label", style: "min-width:28px" }, [`#${i + 1}`]),
+          sel, up, down, rm,
+        ]));
+      });
+    };
+    redrawFallbacks();
+
+    const add = el("button", { class: "btn", type: "button" }, ["+ Add fallback"]);
+    add.onclick = () => {
+      fallbackValues.push("");
+      redrawFallbacks();
+    };
 
     const save = el("button", { class: "btn pri", type: "button" }, ["Save changes"]);
     save.onclick = async () => {
-      const fb = fallback.value.split(",").map((s) => s.trim()).filter(Boolean);
+      const fb = fallbackValues.map((v) => v.trim()).filter(Boolean);
       await this.#setMany([
-        ["agents.defaults.model", input.value.trim()],
+        ["agents.defaults.model", defaultSel.value],
         ["agents.defaults.fallbacks", fb],
       ], "model saved");
     };
 
     this.#root.append(
       el("div", { class: "card" }, [
-        el("label", { class: "lbl", for: "default-model" }, ["Default model"]),
-        input,
-        el("p", { class: "hint" }, ["Used for every new session."]),
         el("div", { class: "modal__field" }, [
-          el("label", { class: "lbl", for: "fallback-models" }, ["Fallbacks"]),
-          fallback,
-          el("p", { class: "hint" }, ["Tried in order when the default model fails."]),
+          el("label", { class: "lbl" }, ["Default model"]),
+          defaultSel,
+          el("p", { class: "hint" }, [
+            options.length === 0
+              ? "No models selected yet — check models in the Models tab first."
+              : "Used for every new session. Choose from the models you selected in the Models tab.",
+          ]),
         ]),
       ]),
       el("div", { class: "card", style: "padding:8px 16px" }, [
         el("div", { class: "cap", style: "padding:8px 0;display:flex;align-items:center;gap:8px" }, [
-          el("span", {}, ["Selected models"]),
+          el("span", {}, ["Fallback models"]),
+          el("span", { class: "hint", style: "margin-left:auto" }, [`${fallbackValues.length} configured`]),
         ]),
-        saved,
+        el("p", { class: "hint" }, [
+          "Tried in order when a model fails (each gets its own retry budget). Add as many as you like — at least 10 fit.",
+        ]),
+        fbRows,
+        add,
       ]),
       save,
     );

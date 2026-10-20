@@ -587,11 +587,17 @@ export class Gateway {
               }
             }
           } else if (path === "agents.defaults.fallbacks" && Array.isArray(value)) {
-            const fallbacks = value.map((m) =>
-              typeof m === "string" ? (canonicalModelRef(service.config, m) ?? m) : m,
-            );
+            const fallbacks = value.map((m) => {
+              if (typeof m !== "string") return m;
+              const t = m.trim();
+              // Profile ids (Settings → Models) are valid fallback entries —
+              // the loop resolves them to wire refs. Keep them untouched.
+              if ((service.config.models ?? {})[t]) return t;
+              return canonicalModelRef(service.config, t) ?? t;
+            });
             for (const m of fallbacks) {
               if (typeof m !== "string" || !m.trim()) continue;
+              if ((service.config.models ?? {})[m.trim()]) continue;
               const invalid = validateModelRef(service.config, m);
               if (invalid) {
                 send(errFrame(id, "bad_model", invalid));

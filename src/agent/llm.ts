@@ -399,14 +399,35 @@ export class LlmError extends Error {
   }
 }
 
-/** Retry-After: seconds or an HTTP-date, floored for the next attempt (capped at 60s). */
+/**
+ * Retry-After: seconds or an HTTP-date. Returned as the exact wait the
+ * provider asked for — no artificial cap (we honor explicit provider hints
+ * exactly and never invent our own time limits).
+ */
 export function parseRetryAfter(header: string | null): number | undefined {
   if (!header) return undefined;
   const ms = Number(header) * 1000;
-  if (Number.isFinite(ms) && ms >= 0) return Math.min(60_000, ms);
+  if (Number.isFinite(ms) && ms >= 0) return ms;
   const at = Date.parse(header);
-  if (Number.isFinite(at)) return Math.min(60_000, Math.max(0, at - Date.now()));
+  if (Number.isFinite(at)) return Math.max(0, at - Date.now());
   return undefined;
+}
+
+/**
+ * Explicit "try again in X" hints inside an error body ("Please try again in
+ * 30s", "try again in 2 minutes"). Returns the exact wait the provider asked
+ * for, or undefined when the message carries no such hint.
+ */
+export function parseRetryHint(message: string): number | undefined {
+  const m = /try again in\s+(\d+(?:\.\d+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)/i.exec(
+    message,
+  );
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  const unit = (m[2] ?? "").toLowerCase();
+  const scale = unit.startsWith("h") ? 3_600_000 : unit.startsWith("m") ? 60_000 : 1000;
+  return n * scale;
 }
 
 export function resolveModel(
@@ -480,6 +501,16 @@ interface StreamOptions {
   /** Per-run override; falls back to agents.defaults.model. */
   model?: string;
   /**
+   * Fallback chain for this run (already resolved to wire refs). Falls back
+   * to agents.defaults.fallbacks. At least 10 entries are supported.
+   */
+  fallbacks?: string[];
+  /**
+   * Called before each retry with the failure so the surface can show the
+   * error and "retrying (attempt N/7)" while it waits.
+   */
+  onRetry?: (info: { model: string; attempt: number; max: number; error: string }) => void;
+  /**
    * Thinking effort for this request ("inherit"/"off"/"low"/…/"max"). Sent as
    * OpenAI-compatible `reasoning_effort` when it names a real level; "inherit"
    * and "off" omit the field (custom endpoints reject an explicit off).
@@ -531,20 +562,28 @@ export class LlmClient {
   /**
    * Stream one completion, walking the fallback chain on retryable failures.
    *
-   * Retry contract (mirrors OpenClaw's policy): a request that has already
+   * Retry contract: no artificial time limits. A request that has already
    * delivered events to the consumer is never retried — retrying would stitch
-   * two answers together. Failures with no output yet retry with jittered
-   * backoff (honoring Retry-After), then fall through to the next model.
-   * Auth/billing errors and unexpected exceptions are terminal.
+   * two answers together. Failures with no output yet retry INSTANTLY — up to
+   * 7 retries per model — unless the provider explicitly asked for a wait
+   * ("Retry-After" or "try again in X"), in which case the exact hint is
+   * honored and nothing more. Every retry reports the error and the attempt
+   * through opts.onRetry so the user sees "error ... retrying (N/7)". After the
+   * retries are spent, the next model in the fallback chain gets its own
+   * fresh 7. Auth/billing errors and unexpected exceptions skip straight to
+   * the next fallback.
    */
   async *stream(opts: StreamOptions): AsyncGenerator<StreamEvent> {
+    const MAX_RETRIES = 7;
     const chain = [
-      ...new Set([opts.model ?? this.#defaults.model, ...this.#defaults.fallbacks].filter(Boolean)),
+      ...new Set(
+        [opts.model ?? this.#defaults.model, ...(opts.fallbacks ?? this.#defaults.fallbacks ?? [])].filter(Boolean),
+      ),
     ];
     if (chain.length === 0) throw new LlmError("no model configured — set agents.defaults.model and a provider");
     let lastError: Error | null = null;
     for (const modelRef of chain) {
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         let yielded = false;
         try {
           for await (const event of this.#streamOnce(modelRef, opts)) {
@@ -560,17 +599,21 @@ export class LlmClient {
           if (yielded) throw e; // partial output reached the consumer — never stitch
           // Strict routes reject the google thinking extension with a 400
           // (unknown field). Drop it and re-run this attempt without it —
-          // the extension is best-effort, the run must survive.
+          // the extension is best-effort, the run must survive. Not a retry.
           if (e.status === 400 && this.#googleExt) {
             this.#googleExt = false;
             attempt--;
             continue;
           }
           if (!e.retryable) break; // auth/4xx on this model: try the next fallback
-          if (attempt >= 2) break; // exhausted retries on this model
+          if (attempt >= MAX_RETRIES) break; // spent all 7 retries on this model
+          const info = { model: modelRef, attempt: attempt + 1, max: MAX_RETRIES, error: e.message };
+          opts.onRetry?.(info);
           this.onRetry?.({ model: modelRef, attempt: attempt + 1, error: e.message });
-          const backoff = Math.min(4000, 250 * 2 ** attempt) * (0.8 + Math.random() * 0.4);
-          await sleep(Math.max(backoff, e.retryAfterMs ?? 0));
+          // Instant retry — except an explicit provider hint is honored
+          // exactly (Retry-After header or a "try again in X" message).
+          const waitMs = e.retryAfterMs ?? parseRetryHint(e.message) ?? 0;
+          if (waitMs > 0) await sleep(waitMs);
         }
       }
     }

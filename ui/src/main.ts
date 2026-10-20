@@ -72,6 +72,15 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
         e.callId as string | undefined,
       );
       break;
+    case "retry": {
+      // Always visible (no collapse): show what failed and that a retry is
+      // running - "error ... retrying (attempt N/7)".
+      const error = String(e.error ?? "provider error");
+      const attempt = Number(e.attempt ?? 1);
+      const max = Number(e.max ?? 7);
+      chat.notice(`error: ${error} — retrying (attempt ${attempt}/${max})...`, "notice--error");
+      break;
+    }
     case "approval":
       chat.approval(String(e.callId), String(e.tool), e.args);
       break;
