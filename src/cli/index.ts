@@ -25,6 +25,7 @@ commands:
   init                 create workspace files and a gateway token
   status               show health and configuration summary
   doctor               diagnose this device
+  security [audit]     review gateway/tool/channel security posture
   stop                    stop a running gateway (pid file)
   config <get|set|path>  read or write config values
   token [--rotate]      show (or regenerate) the gateway token
@@ -68,6 +69,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./provider.js")).providerCmd(rest);
     case "doctor":
       return (await import("./doctor.js")).doctor();
+    case "security":
+      return (await import("./audit.js")).securityCmd(rest);
     case "init":
       return init();
     case "status":

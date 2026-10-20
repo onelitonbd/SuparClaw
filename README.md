@@ -50,6 +50,7 @@ sc config set providers.local.baseUrl  "http://127.0.0.1:8080/v1"
 | `sc tui --url ws://host:port --token …` | terminal UI against a remote daemon |
 | `sc gateway` | run the daemon: gateway, channels, cron |
 | `sc doctor` | node / sqlite / FTS5 / config / port / disk / skills checks |
+| `sc security audit` | security posture: bind, auth, origins, exec, channels, file perms |
 | `sc status` | health + effective config summary |
 | `sc config get\|set\|path` | read and write `~/.suparclaw/config.json5` |
 | `sc pair approve <id>` | allow a Telegram user to DM the bot |
@@ -106,13 +107,31 @@ the body loads on demand through the `skill_read` tool.
 Bare `node -e ''` on this box costs 0.66 s, so SuparClaw's own startup work is ~0.39 s here and
 far less on native Termux.
 
+## Security
+
+The gateway is a control plane that holds your API keys and can run tools — it is
+built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this):
+
+- **Host allowlist** on every HTTP request and WS upgrade (loopback names,
+  private IPs on LAN binds, `gateway.allowedHosts` for proxies) — defeats DNS
+  rebinding.
+- **Origin allowlist** on the WS upgrade — same-origin or
+  `gateway.allowedOrigins`; hostile pages cannot open `ws://127.0.0.1:…` (CSWSH).
+- **Token auth is fail-closed** — an empty token never authorizes anyone; this
+  device's own browser is exempt only on loopback (`auth.loopbackBypass`).
+- **Secrets never travel on the wire** — `config.get` returns sentinels
+  (`__redacted__:…`), `config.set` maps them back to the stored values.
+- **exec is off by default** and gated by per-call approval when enabled.
+
+Run `sc security audit` after any config change.
+
 ## Development
 
 ```bash
 npm install
 npm run build        # dist/sc.js + code-split chunks
 npm run typecheck
-npm test             # 19 tests: config, skills, store, tools, TUI rendering
+npm test             # config, skills, store, tools, TUI, gateway contract, security
 ```
 
 Layout: `src/agent` (loop, llm, tools, skills, workspace), `src/gateway` (http+ws protocol),
@@ -121,6 +140,7 @@ editor), `src/cli`, `src/state` (node:sqlite), `src/config` (strict JSON5 schema
 
 ## Design notes
 
+- `docs/suparclaw-vs-openclaw.md` — gap analysis vs OpenClaw and what we adopt/refuse
 - `docs/suparclaw-architecture-spec.md` — architecture, budgets, milestones
 - `docs/suparclaw-ui-design-spec.md` — the TUI/Web design system we clone and why
 - `docs/openclaw-surfaces-brief.md`, `docs/openclaw-architecture-brief.md` — the research

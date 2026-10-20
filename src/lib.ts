@@ -9,7 +9,10 @@ export { parseFrontmatter, discoverSkills, matchSkills, skillsCatalog } from "./
 export { Store } from "./state/db.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
 export { buildRegistry, toolsToSchema, safePath } from "./agent/tools.js";
-export { LlmClient, resolveModel, parseToolArgs } from "./agent/llm.js";
+export { LlmClient, resolveModel, parseToolArgs, parseRetryAfter, LlmError } from "./agent/llm.js";
+export { hostAllowed, originAllowed, hostnameOf, type TrustPolicy } from "./gateway/trust.js";
+export { redactSecrets, resolveRedacted, isRedacted, maskSecret, REDACTED_PREFIX } from "./config/redact.js";
+export { auditConfig, type Finding } from "./cli/audit.js";
 export { splitForTelegram } from "./channels/telegram.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
