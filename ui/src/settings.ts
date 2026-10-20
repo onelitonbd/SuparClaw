@@ -23,6 +23,8 @@ export class Settings {
   #tabs: HTMLElement;
   #onChanged: () => void;
   #tab: TabId = "model";
+  /** Models tab drill-down: provider name when its model list is open. */
+  #modelsProvider: string | null = null;
 
   constructor(root: HTMLElement, onChanged: () => void) {
     this.#root = root;
@@ -59,6 +61,7 @@ export class Settings {
     let models: string[] = [];
     let modelsWarning: string | undefined;
     let configured: any[] = [];
+    let details: Record<string, any> = {};
     let tools: any[] = [];
     let skills: any[] = [];
     try {
@@ -67,6 +70,7 @@ export class Settings {
       models = (modelRes as any).models ?? [];
       modelsWarning = (modelRes as any).warning;
       configured = (modelRes as any).configured ?? [];
+      details = (modelRes as any).details ?? {};
       tools = (toolRes as any).tools ?? [];
       skills = (skillRes as any).skills ?? [];
     } catch (err) {
@@ -78,9 +82,16 @@ export class Settings {
     const gw = config.gateway ?? {};
 
     this.#root.innerHTML = "";
-    if (this.#tab === "model") this.#renderModel(defaults, models, modelsWarning);
-    else if (this.#tab === "models") this.#renderModels(configured, models);
-    else if (this.#tab === "providers") this.#renderProviders(providers);
+    if (this.#tab === "model") {
+      // Defaults tab offers the SELECTED models only — the strict filter.
+      this.#renderModel(defaults, configured.filter((m) => m.enabled), modelsWarning);
+    } else if (this.#tab === "models") {
+      if (this.#modelsProvider) {
+        this.#renderProviderModels(this.#modelsProvider, providers, configured, models, details, modelsWarning);
+      } else {
+        this.#renderModels(providers, configured, models);
+      }
+    } else if (this.#tab === "providers") this.#renderProviders(providers);
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") this.#renderTools(tools);
     else if (this.#tab === "gateway") this.#renderGateway(gw);
@@ -97,6 +108,7 @@ export class Settings {
       }, [t.label]);
       btn.onclick = () => {
         this.#tab = t.id;
+        this.#modelsProvider = null;
         void this.render();
       };
       this.#tabs.append(btn);
@@ -105,7 +117,7 @@ export class Settings {
 
   /* ---------------- model ---------------- */
 
-  #renderModel(defaults: any, models: string[], warning?: string): void {
+  #renderModel(defaults: any, selected: any[], _warning?: string): void {
     const input = el("input", {
       class: "inp mono",
       id: "default-model",
@@ -124,21 +136,27 @@ export class Settings {
     });
 
     const saved = el("div", { class: "list" });
-    for (const m of models.slice(0, 20)) {
-      const isDef = m === defaults.model;
+    if (selected.length === 0) {
+      saved.append(el("p", { class: "hint" }, [
+        "No models selected yet — open the Models tab and check the models you want in the system.",
+      ]));
+    }
+    for (const m of selected as any[]) {
+      const shown = String(m.id ?? m.ref ?? "");
+      const isDef = shown === defaults.model || m.ref === defaults.model;
       const action = isDef
         ? el("span", { class: "sheet__check", style: "font-size:12px;font-weight:600;color:var(--accent);background:var(--accsoft);padding:3px 10px;border-radius:999px" }, ["Default"])
         : el("button", { class: "btn sm", type: "button" }, ["Set default"]);
       if (!isDef) {
         (action as HTMLElement).onclick = () => {
-          input.value = m;
+          input.value = shown;
           toast("default model updated — save to apply", "info");
         };
       }
       saved.append(el("div", { class: "row" }, [
         el("span", { class: "session__text" }, [
-          el("span", { class: "session__title mono" }, [m]),
-          el("span", { class: "session__meta" }, [m.includes("/") ? (m.split("/")[0] ?? "default") : "default"]),
+          el("span", { class: "session__title mono" }, [m.label || m.ref || shown]),
+          el("span", { class: "session__meta" }, [m.ref ? String(m.ref) : shown]),
         ]),
         action,
       ] as Node[]));
@@ -166,29 +184,8 @@ export class Settings {
       ]),
       el("div", { class: "card", style: "padding:8px 16px" }, [
         el("div", { class: "cap", style: "padding:8px 0;display:flex;align-items:center;gap:8px" }, [
-          el("span", {}, ["Available models"]),
-          (() => {
-            const refresh = el("button", { class: "btn sm", type: "button", style: "margin-left:auto" }, [
-              "↻ Refresh",
-            ]);
-            refresh.onclick = async () => {
-              try {
-                const res = (await gateway.request("models.list", { refresh: true })) as any;
-                toast(
-                  res.warning ? `saved rows shown — ${res.warning}` : `${(res.models ?? []).length} models`,
-                  res.warning ? "info" : "ok",
-                );
-                await this.render();
-              } catch (err) {
-                toast((err as Error).message, "err");
-              }
-            };
-            return refresh;
-          })(),
+          el("span", {}, ["Selected models"]),
         ]),
-        warning
-          ? el("p", { class: "hint", style: "color:var(--warn)" }, [warning])
-          : el("span", {}),
         saved,
       ]),
       save,
@@ -197,83 +194,173 @@ export class Settings {
 
   /* ---------------- models ---------------- */
 
-  #renderModels(configured: any[], discovered: string[]): void {
+  // Provider-first selection surface: a provider card opens a sub-page with
+  // its fetched models; the checkbox marks which models exist "in the system"
+  // (strict filter — unmarked models appear nowhere), and clicking a model
+  // tunes its capabilities in a popup.
+
+  #renderModels(
+    providers: Record<string, Provider>,
+    configured: any[],
+    discovered: string[],
+  ): void {
+    const selected = new Set(configured.filter((m) => m.enabled).map((m) => m.ref));
     const body = el("div", { class: "settings__body" });
 
     body.append(el("div", { class: "card" }, [
-      el("div", { class: "row__label" }, ["Curated models"]),
+      el("div", { class: "row__label" }, ["Models"]),
       el("p", { class: "hint" }, [
-        configured.length === 0
-          ? "Nothing added yet — the picker currently lists every provider model. Add a model to start curating: only accepted models will appear in the picker. You can add the same provider model several times with different tuning."
-          : "Only accepted models appear in the model picker. Sessions can also address a model by its id.",
+        "Pick which models are in the system. Click a provider to see the models fetched from it — only checked models appear in the model picker and everywhere else.",
       ]),
     ]));
 
-    for (const m of configured as any[]) {
-      const tuning: string[] = [];
-      if (m.contextWindow) tuning.push(`${m.contextWindow} tok ctx`);
-      if (m.maxTokens) tuning.push(`max ${m.maxTokens} out`);
-      if (typeof m.temperature === "number") tuning.push(`temp ${m.temperature}`);
-      if (m.reasoningEffort && m.reasoningEffort !== "inherit") tuning.push(`think ${m.reasoningEffort}`);
-
-      const accept = el("button", { class: `btn sm${m.enabled ? " pri" : ""}`, type: "button" }, [
-        m.enabled ? "Accepted" : "Not in picker",
-      ]);
-      accept.onclick = async () => {
-        try {
-          await gateway.request("models.save", { ...m, id: m.id, enabled: !m.enabled });
-          toast(m.enabled ? `${m.label || m.id} removed from picker` : `${m.label || m.id} accepted`, "ok");
-          await this.render();
-        } catch (err) {
-          toast((err as Error).message, "err");
-        }
-      };
-      const edit = el("button", { class: "btn sm", type: "button" }, ["Edit"]);
-      edit.onclick = () => this.#modelForm(m, discovered, () => void this.render());
-      const remove = el("button", { class: "btn sm danger", type: "button" }, ["Remove"]);
-      remove.onclick = () => {
-        void modal({
-          title: "Remove model?",
-          body: `This removes the profile "${m.label || m.id}" (${m.ref}). Sessions naming its id fall back to the raw ref.`,
-          confirmLabel: "Remove",
-          danger: true,
-          onConfirm: async () => {
-            try {
-              await gateway.request("models.remove", { id: m.id });
-              toast("model removed", "ok");
-              await this.render();
-            } catch (err) {
-              toast((err as Error).message, "err");
-            }
-          },
-        });
-      };
-
+    const names = Object.keys(providers);
+    if (names.length === 0) {
       body.append(el("div", { class: "card" }, [
+        el("p", { class: "hint" }, ["No providers yet — add one in the Providers tab first."]),
+      ]));
+    }
+    for (const name of names) {
+      const refs = discovered.filter((r) => r.startsWith(`${name}/`));
+      const chosen = refs.filter((r) => selected.has(r)).length;
+      const open = el("button", { class: "btn sm", type: "button" }, ["Open"]);
+      const card = el("div", { class: "card" }, [
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
-            el("span", { class: "prov__name" }, [m.label || m.id]),
-            el("span", { class: "prov__count mono" }, [m.ref]),
+            el("span", { class: "prov__name" }, [name]),
+            el("span", { class: "prov__count" }, [`${chosen} of ${refs.length} selected`]),
           ]),
-          el("div", { class: "prov__url mono" }, [`id: ${m.id}${tuning.length ? " — " + tuning.join(" · ") : ""}`]),
-          el("div", { class: "prov__row" }, [accept, edit, remove]),
+          el("div", { class: "prov__url" }, [providers[name]?.baseUrl ?? ""]),
+          el("div", { class: "prov__row" }, [open]),
+        ]),
+      ]);
+      const go = () => {
+        this.#modelsProvider = name;
+        void this.render();
+      };
+      open.onclick = go;
+      (card as HTMLElement).style.cursor = "pointer";
+      (card as HTMLElement).onclick = go;
+      body.append(card);
+    }
+
+    this.#root.append(body);
+  }
+
+  #renderProviderModels(
+    provider: string,
+    providers: Record<string, Provider>,
+    configured: any[],
+    discovered: string[],
+    details: Record<string, any>,
+    warning?: string,
+  ): void {
+    const byRef = new Map<string, any>();
+    for (const m of configured as any[]) byRef.set(m.ref, m);
+    const rows = discovered.filter((r) => r.startsWith(`${provider}/`)).sort();
+
+    const back = el("button", { class: "btn sm", type: "button" }, ["← Providers"]);
+    back.onclick = () => {
+      this.#modelsProvider = null;
+      void this.render();
+    };
+    const refresh = el("button", { class: "btn sm", type: "button" }, ["↻ Refresh"]);
+    refresh.onclick = async () => {
+      try {
+        const res = (await gateway.request("models.list", { refresh: true })) as any;
+        toast(
+          res.warning ? `saved rows shown — ${res.warning}` : `${(res.models ?? []).length} models fetched`,
+          res.warning ? "info" : "ok",
+        );
+        await this.render();
+      } catch (err) {
+        toast((err as Error).message, "err");
+      }
+    };
+
+    const head = el("div", { class: "settings__body" }, [
+      el("div", { class: "card" }, [
+        el("div", { class: "prov__head" }, [
+          el("span", { class: "prov__name" }, [provider]),
+          el("div", { class: "prov__row" }, [back, refresh]),
+        ]),
+        el("div", { class: "prov__url" }, [providers[provider]?.baseUrl ?? ""]),
+        el("p", { class: "hint" }, [
+          "Checked models are in the system. Click a model to tune its capabilities.",
+        ]),
+        warning
+          ? el("p", { class: "hint", style: "color:var(--warn)" }, [warning])
+          : el("span", {}),
+      ]),
+    ]);
+
+    if (rows.length === 0) {
+      head.append(el("div", { class: "card" }, [
+        el("p", { class: "hint" }, ["No models fetched from this provider yet — try Refresh."]),
+      ]));
+    }
+
+    for (const ref of rows) {
+      const entry = byRef.get(ref) as any;
+      const on = Boolean(entry?.enabled);
+      const tail = ref.startsWith(`${provider}/`) ? ref.slice(provider.length + 1) : ref;
+      const hintCtx = details[ref]?.contextWindow as number | undefined;
+      const ctx = entry?.contextWindow || hintCtx;
+
+      const check = el("input", {
+        type: "checkbox",
+        class: "model-check",
+        "aria-label": `select ${ref}`,
+        id: `sel-${ref.replace(/[^a-z0-9]+/gi, "-")}`,
+      }) as HTMLInputElement;
+      check.checked = on;
+      check.onchange = () => {
+        void (async () => {
+          try {
+            await gateway.request("models.save", {
+              id: entry?.id,
+              ref,
+              label: entry?.label ?? "",
+              contextWindow: entry?.contextWindow ?? hintCtx ?? 0,
+              maxTokens: entry?.maxTokens ?? 0,
+              temperature: entry?.temperature,
+              reasoningEffort: entry?.reasoningEffort ?? "inherit",
+              enabled: check.checked,
+            });
+            toast(check.checked ? `${tail} is in the system` : `${tail} removed from the system`, "ok");
+            await this.render();
+          } catch (err) {
+            check.checked = !check.checked;
+            toast((err as Error).message, "err");
+          }
+        })();
+      };
+
+      const tune = el("button", { class: "btn sm", type: "button" }, [entry ? "Tune" : "Configure"]);
+      const openTune = () => this.#modelTune(ref, entry, hintCtx, () => void this.render());
+      tune.onclick = openTune;
+
+      const name = el("span", { class: "prov__name mono", style: "flex:1;cursor:pointer;margin-left:10px" }, [
+        tail,
+        ctx ? el("span", { class: "prov__count", style: "margin-left:8px" }, [`${Math.round(ctx / 1000)}k ctx`]) : el("span", {}),
+      ]);
+      (name as HTMLElement).onclick = openTune;
+
+      head.append(el("div", { class: "card" }, [
+        el("div", { class: "prov" }, [
+          check,
+          name,
+          el("div", { class: "prov__row" }, [tune]),
         ]),
       ]));
     }
 
-    const plus = el("span");
-    plus.innerHTML = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
-    const add = el("button", { class: "btn pri", type: "button" }, [plus, "Add model"]);
-    add.onclick = () => this.#modelForm(null, discovered, () => void this.render());
-
-    this.#root.append(body, add);
+    this.#root.append(head);
   }
 
-  #modelForm(existing: any | null, discovered: string[], done: () => void): void {
+  /** Capabilities popup for one fetched model. Save also selects it. */
+  #modelTune(ref: string, existing: any | null, hintCtx: number | undefined, done: () => void): void {
     let close: () => void = () => {};
-    const refList = el("datalist", { id: "model-ref-list" });
-    for (const ref of discovered.slice(0, 200)) refList.append(el("option", { value: ref }));
-
     const field = (name: string, label: string, value: string, placeholder: string, type = "text") => {
       const input = el("input", {
         id: `f-${name}`, class: "inp mono", type, value, placeholder,
@@ -281,11 +368,8 @@ export class Settings {
       }) as HTMLInputElement;
       return { input, wrap: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `f-${name}` }, [label]), input]) };
     };
-    const idF = field("id", "Id (sessions address this)", existing?.id ?? "", "gemini-deep");
-    const labelF = field("label", "Label", existing?.label ?? "", "Gemini Deep");
-    const refF = field("ref", "Model ref (provider/model)", existing?.ref ?? "", "google/gemini-3-flash");
-    (refF.input as HTMLInputElement).setAttribute("list", "model-ref-list");
-    const ctxF = field("contextWindow", "Context window (tokens)", existing?.contextWindow ? String(existing.contextWindow) : "", "1000000", "number");
+    const labelF = field("label", "Label (optional)", existing?.label ?? "", ref.split("/").slice(1).join("/"));
+    const ctxF = field("contextWindow", "Context window (tokens)", String(existing?.contextWindow || hintCtx || ""), "auto-detect");
     const maxF = field("maxTokens", "Max output tokens (0 = provider default)", existing?.maxTokens ? String(existing.maxTokens) : "0", "0", "number");
     const tempF = field("temperature", "Temperature (blank = provider default)", typeof existing?.temperature === "number" ? String(existing.temperature) : "", "0.7", "number");
 
@@ -297,36 +381,50 @@ export class Settings {
     }
 
     modal({
-      title: existing ? `Edit ${existing.id}` : "Add model",
-      confirmLabel: existing ? "Save" : "Add",
+      title: ref,
+      confirmLabel: existing ? "Save" : "Save & select",
       render: (body, c) => {
         close = c;
         body.append(
-          idF.wrap, labelF.wrap, refF.wrap, refList, ctxF.wrap, maxF.wrap, tempF.wrap,
+          labelF.wrap, ctxF.wrap, maxF.wrap, tempF.wrap,
           el("div", { class: "modal__field" }, [
             el("label", { class: "lbl", for: "f-effort" }, ["Default thinking"]),
             effortSel,
             el("p", { class: "hint" }, ["Per-model default; a session thinking choice still overrides it."]),
           ]),
+          existing
+            ? (() => {
+                const rm = el("button", { class: "btn danger", type: "button", style: "margin-top:8px" }, ["Remove from system"]);
+                rm.onclick = async () => {
+                  try {
+                    await gateway.request("models.remove", { id: existing.id });
+                    toast(`${ref} removed`, "ok");
+                    close();
+                    done();
+                  } catch (err) {
+                    toast((err as Error).message, "err");
+                  }
+                };
+                return rm;
+              })()
+            : el("span", {}),
         );
       },
       onConfirm: async () => {
-        const ref = refF.input.value.trim();
-        if (!ref) { toast("ref is required", "err"); return; }
         const payload: Record<string, unknown> = {
-          id: idF.input.value.trim() || labelF.input.value.trim() || ref,
-          label: labelF.input.value.trim(),
+          id: existing?.id,
           ref,
-          contextWindow: Number(ctxF.input.value) || 0,
+          label: labelF.input.value.trim(),
+          contextWindow: Number(ctxF.input.value) || hintCtx || 0,
           maxTokens: Number(maxF.input.value) || 0,
           reasoningEffort: effortSel.value,
-          enabled: existing?.enabled ?? true,
+          enabled: true,
         };
         const temp = tempF.input.value.trim();
         if (temp !== "" && Number.isFinite(Number(temp))) payload["temperature"] = Number(temp);
         try {
           await gateway.request("models.save", payload);
-          toast(existing ? "model saved" : "model added", "ok");
+          toast(existing ? "saved" : `${ref} saved & selected`, "ok");
           close();
           done();
         } catch (err) {

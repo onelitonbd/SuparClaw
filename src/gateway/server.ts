@@ -366,11 +366,11 @@ export class Gateway {
           return;
         }
         case "models.save": {
-          // Upsert one curated profile (Settings → Models). The profile id is
-          // the local handle sessions/picker use; `ref` is the wire
-          // "provider/model". Same ref may exist under several ids with
-          // different tuning ("use it multiple times").
-          const profileId = skillSlug(String(params["id"] ?? params["label"] ?? params["ref"] ?? ""));
+          // Upsert one curated profile (Settings → Models). Identity follows
+          // the fetched model: id = slug(ref) unless explicitly given, so one
+          // fetched model = one config entry (the UI selects from fetched
+          // lists; labels never fork the identity).
+          const profileId = skillSlug(String(params["id"] ?? params["ref"] ?? params["label"] ?? ""));
           if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(profileId)) {
             send(errFrame(id, "bad_request", "id must be 1-64 lowercase letters, numbers, or hyphens"));
             return;
@@ -380,18 +380,37 @@ export class Gateway {
             send(errFrame(id, "bad_request", "ref is required (provider/model)"));
             return;
           }
+          // Merge with the existing entry: a checkbox toggle or label edit
+          // must never wipe stored tuning (context window etc.).
+          type ModelEntry = {
+            label?: string;
+            enabled?: boolean;
+            contextWindow?: number;
+            maxTokens?: number;
+            temperature?: number;
+            reasoningEffort?: string;
+          };
+          const prev: ModelEntry = (service.config.models ?? {})[profileId] ?? {};
+          const num = (key: string, whole = true): number | undefined => {
+            const v = Number(params[key]);
+            if (params[key] === undefined || params[key] === "" || !Number.isFinite(v)) return undefined;
+            return whole ? Math.max(0, Math.trunc(v)) : v;
+          };
           const entry: Record<string, unknown> = {
             ref,
-            label: String(params["label"] ?? "").trim(),
-            enabled: params["enabled"] !== false,
-            contextWindow: Math.max(0, Math.trunc(Number(params["contextWindow"] ?? 0)) || 0),
-            maxTokens: Math.max(0, Math.trunc(Number(params["maxTokens"] ?? 0)) || 0),
-            reasoningEffort: String(params["reasoningEffort"] ?? "inherit"),
+            label: params["label"] !== undefined ? String(params["label"] ?? "").trim() : (prev.label ?? ""),
+            enabled: params["enabled"] !== undefined ? params["enabled"] !== false : (prev.enabled ?? true),
+            contextWindow: num("contextWindow") ?? prev.contextWindow ?? 0,
+            maxTokens: num("maxTokens") ?? prev.maxTokens ?? 0,
+            reasoningEffort:
+              params["reasoningEffort"] !== undefined
+                ? String(params["reasoningEffort"] ?? "inherit")
+                : (prev.reasoningEffort ?? "inherit"),
           };
-          const temp = Number(params["temperature"]);
-          if (params["temperature"] !== undefined && params["temperature"] !== "" && Number.isFinite(temp)) {
-            entry["temperature"] = temp;
-          }
+          const temp = num("temperature", false);
+          const keepTemp = (prev as { temperature?: number }).temperature;
+          if (temp !== undefined) entry["temperature"] = temp;
+          else if (typeof keepTemp === "number") entry["temperature"] = keepTemp;
           const result = service.configSvc.setPath(`models.${profileId}`, entry);
           if (!result.ok) {
             send(errFrame(id, "bad_request", result.errors[0] ?? "invalid model entry"));

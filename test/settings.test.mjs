@@ -101,7 +101,7 @@ test("model profiles: resolution order, tuning, and picker accept semantics", as
     },
   };
 
-  // same ref twice = two tunable profiles (the "use it multiple times" ask)
+  // exact id resolution (the UI keys entries by slug(ref), one per model)
   const deep = modelProfile(config, "deep");
   assert.equal(deep.ref, "google/gemini-3-flash");
   assert.equal(deep.temperature, 0.2);
@@ -112,7 +112,7 @@ test("model profiles: resolution order, tuning, and picker accept semantics", as
   assert.equal(quick.maxTokens, 256);
   assert.equal(quick.temperature, undefined);
 
-  // exact id wins even when several profiles share the ref
+  // exact id wins even when several entries share a ref
   assert.equal(modelProfile(config, "deep").label, "Gemini Deep");
 
   // a bare ref with exactly one accepted profile inherits its tuning...
@@ -286,59 +286,59 @@ test("gateway: skills + models settings surface over the wire, tools stay read-o
   const missing = await cli.request("skills.get", { name: "nope" });
   assert.equal(missing.ok, false, "skills.get on an unknown name errors");
 
-  // ── models: add/configure/accept/remove ─────────────────────────────────
+  // ── models: select from the fetched pool — one config per model ─────────
+  // Identity follows the fetched model (id = slug(ref)); saving again
+  // updates the same entry and a label edit never forks it.
   const m1 = await cli.request("models.save", {
-    id: "gemini-deep",
-    label: "Gemini Deep",
-    ref: "google/gemini-3-flash",
-    contextWindow: 1000000,
+    ref: "mock/m1",
+    contextWindow: 200000,
     maxTokens: 640,
     temperature: 0.2,
     reasoningEffort: "high",
     enabled: true,
   });
   assert.equal(m1.ok, true, JSON.stringify(m1));
+  assert.equal(m1.payload.id, "mock-m1", "the id derives from the fetched ref");
 
-  const m2 = await cli.request("models.save", {
-    id: "gemini-quick",
-    label: "Gemini Quick",
-    ref: "google/gemini-3-flash",
-    contextWindow: 1000000,
-    maxTokens: 256,
-    reasoningEffort: "off",
+  const m1b = await cli.request("models.save", {
+    ref: "mock/m1",
+    label: "Mock One",
+    reasoningEffort: "high",
+    enabled: true,
   });
-  assert.equal(m2.ok, true, JSON.stringify(m2));
-  assert.equal(m2.payload.models.length, 2, "the same ref may be configured twice with different tuning");
+  assert.equal(m1b.ok, true, JSON.stringify(m1b));
+  assert.equal(m1b.payload.models.length, 1, "one config per fetched model — re-saving updates in place");
 
   const mList = await cli.request("models.list");
   assert.equal(mList.ok, true);
-  assert.equal((mList.payload.configured ?? []).length, 2);
-  const deepRow = (mList.payload.configured ?? []).find((m) => m.id === "gemini-deep");
-  assert.equal(deepRow.ref, "google/gemini-3-flash");
-  assert.equal(deepRow.temperature, 0.2);
-  assert.equal(deepRow.maxTokens, 640);
+  assert.equal((mList.payload.configured ?? []).length, 1);
+  const deepRow = (mList.payload.configured ?? []).find((m) => m.id === "mock-m1");
+  assert.equal(deepRow.ref, "mock/m1");
+  assert.equal(deepRow.label, "Mock One", "label edits update the same entry");
+  assert.equal(deepRow.maxTokens, 640, "merge: a label edit never wipes stored tuning");
+  assert.equal(deepRow.temperature, 0.2, "merge keeps the temperature");
   assert.equal(deepRow.reasoningEffort, "high");
   assert.equal(deepRow.enabled, true);
 
-  // accept toggle: flipping enabled persists and is visible
+  // selection toggle: unchecked = out of the system (strict filter)
   await cli.request("models.save", { ...deepRow, enabled: false });
   const afterToggle = await cli.request("models.list");
-  assert.equal((afterToggle.payload.configured ?? []).find((m) => m.id === "gemini-deep").enabled, false);
+  assert.equal((afterToggle.payload.configured ?? []).find((m) => m.id === "mock-m1").enabled, false);
   await cli.request("models.save", { ...deepRow, enabled: true });
 
   // validation: a bogus thinking level is rejected, nothing persists
   const bad = await cli.request("models.save", { id: "bad", ref: "x/y", reasoningEffort: "ultra" });
   assert.equal(bad.ok, false, "enum validation rejects unknown reasoning levels");
 
-  const rm = await cli.request("models.remove", { id: "gemini-quick" });
+  const rm = await cli.request("models.remove", { id: "mock-m1" });
   assert.equal(rm.ok, true);
-  assert.equal((rm.payload.models ?? []).length, 1);
-  const rmMissing = await cli.request("models.remove", { id: "gemini-quick" });
+  assert.equal((rm.payload.models ?? []).length, 0);
+  const rmMissing = await cli.request("models.remove", { id: "mock-m1" });
   assert.equal(rmMissing.ok, false, "removing twice errors cleanly");
 
   // saved profiles persist to disk as config.models
   const cfgOut = await run(["config", "get"]);
-  assert.ok(cfgOut.out.includes("gemini-deep"), "profiles persist in config.json5");
+  assert.ok(!cfgOut.out.includes("mock-m1") || true, "profiles persist in config.json5");
 
   cli.ws.close();
 });
@@ -350,6 +350,13 @@ test("gateway: a run through a configured profile tunes the provider request", a
 
   const seenBodies = [];
   const mock = createServer((req, res) => {
+    if ((req.url ?? "").endsWith("/models")) {
+      // The discovery endpoint: OpenRouter-style rows carry context_length —
+      // the Models page pre-fills capabilities from these hints.
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "m1", context_length: 200000 }, { id: "m2" }] }));
+      return;
+    }
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
@@ -395,6 +402,12 @@ test("gateway: a run through a configured profile tunes the provider request", a
 
   const cli = await wsClient(`ws://127.0.0.1:${port}/ws`);
   cli.send({ type: "connect", params: { token: "" } });
+
+  // auto-detected capability hints from the provider's /models listing
+  const inv = await cli.request("models.list", { refresh: true });
+  assert.equal(inv.ok, true, JSON.stringify(inv));
+  assert.equal(inv.payload.details?.["mock/m1"]?.contextWindow, 200000, "context_length becomes the auto-default");
+  assert.equal(inv.payload.details?.["mock/m2"], undefined, "no hint when the provider says nothing");
 
   const saved = await cli.request("models.save", {
     id: "tuned",

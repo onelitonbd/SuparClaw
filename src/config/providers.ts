@@ -28,7 +28,15 @@ export const presetByName = (name: string): Preset | undefined =>
   PRESETS.find((p) => p.name === name.toLowerCase());
 
 /** Ask a provider for its model list. Never throws — failures come back as .error. */
-export async function fetchModels(baseUrl: string, apiKey: string): Promise<{ models: string[]; error?: string }> {
+export interface ModelHint {
+  /** Native context window in tokens when the provider's /models says so. */
+  contextWindow?: number;
+}
+
+export async function fetchModels(
+  baseUrl: string,
+  apiKey: string,
+): Promise<{ models: string[]; hints?: Record<string, ModelHint>; error?: string }> {
   const url = `${baseUrl.replace(/\/+$/, "")}/models`;
   try {
     const res = await fetch(url, {
@@ -36,9 +44,19 @@ export async function fetchModels(baseUrl: string, apiKey: string): Promise<{ mo
       signal: AbortSignal.timeout(12_000),
     });
     if (!res.ok) return { models: [], error: `HTTP ${res.status}` };
-    const body = (await res.json()) as { data?: { id?: string }[] };
-    const models = (body.data ?? []).map((m) => m.id).filter((id): id is string => Boolean(id));
-    return { models };
+    const body = (await res.json()) as {
+      data?: { id?: string; context_length?: number; context_window?: number; max_context_length?: number; max_input_tokens?: number }[];
+    };
+    const models: string[] = [];
+    const hints: Record<string, ModelHint> = {};
+    for (const m of body.data ?? []) {
+      if (!m.id) continue;
+      models.push(m.id);
+      // OpenRouter publishes context_length; other stacks use near-neighbours.
+      const ctx = m.context_length ?? m.context_window ?? m.max_context_length ?? m.max_input_tokens;
+      if (typeof ctx === "number" && Number.isFinite(ctx) && ctx > 0) hints[m.id] = { contextWindow: ctx };
+    }
+    return { models, hints };
   } catch (err) {
     return { models: [], error: (err as Error).message };
   }
@@ -51,7 +69,7 @@ export async function fetchModels(baseUrl: string, apiKey: string): Promise<{ mo
 // rows and reports the failure as a warning.
 
 const DEFAULT_TTL_MS = 10 * 60_000;
-const cache = new Map<string, { at: number }>();
+const cache = new Map<string, { at: number; hints?: Record<string, ModelHint> }>();
 
 const ttlMs = (): number => {
   const raw = Number(process.env["SUPARCLAW_MODELS_TTL_MS"] ?? "");
@@ -61,6 +79,8 @@ const ttlMs = (): number => {
 export interface ModelsResult {
   /** "<provider>/<model>" refs: configured rows plus any discovered ones. */
   models: string[];
+  /** Per-ref auto-detected hints (context window) from the live /models. */
+  details?: Record<string, ModelHint>;
   /** Providers whose live fetch failed — saved rows are still served. */
   warning?: string;
   /** A background fetch is in flight; call again soon for fresh rows. */
@@ -75,21 +95,21 @@ export interface ModelsResult {
 export async function refreshProviderModels(
   cfg: ConfigService,
   name: string,
-): Promise<{ models: string[]; error?: string }> {
+): Promise<{ models: string[]; hints?: Record<string, ModelHint>; error?: string }> {
   const p = cfg.current.providers?.[name] as ProviderRecord | undefined;
   if (!p) return { models: [], error: `no such provider: ${name}` };
   const key = `${name}@${p.baseUrl}`;
   const saved = (p.models ?? []).filter(Boolean);
   const found = await fetchModels(p.baseUrl ?? "", p.apiKey ?? "");
   if (found.error || found.models.length === 0) {
-    return { models: saved, error: found.error ?? "empty listing" };
+    return { models: saved, hints: cache.get(key)?.hints, error: found.error ?? "empty listing" };
   }
-  cache.set(key, { at: Date.now() });
+  cache.set(key, { at: Date.now(), hints: found.hints });
   const merged = [...new Set([...saved, ...found.models])].slice(0, 200);
   if (merged.length !== saved.length || merged.some((m, i) => m !== saved[i])) {
     cfg.setPath(`providers.${name}.models`, merged);
   }
-  return { models: merged };
+  return { models: merged, hints: found.hints };
 }
 
 /**
@@ -125,14 +145,21 @@ export async function discoverModels(cfg: ConfigService, opts: { refresh?: boole
   }
 
   const out: string[] = [];
+  const details: Record<string, ModelHint> = {};
   for (const [name, p] of Object.entries(cfg.current.providers ?? {})) {
-    for (const m of (p as ProviderRecord).models ?? []) out.push(`${name}/${m}`);
+    const hints = cache.get(`${name}@${(p as ProviderRecord).baseUrl}`)?.hints ?? {};
+    for (const m of (p as ProviderRecord).models ?? []) {
+      out.push(`${name}/${m}`);
+      const hint = hints[m];
+      if (hint) details[`${name}/${m}`] = hint;
+    }
   }
   if (out.length === 0) {
     const model = cfg.current.agents?.defaults?.model;
     if (model) out.push(model);
   }
   const result: ModelsResult = { models: out };
+  if (Object.keys(details).length > 0) result.details = details;
   if (warnings.length > 0) result.warning = `saved rows shown — ${warnings.join("; ")}`;
   if (refreshing) result.refreshing = true;
   return result;

@@ -155,24 +155,16 @@ async function refresh(): Promise<void> {
     ]);
     const status = statusRes as any;
     toolCount = (status.tools ?? []).length;
-    // Curated profiles win: once the user has accepted any model in Settings →
-    // Models, the picker shows only those. Fresh setups keep the full
-    // discovered provider list until the first profile is added.
+    // Strict filter: only models selected in Settings → Models appear
+    // anywhere in the system. Nothing selected = empty picker with a hint.
     const configured = (((modelRes as any).configured ?? []) as any[]).filter((m) => m.enabled);
-    models =
-      configured.length > 0
-        ? configured.map((m) => ({
-            value: String(m.id),
-            label: String(m.label || m.ref || m.id),
-            group: String(m.ref ?? "").split("/")[0] || "default",
-          }))
-        : (((modelRes as any).models ?? []) as string[]).map((ref) => ({
-            value: ref,
-            label: ref,
-            group: ref.split("/")[0] || "default",
-          }));
+    models = configured.map((m) => ({
+      value: String(m.id),
+      label: String(m.label || m.ref || m.id),
+      group: String(m.ref ?? "").split("/")[0] || "default",
+    }));
     currentModel = status.model || models[0]?.value || "";
-    $("model-name").textContent = models.find((m) => m.value === currentModel)?.label || currentModel || "model…";
+    $("model-name").textContent = models.find((m) => m.value === currentModel)?.label || currentModel || "no model";
     renderSessions((sessionRes as any).sessions ?? []);
     syncThinking(status, (sessionRes as any).sessions ?? []);
   } catch { /* gateway reconnecting */ }

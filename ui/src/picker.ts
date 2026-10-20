@@ -39,6 +39,12 @@ export function pickModel(opts: {
       .filter((r) => r.score > 0)
       .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
     list.innerHTML = "";
+    if (rows.length === 0) {
+      list.append(el("div", { class: "sheet__empty" }, [
+        "No models selected — enable them in Settings → Models",
+      ]));
+      return;
+    }
     if (scored.length === 0) {
       list.append(el("div", { class: "sheet__empty" }, ["No models match"]));
       return;
