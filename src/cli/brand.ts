@@ -57,3 +57,35 @@ export function voiceLine(): string {
 export function celebrate(line: string): string {
   return `  ${fg.accentBright(BRAND.emoji)}  ${fg.bold(line)}`;
 }
+
+export interface SubsystemCheck {
+  name: string;
+  status: "ok" | "warn" | "fail";
+  detail: string;
+}
+
+/** `✓ store   sqlite open` — the subsystem readiness row. */
+export function checkRow(check: SubsystemCheck): string {
+  const mark =
+    check.status === "ok"
+      ? fg.success("✓")
+      : check.status === "warn"
+        ? fg.warn("▲")
+        : fg.error("✗");
+  return `    ${mark} ${check.name.padEnd(10)} ${fg.muted(check.detail)}`;
+}
+
+/** The full readiness block + an honest closing line. */
+export function checklist(checks: SubsystemCheck[], title = "subsystems"): string {
+  const out = [`  ${fg.muted(title)}`, ...checks.map(checkRow)];
+  const fails = checks.filter((c) => c.status === "fail").length;
+  const warns = checks.filter((c) => c.status === "warn").length;
+  if (fails > 0) {
+    out.push(`\n  ${fg.error("✗")} ${fails} subsystem${fails > 1 ? "s" : ""} need${fails > 1 ? "" : "s"} attention`);
+  } else if (warns > 0) {
+    out.push(`\n  ${fg.warn("▲")} ready, with ${warns} note${warns > 1 ? "s" : ""}`);
+  } else {
+    out.push(`\n  ${fg.success("✓")} all systems connected ${BRAND.emoji}`);
+  }
+  return out.join("\n");
+}

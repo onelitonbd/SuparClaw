@@ -19,7 +19,8 @@ async function createCron(schedule: string, handler: () => void | Promise<void>,
 }
 
 export class Scheduler {
-  #jobs = new Map<string, CronHandle>();
+  /** job id -> armed timer + the schedule it was armed with (for cheap diffs). */
+  #jobs = new Map<string, { handle: CronHandle; schedule: string }>();
   readonly store: Store;
   readonly log: Logger;
   readonly fire: (job: JobRow) => Promise<void>;
@@ -42,21 +43,42 @@ export class Scheduler {
   }
 
   async #schedule(job: JobRow): Promise<void> {
-    this.#jobs.get(job.id)?.stop();
+    const armed = this.#jobs.get(job.id);
+    if (armed?.schedule === job.schedule) return; // already armed correctly
+    armed?.handle.stop();
     try {
       const cron = await createCron(job.schedule, async () => {
         try {
           await this.fire(job);
-          this.store.recordJobRun(job.id, "done", "");
+          // Success is recorded once — by the service's reply path (with the
+          // reply text). Recording here too produced two rows per run.
         } catch (err) {
           this.store.recordJobRun(job.id, "error", (err as Error).message);
           this.log.error(`cron ${job.name} failed: ${(err as Error).message}`);
         }
       }, true);
-      this.#jobs.set(job.id, cron);
+      this.#jobs.set(job.id, { handle: cron, schedule: job.schedule });
       this.log.info(`cron armed: ${job.name} (${job.schedule})`);
     } catch (err) {
       this.log.error(`cron ${job.name} has an invalid schedule: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Re-arm job changes made by other processes (`sc cron add` etc write
+   * SQLite directly). Cheap diff: nothing already armed is touched.
+   */
+  async reconcile(): Promise<void> {
+    const current = new Map(this.store.listJobs().map((j) => [j.id, j] as const));
+    for (const [id, armed] of this.#jobs) {
+      const job = current.get(id);
+      if (!job || !job.enabled) {
+        armed.handle.stop();
+        this.#jobs.delete(id);
+      }
+    }
+    for (const job of current.values()) {
+      if (job.enabled) await this.#schedule(job);
     }
   }
 
@@ -68,20 +90,23 @@ export class Scheduler {
   async upsert(job: Omit<JobRow, "created_at" | "last_run_at"> & { last_run_at?: number | null }): Promise<JobRow> {
     const saved = this.store.upsertJob(job);
     if (saved.enabled) await this.#schedule(saved);
-    else this.#jobs.get(saved.id)?.stop();
+    else {
+      this.#jobs.get(saved.id)?.handle.stop();
+      this.#jobs.delete(saved.id);
+    }
     return saved;
   }
 
   remove(id: string): boolean {
     const existed = this.store.getJob(id) !== undefined;
-    this.#jobs.get(id)?.stop();
+    this.#jobs.get(id)?.handle.stop();
     this.#jobs.delete(id);
     this.store.deleteJob(id);
     return existed;
   }
 
   stop(): void {
-    for (const cron of this.#jobs.values()) cron.stop();
+    for (const armed of this.#jobs.values()) armed.handle.stop();
     this.#jobs.clear();
   }
 }

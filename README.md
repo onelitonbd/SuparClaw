@@ -50,10 +50,10 @@ sc config set providers.local.baseUrl  "http://127.0.0.1:8080/v1"
 |---|---|
 | `sc chat` / `sc tui` | terminal UI (embedded runtime, no sockets) |
 | `sc tui --url ws://host:port --token …` | terminal UI against a remote daemon |
-| `sc gateway` | run the daemon: gateway, channels, cron |
+| `sc gateway` | run the daemon: gateway, channels, cron — prints a readiness checklist proving every subsystem is connected |
 | `sc doctor` | node / sqlite / FTS5 / config / port / disk / skills checks |
 | `sc security audit` | security posture: bind, auth, origins, exec, channels, file perms |
-| `sc status` | health + effective config summary |
+| `sc status` | subsystem readiness + effective config — probes the **running** gateway when one is up (`live: true`), offline view otherwise |
 | `sc config get\|set\|path` | read and write `~/.suparclaw/config.json5` |
 | `sc pair approve <id>` | allow a Telegram user to DM the bot |
 | `sc cron add\|list\|remove` | scheduled prompts |

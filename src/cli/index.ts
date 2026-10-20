@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configPath, ensureDirs, webUiRoot, dbPath } from "../util/paths.js";
-import { brandLine, card, celebrate, fg, kv, voiceLine } from "./brand.js";
+import { brandLine, card, celebrate, checklist, fg, kv, voiceLine } from "./brand.js";
 
 // Service, the store and the agent runtime load per command, so `sc version`
 // and `sc help` never pay for node:sqlite, tools or the model client.
@@ -140,10 +140,39 @@ async function init(): Promise<number> {
 }
 
 async function status(): Promise<number> {
+  // Prefer the RUNNING gateway — that is the thing with moving parts. The
+  // offline view below is what you get when no daemon is up (like OpenClaw's
+  // doctor vs `status --deep`).
+  const candidates: number[] = [];
+  const envPort = Number.parseInt(process.env["SUPARCLAW_GATEWAY_PORT"] ?? "", 10);
+  if (Number.isFinite(envPort) && envPort > 0) candidates.push(envPort);
+  try {
+    for (const p of await (await import("./service.js")).listGateways()) {
+      if (p.port) candidates.push(p.port);
+    }
+  } catch {
+    /* fall through to the default */
+  }
+  candidates.push(18790);
+  for (const port of candidates) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/status`, {
+        signal: AbortSignal.timeout(1200),
+      });
+      if (res.ok) {
+        const live = (await res.json()) as Record<string, unknown>;
+        const health = await probeHealth(port);
+        console.log(JSON.stringify({ live: true, gatewayPort: port, health, ...live }, null, 2));
+        return 0;
+      }
+    } catch {
+      /* try the next candidate */
+    }
+  }
   const service = await openService();
   const health = service.health();
   const info = service.status();
-  console.log(JSON.stringify({ health, ...info }, null, 2));
+  console.log(JSON.stringify({ live: false, health, ...info }, null, 2));
   await service.stop();
   return 0;
 }
@@ -259,6 +288,8 @@ async function gateway(args: string[], GatewayCtor: typeof import("../gateway/se
     console.log(`           ${fg.muted("this device's browser connects automatically;")}`);
     console.log(`           ${fg.muted("remote: sc tui --url ws://host:port --token <token>")}`);
   }
+  console.log("");
+  console.log(checklist(service.readiness()));
   console.log("");
   console.log("press ctrl+c to stop");
 

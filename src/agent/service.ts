@@ -7,7 +7,7 @@ import { Store } from "../state/db.js";
 import { createLogger, type Logger } from "../util/log.js";
 import { dbPath, ensureDirs, logsDir, stateDir, workspaceDir } from "../util/paths.js";
 import { AgentLoop, type RunEvent } from "../agent/loop.js";
-import { LlmClient } from "../agent/llm.js";
+import { LlmClient, resolveModel } from "../agent/llm.js";
 import { writeWorkspaceTemplates } from "../agent/workspace.js";
 import { TelegramChannel } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
@@ -94,6 +94,40 @@ export class Service {
     this.log.info(`config applied — model ${config.agents.defaults.model || "(unset)"}`);
   }
 
+  /** Hot reload for edits made outside config.set (sc config set, hand edits). */
+  watchConfig(): void {
+    let prev = this.config.channels.telegram;
+    this.configSvc.watchForChanges((config) => {
+      this.applyConfig(config);
+      const tg = config.channels.telegram;
+      const changed = tg.enabled !== prev.enabled || tg.token !== prev.token;
+      prev = tg;
+      if (changed && this.#telegram?.running) {
+        void this.#telegram.stop().then(() => {
+          if (tg.enabled && tg.token) void this.#startTelegram();
+        });
+      } else if (changed && tg.enabled && tg.token && !this.#telegram?.running) {
+        void this.#startTelegram();
+      }
+      if (this.#cron) void this.#cron.reconcile();
+      this.log.info("config hot-reloaded");
+    });
+  }
+
+  async #startTelegram(): Promise<void> {
+    this.#telegram = new TelegramChannel(this, this.log);
+    try {
+      await this.#telegram.start();
+    } catch (err) {
+      this.log.error(`telegram failed to start: ${(err as Error).message}`);
+    }
+  }
+
+  /** Re-arm cron jobs changed outside the daemon (sc cron add, other tools). */
+  async cronReconcile(): Promise<void> {
+    if (this.#cron) await this.#cron.reconcile();
+  }
+
   async startChannels(): Promise<void> {
     const config = this.config;
     if (config.cron.enabled) {
@@ -113,13 +147,11 @@ export class Service {
     }
 
     if (config.channels.telegram.enabled && config.channels.telegram.token) {
-      this.#telegram = new TelegramChannel(this, this.log);
-      try {
-        await this.#telegram.start();
-      } catch (err) {
-        this.log.error(`telegram failed to start: ${(err as Error).message}`);
-      }
+      await this.#startTelegram();
     }
+    // Config edits made outside config.set (sc config set, hand edits) must
+    // reach the running daemon too.
+    this.watchConfig();
   }
 
   /** One entry point for every surface: TUI, WS clients, Telegram, cron. */
@@ -178,6 +210,103 @@ export class Service {
     };
   }
 
+  /**
+   * Subsystem readiness — "is everything actually connected?", asked of the
+   * live components (OpenClaw's `status --deep` idea at our scale).
+   */
+  readiness(): { name: string; status: "ok" | "warn" | "fail"; detail: string }[] {
+    const checks: { name: string; status: "ok" | "warn" | "fail"; detail: string }[] = [];
+    const config = this.config;
+
+    checks.push(
+      this.configSvc.errors.length === 0
+        ? { name: "config", status: "ok", detail: "valid" }
+        : { name: "config", status: "fail", detail: this.configSvc.errors[0] ?? "invalid" },
+    );
+
+    try {
+      this.store.getMeta("schema_version");
+      checks.push({
+        name: "store",
+        status: "ok",
+        detail: `sqlite open · fts ${this.store.fts ? "on" : "like-fallback"}`,
+      });
+    } catch (err) {
+      checks.push({ name: "store", status: "fail", detail: (err as Error).message });
+    }
+
+    const modelRef = config.agents.defaults.model;
+    if (!modelRef) {
+      checks.push({ name: "model", status: "warn", detail: "no default model — run: sc setup" });
+    } else {
+      try {
+        const resolved = resolveModel(modelRef, config.providers);
+        checks.push({
+          name: "model",
+          status: "ok",
+          detail: `${modelRef} → ${resolved.provider} · ${resolved.model}`,
+        });
+      } catch (err) {
+        checks.push({ name: "model", status: "fail", detail: (err as Error).message });
+      }
+    }
+
+    const toolCount = this.loop.tools.length;
+    checks.push({
+      name: "tools",
+      status: toolCount > 0 ? "ok" : "fail",
+      detail: `${toolCount} registered`,
+    });
+
+    const readySkills = this.loop.skills.filter((s) => s.eligible).length;
+    checks.push({
+      name: "skills",
+      status: "ok",
+      detail: `${readySkills}/${this.loop.skills.length} ready`,
+    });
+
+    const ws = workspaceDir();
+    checks.push(
+      existsSync(join(ws, "AGENTS.md"))
+        ? { name: "workspace", status: "ok", detail: ws }
+        : { name: "workspace", status: "warn", detail: "no AGENTS.md — run: sc init" },
+    );
+
+    if (config.cron.enabled) {
+      const armed = this.#cron?.count ?? 0;
+      const total = this.store.listJobs().filter((j) => j.enabled).length;
+      checks.push({
+        name: "cron",
+        status: armed === total ? "ok" : "warn",
+        detail:
+          armed === total
+            ? `${armed} job${armed === 1 ? "" : "s"} armed`
+            : `${armed}/${total} armed — reconciling`,
+      });
+    } else {
+      checks.push({ name: "cron", status: "ok", detail: "disabled" });
+    }
+
+    const tg = config.channels.telegram;
+    if (!tg.enabled) {
+      checks.push({ name: "telegram", status: "ok", detail: "disabled" });
+    } else if (this.#telegram?.running) {
+      checks.push({
+        name: "telegram",
+        status: "ok",
+        detail: `online${this.#telegram.username ? ` as @${this.#telegram.username}` : ""}`,
+      });
+    } else {
+      checks.push({
+        name: "telegram",
+        status: "fail",
+        detail: "enabled but not connected — check channels.telegram.token",
+      });
+    }
+
+    return checks;
+  }
+
   status(): Record<string, unknown> {
     const config = this.config;
     return {
@@ -193,6 +322,7 @@ export class Service {
       },
       cron: { enabled: config.cron.enabled, jobs: this.#cron?.count ?? 0 },
       workspace: workspaceDir(),
+      checks: this.readiness(),
     };
   }
 

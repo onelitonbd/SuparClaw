@@ -79,6 +79,8 @@ export class Gateway {
     this.#timer = setInterval(() => {
       // keep the send-dedupe map from growing on a long-lived daemon
       for (const [key, at] of this.#dedupe) if (Date.now() - at > 300_000) this.#dedupe.delete(key);
+      // pick up job changes written by other processes (sc cron add etc)
+      void this.service.cronReconcile();
       this.#broadcast("tick", { at: Date.now() });
     }, 30_000);
   }
@@ -154,6 +156,10 @@ export class Gateway {
           return;
         }
         send({ type: "hello-ok", payload: { version: "0.1.0", methods: this.#methods() } });
+        // Register as an event subscriber immediately after auth so observers
+        // (second tabs, remote TUIs) receive broadcasts — not just sockets
+        // that happen to have sent a chat.send.
+        this.#clients.add(ws);
         return;
       }
 
@@ -228,7 +234,6 @@ export class Gateway {
             return;
           }
           send(okFrame(id, { accepted: true, sessionKey }));
-          this.#clients.add(ws);
           void service.send({
             sessionKey,
             text,
@@ -296,6 +301,9 @@ export class Gateway {
           );
           return;
         case "cron.list":
+          // Reconcile here so jobs added by other processes (`sc cron add`)
+          // show up — and arm — without waiting for the next tick.
+          await service.cronReconcile();
           send(okFrame(id, { jobs: service.store.listJobs(), runs: service.store.lastJobRuns(10) }));
           return;
         case "config.get":
