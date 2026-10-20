@@ -183,7 +183,7 @@ async function switchSession(key: string): Promise<void> {
   if (key === sessionKey) return;
   sessionKey = key;
   localStorage.setItem("sc.session", key);
-  $("session-pill").querySelector(".sc-session-chip__key")!.textContent = key;
+  $("session-key").textContent = key;
   closeDrawer();
   await loadHistory();
   void refresh();
@@ -338,7 +338,7 @@ document.addEventListener("keydown", (e) => {
 /* ---------------- boot ---------------- */
 
 if (localStorage.getItem("sc.theme")) document.documentElement.dataset.themeMode = localStorage.getItem("sc.theme")!;
-$("session-pill").querySelector(".sc-session-chip__key")!.textContent = sessionKey;
+$("session-key").textContent = sessionKey;
 $("session-pill").title = `session ${sessionKey}`;
 applyLayout();
 route();

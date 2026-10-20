@@ -1,0 +1,165 @@
+// Boots the built Control UI bundle against a minimal DOM stub.
+//
+// The real browser is not available on the build machine, so this test does
+// the next best thing: it checks that every element the TypeScript looks up
+// actually exists in ui/index.html, and that the bundle runs without throwing
+// on start-up.
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Minimal element: enough DOM surface for the Control UI to boot. */
+class El {
+  constructor(tag = "div") {
+    this.tagName = tag.toUpperCase();
+    this.children = [];
+    this.attributes = new Map();
+    this.dataset = {};
+    this.style = {};
+    this.className = "";
+    this.hidden = false;
+    this.textContent = "";
+    this.value = "";
+    this.scrollTop = 0;
+    this.scrollHeight = 1000;
+    this.clientHeight = 600;
+    this.scrollWidth = 800;
+    this.clientWidth = 400;
+    this.innerHTML = "";
+    this._listeners = new Map();
+    this.classList = {
+      add: (...c) => { this.className = `${this.className} ${c.join(" ")}`.trim(); },
+      remove: (...c) => { this.className = this.className.split(/\s+/).filter((x) => x && !c.includes(x)).join(" "); },
+      toggle: (c, on) => { if (on) this.classList.add(c); else this.classList.remove(c); return on; },
+      contains: (c) => this.className.split(/\s+/).includes(c),
+    };
+  }
+  setAttribute(k, v) { this.attributes.set(k, String(v)); }
+  getAttribute(k) { return this.attributes.get(k) ?? null; }
+  removeAttribute(k) { this.attributes.delete(k); }
+  append(...nodes) { for (const n of nodes) this.children.push(n); }
+  appendChild(n) { this.children.push(n); return n; }
+  remove() {}
+  addEventListener(type, fn) { this._listeners.set(type, fn); }
+  removeEventListener() {}
+  dispatch(type, ev = {}) { this._listeners.get(type)?.(ev); }
+  set onclick(fn) { this._onclick = fn; }
+  get onclick() { return this._onclick; }
+  set oninput(fn) { this._oninput = fn; }
+  set oncontextmenu(fn) { this._oncontextmenu = fn; }
+  set onkeydown(fn) { this._onkeydown = fn; }
+  set onscroll(fn) { this._onscroll = fn; }
+  focus() {}
+  closest() { return null; }
+  querySelector(sel) { return El.resolve ? El.resolve(sel) : null; }
+  querySelectorAll() { return []; }
+  get lastElementChild() { return this.children[this.children.length - 1] ?? null; }
+  get firstElementChild() { return this.children[0] ?? null; }
+  get parentElement() { return null; }
+  get isConnected() { return true; }
+  getBoundingClientRect() { return { top: 0, left: 0, width: 400, height: 300, right: 400, bottom: 300 }; }
+  matches() { return false; }
+}
+
+async function boot() {
+  const html = await readFile(join(root, "ui/index.html"), "utf8");
+  const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+
+  const make = (tag) => new El(tag);
+  const byId = (id) => (ids.has(id) ? make("div") : null);
+  El.resolve = (sel) => (typeof sel === "string" && sel.startsWith("#") ? byId(sel.slice(1)) : null);
+
+  const document = {
+    documentElement: make("html"),
+    body: make("body"),
+    getElementById: (id) => byId(id),
+    querySelector: (sel) => (sel.startsWith("#") ? byId(sel.slice(1)) : null),
+    querySelectorAll: () => [],
+    createElement: (tag) => make(tag),
+    createTextNode: (t) => ({ nodeValue: t }),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const listeners = new Map();
+  const socket = {
+    readyState: 0,
+    send() {},
+    close() {},
+    addEventListener(type, fn) { listeners.set(type, fn); },
+    removeEventListener() {},
+  };
+
+  const win = {
+    innerWidth: 1280,
+    innerHeight: 800,
+    addEventListener() {},
+    removeEventListener() {},
+    matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+    location: { hash: "", href: "http://127.0.0.1:18790/", reload() {} },
+    requestAnimationFrame: (fn) => setTimeout(fn, 0),
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+  };
+  win.window = win;
+
+  const store = new Map();
+  const localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+
+  const prev = {
+    location: globalThis.location,
+    window: globalThis.window,
+    document: globalThis.document,
+    localStorage: globalThis.localStorage,
+    navigator: globalThis.navigator,
+    WebSocket: globalThis.WebSocket,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    matchMedia: globalThis.matchMedia,
+  };
+
+  globalThis.window = win;
+  globalThis.location = win.location;
+  globalThis.document = document;
+  globalThis.localStorage = localStorage;
+  Object.defineProperty(globalThis, "navigator", {
+    value: { clipboard: { writeText: async () => {} } },
+    configurable: true,
+    writable: true,
+  });
+  globalThis.WebSocket = class {
+    constructor() { return socket; }
+  };
+  globalThis.requestAnimationFrame = win.requestAnimationFrame;
+  globalThis.matchMedia = win.matchMedia;
+
+  return { ids, restore: () => { Object.assign(globalThis, prev); El.resolve = null; } };
+}
+
+test("the Control UI bundle boots and every element it looks up exists", async () => {
+  const { ids, restore } = await boot();
+  try {
+    const mod = await import(pathToFileURL(join(root, "dist/ui/app.js")).href);
+    assert.ok(mod, "bundle loaded");
+  } finally {
+    restore();
+  }
+
+  // The ids the app reaches for — keep in sync with ui/src/*.ts.
+  const required = [
+    "app", "content", "chat-view", "settings-view", "shell-nav", "sidebar", "settings-sidebar",
+    "settings-back", "settings-btn", "settings-btn-side", "theme-btn", "new-session", "sessions",
+    "stats", "session-pill", "conn-pill", "brand-dot", "clear-btn", "drawer-btn", "nav-backdrop",
+    "thread", "thread-inner", "empty-state", "suggestions", "jump", "composer", "input",
+    "send-btn", "stop-btn", "tok", "approval-bar", "model-btn", "model-name", "modal", "toasts",
+  ];
+  const missing = required.filter((id) => !ids.has(id));
+  assert.deepEqual(missing, [], `index.html is missing: ${missing.join(", ")}`);
+});
