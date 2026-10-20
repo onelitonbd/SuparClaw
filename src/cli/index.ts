@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configPath, ensureDirs, webUiRoot, dbPath } from "../util/paths.js";
+import { brandLine, card, celebrate, fg, kv, voiceLine } from "./brand.js";
 
 // Service, the store and the agent runtime load per command, so `sc version`
 // and `sc help` never pay for node:sqlite, tools or the model client.
@@ -11,7 +12,7 @@ async function openService(configPathOverride?: string) {
 
 export const VERSION = "0.1.0";
 
-const HELP = `suparclaw ${VERSION} — personal AI gateway that runs on your phone
+const HELP = `${fg.accentBright("///")} ${fg.bold("suparclaw")} ${VERSION} — ${fg.info("your phone is the machine.")}
 
 usage: sc <command> [options]
 
@@ -105,24 +106,35 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 async function init(): Promise<number> {
+  console.log(`\n${brandLine("· " + "your phone is the machine.")}\n`);
   ensureDirs();
-  if (!existsSync(configPath())) {
+  const madeConfig = !existsSync(configPath());
+  if (madeConfig) {
     const { STARTER_CONFIG } = await import("../config/load.js");
     writeFileSync(configPath(), STARTER_CONFIG, "utf8");
-    console.log(`created ${configPath()}`);
   }
   const service = await openService();
   const { created, token } = service.bootstrap();
-  for (const file of created) console.log(`created ${file}`);
-  if (!created.length) console.log("workspace already initialized");
-  console.log(`\ngateway token: ${token.slice(0, 8)}…\n`);
-  console.log("next:");
-  console.log("  sc doctor                      # check the device");
-  console.log('  sc config set agents.defaults.model "openai/gpt-4o-mini"');
-  console.log('  sc config set providers.openai.baseUrl "https://api.openai.com/v1"');
-  console.log('  sc config set providers.openai.apiKey "sk-..."');
-  console.log("  sc chat                        # start here");
-  console.log("");
+  const files = [
+    ...(madeConfig ? ["config.json5"] : []),
+    ...created.filter((f) => !(madeConfig && f.startsWith("config.json5"))),
+  ];
+  console.log(
+    card([
+      celebrate(`workspace ready ${fg.muted("(~/.suparclaw/workspace)")}`),
+      "",
+      ...files.map((f) => kv(f.startsWith("config") ? "config" : "workspace", f)),
+      kv("gateway token", `${fg.bold(token.slice(0, 8))}${fg.muted("…")} ${fg.muted("(sc token)")}`),
+    ]),
+  );
+  if (files.length === 0) console.log(`  ${fg.muted("workspace already initialized")}`);
+  console.log(`\n  ${fg.muted(voiceLine())}\n`);
+  console.log(`  ${fg.bold("next steps")}`);
+  console.log(`    ${fg.accent("1")}  sc doctor            check this device`);
+  console.log(`    ${fg.accent("2")}  sc security audit    lock down the gateway`);
+  console.log(`    ${fg.accent("3")}  sc setup             connect a model provider`);
+  console.log(`    ${fg.accent("4")}  sc chat              say hello`);
+  console.log(`    ${fg.accent("5")}  sc gateway           run the daemon\n`);
   void service.stop();
   return 0;
 }
@@ -235,16 +247,19 @@ async function gateway(args: string[], GatewayCtor: typeof import("../gateway/se
   await service.startChannels();
   (await import("./service.js")).writePid(service.config.gateway.port);
   const auth = service.config.gateway.auth;
-  console.log(`suparclaw gateway listening on ws://${gw.address}/ws`);
-  console.log(`web ui:  http://${gw.address.replace("0.0.0.0", "127.0.0.1")}/`);
-  console.log(`health:  http://${gw.address.replace("0.0.0.0", "127.0.0.1")}/health`);
+  const uiHost = gw.address.replace("0.0.0.0", "127.0.0.1");
+  console.log(`\n${brandLine("gateway")}`);
+  console.log(`  ${fg.muted("ws")}       ws://${gw.address}/ws`);
+  console.log(`  ${fg.muted("web ui")}   http://${uiHost}/`);
+  console.log(`  ${fg.muted("health")}   http://${uiHost}/health`);
   if (auth.mode === "none") {
-    console.log("auth:    disabled");
+    console.log(`  ${fg.muted("auth")}     ${fg.warn("disabled")}`);
   } else {
-    console.log(`token:   ${auth.token}`);
-    console.log("         (the browser on this device connects automatically;");
-    console.log("          from another machine use: sc tui --url … --token <token>)");
+    console.log(`  ${fg.muted("token")}    ${fg.bold(auth.token.slice(0, 8))}${fg.muted("…")} ${fg.muted("(sc token)")}`);
+    console.log(`           ${fg.muted("this device's browser connects automatically;")}`);
+    console.log(`           ${fg.muted("remote: sc tui --url ws://host:port --token <token>")}`);
   }
+  console.log("");
   console.log("press ctrl+c to stop");
 
   const shutdown = async () => {

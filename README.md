@@ -1,5 +1,7 @@
 # SuparClaw
 
+**Your phone is the machine.** 🦀
+
 A personal AI gateway that runs natively on Termux — one daemon, one WebSocket control plane,
 channels, tools, skills, sessions, memory files and cron — packaged as a single 600 KB
 JavaScript file with **zero native modules**.
