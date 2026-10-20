@@ -551,3 +551,64 @@ test("llm: gemini requests ask for thought summaries via google.thinking_config"
   assert.equal(plain.google, undefined, "non-Gemini bodies stay untouched");
   assert.equal(plain.reasoning_effort, "high");
 });
+
+test("llm: strict routes rejecting the google extension recover transparently", async (t) => {
+  const { LlmClient } = await import("../dist/lib.js");
+  // MultiRouter validates the payload strictly and 400s the whole request:
+  // "Invalid JSON payload received. Unknown name \"google\": Cannot find field."
+  // The run must survive: drop the extension, retry, latch it off for good.
+  const bodies = [];
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const body = JSON.parse(raw);
+      bodies.push(body);
+      if (body.google) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify([
+            {
+              error: {
+                code: 400,
+                message:
+                  'Invalid JSON payload received. Unknown name "google": Cannot find field.',
+                status: "INVALID_ARGUMENT",
+              },
+            },
+          ]),
+        );
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "hello" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      res.end();
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => server.listen(port, "127.0.0.1", r));
+  t.after(() => server.close());
+  const llm = new LlmClient(
+    {
+      mock: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["gemini-3-flash-preview"] },
+      other: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["z"] },
+    },
+    { model: "mock/gemini-3-flash-preview", fallbacks: [] },
+  );
+
+  const events = [];
+  for await (const e of llm.stream({ messages: [{ role: "user", content: "hi" }], reasoning: "high" })) events.push(e);
+  assert.equal(events.filter((e) => e.type === "text").map((e) => e.text).join(""), "hello", "run survives the rejection");
+  assert.equal(bodies.length, 2, "rejected once, retried once");
+  assert.ok(bodies[0].google, "first request carried the extension");
+  assert.equal(bodies[1].google, undefined, "retry dropped the extension");
+  assert.equal(bodies[1].reasoning_effort, "high", "everything else is untouched");
+
+  // latched off for good — later calls never send it again
+  for await (const _ of llm.stream({ messages: [{ role: "user", content: "hi" }], reasoning: "high" })) {
+    // drain
+  }
+  assert.equal(bodies.at(-1).google, undefined, "no extension on subsequent calls");
+  assert.equal(bodies.length, 3, "second call went straight through");
+});

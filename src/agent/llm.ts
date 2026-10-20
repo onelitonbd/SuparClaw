@@ -492,6 +492,14 @@ const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 export class LlmClient {
   #providers: Record<string, ProviderConfig>;
   #defaults: { model: string; fallbacks: string[] };
+  /**
+   * Best-effort google thinking extension latch. Strict protobuf-JSON routes
+   * (MultiRouter and friends) reject unknown top-level fields with
+   * "Unknown name \"google\": Cannot find field" and 400 the whole request —
+   * on the first such 400 the extension is dropped and the request retried,
+   * and it is never sent again on this client.
+   */
+  #googleExt = true;
 
   constructor(
     providers: Record<string, ProviderConfig>,
@@ -550,6 +558,14 @@ export class LlmClient {
           if (e.name === "AbortError" || opts.signal?.aborted) throw e;
           if (!(e instanceof LlmError)) throw e; // programming errors are terminal
           if (yielded) throw e; // partial output reached the consumer — never stitch
+          // Strict routes reject the google thinking extension with a 400
+          // (unknown field). Drop it and re-run this attempt without it —
+          // the extension is best-effort, the run must survive.
+          if (e.status === 400 && this.#googleExt) {
+            this.#googleExt = false;
+            attempt--;
+            continue;
+          }
           if (!e.retryable) break; // auth/4xx on this model: try the next fallback
           if (attempt >= 2) break; // exhausted retries on this model
           this.onRetry?.({ model: modelRef, attempt: attempt + 1, error: e.message });
@@ -578,7 +594,7 @@ export class LlmClient {
     if (opts.maxTokens !== undefined) body["max_tokens"] = opts.maxTokens;
     const effort = opts.reasoning;
     if (effort && effort !== "inherit" && effort !== "off") body["reasoning_effort"] = effort;
-    if (signToolCalls) {
+    if (signToolCalls && this.#googleExt) {
       // Gemini's OpenAI-compat extension: ask for thought summaries explicitly.
       // On Gemini 3.x summaries are gated behind thinking_config; the bare
       // reasoning_effort field is ignored on some routes and the stream then
