@@ -43,14 +43,12 @@ gateway.on((event, payload) => {
     handleChatEvent(p.event ?? {});
     return;
   }
-  // individual frames from older gateways
-  if (event === "chat.delta") { chat.assistantStart(); chat.delta(String(payload?.delta ?? "")); }
-  if (event === "chat.reply") { chat.finish(String(payload?.text ?? "")); }
-  if (event === "chat.tool") {
-    const t = payload?.event ?? {};
-    chat.tool(String(t.name ?? "tool"), t.status ?? "running", t.detail);
-  }
+  // One stream only. The gateway used to also emit per-event chat.delta /
+  // chat.reply / chat.tool frames; applying both copies doubled the streaming
+  // text and rendered every reply twice. Those frames are gone server-side.
 });
+
+const finalizedRuns = new Set<string>();
 
 function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
   switch (e.type) {
@@ -69,6 +67,14 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       chat.approval(String(e.callId), String(e.tool), e.args);
       break;
     case "final": {
+      // A final for an already-rendered run must never append a second copy
+      // (late replay after history reload — the OpenClaw #167052 class).
+      const runId = String(e.runId ?? crypto.randomUUID());
+      if (finalizedRuns.has(runId)) return;
+      finalizedRuns.add(runId);
+      if (finalizedRuns.size > 32) {
+        finalizedRuns.delete(finalizedRuns.values().next().value as string);
+      }
       const usage = e.usage as Record<string, number> | undefined;
       if (usage?.["total_tokens"]) chat.setTokenHint(`${usage["total_tokens"]} tokens`);
       chat.finish(String(e.text ?? ""));
@@ -76,8 +82,7 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       break;
     }
     case "error":
-      chat.finish();
-      chat.notice(`error: ${e.message}`);
+      chat.fail(String(e.message ?? "error"));
       busy = false;
       chat.setBusy(false);
       toast(String(e.message ?? "error"), "err");

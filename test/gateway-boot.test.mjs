@@ -174,15 +174,20 @@ test("gateway boot wires every subsystem — report, fan-out, hot reload, cron",
   await talker.wait((f) => f.type === "hello-ok");
 
   await talker.request("chat.send", { sessionKey: "main:main", text: "hello", key: `boot-${Date.now()}` });
-  const reply = await talker.wait((f) => f.type === "event" && f.event === "chat.reply");
-  assert.match(String(reply.payload.text ?? ""), /Hello from the mock provider/);
+  const reply = await talker.wait((f) => f.type === "event" && f.event === "chat" && f.payload?.event?.type === "final");
+  assert.match(String(reply.payload.event.text ?? ""), /Hello from the mock provider/);
 
   const observed = await observer.wait(
-    (f) => f.type === "event" && f.event === "chat.reply",
+    (f) => f.type === "event" && f.event === "chat" && f.payload?.event?.type === "final",
     8000,
   );
-  assert.match(String(observed.payload.text ?? ""), /Hello from the mock provider/,
+  assert.match(String(observed.payload.event.text ?? ""), /Hello from the mock provider/,
     "a connect-only observer receives chat replies");
+  // single stream: exactly one final for the run, and no legacy duplicate frames
+  const finals = talker.frames.filter((f) => f.type === "event" && f.event === "chat" && f.payload?.event?.type === "final");
+  assert.equal(finals.length, 1, "exactly one final event per run (no duplicate bubbles)");
+  const legacy = talker.frames.filter((f) => f.type === "event" && ["chat.delta", "chat.reply", "chat.tool"].includes(f.event));
+  assert.equal(legacy.length, 0, `no legacy chat.* frames on the wire: ${JSON.stringify(legacy)}`);
 
   // ── 4. config hot reload reaches the running daemon (regression: dead watch)
   const set = await run(["config", "set", "agents.defaults.model", "mock/m2"]);

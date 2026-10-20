@@ -202,16 +202,49 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
   let app: InstanceType<typeof TuiApp> | null = null;
 
   client.onEvent((event, payload) => {
-    const data = payload as { sessionKey?: string; delta?: string; text?: string; event?: { type: string; name?: string; status?: string; detail?: string; callId?: string; tool?: string; args?: Record<string, unknown> } };
-    if (event === "chat.delta" && data.delta) {
-      app?.push({ kind: "assistant", text: data.delta, streaming: true });
-    } else if (event === "chat.reply" && data.text) {
-      app?.completeAssistant(data.text);
-      if (app) app.busy = false;
-    } else if (event === "chat.tool" && data.event) {
-      app?.push({ kind: "tool", name: data.event.name ?? "?", status: (data.event.status as "running") ?? "done", detail: data.event.detail });
-    } else if (event === "chat.approval" && data.event) {
-      app?.approvals.push({ callId: data.event.callId ?? "", tool: data.event.tool ?? "", args: data.event.args ?? {} });
+    // One stream: "chat" envelopes carry every run event (the gateway no
+    // longer emits per-event chat.delta/chat.reply/… frames).
+    if (event !== "chat") return;
+    const data = payload as {
+      sessionKey?: string;
+      event?: {
+        type: string;
+        text?: string;
+        message?: string;
+        name?: string;
+        status?: string;
+        detail?: string;
+        callId?: string;
+        tool?: string;
+        args?: Record<string, unknown>;
+      };
+    };
+    if (data.sessionKey && data.sessionKey !== sessionKey) return;
+    const e = data.event ?? ({} as NonNullable<typeof data.event>);
+    switch (e.type) {
+      case "start":
+        if (app) app.busy = true;
+        break;
+      case "delta":
+        app?.push({ kind: "assistant", text: String(e.text ?? ""), streaming: true });
+        break;
+      case "tool":
+        app?.push({ kind: "tool", name: e.name ?? "?", status: (e.status as "running") ?? "done", detail: e.detail });
+        break;
+      case "approval":
+        app?.approvals.push({ callId: e.callId ?? "", tool: e.tool ?? "", args: e.args ?? {} });
+        break;
+      case "final":
+        app?.completeAssistant(String(e.text ?? ""));
+        if (app) app.busy = false;
+        break;
+      case "error":
+        app?.completeAssistant(`⚠ ${String(e.message ?? "error")}`);
+        if (app) app.busy = false;
+        break;
+      case "idle":
+        if (app) app.busy = false;
+        break;
     }
   });
 

@@ -225,8 +225,8 @@ test("gateway model pipeline: UI provider parity, strictness, loading, fetch war
   // ── 4. model loading: per-run override routes to the right provider/model
   f = await ws.request("chat.send", { sessionKey: "main:main", text: "hi", model: "mock/m3", key: `ml-${Date.now()}` });
   assert.equal(f.ok, true, `chat.send: ${JSON.stringify(f)}`);
-  const reply = await ws.wait((x) => x.type === "event" && x.event === "chat.reply");
-  assert.equal(String(reply.payload.text ?? ""), "I am m3.", "per-run model override is honored");
+  const reply = await ws.wait((x) => x.type === "event" && x.event === "chat" && x.payload?.event?.type === "final");
+  assert.equal(String(reply.payload.event.text ?? ""), "I am m3.", "per-run model override is honored");
 
   // ── 5. providers.test + providers.remove (shared implementation)
   f = await ws.request("providers.test", { name: "uiprov" });

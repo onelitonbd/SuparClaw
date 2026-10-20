@@ -244,16 +244,20 @@ export class Gateway {
             return;
           }
           send(okFrame(id, { accepted: true, sessionKey }));
+          // Single event stream: service.subscribe already fans every run event
+          // (start/delta/tool/approval/final/error/idle) out to ALL sockets as
+          // "chat" envelopes. Broadcasting again from these callbacks produced
+          // a second copy of every event — doubled streaming text and a
+          // duplicate assistant bubble per reply in every client.
           void service.send({
             sessionKey,
             text,
             isMainSession: params["isMainSession"] === true,
             source: "gateway",
             model: typeof params["model"] === "string" && params["model"] ? params["model"] : undefined,
-            reply: async (final) => this.#broadcast("chat.reply", { sessionKey, text: final }),
-            onDelta: async (delta) => this.#broadcast("chat.delta", { sessionKey, delta }),
-            onTool: async (event) => this.#broadcast("chat.tool", { sessionKey, event }),
-            onApproval: async (event) => this.#broadcast("chat.approval", { sessionKey, event }),
+            reply: async () => {
+              /* final text rides the "chat" envelope (event.type === "final") */
+            },
           });
           return;
         }

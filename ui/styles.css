@@ -380,6 +380,7 @@ textarea:focus-visible {
 }
 
 .msg__status.is-live { color: var(--accent); }
+.msg__status.is-error { color: var(--err, var(--danger, #f87171)); }
 
 .msg__body {
   font-size: 15px;

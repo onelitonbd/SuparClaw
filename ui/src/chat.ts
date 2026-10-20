@@ -6,7 +6,7 @@
 //                       > .msg__tools (.tool > .tool__row + .tool__body)
 //                       > .msg__body
 
-import { el, fmtDuration, toast } from "./dom.js";
+import { el, fmtDuration, icon, toast } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
 
 export interface ChatHandlers {
@@ -201,6 +201,21 @@ export class Chat {
     this.#scrollToBottom();
   }
 
+  /** A run that died: keep the partial text, but never label it "Done". */
+  fail(message: string): void {
+    this.notice(`error: ${message}`);
+    if (!this.#live) return;
+    const live = this.#live;
+    live.body.innerHTML = renderMarkdown(this.#streamText);
+    live.status.textContent = `Error · ${message.slice(0, 60)}`;
+    live.status.classList.remove("is-live");
+    live.status.classList.add("is-error");
+    this.#live = null;
+    this.#streamText = "";
+    this.setBusy(false);
+    this.#scrollToBottom();
+  }
+
   assistant(text: string): void {
     this.#clearEmpty();
     const head = this.#head("Done");
@@ -224,11 +239,11 @@ export class Chat {
       const started = Date.now();
       this.#toolStart.set(key, started);
       const row = el("button", { class: "tool__row", type: "button", "aria-expanded": "false" }, [
-        el("span", { class: "tool__icon tool__icon--run" }, [SPINNER]),
+        icon(SPINNER, "tool__icon tool__icon--run"),
         el("span", { class: "tool__name" }, [name]),
         el("span", { class: "tool__summary" }, [""]),
         el("span", { class: "tool__dur" }, ["…"]),
-        el("span", {}, [CHEVRON]),
+        icon(CHEVRON),
       ]);
       const body = el("div", { class: "tool__body", hidden: "" });
       row.onclick = () => {
@@ -247,27 +262,27 @@ export class Chat {
       }
     }
 
-    const icon = card.querySelector(".tool__icon") as HTMLElement;
+    const iconBox = card.querySelector(".tool__icon") as HTMLElement;
     const summary = card.querySelector(".tool__summary") as HTMLElement;
     const dur = card.querySelector(".tool__dur") as HTMLElement;
     const body = card.querySelector(".tool__body") as HTMLElement;
 
     const elapsed = Date.now() - (this.#toolStart.get(key) ?? Date.now());
     if (status === "running") {
-      icon.className = "tool__icon tool__icon--run";
-      icon.innerHTML = SPINNER;
+      iconBox.className = "tool__icon tool__icon--run";
+      iconBox.innerHTML = SPINNER;
       dur.textContent = "…";
     } else if (status === "done") {
-      icon.className = "tool__icon tool__icon--ok";
-      icon.innerHTML = CHECK;
+      iconBox.className = "tool__icon tool__icon--ok";
+      iconBox.innerHTML = CHECK;
       dur.textContent = fmtDuration(elapsed);
     } else if (status === "pending") {
-      icon.className = "tool__icon tool__icon--wait";
-      icon.innerHTML = PAUSE;
+      iconBox.className = "tool__icon tool__icon--wait";
+      iconBox.innerHTML = PAUSE;
       dur.textContent = "waiting";
     } else {
-      icon.className = "tool__icon tool__icon--err";
-      icon.innerHTML = CROSS;
+      iconBox.className = "tool__icon tool__icon--err";
+      iconBox.innerHTML = CROSS;
       dur.textContent = "failed";
     }
 
@@ -320,7 +335,7 @@ export class Chat {
   #head(status: string): HTMLElement {
     const statusEl = el("span", { class: "msg__status mono" }, [status]);
     return el("div", { class: "msg__head" }, [
-      el("span", { class: "msg__avatar" }, [SPARKLE]),
+      icon(SPARKLE, "msg__avatar"),
       el("span", { class: "msg__name" }, ["Assistant"]),
       statusEl,
     ]);
