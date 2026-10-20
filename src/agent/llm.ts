@@ -8,6 +8,55 @@ export interface ToolCall {
   args: string;
 }
 
+/* ---- wire serialization (strict OpenAI chat format) ---- */
+
+let callSeq = 0;
+
+/**
+ * Model-supplied tool-call ids are often empty or reused ("0","0" — Gemini
+ * repeats per-turn ids). Strict backends reject duplicate/empty ids across
+ * the whole history, so always remap to unique opaque ids.
+ */
+function normalizeCallIds(calls: ToolCall[]): ToolCall[] {
+  return calls.map((c) => ({
+    ...c,
+    id: `call_${Date.now().toString(36)}_${(callSeq++).toString(36)}`,
+  }));
+}
+
+/**
+ * Serialize internal messages to the strict OpenAI wire shape. Google
+ * Gemini's OpenAI-compat layer (which routers like MultiRouter sit in front
+ * of) rejects the internal tool_calls shape {id,name,args} with a generic
+ * 400 INVALID_ARGUMENT ("Function call name is empty") — the wire shape is
+ * {id, type:"function", function:{name, arguments}}. Also: tool-call-only
+ * assistant messages omit content entirely (null and "" both get 400s from
+ * some backends), empty arguments become "{}", and tool messages carry the
+ * function name (Gemini enforces it).
+ */
+function wireMessages(messages: ChatMessage[]): unknown[] {
+  return messages.map((m) => {
+    if (m.role === "assistant") {
+      const out: Record<string, unknown> = { role: "assistant" };
+      if (m.tool_calls?.length) {
+        out["tool_calls"] = m.tool_calls.map((c) => ({
+          id: c.id,
+          type: "function",
+          function: { name: c.name, arguments: c.args.trim() ? c.args : "{}" },
+        }));
+        if (m.content) out["content"] = m.content;
+      } else {
+        out["content"] = m.content ?? "";
+      }
+      return out;
+    }
+    if (m.role === "tool") {
+      return { role: "tool", tool_call_id: m.tool_call_id, name: m.name, content: m.content };
+    }
+    return m;
+  });
+}
+
 export type ChatMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
@@ -214,7 +263,7 @@ export class LlmClient {
     const resolved = resolveModel(modelRef, this.#providers);
     const body: Record<string, unknown> = {
       model: resolved.model,
-      messages: opts.messages,
+      messages: wireMessages(opts.messages),
       stream: true,
       stream_options: { include_usage: true },
     };
@@ -254,6 +303,8 @@ export class LlmClient {
     if (!res.body) throw new LlmError("provider returned an empty stream", undefined, true);
 
     const calls = new Map<number, ToolCall>();
+    const callIds = new Map<string, number>();
+    let lastSlot = 0;
     let finishReason = "stop";
     let usage: Record<string, number> | null = null;
 
@@ -287,17 +338,38 @@ export class LlmClient {
         }
         const deltaCalls = delta["tool_calls"];
         if (Array.isArray(deltaCalls)) {
+          // Key by id when present (Gemini's OpenAI-compat omits `index`, so
+          // index-keyed accumulation would merge parallel calls into one).
+          // Fragments without id fall back to their index, then to the most
+          // recent call.
           for (const raw of deltaCalls as {
             index?: number;
             id?: string;
             function?: { name?: string; arguments?: string };
           }[]) {
-            const index = raw.index ?? 0;
-            const existing = calls.get(index) ?? { id: "", name: "", args: "" };
-            if (raw.id) existing.id = raw.id;
+            let slot: number | undefined;
+            if (raw.id) {
+              const known = callIds.get(raw.id);
+              if (known !== undefined) {
+                slot = known;
+              } else {
+                const at = raw.index !== undefined ? calls.get(raw.index) : undefined;
+                // A new id claims a fresh slot — or adopts the id-less first
+                // fragment already parked at raw.index.
+                slot = at && !at.id ? raw.index : Math.max(-1, ...calls.keys()) + 1;
+              }
+            } else {
+              slot = raw.index ?? lastSlot;
+            }
+            const existing = calls.get(slot) ?? { id: "", name: "", args: "" };
+            if (raw.id && !existing.id) {
+              existing.id = raw.id;
+              callIds.set(raw.id, slot);
+            }
             if (raw.function?.name) existing.name += raw.function.name;
             if (raw.function?.arguments) existing.args += raw.function.arguments;
-            calls.set(index, existing);
+            calls.set(slot, existing);
+            lastSlot = slot;
           }
         }
       }
@@ -310,7 +382,7 @@ export class LlmClient {
     }
 
     const finished = [...calls.values()].filter((c) => c.name.length > 0);
-    if (finished.length > 0) yield { type: "tool_calls", calls: finished };
+    if (finished.length > 0) yield { type: "tool_calls", calls: normalizeCallIds(finished) };
     if (usage) yield { type: "usage", usage };
     yield { type: "done", finishReason };
   }

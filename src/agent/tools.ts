@@ -398,10 +398,21 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
 }
 
 export function toolsToSchema(tools: ToolSpec[]): { type: "function"; function: Record<string, unknown> }[] {
-  return tools.map((t) => ({
-    type: "function",
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
+  return tools.map((t) => {
+    const parameters = (t.parameters ?? { type: "object", properties: {} }) as Record<string, unknown>;
+    const props = (parameters["properties"] ?? {}) as Record<string, unknown>;
+    // Gemini's OpenAI-compat rejects OBJECT schemas with empty properties
+    // ("should be non-empty for OBJECT type") — parameterless tools get a
+    // harmless optional filler property. Callers ignore unknown args.
+    const safeParams =
+      Object.keys(props).length === 0
+        ? { ...parameters, properties: { note: { type: "string", description: "(no arguments)" } } }
+        : parameters;
+    return {
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: safeParams },
+    };
+  });
 }
 
 export { skillsCatalog };
