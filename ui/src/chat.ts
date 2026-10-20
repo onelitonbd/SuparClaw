@@ -9,6 +9,35 @@
 import { el, fmtDuration, icon, toast } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
 
+/**
+ * Provider errors arrive as raw JSON blobs ({"error":{"message":"..."}} or
+ * [{...}]). Surface the human message instead of the JSON wall — the raw
+ * text stays in storage, the UI shows what a person needs.
+ */
+export function prettyError(message: string): string {
+  let text = message;
+  for (let pass = 0; pass < 3; pass++) {
+    const start = text.search(/[{[]/);
+    if (start < 0) break;
+    try {
+      const parsed: unknown = JSON.parse(text.slice(start));
+      const extract = (value: unknown): string | null => {
+        if (!value || typeof value !== "object") return null;
+        const obj = value as Record<string, unknown>;
+        if (typeof obj["message"] === "string") return obj["message"] as string;
+        const inner = obj["error"] ?? (Array.isArray(obj["errors"]) ? obj["errors"][0] : undefined);
+        return extract(inner);
+      };
+      const found = Array.isArray(parsed) ? extract(parsed[0]) : extract(parsed);
+      if (!found || found === text.slice(start)) break;
+      text = (start > 0 ? text.slice(0, start).trim().replace(/[:\s]+$/, "") + ": " : "") + found;
+    } catch {
+      break; // not JSON after all
+    }
+  }
+  return text;
+}
+
 export interface ChatHandlers {
   send(text: string): void;
   abort(): void;
@@ -272,11 +301,12 @@ export class Chat {
 
   /** A run that died: keep the partial text, but never label it "Done". */
   fail(message: string): void {
-    this.notice(`error: ${message}`);
+    const pretty = prettyError(message);
+    this.notice(`error: ${pretty}`, "notice--error");
     if (!this.#live) return;
     const live = this.#live;
     live.body.innerHTML = renderMarkdown(this.#streamText);
-    live.status.textContent = `Error · ${message.slice(0, 60)}`;
+    live.status.textContent = `Error · ${pretty.slice(0, 80)}`;
     live.status.classList.remove("is-live");
     live.status.classList.add("is-error");
     this.#live = null;
@@ -294,9 +324,9 @@ export class Chat {
     this.#scrollToBottom();
   }
 
-  notice(text: string): void {
+  notice(text: string, variant?: string): void {
     this.#clearEmpty();
-    this.stack.append(el("div", { class: "notice mono" }, [text]));
+    this.stack.append(el("div", { class: variant ? `notice mono ${variant}` : "notice mono" }, [text]));
     this.#scrollToBottom();
   }
 
@@ -443,11 +473,6 @@ export class Chat {
     const block = this.#thought(text);
     this.stack.append(block.root);
     this.#scrollToBottom();
-  }
-
-  /** View → Reasoning: hides thinking blocks without ever discarding them. */
-  setThinkingView(view: "on" | "off"): void {
-    this.stack.classList.toggle("stack--no-thought", view === "off");
   }
 
   /** ---- approvals ---- */

@@ -288,7 +288,7 @@ test("gateway: session thinking level persists across refresh and reasoning save
   assert.equal(fresh.payload.thinking, "medium");
 });
 
-test("ui: thinking preview streams, replays from storage, and hides without loss", async () => {
+test("ui: thinking preview streams, replays from storage, and stays visible", async () => {
   const { build } = await import("esbuild");
   const { parseHTML } = await import("linkedom");
   const outDir = mkdtempSync(join(TEST_TMP, "sc-thinkui-"));
@@ -337,10 +337,7 @@ test("ui: thinking preview streams, replays from storage, and hides without loss
   assert.equal(blocks[0].querySelector(".thought__row")?.getAttribute("aria-expanded"), "false", "replays collapsed for review");
   assert.match(blocks[1].textContent ?? "", /Second segment/);
 
-  // View → Reasoning off hides the blocks — nothing is discarded
-  chat.setThinkingView("off");
-  assert.ok(dom.document.getElementById("stack").className.includes("stack--no-thought"), "hidden via view toggle");
-  assert.equal(dom.document.querySelectorAll("#stack .thought").length, 2, "still in the DOM — not lost");
-  chat.setThinkingView("on");
-  assert.ok(!dom.document.getElementById("stack").className.includes("stack--no-thought"));
+  // thinking preview is always visible — no view toggle exists anymore
+  assert.equal(typeof chat.setThinkingView, "undefined", "the on/off button is gone by request");
+  assert.equal(dom.document.querySelectorAll("#stack .thought").length, 2, "both saved segments stay visible");
 });

@@ -178,3 +178,28 @@ test("composer carries no session counter (removed by request)", () => {
   assert.ok(!/sessions\} session/.test(src), "no 'N sessions' label anywhere");
   assert.ok(src.includes("setTokenHint"), "#tok still shows token hints");
 });
+
+test("composer has no thinking-visibility button — preview is always on", () => {
+  const html = readFileSync(join(ROOT, "ui/index.html"), "utf8");
+  assert.ok(!html.includes("think-view"), "eye toggle removed from the composer");
+  const src = readFileSync(join(ROOT, "ui/src/main.ts"), "utf8");
+  assert.ok(!src.includes("setThinkingView") && !src.includes("sc.reasoningView"), "no view-toggle wiring left");
+});
+
+test("prettyError turns provider JSON walls into the human message", async () => {
+  const { prettyError } = await import(pathToFileURL(join(outDir, "chat.mjs")).href);
+  const raw =
+    'error: HTTP 502 from MultiRouter: {"error":{"message":"All providers failed. Last error: All keys failed. Last upstream 503: {\\"error\\":{\\"message\\":\\"The service returned an error. Please retry later.\\",\\"type\\":\\"api_error\\"}}","type":"upstream_error","code":null,"param":null}}';
+  const pretty = prettyError(raw);
+  assert.ok(pretty.includes("HTTP 502 from MultiRouter"), "prefix kept");
+  assert.ok(pretty.includes("All providers failed"), "human message extracted");
+  assert.ok(!pretty.includes('{"error"'), `JSON wall gone: ${pretty}`);
+  assert.equal(prettyError("HTTP 400 from X: plain text"), "HTTP 400 from X: plain text", "plain text passes through");
+});
+
+test("styles keep long errors and tokens inside the thread", () => {
+  const css = readFileSync(join(ROOT, "ui/styles.css"), "utf8");
+  assert.ok(css.includes("overflow-wrap: anywhere"), "wrap-anywhere present");
+  assert.ok(/overflow-x:\s*hidden/.test(css), "thread scroller clips horizontal overflow");
+  assert.ok(css.includes(".notice--error"), "errors render as a bounded card");
+});

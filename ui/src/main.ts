@@ -206,16 +206,7 @@ $("think").addEventListener("change", async () => {
   }
 });
 
-const savedThinkView = localStorage.getItem("sc.reasoningView") === "off" ? "off" : "on";
-chat.setThinkingView(savedThinkView);
-$("think-view").setAttribute("aria-pressed", String(savedThinkView === "on"));
-$("think-view").addEventListener("click", () => {
-  const next = localStorage.getItem("sc.reasoningView") === "off" ? "on" : "off";
-  localStorage.setItem("sc.reasoningView", next);
-  chat.setThinkingView(next);
-  $("think-view").setAttribute("aria-pressed", String(next === "on"));
-  toast(`thinking preview: ${next}`, "ok");
-});
+
 
 /* ---------------- sessions drawer ---------------- */
 
