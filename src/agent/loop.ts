@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SuparClawConfig } from "../config/schema.js";
+import { modelProfile, type SuparClawConfig } from "../config/schema.js";
 import type { Store } from "../state/db.js";
 import type { Logger } from "../util/log.js";
 import { loadWorkspaceContext, todayStamp } from "./workspace.js";
@@ -70,7 +70,7 @@ Operating rules:
 
 export class AgentLoop {
   readonly tools: ToolSpec[];
-  readonly skills: SkillMeta[];
+  skills: SkillMeta[] = [];
   readonly llm: LlmClient;
   readonly workspace: string;
 
@@ -82,13 +82,7 @@ export class AgentLoop {
   constructor(private readonly deps: LoopDeps) {
     this.workspace = workspaceDir();
     this.tools = deps.tools ?? buildRegistry(deps.config);
-    this.skills = discoverSkills({
-      roots: [
-        { label: "workspace", dir: `${this.workspace}/skills` },
-        { label: "state", dir: skillsDir() },
-        { label: "bundled", dir: bundledSkillsRoot() },
-      ],
-    });
+    this.refreshSkills();
     this.llm =
       deps.llm ??
       new LlmClient(deps.config.providers, {
@@ -103,6 +97,29 @@ export class AgentLoop {
 
   busySessions(): string[] {
     return [...this.#active.keys()];
+  }
+
+  /**
+   * Re-discover skills from all roots (after `skill_save` / Settings writes).
+   * Workspace entries win the name shadowing order, same as at construction.
+   */
+  refreshSkills(): void {
+    this.skills = discoverSkills({
+      roots: [
+        { label: "workspace", dir: `${this.workspace}/skills` },
+        { label: "state", dir: skillsDir() },
+        { label: "bundled", dir: bundledSkillsRoot() },
+      ],
+    });
+  }
+
+  /**
+   * Push a fresh config in after any write (config.set, providers.*, models.*).
+   * The config service swaps objects on write, so without this the loop would
+   * keep running on its boot snapshot.
+   */
+  setConfig(config: SuparClawConfig): void {
+    this.deps.config = config;
   }
 
   abort(sessionKey: string): boolean {
@@ -169,6 +186,10 @@ export class AgentLoop {
         config: this.deps.config,
         approved: false,
         signal: controller.signal,
+        refreshSkills: () => {
+          this.refreshSkills();
+          ctx.skills = this.skills;
+        },
       };
 
       for (let turn = 0, lastThoughtRow = ""; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
@@ -178,14 +199,20 @@ export class AgentLoop {
         let replayDetails: Record<string, unknown>[] = [];
         let replaySignatures: Record<string, string> = {};
         let replayExtraContent: Record<string, unknown> | undefined;
+        // A request may name a curated profile id or a bare provider ref; the
+        // profile contributes its wire ref plus per-model tuning.
+        const profile = modelProfile(this.deps.config, input.model ?? "");
         for await (const event of this.llm.stream({
           messages,
           tools: schema.length > 0 ? schema : undefined,
           signal: controller.signal,
-          model: input.model,
+          model: profile.ref || undefined,
+          temperature: profile.temperature,
+          maxTokens: profile.maxTokens,
           reasoning:
             input.reasoning ??
             session.thinking ??
+            (profile.reasoningEffort !== "inherit" ? profile.reasoningEffort : undefined) ??
             (this.deps.config.agents.defaults.reasoningEffort as string | undefined),
         })) {
           if (event.type === "reasoning") {

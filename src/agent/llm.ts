@@ -756,7 +756,7 @@ export class LlmClient {
             thought_signature?: string;
             thoughtSignature?: string;
           }[]) {
-            let slot: number | undefined;
+            let slot: number;
             if (raw.id) {
               const known = callIds.get(raw.id);
               if (known !== undefined) {
@@ -765,7 +765,7 @@ export class LlmClient {
                 const at = raw.index !== undefined ? calls.get(raw.index) : undefined;
                 // A new id claims a fresh slot — or adopts the id-less first
                 // fragment already parked at raw.index.
-                slot = at && !at.id ? raw.index : Math.max(-1, ...calls.keys()) + 1;
+                slot = at && !at.id && raw.index !== undefined ? raw.index : Math.max(-1, ...calls.keys()) + 1;
               }
             } else {
               slot = raw.index ?? lastSlot;

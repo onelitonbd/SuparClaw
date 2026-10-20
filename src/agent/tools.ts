@@ -4,7 +4,7 @@ import type { SuparClawConfig } from "../config/schema.js";
 import type { Store } from "../state/db.js";
 import type { Logger } from "../util/log.js";
 import { todayStamp } from "./workspace.js";
-import { discoverSkills, readSkillBody, skillsCatalog, type SkillMeta } from "./skills.js";
+import { discoverSkills, readSkillBody, skillsCatalog, writeSkill, type SkillMeta } from "./skills.js";
 
 export interface JsonSchema {
   type: "object";
@@ -22,6 +22,8 @@ export interface ToolContext {
   config: SuparClawConfig;
   approved: boolean;
   signal?: AbortSignal;
+  /** Re-discover skills after a tool writes one (`skill_save`). */
+  refreshSkills?: () => void;
 }
 
 export interface ToolSpec {
@@ -358,6 +360,31 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         return `# Skill: ${skill.name}\n\n${readSkillBody(skill)}`;
       },
     },
+    {
+      name: "skill_save",
+      description:
+        "Save instructions as a new skill for later reuse. Use whenever the user wants to capture a workflow, procedure, or reference so it can be triggered in future sessions — e.g. \"save that as a skill\", \"remember how to do this\", or when you have worked out a repeatable process worth keeping.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: str("Skill name — 1-64 lowercase letters, numbers, or hyphens"),
+          description: str("One line: what the skill does AND when to use it (this is how it triggers later)"),
+          content: str("The skill instructions in Markdown"),
+        },
+        required: ["name", "description", "content"],
+      },
+      async run(args, ctx) {
+        const result = writeSkill(
+          ctx.workspace,
+          String(args["name"] ?? ""),
+          String(args["description"] ?? ""),
+          String(args["content"] ?? ""),
+        );
+        if (!result.ok) return `error: ${result.error}`;
+        ctx.refreshSkills?.();
+        return `saved skill "${result.name}" to skills/${result.name}/SKILL.md — it is available now (skill_read "${result.name}") and in future sessions`;
+      },
+    },
   );
 
   if (config.tools.exec.enabled) {
@@ -399,7 +426,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
 
 export function toolsToSchema(tools: ToolSpec[]): { type: "function"; function: Record<string, unknown> }[] {
   return tools.map((t) => {
-    const parameters = (t.parameters ?? { type: "object", properties: {} }) as Record<string, unknown>;
+    const parameters = (t.parameters ?? { type: "object", properties: {} }) as unknown as Record<string, unknown>;
     const props = (parameters["properties"] ?? {}) as Record<string, unknown>;
     // Gemini's OpenAI-compat rejects OBJECT schemas with empty properties
     // ("should be non-empty for OBJECT type") — parameterless tools get a

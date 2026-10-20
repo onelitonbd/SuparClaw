@@ -11,7 +11,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 let sessionKey = localStorage.getItem("sc.session") || "main:main";
 let currentModel = "";
 let busy = false;
-let models: string[] = [];
+let models: { value: string; label: string; group: string }[] = [];
 let toolCount = 0;
 let settings: Settings | null = null;
 
@@ -155,9 +155,24 @@ async function refresh(): Promise<void> {
     ]);
     const status = statusRes as any;
     toolCount = (status.tools ?? []).length;
-    models = (modelRes as any).models ?? [];
-    currentModel = status.model || models[0] || "";
-    $("model-name").textContent = currentModel || "model…";
+    // Curated profiles win: once the user has accepted any model in Settings →
+    // Models, the picker shows only those. Fresh setups keep the full
+    // discovered provider list until the first profile is added.
+    const configured = (((modelRes as any).configured ?? []) as any[]).filter((m) => m.enabled);
+    models =
+      configured.length > 0
+        ? configured.map((m) => ({
+            value: String(m.id),
+            label: String(m.label || m.ref || m.id),
+            group: String(m.ref ?? "").split("/")[0] || "default",
+          }))
+        : (((modelRes as any).models ?? []) as string[]).map((ref) => ({
+            value: ref,
+            label: ref,
+            group: ref.split("/")[0] || "default",
+          }));
+    currentModel = status.model || models[0]?.value || "";
+    $("model-name").textContent = models.find((m) => m.value === currentModel)?.label || currentModel || "model…";
     renderSessions((sessionRes as any).sessions ?? []);
     syncThinking(status, (sessionRes as any).sessions ?? []);
   } catch { /* gateway reconnecting */ }
@@ -337,12 +352,13 @@ $("model-btn").onclick = () => {
   pickModel({
     current: currentModel,
     models,
-    onPick: async (ref) => {
-      $("model-name").textContent = ref;
+    onPick: async (value) => {
+      const label = models.find((m) => m.value === value)?.label || value;
+      $("model-name").textContent = label;
       try {
-        await gateway.request("config.set", { path: "agents.defaults.model", value: ref });
-        currentModel = ref;
-        toast(`model → ${ref}`, "ok");
+        await gateway.request("config.set", { path: "agents.defaults.model", value });
+        currentModel = value;
+        toast(`model → ${label}`, "ok");
         void refresh();
       } catch (err) {
         toast((err as Error).message, "err");

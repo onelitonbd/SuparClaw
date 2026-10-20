@@ -199,6 +199,39 @@ export const CONFIG_SCHEMA: SchemaNode = {
         },
       },
     },
+    // Curated model profiles — the Settings "Models" tab. Unlike OpenClaw
+    // (every provider model shows up), nothing appears in the picker until the
+    // user adds it here. The record key is the local id; the same wire ref may
+    // be configured several times with different tuning ("use it multiple
+    // times"). `enabled` is the accept switch: only accepted profiles appear
+    // in the model picker.
+    models: {
+      t: "record",
+      default: {},
+      of: {
+        t: "object",
+        fields: {
+          // Wire ref sent to the provider ("provider/model" or a bare model id).
+          ref: { t: "string", default: "" },
+          // Display name; falls back to the ref when empty.
+          label: { t: "string", default: "" },
+          // Accept switch — accepted models appear in the model picker.
+          enabled: { t: "bool", default: true },
+          // Native context window in tokens (0 = unknown).
+          contextWindow: { t: "int", min: 0, default: 0 },
+          // Output cap sent as max_tokens (0 = provider default).
+          maxTokens: { t: "int", min: 0, default: 0 },
+          // Optional sampling temperature; absent = provider default.
+          temperature: { t: "number", optional: true },
+          // Per-model thinking default; "inherit" defers to session/global.
+          reasoningEffort: {
+            t: "enum",
+            values: ["inherit", "off", "low", "medium", "high", "xhigh", "max"],
+            default: "inherit",
+          },
+        },
+      },
+    },
     channels: {
       t: "object",
       default: {},
@@ -275,6 +308,18 @@ export interface SuparClawConfig {
     string,
     { baseUrl: string; apiKey: string; headers: Record<string, string>; models: string[] }
   >;
+  models: Record<
+    string,
+    {
+      ref: string;
+      label: string;
+      enabled: boolean;
+      contextWindow: number;
+      maxTokens: number;
+      temperature?: number;
+      reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
+    }
+  >;
   channels: {
     telegram: {
       enabled: boolean;
@@ -305,4 +350,75 @@ export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: st
 
 export function emptyConfig(): SuparClawConfig {
   return applyDefaults(CONFIG_SCHEMA, {}) as SuparClawConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Model profiles — curated entries from config.models (Settings → Models).
+// ---------------------------------------------------------------------------
+
+export interface ModelProfile {
+  /** Local id (record key) — what sessions and the picker reference. */
+  id: string;
+  /** Wire ref sent to the provider. */
+  ref: string;
+  label: string;
+  enabled: boolean;
+  /** Native context window in tokens (0 = unknown). */
+  contextWindow: number;
+  /** Output cap for max_tokens (undefined = provider default). */
+  maxTokens?: number;
+  /** Sampling temperature (undefined = provider default). */
+  temperature?: number;
+  reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+/** Configured profiles as a list; the record key is the profile id. */
+export function modelProfiles(config: SuparClawConfig): ModelProfile[] {
+  return Object.entries(config.models ?? {}).map(([id, m]) => ({
+    id,
+    ref: m.ref,
+    label: m.label || m.ref || id,
+    enabled: m.enabled !== false,
+    contextWindow: m.contextWindow ?? 0,
+    maxTokens: m.maxTokens ? m.maxTokens : undefined,
+    temperature: typeof m.temperature === "number" ? m.temperature : undefined,
+    reasoningEffort: m.reasoningEffort ?? "inherit",
+  }));
+}
+
+/**
+ * Resolve a requested model ("gemini-deep" profile id, or a bare
+ * "provider/model" ref) to a full profile. Precedence: exact profile id, then
+ * a lone accepted profile on that ref, then a synthesized passthrough profile
+ * so unconfigured refs keep working exactly as before.
+ */
+export function modelProfile(config: SuparClawConfig, requested: string): ModelProfile {
+  const all = modelProfiles(config);
+  const req = requested.trim();
+  if (!req) {
+    // No explicit request — resolve the configured default through the same
+    // rules (it may itself name a profile id).
+    const def = (config.agents.defaults.model ?? "").trim();
+    if (def) return modelProfile(config, def);
+    return {
+      id: "",
+      ref: "",
+      label: "",
+      enabled: true,
+      contextWindow: 0,
+      reasoningEffort: "inherit",
+    };
+  }
+  const byId = all.find((m) => m.id === req);
+  if (byId) return byId;
+  const byRef = all.filter((m) => m.ref === req && m.enabled);
+  if (byRef.length === 1) return byRef[0] as ModelProfile;
+  return {
+    id: req,
+    ref: req,
+    label: req,
+    enabled: true,
+    contextWindow: 0,
+    reasoningEffort: "inherit",
+  };
 }

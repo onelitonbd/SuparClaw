@@ -1,15 +1,19 @@
-// Settings: Model, Providers, Gateway, Runtime — tabbed, one card per block.
+// Settings: Defaults, Models, Providers, Skills, Tools, Gateway, Runtime —
+// tabbed, one card per block.
 
 import { el, modal, toast } from "./dom.js";
 import { gateway } from "./rpc.js";
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "providers" | "gateway" | "runtime";
+type TabId = "model" | "models" | "providers" | "skills" | "tools" | "gateway" | "runtime";
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "model", label: "Model" },
+  { id: "model", label: "Defaults" },
+  { id: "models", label: "Models" },
   { id: "providers", label: "Providers" },
+  { id: "skills", label: "Skills" },
+  { id: "tools", label: "Tools" },
   { id: "gateway", label: "Gateway" },
   { id: "runtime", label: "Runtime" },
 ];
@@ -54,14 +58,17 @@ export class Settings {
     let config: any = {};
     let models: string[] = [];
     let modelsWarning: string | undefined;
-    let tools = 0, skills = 0;
+    let configured: any[] = [];
+    let tools: any[] = [];
+    let skills: any[] = [];
     try {
       const [cfg, modelRes, toolRes, skillRes] = await this.#load();
       config = (cfg as any).config ?? {};
       models = (modelRes as any).models ?? [];
       modelsWarning = (modelRes as any).warning;
-      tools = ((toolRes as any).tools ?? []).length;
-      skills = ((skillRes as any).skills ?? []).length;
+      configured = (modelRes as any).configured ?? [];
+      tools = (toolRes as any).tools ?? [];
+      skills = (skillRes as any).skills ?? [];
     } catch (err) {
       toast(`could not load config: ${(err as Error).message}`, "err");
     }
@@ -72,9 +79,12 @@ export class Settings {
 
     this.#root.innerHTML = "";
     if (this.#tab === "model") this.#renderModel(defaults, models, modelsWarning);
+    else if (this.#tab === "models") this.#renderModels(configured, models);
     else if (this.#tab === "providers") this.#renderProviders(providers);
+    else if (this.#tab === "skills") this.#renderSkills(skills);
+    else if (this.#tab === "tools") this.#renderTools(tools);
     else if (this.#tab === "gateway") this.#renderGateway(gw);
-    else this.#renderRuntime(config, { tools, skills, models: models.length });
+    else this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
 
   #renderTabs(): void {
@@ -185,6 +195,147 @@ export class Settings {
     );
   }
 
+  /* ---------------- models ---------------- */
+
+  #renderModels(configured: any[], discovered: string[]): void {
+    const body = el("div", { class: "settings__body" });
+
+    body.append(el("div", { class: "card" }, [
+      el("div", { class: "row__label" }, ["Curated models"]),
+      el("p", { class: "hint" }, [
+        configured.length === 0
+          ? "Nothing added yet — the picker currently lists every provider model. Add a model to start curating: only accepted models will appear in the picker. You can add the same provider model several times with different tuning."
+          : "Only accepted models appear in the model picker. Sessions can also address a model by its id.",
+      ]),
+    ]));
+
+    for (const m of configured as any[]) {
+      const tuning: string[] = [];
+      if (m.contextWindow) tuning.push(`${m.contextWindow} tok ctx`);
+      if (m.maxTokens) tuning.push(`max ${m.maxTokens} out`);
+      if (typeof m.temperature === "number") tuning.push(`temp ${m.temperature}`);
+      if (m.reasoningEffort && m.reasoningEffort !== "inherit") tuning.push(`think ${m.reasoningEffort}`);
+
+      const accept = el("button", { class: `btn sm${m.enabled ? " pri" : ""}`, type: "button" }, [
+        m.enabled ? "Accepted" : "Not in picker",
+      ]);
+      accept.onclick = async () => {
+        try {
+          await gateway.request("models.save", { ...m, id: m.id, enabled: !m.enabled });
+          toast(m.enabled ? `${m.label || m.id} removed from picker` : `${m.label || m.id} accepted`, "ok");
+          await this.render();
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      };
+      const edit = el("button", { class: "btn sm", type: "button" }, ["Edit"]);
+      edit.onclick = () => this.#modelForm(m, discovered, () => void this.render());
+      const remove = el("button", { class: "btn sm danger", type: "button" }, ["Remove"]);
+      remove.onclick = () => {
+        void modal({
+          title: "Remove model?",
+          body: `This removes the profile "${m.label || m.id}" (${m.ref}). Sessions naming its id fall back to the raw ref.`,
+          confirmLabel: "Remove",
+          danger: true,
+          onConfirm: async () => {
+            try {
+              await gateway.request("models.remove", { id: m.id });
+              toast("model removed", "ok");
+              await this.render();
+            } catch (err) {
+              toast((err as Error).message, "err");
+            }
+          },
+        });
+      };
+
+      body.append(el("div", { class: "card" }, [
+        el("div", { class: "prov" }, [
+          el("div", { class: "prov__head" }, [
+            el("span", { class: "prov__name" }, [m.label || m.id]),
+            el("span", { class: "prov__count mono" }, [m.ref]),
+          ]),
+          el("div", { class: "prov__url mono" }, [`id: ${m.id}${tuning.length ? " — " + tuning.join(" · ") : ""}`]),
+          el("div", { class: "prov__row" }, [accept, edit, remove]),
+        ]),
+      ]));
+    }
+
+    const plus = el("span");
+    plus.innerHTML = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+    const add = el("button", { class: "btn pri", type: "button" }, [plus, "Add model"]);
+    add.onclick = () => this.#modelForm(null, discovered, () => void this.render());
+
+    this.#root.append(body, add);
+  }
+
+  #modelForm(existing: any | null, discovered: string[], done: () => void): void {
+    let close: () => void = () => {};
+    const refList = el("datalist", { id: "model-ref-list" });
+    for (const ref of discovered.slice(0, 200)) refList.append(el("option", { value: ref }));
+
+    const field = (name: string, label: string, value: string, placeholder: string, type = "text") => {
+      const input = el("input", {
+        id: `f-${name}`, class: "inp mono", type, value, placeholder,
+        autocomplete: "off", spellcheck: "false", step: type === "number" ? "any" : undefined,
+      }) as HTMLInputElement;
+      return { input, wrap: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `f-${name}` }, [label]), input]) };
+    };
+    const idF = field("id", "Id (sessions address this)", existing?.id ?? "", "gemini-deep");
+    const labelF = field("label", "Label", existing?.label ?? "", "Gemini Deep");
+    const refF = field("ref", "Model ref (provider/model)", existing?.ref ?? "", "google/gemini-3-flash");
+    (refF.input as HTMLInputElement).setAttribute("list", "model-ref-list");
+    const ctxF = field("contextWindow", "Context window (tokens)", existing?.contextWindow ? String(existing.contextWindow) : "", "1000000", "number");
+    const maxF = field("maxTokens", "Max output tokens (0 = provider default)", existing?.maxTokens ? String(existing.maxTokens) : "0", "0", "number");
+    const tempF = field("temperature", "Temperature (blank = provider default)", typeof existing?.temperature === "number" ? String(existing.temperature) : "", "0.7", "number");
+
+    const effortSel = el("select", { class: "inp", id: "f-effort" }) as HTMLSelectElement;
+    for (const v of ["inherit", "off", "low", "medium", "high", "xhigh", "max"]) {
+      const opt = el("option", { value: v }, [v]) as HTMLOptionElement;
+      if ((existing?.reasoningEffort ?? "inherit") === v) opt.selected = true;
+      effortSel.append(opt);
+    }
+
+    modal({
+      title: existing ? `Edit ${existing.id}` : "Add model",
+      confirmLabel: existing ? "Save" : "Add",
+      render: (body, c) => {
+        close = c;
+        body.append(
+          idF.wrap, labelF.wrap, refF.wrap, refList, ctxF.wrap, maxF.wrap, tempF.wrap,
+          el("div", { class: "modal__field" }, [
+            el("label", { class: "lbl", for: "f-effort" }, ["Default thinking"]),
+            effortSel,
+            el("p", { class: "hint" }, ["Per-model default; a session thinking choice still overrides it."]),
+          ]),
+        );
+      },
+      onConfirm: async () => {
+        const ref = refF.input.value.trim();
+        if (!ref) { toast("ref is required", "err"); return; }
+        const payload: Record<string, unknown> = {
+          id: idF.input.value.trim() || labelF.input.value.trim() || ref,
+          label: labelF.input.value.trim(),
+          ref,
+          contextWindow: Number(ctxF.input.value) || 0,
+          maxTokens: Number(maxF.input.value) || 0,
+          reasoningEffort: effortSel.value,
+          enabled: existing?.enabled ?? true,
+        };
+        const temp = tempF.input.value.trim();
+        if (temp !== "" && Number.isFinite(Number(temp))) payload["temperature"] = Number(temp);
+        try {
+          await gateway.request("models.save", payload);
+          toast(existing ? "model saved" : "model added", "ok");
+          close();
+          done();
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      },
+    });
+  }
+
   /* ---------------- providers ---------------- */
 
   #renderProviders(providers: Record<string, Provider>): void {
@@ -214,6 +365,133 @@ export class Settings {
     add.onclick = () => this.#providerForm(null, providers, () => void this.render());
 
     this.#root.append(body, add);
+  }
+
+  /* ---------------- skills ---------------- */
+
+  #renderSkills(skills: any[]): void {
+    const body = el("div", { class: "settings__body" });
+
+    body.append(el("div", { class: "card" }, [
+      el("div", { class: "row__label" }, ["Skills"]),
+      el("p", { class: "hint" }, [
+        "Instruction packs the agent can load (SKILL.md + frontmatter). The agent can also save new skills itself with the skill_save tool. Workspace entries shadow state and bundled ones of the same name.",
+      ]),
+    ]));
+
+    for (const s of skills as any[]) {
+      const open = el("button", { class: "btn sm", type: "button" }, ["Open"]);
+      open.onclick = () => {
+        void (async () => {
+          try {
+            const res = (await gateway.request("skills.get", { name: s.name })) as any;
+            modal({
+              title: s.name,
+              body: el("div", {}, [
+                el("p", { class: "hint" }, [s.description || "(no description)"]),
+                el("pre", { class: "mono", style: "white-space:pre-wrap;font-size:12px;max-height:50vh;overflow:auto" }, [String(res.body ?? "")]),
+              ]),
+              confirmLabel: "",
+            });
+          } catch (err) {
+            toast((err as Error).message, "err");
+          }
+        })();
+      };
+
+      const badgeStyle = s.eligible
+        ? "font-size:11px;font-weight:600;color:var(--accent);background:var(--accsoft);padding:2px 8px;border-radius:999px"
+        : "font-size:11px;font-weight:600;color:var(--warn);padding:2px 8px;border-radius:999px";
+      body.append(el("div", { class: "card" }, [
+        el("div", { class: "prov" }, [
+          el("div", { class: "prov__head" }, [
+            el("span", { class: "prov__name mono" }, [s.name]),
+            el("span", { class: "prov__count" }, [s.root]),
+          ]),
+          el("div", { class: "prov__url" }, [s.description || "(no description)"]),
+          el("div", { class: "prov__row" }, [
+            el("span", { class: "sheet__check", style: badgeStyle }, [s.eligible ? "available" : `unavailable${s.reason ? " — " + s.reason : ""}`]),
+            open,
+          ]),
+        ]),
+      ]));
+    }
+
+    const plus = el("span");
+    plus.innerHTML = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+    const add = el("button", { class: "btn pri", type: "button" }, [plus, "Add skill"]);
+    add.onclick = () => this.#skillForm(() => void this.render());
+
+    this.#root.append(body, add);
+  }
+
+  #skillForm(done: () => void): void {
+    let close: () => void = () => {};
+    const name = el("input", { class: "inp mono", id: "f-skill-name", placeholder: "my-skill", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const desc = el("input", { class: "inp", id: "f-skill-desc", placeholder: "What it does and when to use it", autocomplete: "off" }) as HTMLInputElement;
+    const content = el("textarea", {
+      class: "inp mono", id: "f-skill-body", rows: "12",
+      placeholder: "The skill instructions in Markdown",
+      style: "min-height:200px;resize:vertical",
+      spellcheck: "false",
+    }) as HTMLTextAreaElement;
+
+    modal({
+      title: "Add skill",
+      confirmLabel: "Add",
+      render: (body, c) => {
+        close = c;
+        body.append(
+          el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "f-skill-name" }, ["Name"]), name,
+            el("p", { class: "hint" }, ["1-64 lowercase letters, numbers, or hyphens."])]),
+          el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "f-skill-desc" }, ["Description"]), desc,
+            el("p", { class: "hint" }, ["One line: what it does AND when to use it — this is how it triggers later."])]),
+          el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "f-skill-body" }, ["Content"]), content]),
+        );
+      },
+      onConfirm: async () => {
+        if (!name.value.trim()) { toast("name is required", "err"); return; }
+        try {
+          await gateway.request("skills.save", {
+            name: name.value,
+            description: desc.value,
+            body: content.value,
+          });
+          toast(`skill "${name.value.trim().toLowerCase()}" saved`, "ok");
+          close();
+          done();
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      },
+    });
+  }
+
+  /* ---------------- tools ---------------- */
+
+  #renderTools(tools: any[]): void {
+    const body = el("div", { class: "settings__body" });
+
+    body.append(el("div", { class: "card" }, [
+      el("div", { class: "row__label" }, ["Tools"]),
+      el("p", { class: "hint" }, [
+        `${tools.length} built-in tools the agent can call. Read-only: neither the agent nor you can add or remove tools here — they ship with the runtime.`,
+      ]),
+    ]));
+
+    for (const t of tools as any[]) {
+      body.append(el("div", { class: "card" }, [
+        el("div", { class: "prov" }, [
+          el("div", { class: "prov__head" }, [
+            el("span", { class: "prov__name mono" }, [t.name]),
+            el("span", { class: "prov__count" }, [t.needsApproval ? "asks approval" : "auto"]),
+          ]),
+          el("div", { class: "prov__url" }, [t.description || ""]),
+        ]),
+      ]));
+    }
+
+    this.#root.append(body);
   }
 
   /* ---------------- gateway ---------------- */

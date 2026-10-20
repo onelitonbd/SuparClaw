@@ -13,6 +13,9 @@ import {
   validateModelRef,
 } from "../config/providers.js";
 import { redactSecrets, resolveRedacted } from "../config/redact.js";
+import { modelProfiles } from "../config/schema.js";
+import { readSkillBody, skillSlug, writeSkill } from "../agent/skills.js";
+import { workspaceDir } from "../util/paths.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
 
@@ -359,7 +362,60 @@ export class Gateway {
           const result = await discoverModels(service.configSvc, {
             refresh: params["refresh"] === true,
           });
-          send(okFrame(id, result));
+          send(okFrame(id, { ...result, configured: modelProfiles(service.config) }));
+          return;
+        }
+        case "models.save": {
+          // Upsert one curated profile (Settings → Models). The profile id is
+          // the local handle sessions/picker use; `ref` is the wire
+          // "provider/model". Same ref may exist under several ids with
+          // different tuning ("use it multiple times").
+          const profileId = skillSlug(String(params["id"] ?? params["label"] ?? params["ref"] ?? ""));
+          if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(profileId)) {
+            send(errFrame(id, "bad_request", "id must be 1-64 lowercase letters, numbers, or hyphens"));
+            return;
+          }
+          const ref = String(params["ref"] ?? "").trim();
+          if (!ref) {
+            send(errFrame(id, "bad_request", "ref is required (provider/model)"));
+            return;
+          }
+          const entry: Record<string, unknown> = {
+            ref,
+            label: String(params["label"] ?? "").trim(),
+            enabled: params["enabled"] !== false,
+            contextWindow: Math.max(0, Math.trunc(Number(params["contextWindow"] ?? 0)) || 0),
+            maxTokens: Math.max(0, Math.trunc(Number(params["maxTokens"] ?? 0)) || 0),
+            reasoningEffort: String(params["reasoningEffort"] ?? "inherit"),
+          };
+          const temp = Number(params["temperature"]);
+          if (params["temperature"] !== undefined && params["temperature"] !== "" && Number.isFinite(temp)) {
+            entry["temperature"] = temp;
+          }
+          const result = service.configSvc.setPath(`models.${profileId}`, entry);
+          if (!result.ok) {
+            send(errFrame(id, "bad_request", result.errors[0] ?? "invalid model entry"));
+            return;
+          }
+          service.applyConfig();
+          send(okFrame(id, { ok: true, id: profileId, models: modelProfiles(service.config) }));
+          return;
+        }
+        case "models.remove": {
+          const key = String(params["id"] ?? "");
+          const rest = { ...service.config.models };
+          if (!(key in rest)) {
+            send(errFrame(id, "not_found", `no model profile named ${key}`));
+            return;
+          }
+          delete rest[key];
+          const result = service.configSvc.set("models", rest);
+          if (!result.ok) {
+            send(errFrame(id, "bad_request", result.errors[0] ?? "could not remove model"));
+            return;
+          }
+          service.applyConfig();
+          send(okFrame(id, { ok: true, models: modelProfiles(service.config) }));
           return;
         }
         case "providers.add": {
@@ -408,7 +464,16 @@ export class Gateway {
           return;
         }
         case "tools.list":
-          send(okFrame(id, { tools: service.loop.tools.map((t) => ({ name: t.name, description: t.description })) }));
+          // Read-only inventory — neither the UI nor the agent can add tools.
+          send(
+            okFrame(id, {
+              tools: service.loop.tools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                needsApproval: t.needsApproval === true,
+              })),
+            }),
+          );
           return;
         case "skills.list":
           send(
@@ -418,12 +483,51 @@ export class Gateway {
                 description: s.description,
                 readWhen: s.readWhen,
                 root: s.root,
+                path: s.path,
                 eligible: s.eligible,
                 reason: s.reason,
+                userInvocable: s.userInvocable,
+                disableModelInvocation: s.disableModelInvocation,
               })),
             }),
           );
           return;
+        case "skills.get": {
+          const name = String(params["name"] ?? "");
+          const skill = service.loop.skills.find((s) => s.name === name);
+          if (!skill) {
+            send(errFrame(id, "not_found", `no skill named ${name}`));
+            return;
+          }
+          send(
+            okFrame(id, {
+              name: skill.name,
+              description: skill.description,
+              root: skill.root,
+              path: skill.path,
+              body: readSkillBody(skill),
+            }),
+          );
+          return;
+        }
+        case "skills.save": {
+          // The shared save path (Settings "+", CLI, and `skill_save` tool
+          // writes go through workspace/skills directly). Writes
+          // <workspace>/skills/<name>/SKILL.md and re-discovers immediately.
+          const result = writeSkill(
+            workspaceDir(),
+            String(params["name"] ?? ""),
+            String(params["description"] ?? ""),
+            String(params["body"] ?? params["content"] ?? ""),
+          );
+          if (!result.ok) {
+            send(errFrame(id, "bad_request", result.error ?? "could not save skill"));
+            return;
+          }
+          service.loop.refreshSkills();
+          send(okFrame(id, { ok: true, name: result.name, path: result.path }));
+          return;
+        }
         case "cron.list":
           // Reconcile here so jobs added by other processes (`sc cron add`)
           // show up — and arm — without waiting for the next tick.
@@ -450,17 +554,24 @@ export class Gateway {
           // Model ids often contain slashes, so a bare id has to be looked up
           // instead of split on its first slash.
           if (path === "agents.defaults.model" && typeof value === "string") {
-            value = canonicalModelRef(service.config, value) ?? value;
-            const invalid = value.trim() ? validateModelRef(service.config, value) : null;
-            if (invalid) {
-              send(errFrame(id, "bad_model", invalid));
-              return;
+            // A curated profile id (Settings → Models) is a valid default
+            // model: the loop resolves it to its wire ref + tuning at run time.
+            // Only bare provider refs go through canonicalization/validation.
+            const isProfileId = Boolean((service.config.models ?? {})[value.trim()]);
+            if (!isProfileId) {
+              const modelRef = canonicalModelRef(service.config, value) ?? value;
+              value = modelRef;
+              const invalid = modelRef.trim() ? validateModelRef(service.config, modelRef) : null;
+              if (invalid) {
+                send(errFrame(id, "bad_model", invalid));
+                return;
+              }
             }
           } else if (path === "agents.defaults.fallbacks" && Array.isArray(value)) {
-            value = value.map((m) =>
+            const fallbacks = value.map((m) =>
               typeof m === "string" ? (canonicalModelRef(service.config, m) ?? m) : m,
             );
-            for (const m of value) {
+            for (const m of fallbacks) {
               if (typeof m !== "string" || !m.trim()) continue;
               const invalid = validateModelRef(service.config, m);
               if (invalid) {
@@ -468,6 +579,7 @@ export class Gateway {
                 return;
               }
             }
+            value = fallbacks;
           }
           const result = service.configSvc.setPath(path, value);
           if (!result.ok) {

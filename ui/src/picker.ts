@@ -5,8 +5,9 @@ import { el, fuzzy } from "./dom.js";
 
 export function pickModel(opts: {
   current: string;
-  models: string[];
-  onPick: (ref: string) => void;
+  /** value = what chat/config use (profile id or bare ref); label = display. */
+  models: { value: string; label: string; group: string }[];
+  onPick: (value: string) => void;
 }): void {
   const overlay = document.getElementById("sheet-overlay") as HTMLElement | null;
   const list = document.getElementById("model-list") as HTMLElement | null;
@@ -15,12 +16,13 @@ export function pickModel(opts: {
   const scrim = document.getElementById("sheet-scrim") as HTMLElement | null;
   if (!overlay || !list || !filter || !addBtn || !scrim) return;
 
-  const rows = opts.models.map((ref) => {
-    const slash = ref.indexOf("/");
-    return { ref, provider: slash > 0 ? ref.slice(0, slash) : "default" };
-  });
+  const rows = opts.models.map((m) => ({
+    value: m.value,
+    label: m.label,
+    provider: m.group || "default",
+  }));
 
-  let selection = Math.max(0, rows.findIndex((r) => r.ref === opts.current));
+  let selection = Math.max(0, rows.findIndex((r) => r.value === opts.current));
 
   const close = () => {
     overlay.hidden = true;
@@ -33,9 +35,9 @@ export function pickModel(opts: {
   const render = () => {
     const q = filter.value.trim();
     const scored = rows
-      .map((r) => ({ ...r, score: Math.max(fuzzy(q, r.ref), fuzzy(q, r.provider)) }))
+      .map((r) => ({ ...r, score: Math.max(fuzzy(q, r.label), fuzzy(q, r.value), fuzzy(q, r.provider)) }))
       .filter((r) => r.score > 0)
-      .sort((a, b) => b.score - a.score || a.ref.localeCompare(b.ref));
+      .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
     list.innerHTML = "";
     if (scored.length === 0) {
       list.append(el("div", { class: "sheet__empty" }, ["No models match"]));
@@ -51,10 +53,10 @@ export function pickModel(opts: {
       check.innerHTML =
         '<svg role="img" aria-label="Current model" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
       const row = el("button", { class: "sheet__row", type: "button" }, [
-        el("span", { class: "mono" }, [r.ref]),
-        r.ref === opts.current ? check : null,
+        el("span", { class: "mono" }, [r.label]),
+        r.value === opts.current ? check : null,
       ].filter(Boolean) as Node[]);
-      row.onclick = () => { opts.onPick(r.ref); close(); };
+      row.onclick = () => { opts.onPick(r.value); close(); };
       list.append(row);
     }
   };
