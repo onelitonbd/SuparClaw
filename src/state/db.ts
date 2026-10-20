@@ -241,6 +241,38 @@ export class Store {
       .all(sessionId, like, limit) as unknown as MessageRow[];
   }
 
+  /** Cross-session search — what `memory_search` actually wants: every
+   *  transcript, labelled with the session key it came from. */
+  searchMessagesAll(
+    query: string,
+    limit = 10,
+  ): (MessageRow & { session_key: string })[] {
+    const like = `%${query.replace(/[%_]/g, "")}%`;
+    if (this.fts) {
+      try {
+        return this.db
+          .prepare(
+            `SELECT m.*, s.key AS session_key FROM fts_messages f
+             JOIN messages m ON m.id = f.message_id
+             JOIN sessions s ON s.id = m.session_id
+             WHERE fts_messages MATCH ? ORDER BY m.id DESC LIMIT ?`,
+          )
+          .all(query.replace(/[^\w\s]/g, " ").trim(), limit) as unknown as (MessageRow & {
+          session_key: string;
+        })[];
+      } catch {
+        /* fall through to LIKE */
+      }
+    }
+    return this.db
+      .prepare(
+        `SELECT m.*, s.key AS session_key FROM messages m
+         JOIN sessions s ON s.id = m.session_id
+         WHERE m.content LIKE ? ORDER BY m.id DESC LIMIT ?`,
+      )
+      .all(like, limit) as unknown as (MessageRow & { session_key: string })[];
+  }
+
   // ---- cron jobs --------------------------------------------------------
   listJobs(): JobRow[] {
     return this.db.prepare("SELECT * FROM jobs ORDER BY created_at DESC").all() as unknown as JobRow[];

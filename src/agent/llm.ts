@@ -36,10 +36,25 @@ export interface ResolvedModel {
 }
 
 export class LlmError extends Error {
-  constructor(message: string, readonly status?: number, readonly retryable = false) {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly retryable = false,
+    readonly retryAfterMs?: number,
+  ) {
     super(message);
     this.name = "LlmError";
   }
+}
+
+/** Retry-After: seconds or an HTTP-date, floored for the next attempt (capped at 60s). */
+export function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const ms = Number(header) * 1000;
+  if (Number.isFinite(ms) && ms >= 0) return Math.min(60_000, ms);
+  const at = Date.parse(header);
+  if (Number.isFinite(at)) return Math.min(60_000, Math.max(0, at - Date.now()));
+  return undefined;
 }
 
 export function resolveModel(
@@ -147,23 +162,41 @@ export class LlmClient {
     return out;
   }
 
-  /** Stream one completion, walking the fallback chain on retryable failures. */
+  /**
+   * Stream one completion, walking the fallback chain on retryable failures.
+   *
+   * Retry contract (mirrors OpenClaw's policy): a request that has already
+   * delivered events to the consumer is never retried — retrying would stitch
+   * two answers together. Failures with no output yet retry with jittered
+   * backoff (honoring Retry-After), then fall through to the next model.
+   * Auth/billing errors and unexpected exceptions are terminal.
+   */
   async *stream(opts: StreamOptions): AsyncGenerator<StreamEvent> {
-    const chain = [opts.model ?? this.#defaults.model, ...this.#defaults.fallbacks].filter(Boolean);
+    const chain = [
+      ...new Set([opts.model ?? this.#defaults.model, ...this.#defaults.fallbacks].filter(Boolean)),
+    ];
     if (chain.length === 0) throw new LlmError("no model configured — set agents.defaults.model and a provider");
     let lastError: Error | null = null;
     for (const modelRef of chain) {
       for (let attempt = 0; attempt < 3; attempt++) {
+        let yielded = false;
         try {
-          yield* this.#streamOnce(modelRef, opts);
+          for await (const event of this.#streamOnce(modelRef, opts)) {
+            yielded = true;
+            yield event;
+          }
           return;
         } catch (err) {
-          const e = err as LlmError;
+          const e = err as Error;
           lastError = e;
-          const retryable = e.retryable || e instanceof LlmError === false;
+          if (e.name === "AbortError" || opts.signal?.aborted) throw e;
+          if (!(e instanceof LlmError)) throw e; // programming errors are terminal
+          if (yielded) throw e; // partial output reached the consumer — never stitch
+          if (!e.retryable) break; // auth/4xx on this model: try the next fallback
+          if (attempt >= 2) break; // exhausted retries on this model
           this.onRetry?.({ model: modelRef, attempt: attempt + 1, error: e.message });
-          if (!retryable || opts.signal?.aborted) break;
-          await sleep(Math.min(4000, 250 * 2 ** attempt));
+          const backoff = Math.min(4000, 250 * 2 ** attempt) * (0.8 + Math.random() * 0.4);
+          await sleep(Math.max(backoff, e.retryAfterMs ?? 0));
         }
       }
     }
@@ -206,6 +239,7 @@ export class LlmClient {
         `HTTP ${res.status} from ${resolved.provider}: ${text.slice(0, 300) || res.statusText}`,
         res.status,
         RETRYABLE_STATUS.has(res.status),
+        RETRYABLE_STATUS.has(res.status) ? parseRetryAfter(res.headers.get("retry-after")) : undefined,
       );
     }
     if (!res.body) throw new LlmError("provider returned an empty stream", undefined, true);
@@ -214,41 +248,49 @@ export class LlmClient {
     let finishReason = "stop";
     let usage: Record<string, number> | null = null;
 
-    for await (const chunk of iterateSse(res.body)) {
-      if (chunk === "[DONE]") break;
-      let payload: {
-        choices?: { delta?: Record<string, unknown>; finish_reason?: string }[];
-        usage?: Record<string, number>;
-      };
-      try {
-        payload = JSON.parse(chunk);
-      } catch {
-        continue;
-      }
-      if (payload.usage) usage = payload.usage;
-      const choice = payload.choices?.[0];
-      if (!choice) continue;
-      if (choice.finish_reason) finishReason = choice.finish_reason;
-      const delta = choice.delta ?? {};
-      const content = delta["content"];
-      if (typeof content === "string" && content.length > 0) {
-        yield { type: "text", text: content };
-      }
-      const deltaCalls = delta["tool_calls"];
-      if (Array.isArray(deltaCalls)) {
-        for (const raw of deltaCalls as {
-          index?: number;
-          id?: string;
-          function?: { name?: string; arguments?: string };
-        }[]) {
-          const index = raw.index ?? 0;
-          const existing = calls.get(index) ?? { id: "", name: "", args: "" };
-          if (raw.id) existing.id = raw.id;
-          if (raw.function?.name) existing.name += raw.function.name;
-          if (raw.function?.arguments) existing.args += raw.function.arguments;
-          calls.set(index, existing);
+    try {
+      for await (const chunk of iterateSse(res.body)) {
+        if (chunk === "[DONE]") break;
+        let payload: {
+          choices?: { delta?: Record<string, unknown>; finish_reason?: string }[];
+          usage?: Record<string, number>;
+        };
+        try {
+          payload = JSON.parse(chunk);
+        } catch {
+          continue;
+        }
+        if (payload.usage) usage = payload.usage;
+        const choice = payload.choices?.[0];
+        if (!choice) continue;
+        if (choice.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice.delta ?? {};
+        const content = delta["content"];
+        if (typeof content === "string" && content.length > 0) {
+          yield { type: "text", text: content };
+        }
+        const deltaCalls = delta["tool_calls"];
+        if (Array.isArray(deltaCalls)) {
+          for (const raw of deltaCalls as {
+            index?: number;
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }[]) {
+            const index = raw.index ?? 0;
+            const existing = calls.get(index) ?? { id: "", name: "", args: "" };
+            if (raw.id) existing.id = raw.id;
+            if (raw.function?.name) existing.name += raw.function.name;
+            if (raw.function?.arguments) existing.args += raw.function.arguments;
+            calls.set(index, existing);
+          }
         }
       }
+    } catch (err) {
+      // A dropped socket mid-stream is transport, not a bug: classify it as a
+      // retryable LlmError (the retry policy in stream() decides what happens
+      // once output has been delivered).
+      if ((err as Error).name === "AbortError") throw err;
+      throw new LlmError(`stream interrupted: ${(err as Error).message}`, undefined, true);
     }
 
     const finished = [...calls.values()].filter((c) => c.name.length > 0);
@@ -266,14 +308,15 @@ async function* iterateSse(body: ReadableStream<Uint8Array>): AsyncGenerator<str
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const rawEvent = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
+    // Event separator is \n\n; tolerate CRLF servers (\r\n\r\n / \n\r\n).
+    let sep: RegExpExecArray | null;
+    while ((sep = /\n\n|\n\r\n|\r\n\r\n/.exec(buffer)) !== null) {
+      const rawEvent = buffer.slice(0, sep.index);
+      buffer = buffer.slice(sep.index + sep[0].length);
       const data = rawEvent
         .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim())
+        .filter((line) => line.trim().startsWith("data:"))
+        .map((line) => line.trim().slice(5).trim())
         .join("\n");
       if (data) yield data;
     }

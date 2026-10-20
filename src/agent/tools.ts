@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, appendFileSync, statSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, appendFileSync, statSync, renameSync, existsSync } from "node:fs";
 import { join, resolve, relative, dirname, extname } from "node:path";
 import type { SuparClawConfig } from "../config/schema.js";
 import type { Store } from "../state/db.js";
@@ -46,6 +46,34 @@ export function safePath(workspace: string, p: string): string {
 }
 
 const MAX_READ = 60_000;
+
+/** Daily notes, newest first: ["memory/2026-10-20.md", …]. */
+function listDailyNotes(workspace: string): string[] {
+  try {
+    return readdirSync(join(workspace, "memory"))
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .reverse()
+      .map((f) => `memory/${f}`);
+  } catch {
+    return [];
+  }
+}
+
+/** Termux bash first, then ordinary shells — exec must work off-phone too. */
+function findShell(): string {
+  const candidates = [
+    process.env["PREFIX"] ? `${process.env["PREFIX"]}/bin/bash` : "",
+    "/data/data/com.termux/files/usr/bin/bash",
+    "/bin/bash",
+    "/usr/bin/bash",
+    "/bin/sh",
+  ];
+  for (const c of candidates) {
+    if (c && existsSync(c)) return c;
+  }
+  return "/bin/sh";
+}
 
 export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   const tools: ToolSpec[] = [];
@@ -172,16 +200,55 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
       {
         name: "memory_search",
-        description: "Search past messages in this session's transcript.",
+        description:
+          "Search memory notes (MEMORY.md, memory/*.md) and past transcripts across all sessions. Returns dated, source-labelled snippets.",
         parameters: {
           type: "object",
           properties: { query: str("Search terms"), limit: int("Max results (default 8)") },
           required: ["query"],
         },
         async run(args, ctx) {
-          const rows = ctx.store.searchMessages(ctx.config.agents.defaults.id, String(args["query"]), Number(args["limit"] ?? 8));
-          if (rows.length === 0) return "no matches";
-          return rows.map((r) => `[${new Date(r.created_at).toISOString().slice(0, 16)}] ${r.role}: ${r.content.slice(0, 400)}`).join("\n\n");
+          const q = String(args["query"] ?? "").trim();
+          if (!q) return "error: empty query";
+          const limit = Math.min(Math.max(Number(args["limit"] ?? 8), 1), 20);
+          const needle = q.toLowerCase();
+          const results: string[] = [];
+
+          // 1. workspace memory: curated MEMORY.md first, then daily notes newest-first
+          const files = ["MEMORY.md", ...listDailyNotes(ctx.workspace)];
+          for (const rel of files) {
+            if (results.length >= limit) break;
+            let text: string;
+            try {
+              text = readFileSync(join(ctx.workspace, rel), "utf8");
+            } catch {
+              continue;
+            }
+            const at = text.toLowerCase().indexOf(needle);
+            if (at === -1) continue;
+            const start = Math.max(0, at - 70);
+            const snippet = text.slice(start, at + needle.length + 130).replace(/\s+/g, " ").trim();
+            results.push(`[memory/${rel}] …${snippet}…`);
+          }
+
+          // 2. transcripts across every session (FTS5 with LIKE fallback)
+          if (results.length < limit) {
+            const rows = ctx.store.searchMessagesAll(q, limit - results.length);
+            for (const row of rows) {
+              const at = row.content.toLowerCase().indexOf(needle);
+              const snippet =
+                at === -1
+                  ? row.content.slice(0, 160).replace(/\s+/g, " ")
+                  : row.content
+                      .slice(Math.max(0, at - 70), at + needle.length + 130)
+                      .replace(/\s+/g, " ")
+                      .trim();
+              const when = new Date(row.created_at).toISOString().slice(0, 10);
+              results.push(`[${when} · ${row.session_key} · ${row.role}] …${snippet}…`);
+            }
+          }
+
+          return results.length > 0 ? results.join("\n\n") : "no matches";
         },
       },
     );
@@ -303,16 +370,16 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         required: ["command"],
       },
       needsApproval: true,
-      async run(args, ctx) {
-        if (config.tools.exec.approvals && !ctx.approved) {
-          return "error: execution needs approval — ask the user to approve, then retry";
-        }
-        const { execFile } = await import("node:child_process");
-        const timeoutMs = Math.min(Number(args["timeoutMs"] ?? config.tools.exec.timeoutMs), 600_000);
-        return await new Promise<string>((resolvePromise) => {
-          execFile(
-            "/data/data/com.termux/files/usr/bin/bash",
-            ["-lc", String(args["command"])],
+        async run(args, ctx) {
+          if (config.tools.exec.approvals && !ctx.approved) {
+            return "error: execution needs approval — ask the user to approve, then retry";
+          }
+          const { execFile } = await import("node:child_process");
+          const timeoutMs = Math.min(Number(args["timeoutMs"] ?? config.tools.exec.timeoutMs), 600_000);
+          return await new Promise<string>((resolvePromise) => {
+            execFile(
+              findShell(),
+              ["-lc", String(args["command"])],
             { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 1_000_000 },
             (err, stdout, stderr) => {
               const parts: string[] = [];

@@ -124,7 +124,8 @@ export class Service {
 
   /** One entry point for every surface: TUI, WS clients, Telegram, cron. */
   async send(payload: ChatPayload): Promise<void> {
-    this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event: { type: "start", runId: crypto.randomUUID(), sessionKey: payload.sessionKey } } satisfies ServiceEvent);
+    // Lifecycle events (start/delta/tool/final/idle) all come from the loop with
+    // the real runId — no synthetic start here, so surfaces never see two runs.
     await this.loop.run({
       sessionKey: payload.sessionKey,
       text: payload.text,

@@ -53,6 +53,8 @@ export class AgentLoop {
 
   #active = new Map<string, { runId: string; controller: AbortController }>();
   #queue = new Map<string, string[]>();
+  /** Per-session serialization chain: one turn at a time (session-controller invariant). */
+  #tails = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: LoopDeps) {
     this.workspace = workspaceDir();
@@ -100,7 +102,8 @@ export class AgentLoop {
         onEvent({ type: "idle", sessionKey });
         return;
       }
-      // steer: interrupt the active run, the new message becomes the turn
+      // steer: interrupt the active run; our turn begins when it unwinds
+      // (the tail chain below guarantees the two never overlap).
       this.abort(sessionKey);
     }
 
@@ -108,6 +111,21 @@ export class AgentLoop {
     const controller = new AbortController();
     this.#active.set(sessionKey, { runId, controller });
     onEvent({ type: "start", runId, sessionKey });
+
+    const prev = this.#tails.get(sessionKey) ?? Promise.resolve();
+    const turn = prev.then(() => this.#runTurn(input, runId, controller));
+    this.#tails.set(
+      sessionKey,
+      turn.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    await turn;
+  }
+
+  async #runTurn(input: RunInput, runId: string, controller: AbortController): Promise<void> {
+    const { sessionKey, onEvent } = input;
 
     const session = this.deps.store.ensureSession(sessionKey);
     const isMain = input.isMainSession ?? sessionKey.endsWith(":main");
@@ -211,15 +229,25 @@ export class AgentLoop {
         onEvent({ type: "error", runId, message });
       }
     } finally {
-      this.#active.delete(sessionKey);
-      onEvent({ type: "idle", sessionKey });
-    }
+      // Fenced cleanup: only the run that still owns the slot may clear it.
+      // A superseded run must neither delete its successor's registration nor
+      // emit "idle" while the successor is still working.
+      const cur = this.#active.get(sessionKey);
+      if (cur?.runId === runId) {
+        this.#active.delete(sessionKey);
+        onEvent({ type: "idle", sessionKey });
+      }
 
-    const pending = this.#queue.get(sessionKey);
-    if (pending && pending.length > 0) {
-      const [next, ...rest] = pending;
-      this.#queue.set(sessionKey, rest);
-      await this.run({ ...input, text: next! });
+      const pending = this.#queue.get(sessionKey);
+      if (pending && pending.length > 0) {
+        const [next, ...rest] = pending;
+        this.#queue.set(sessionKey, rest);
+        // Detached: the queued turn chains onto #tails after this one settles,
+        // so awaiting it here would deadlock on our own tail.
+        void this.run({ ...input, text: next! }).catch((err) =>
+          this.deps.log.error(`queued run failed: ${(err as Error).message}`),
+        );
+      }
     }
   }
 
