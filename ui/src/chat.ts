@@ -202,6 +202,11 @@ export class Chat {
    * reload a thread. A run that is still streaming keeps its bubble (history
    * predates it), one bad row cannot kill the rest, and an empty result shows
    * the empty state rather than a blank screen.
+   *
+   * Rows replay as ONE assistant bubble per turn — the same layout the live
+   * stream produces (thought block(s) → tool cards → answer body). Row-by-row
+   * replay used to scatter every tool card into its own "Assistant Tools"
+   * bubble with thinking floating between them.
    */
   replaceThread(rows: { role: string; content: string }[]): number {
     const live = this.#live;
@@ -211,51 +216,88 @@ export class Chat {
     this.#looseThought = null;
     this.#streamText = "";
     let rendered = 0;
+
+    type ReplayTool = { name: string; status: ToolStatus; detail: string; ms?: number; key: string };
+    type TurnGroup = { thoughts: string[]; tools: ReplayTool[]; text: string };
+    let group: TurnGroup | null = null;
+    const newGroup = (): TurnGroup => ({ thoughts: [], tools: [], text: "" });
+    const flushGroup = (): void => {
+      if (!group) return;
+      const has = group.text || group.tools.length > 0 || group.thoughts.length > 0;
+      if (has) this.#renderTurn(group);
+      group = null;
+    };
+
     for (const [index, row] of rows.entries()) {
       try {
         if (row.role === "user") {
+          flushGroup();
           this.user(row.content);
           rendered++;
         } else if (row.role === "assistant" && row.content) {
-          this.assistant(row.content);
+          group ??= newGroup();
+          group.text += (group.text ? "\n\n" : "") + row.content;
           rendered++;
         } else if (row.role === "tool" && row.content) {
-          // Replay a persisted tool row: "→ name · 6ms\n<output>"
+          // Persisted tool row: "→ name · 6ms\n<output>"
           const lines = row.content.split("\n");
           const head = (lines[0] ?? "").replace(/^→\s*/, "");
           const timed = head.match(/^(.*?)\s*·\s*(\d+)ms$/);
           const name = (timed?.[1] ?? head).trim() || "tool";
           const duration = timed?.[2] ? Number(timed[2]) : undefined;
           const output = lines.slice(1).join("\n");
-          this.tool(
+          group ??= newGroup();
+          group.tools.push({
             name,
-            output.startsWith("error") ? "error" : "done",
-            output,
-            duration,
-            `row-${index}`,
-          );
+            status: output.startsWith("error") ? "error" : "done",
+            detail: output,
+            ms: duration,
+            key: `row-${index}`,
+          });
           rendered++;
         } else if (row.role === "error" && row.content) {
           // fail() with no live bubble renders the same "error: …" notice the
           // user saw live — errors were live-only and vanished on refresh.
+          flushGroup();
           this.fail(row.content);
           rendered++;
         } else if (row.role === "reasoning" && row.content) {
-          // Saved thinking segments reload as reviewable blocks — nothing
-          // the model produced is ever lost from the transcript.
-          this.reasoning(row.content);
+          group ??= newGroup();
+          group.thoughts.push(row.content);
           rendered++;
         }
       } catch {
         /* one bad message must not take the thread with it */
       }
     }
+    flushGroup();
     if (rendered === 0) this.#renderEmpty();
     if (live) {
       this.assistantStart();
       this.delta(liveText);
     }
     return rendered;
+  }
+
+  /** One assistant turn: thought block(s) → tool cards → answer body (live order). */
+  #renderTurn(group: { thoughts: string[]; tools: { name: string; status: ToolStatus; detail: string; ms?: number; key: string }[]; text: string }): void {
+    const status = group.text ? "Done" : group.tools.length > 0 ? "Tools" : "Thinking";
+    const head = this.#head(status);
+    const tools = el("div", { class: "msg__tools" });
+    const body = el("div", { class: "msg__body" });
+    if (group.text) body.innerHTML = renderMarkdown(group.text);
+    const root = el("div", { class: "msg msg--assistant" }, [head, tools, body]);
+    for (const thought of group.thoughts) {
+      const block = this.#thought();
+      block.text = thought;
+      block.body.innerHTML = renderMarkdown(thought);
+      root.insertBefore(block.root, tools);
+    }
+    this.stack.append(root);
+    for (const t of group.tools) {
+      this.tool(t.name, t.status, t.detail, t.ms, t.key, tools);
+    }
+    this.#scrollToBottom();
   }
 
   /** ---- transcript writers ---- */
@@ -279,11 +321,17 @@ export class Chat {
       ]),
     ]);
     const root = el("div", { class: "msg msg--assistant" }, [head, tools, body]);
+    // Thinking that arrived before the bubble opened moves INSIDE it — the
+    // turn is one visual unit (thought → tools → answer), live and on replay.
+    const loose = this.#looseThought;
+    if (loose) root.insertBefore(loose.root, tools);
     this.stack.append(root);
     this.#live = {
       root, head, status: head.querySelector(".msg__status") as HTMLElement,
       tools, body, startedAt: Date.now(),
+      thought: loose ?? undefined,
     };
+    this.#looseThought = null;
     this.#scrollToBottom();
   }
 
@@ -344,7 +392,7 @@ export class Chat {
     this.#scrollToBottom();
   }
 
-  tool(name: string, status: ToolStatus, detail?: string, ms?: number, key?: string): void {
+  tool(name: string, status: ToolStatus, detail?: string, ms?: number, key?: string, host?: HTMLElement): void {
     this.#clearEmpty();
     // Cards are keyed per call (callId live, synthetic on replay) — consecutive
     // calls of the same tool must each get their own pill. running→done of one
@@ -368,9 +416,9 @@ export class Chat {
         body.hidden = !open;
       };
       card = el("div", { class: "tool", "data-tool": cardKey }, [row, body]);
-      const host = this.#live?.tools ?? null;
-      if (host) {
-        host.append(card);
+      const target = host ?? this.#live?.tools ?? null;
+      if (target) {
+        target.append(card);
       } else {
         const head = this.#head("Tools");
         const tools = el("div", { class: "msg__tools" }, [card]);

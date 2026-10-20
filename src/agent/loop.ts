@@ -171,7 +171,7 @@ export class AgentLoop {
         signal: controller.signal,
       };
 
-      for (let turn = 0; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
+      for (let turn = 0, lastThoughtRow = ""; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
         let text = "";
         let toolCalls: ToolCall[] = [];
         let thought = "";
@@ -206,10 +206,14 @@ export class AgentLoop {
         }
         // Persist each thinking segment at its boundary (before any tool step,
         // again before the final) so a reload can show the reasoning that
-        // preceded every step — and nothing is ever lost.
+        // preceded every step — and nothing is ever lost. Identical consecutive
+        // segments (the per-round "no preview" marker) persist once per run.
         const segmentThought = thought.trim();
-        if (segmentThought) {
+        if (segmentThought && segmentThought !== lastThoughtRow) {
           this.deps.store.appendMessage(session.id, "reasoning", segmentThought, runId);
+          lastThoughtRow = segmentThought;
+          thought = "";
+        } else if (segmentThought) {
           thought = "";
         }
 

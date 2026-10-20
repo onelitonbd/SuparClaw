@@ -120,7 +120,12 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
   ]);
   assert.equal(n, 4, "every visible row type renders");
   assert.equal(dom2.document.querySelectorAll("#stack .msg--user").length, 1, "user bubble");
-  assert.equal(dom2.document.querySelectorAll("#stack .msg--assistant").length, 2, "assistant bubble + Tools host");
+  // ONE grouped assistant bubble per turn: answer body + tool cards together
+  // (row-by-row replay used to scatter each tool into its own host bubble).
+  assert.equal(dom2.document.querySelectorAll("#stack .msg--assistant").length, 1, "one grouped turn bubble");
+  const turn = dom2.document.querySelector("#stack .msg--assistant");
+  assert.ok(turn.querySelector(".tool[data-tool='row-2']"), "tool card lives inside the turn bubble");
+  assert.match(turn.querySelector(".msg__body")?.textContent ?? "", /a1/, "answer body shares the bubble");
   assert.ok(dom2.document.querySelector("#stack .tool[data-tool='row-2']"), "tool row replays as a card");
   assert.match(
     (dom2.document.querySelector("#stack .tool__dur")?.textContent ?? "") + (dom2.document.querySelector("#stack .tool__body")?.textContent ?? ""),
@@ -162,6 +167,67 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
   assert.ok(msgs[1].className.includes("msg--assistant"), "the live bubble is assistant");
   await new Promise((r) => setTimeout(r, 20));
   assert.ok((msgs[1].textContent ?? "").includes("streaming text"), "live text survives the reload");
+});
+
+test("reload groups a turn into ONE bubble: thinking → tools → answer (the mobile screenshot bug)", async () => {
+  const dom3 = parseHTML(readFileSync(join(ROOT, "ui/index.html"), "utf8"));
+  globalThis.document = dom3.document;
+  globalThis.HTMLElement = dom3.HTMLElement;
+  globalThis.CSS = { escape: (s) => s };
+  globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+  const chat = new Chat(dom3.document.body, { send: () => {}, abort: () => {}, approve: () => {} });
+
+  // The exact shape from the user's session: one "hey" turn that ran three
+  // web_search rounds, thought before each, answered in Bangla at the end.
+  const n = chat.replaceThread([
+    { role: "user", content: "hey" },
+    { role: "reasoning", content: "Plan: check the news first." },
+    { role: "tool", content: "→ web_search · 1100ms\nresults 1" },
+    { role: "reasoning", content: "More context needed." },
+    { role: "tool", content: "→ web_search · 1000ms\nresults 2" },
+    { role: "tool", content: "→ web_search · 827ms\nresults 3" },
+    { role: "assistant", content: "নিন, খবর এখানে।" },
+  ]);
+  assert.equal(n, 7, "every row counted");
+  assert.equal(dom3.document.querySelectorAll("#stack .msg--user").length, 1);
+  assert.equal(dom3.document.querySelectorAll("#stack .msg--assistant").length, 1, "ONE bubble for the whole turn");
+  const turn = dom3.document.querySelector("#stack .msg--assistant");
+  assert.equal(turn.querySelectorAll(".tool").length, 3, "all three tool cards in the bubble");
+  assert.equal(turn.querySelectorAll(".thought").length, 2, "thinking blocks live inside the bubble");
+  assert.match(turn.querySelector(".msg__body")?.textContent ?? "", /খবর/, "answer body at the bottom of the same bubble");
+  // order: thought blocks above the tool cards, answer body last
+  const kids = [...turn.children].map((c) => c.className);
+  assert.ok(kids[0].includes("msg__head"), "head first");
+  assert.ok(kids.some((c) => c.includes("thought")), "thought blocks present");
+  assert.ok(
+    kids.findIndex((c) => c.includes("thought")) < kids.findIndex((c) => c.includes("msg__tools")),
+    "thinking above tools (live order)",
+  );
+  assert.ok(kids.at(-1).includes("msg__body"), "body last");
+});
+
+test("live: thinking that arrives before the bubble opens moves inside it", async () => {
+  const dom4 = parseHTML(readFileSync(join(ROOT, "ui/index.html"), "utf8"));
+  globalThis.document = dom4.document;
+  globalThis.HTMLElement = dom4.HTMLElement;
+  globalThis.CSS = { escape: (s) => s };
+  globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+  const chat = new Chat(dom4.document.body, { send: () => {}, abort: () => {}, approve: () => {} });
+
+  chat.reasoningDelta("Early thought."); // no bubble open yet
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(dom4.document.querySelectorAll("#stack > .thought").length, 1, "loose block while waiting");
+  chat.assistantStart();
+  chat.reasoningDelta(" More.");
+  chat.tool("web_search", "done", "hits", 100, "c1");
+  chat.delta("answer");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(dom4.document.querySelectorAll("#stack > .thought").length, 0, "no floating loose block");
+  const turn = dom4.document.querySelector("#stack .msg--assistant");
+  const thought = turn.querySelector(".thought");
+  assert.ok(thought, "thought block inside the bubble");
+  assert.match(thought.textContent ?? "", /Early thought\. More\./, "fragments keep accumulating in place");
+  assert.ok(turn.querySelector(".tool"), "tool card in the same bubble");
 });
 
 test("loadHistory replaces via replaceThread and never clears before the fetch", () => {

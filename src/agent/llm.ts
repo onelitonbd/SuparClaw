@@ -817,12 +817,22 @@ export class LlmClient {
     }
     // Some Gemini 3.x OpenAI-compat routes bill reasoning tokens but stream no
     // preview text at all (reasoning_content never appears). Say so honestly
-    // instead of silently showing nothing.
-    if (!sawReasoningText && reasoningTokens(usage as Record<string, unknown> | null) > 0) {
-      yield {
-        type: "reasoning",
-        text: "Thinking ran (reasoning tokens billed) but this provider route exposed no preview text.",
-      };
+    // instead of silently showing nothing. When a level was explicitly
+    // requested, the absence of any preview is itself worth surfacing.
+    if (!sawReasoningText) {
+      const tokens = reasoningTokens(usage as Record<string, unknown> | null);
+      const asked = opts.reasoning !== undefined && opts.reasoning !== "inherit" && opts.reasoning !== "off";
+      if (tokens > 0) {
+        yield {
+          type: "reasoning",
+          text: "Thinking ran (reasoning tokens billed) but this provider route exposed no preview text.",
+        };
+      } else if (asked) {
+        yield {
+          type: "reasoning",
+          text: `No thinking preview arrived from this provider route (requested level: ${opts.reasoning}).`,
+        };
+      }
     }
 
     const finished = [...calls.values()].filter((c) => c.name.length > 0);
