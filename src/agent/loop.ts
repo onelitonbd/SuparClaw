@@ -11,7 +11,7 @@ import { skillsDir, workspaceDir } from "../util/paths.js";
 export type RunEvent =
   | { type: "start"; runId: string; sessionKey: string }
   | { type: "delta"; text: string }
-  | { type: "tool"; callId: string; name: string; status: "running" | "done" | "error"; detail?: string }
+  | { type: "tool"; callId: string; name: string; status: "running" | "done" | "error"; detail?: string; ms?: number }
   | { type: "final"; runId: string; text: string; usage?: Record<string, number> }
   | { type: "error"; runId: string; message: string }
   | { type: "approval"; callId: string; tool: string; args: Record<string, unknown> }
@@ -180,7 +180,9 @@ export class AgentLoop {
           const spec = this.tools.find((t) => t.name === call.name);
           const started = Date.now();
           if (!spec) {
-            messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: `error: unknown tool ${call.name}` });
+            const output = `error: unknown tool ${call.name}`;
+            messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: output });
+            this.deps.store.appendMessage(session.id, "tool", `→ ${call.name}\n${output}`, runId);
             onEvent({ type: "tool", callId: call.id, name: call.name, status: "error", detail: "unknown tool" });
             continue;
           }
@@ -199,11 +201,15 @@ export class AgentLoop {
               ? await spec.run(args, { ...ctx, approved: true })
               : "error: user declined this action";
             this.deps.store.logTool(runId, call.name, approved ? "ok" : "declined", Date.now() - started);
-            this.deps.store.appendMessage(session.id, "tool", `→ ${call.name}\n${output.slice(0, 4000)}`, runId);
           } catch (err) {
             output = `error: ${(err as Error).message}`;
             this.deps.store.logTool(runId, call.name, "error", Date.now() - started);
           }
+          const ms = Date.now() - started;
+          // Persist EVERY outcome (success, decline, throw). Failed calls used
+          // to skip persistence entirely and vanish on refresh; the header
+          // carries the duration so a reload can replay the exact pill.
+          this.deps.store.appendMessage(session.id, "tool", `→ ${call.name} · ${ms}ms\n${output.slice(0, 4000)}`, runId);
           const failed = output.startsWith("error");
           onEvent({
             type: "tool",
@@ -211,6 +217,7 @@ export class AgentLoop {
             name: call.name,
             status: failed ? "error" : "done",
             detail: output.slice(0, 200),
+            ms,
           });
           messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: output });
         }
@@ -226,6 +233,9 @@ export class AgentLoop {
       this.deps.store.finishRun(runId, aborted ? "aborted" : "error", usage, message);
       if (!aborted) {
         this.deps.log.error(`run ${runId} failed: ${message}`);
+        // Persist the failure as its own transcript row — error bubbles were
+        // live-only and disappeared on every refresh.
+        this.deps.store.appendMessage(session.id, "error", message, runId);
         onEvent({ type: "error", runId, message });
       }
     } finally {

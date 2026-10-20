@@ -102,6 +102,7 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
   const dom2 = parseHTML(readFileSync(join(ROOT, "ui/index.html"), "utf8"));
   globalThis.document = dom2.document;
   globalThis.HTMLElement = dom2.HTMLElement;
+  globalThis.CSS = { escape: (s) => s };
   globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
   const chat = new Chat(dom2.document.body, {
     send: () => {},
@@ -109,14 +110,35 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
     approve: () => {},
   });
 
-  // plain history reload
+  // plain history reload — user, assistant, tool pills, and error rows all
+  // round-trip (tool calls and errors used to vanish on refresh)
   let n = chat.replaceThread([
     { role: "user", content: "q1" },
     { role: "assistant", content: "a1" },
-    { role: "tool", content: "skipped" },
+    { role: "tool", content: "→ fs_read · 6ms\n# IDENTITY.md\nfile body here" },
+    { role: "error", content: "HTTP 400 from MultiRouter: bad argument" },
   ]);
-  assert.equal(n, 2, "user + assistant rows render, tool rows are skipped");
-  assert.equal(dom2.document.querySelectorAll("#stack .msg").length, 2);
+  assert.equal(n, 4, "every visible row type renders");
+  assert.equal(dom2.document.querySelectorAll("#stack .msg--user").length, 1, "user bubble");
+  assert.equal(dom2.document.querySelectorAll("#stack .msg--assistant").length, 2, "assistant bubble + Tools host");
+  assert.ok(dom2.document.querySelector("#stack .tool[data-tool='row-2']"), "tool row replays as a card");
+  assert.match(
+    (dom2.document.querySelector("#stack .tool__dur")?.textContent ?? "") + (dom2.document.querySelector("#stack .tool__body")?.textContent ?? ""),
+    /6ms|file body/,
+    "tool timing/output survive the reload",
+  );
+  assert.match(
+    dom2.document.querySelector("#stack").textContent ?? "",
+    /error: HTTP 400 from MultiRouter/,
+    "error row replays as the same notice shown live",
+  );
+
+  // a failed tool row replays with the error styling
+  n = chat.replaceThread([
+    { role: "tool", content: "→ exec · 3ms\nerror: user declined this action" },
+  ]);
+  assert.equal(n, 1);
+  assert.ok(dom2.document.querySelector("#stack .tool__icon--err"), "failed tool row shows the error state");
 
   // one bad row must not take the thread with it (render isolation)
   n = chat.replaceThread([

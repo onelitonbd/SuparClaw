@@ -61,7 +61,13 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       chat.delta(String(e.text ?? ""));
       break;
     case "tool":
-      chat.tool(String(e.name ?? "tool"), (e.status as "running" | "done" | "error") ?? "running", e.detail as string | undefined);
+      chat.tool(
+        String(e.name ?? "tool"),
+        (e.status as "running" | "done" | "error") ?? "running",
+        e.detail as string | undefined,
+        e.ms as number | undefined,
+        e.callId as string | undefined,
+      );
       break;
     case "approval":
       chat.approval(String(e.callId), String(e.tool), e.args);

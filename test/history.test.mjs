@@ -173,3 +173,178 @@ test("history survives rename and refresh — the messages-vanish regression", a
   hist = await ws2.request("chat.history", { sessionKey: "main:new-name", limit: 60 });
   assert.equal(hist.payload.messages.length, 2, "a refreshed page gets the same thread back");
 });
+
+test("tool calls and errors persist — they used to vanish on refresh", async (t) => {
+  // Loop-level: every tool outcome and every run failure lands in messages,
+  // because on refresh the UI can only show what was persisted.
+  const { AgentLoop, Store, createLogger, emptyConfig } = await import("../dist/lib.js");
+  const dir = mkdtempSync(join(TEST_TMP, "sc-persist-"));
+  const config = emptyConfig();
+  config.tools.exec.enabled = true;
+  const store = Store.open(join(dir, "state.sqlite"));
+  t.after(() => store.close());
+
+  const fakeLlm = {
+    async *stream() {
+      throw new Error("HTTP 500 from MultiRouter: upstream exploded");
+    },
+  };
+  const loop = new AgentLoop({
+    config,
+    store,
+    log: createLogger({ level: "error" }),
+    llm: fakeLlm,
+    tools: [
+      {
+        name: "ok_tool",
+        description: "succeeds",
+        needsApproval: false,
+        run: async () => "all good",
+      },
+      {
+        name: "bad_tool",
+        description: "throws",
+        needsApproval: false,
+        run: async () => {
+          throw new Error("tool exploded");
+        },
+      },
+    ],
+  });
+
+  // a turn whose LLM call dies mid-tool-round persists the tool rows AND the error
+  let events = [];
+  const llmThatCallsToolsThenFails = {
+    async *stream({ messages }) {
+      // first round asks for two tools, second round (tool results present) dies
+      if (messages.some((m) => m.role === "tool")) {
+        throw new Error("HTTP 500 from MultiRouter: upstream exploded");
+      }
+      yield {
+        type: "tool_calls",
+        calls: [
+          { id: "c1", name: "ok_tool", args: "{}" },
+          { id: "c2", name: "bad_tool", args: "{}" },
+        ],
+      };
+      yield { type: "done", finishReason: "tool_calls" };
+    },
+  };
+  loop.llm = llmThatCallsToolsThenFails;
+  await loop.run({ sessionKey: "main:t", text: "use tools", onEvent: (e) => events.push(e) });
+
+  const session = store.getSessionByKey("main:t");
+  const rows = store.recentMessages(session.id, 20);
+  const roles = rows.map((r) => r.role);
+  assert.deepEqual(roles, ["user", "tool", "tool", "error"], `full transcript rows persisted: ${JSON.stringify(rows.map((r) => [r.role, r.content.slice(0, 30)]))}`);
+
+  const okRow = rows.find((r) => r.content.startsWith("→ ok_tool"));
+  assert.ok(okRow, "successful tool row persisted");
+  assert.match(okRow.content, /· \d+ms/, "duration stored in the header for replay");
+  assert.match(okRow.content, /all good/, "output stored");
+
+  const badRow = rows.find((r) => r.content.startsWith("→ bad_tool"));
+  assert.ok(badRow, "FAILED tool row persisted (used to skip persistence and vanish)");
+  assert.match(badRow.content, /error: tool exploded/, "failure output stored");
+
+  const errRow = rows.find((r) => r.role === "error");
+  assert.match(errRow.content, /HTTP 500 from MultiRouter/, "run error persisted as its own row");
+
+  // tool/error rows are filtered out of LLM context by buildMessages (only
+  // user/assistant rows enter prompts) — assert no fake assistant row exists
+  assert.ok(!rows.some((r) => r.role === "assistant"), "no fake assistant row for a dead run");
+});
+
+test("persisted errors and tool rows survive to a fresh connection (the refresh)", async (t) => {
+  // end-to-end through the gateway: a failing model call leaves an error row
+  // that chat.history serves to a brand-new client.
+  const mockPort = await freePort();
+  const mock = createServer((req, res) => {
+    if ((req.url ?? "").endsWith("/models")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "m1" }] }));
+      return;
+    }
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      // Fail only while the CURRENT question is the trigger (history pollution
+      // would otherwise poison later turns; retries of the same turn keep failing).
+      let lastText = "";
+      try {
+        const msgs = JSON.parse(body).messages ?? [];
+        const last = msgs[msgs.length - 1] ?? {};
+        lastText = typeof last.content === "string" ? last.content : JSON.stringify(last.content ?? "");
+      } catch { /* non-JSON body */ }
+      if (lastText.includes("FAILNOW")) {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "Provider returned error" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "fine" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      res.end();
+    });
+  });
+  await new Promise((r) => mock.listen(mockPort, "127.0.0.1", r));
+  t.after(() => mock.close());
+
+  const port = await freePort();
+  const home = mkdtempSync(join(TEST_TMP, "sc-errs-"));
+  const env = { ...process.env, SUPARCLAW_HOME: home };
+  await new Promise((resolve) => {
+    const p = spawn(process.execPath, [SC, "init"], { env });
+    p.on("close", resolve);
+  });
+  const set = (path, value) =>
+    new Promise((resolve) => {
+      const p = spawn(process.execPath, [SC, "config", "set", path, String(value)], { env });
+      p.on("close", resolve);
+    });
+  await set("gateway.port", String(port));
+  await set("providers.mock", JSON.stringify({ baseUrl: `http://127.0.0.1:${mockPort}/v1`, apiKey: "x", models: ["m1"] }));
+  await set("agents.defaults.model", "mock/m1");
+
+  const gw = spawn(process.execPath, [SC, "gateway"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => gw.kill("SIGKILL"));
+  let up = false;
+  for (let i = 0; i < 240 && !up; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    try { await fetch(`http://127.0.0.1:${port}/health`); up = true; } catch { /* retry */ }
+  }
+  assert.ok(up, "gateway up");
+
+  const ws = await wsClient(`ws://127.0.0.1:${port}/ws`);
+  t.after(() => ws.ws.close());
+  ws.send({ type: "connect", params: { token: "" } });
+  await ws.wait((f) => f.type === "hello-ok");
+
+  const sessionKey = "main:errors";
+  await ws.request("chat.send", { sessionKey, text: "FAILNOW please", isMainSession: true, key: "e1" });
+  await ws.wait((f) => f.type === "event" && f.event === "chat" && f.payload?.event?.type === "error");
+
+  // the error is in the transcript immediately…
+  let hist = await ws.request("chat.history", { sessionKey, limit: 20 });
+  assert.ok(
+    hist.payload.messages.some((m) => m.role === "error" && /HTTP 500|Provider returned error/.test(m.content)),
+    `error row persisted: ${JSON.stringify(hist.payload.messages.map((m) => [m.role, m.content.slice(0, 40)]))}`,
+  );
+
+  // …and a fresh connection (browser refresh) still sees it
+  const ws2 = await wsClient(`ws://127.0.0.1:${port}/ws`);
+  t.after(() => ws2.ws.close());
+  ws2.send({ type: "connect", params: { token: "" } });
+  await ws2.wait((f) => f.type === "hello-ok");
+  hist = await ws2.request("chat.history", { sessionKey, limit: 20 });
+  assert.ok(
+    hist.payload.messages.some((m) => m.role === "error"),
+    "a refreshed page still gets the error row",
+  );
+  // a healthy turn after the failure still lands in order
+  await ws.request("chat.send", { sessionKey, text: "now succeed", isMainSession: true, key: "e2" });
+  await ws.wait((f) => f.type === "event" && f.event === "chat" && f.payload?.event?.type === "final");
+  hist = await ws.request("chat.history", { sessionKey, limit: 20 });
+  const roles = hist.payload.messages.map((m) => m.role);
+  assert.deepEqual(roles, ["user", "error", "user", "assistant"], `turns keep their order: ${roles.join(",")}`);
+});

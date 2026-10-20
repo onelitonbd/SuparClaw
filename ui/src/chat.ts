@@ -162,13 +162,34 @@ export class Chat {
     this.#live = null;
     this.#streamText = "";
     let rendered = 0;
-    for (const row of rows) {
+    for (const [index, row] of rows.entries()) {
       try {
         if (row.role === "user") {
           this.user(row.content);
           rendered++;
         } else if (row.role === "assistant" && row.content) {
           this.assistant(row.content);
+          rendered++;
+        } else if (row.role === "tool" && row.content) {
+          // Replay a persisted tool row: "→ name · 6ms\n<output>"
+          const lines = row.content.split("\n");
+          const head = (lines[0] ?? "").replace(/^→\s*/, "");
+          const timed = head.match(/^(.*?)\s*·\s*(\d+)ms$/);
+          const name = (timed?.[1] ?? head).trim() || "tool";
+          const duration = timed?.[2] ? Number(timed[2]) : undefined;
+          const output = lines.slice(1).join("\n");
+          this.tool(
+            name,
+            output.startsWith("error") ? "error" : "done",
+            output,
+            duration,
+            `row-${index}`,
+          );
+          rendered++;
+        } else if (row.role === "error" && row.content) {
+          // fail() with no live bubble renders the same "error: …" notice the
+          // user saw live — errors were live-only and vanished on refresh.
+          this.fail(row.content);
           rendered++;
         }
       } catch {
@@ -265,13 +286,16 @@ export class Chat {
     this.#scrollToBottom();
   }
 
-  tool(name: string, status: ToolStatus, detail?: string): void {
+  tool(name: string, status: ToolStatus, detail?: string, ms?: number, key?: string): void {
     this.#clearEmpty();
-    const key = `${name}`;
-    let card = this.stack.querySelector<HTMLElement>(`.tool[data-tool="${CSS.escape(key)}"]`);
+    // Cards are keyed per call (callId live, synthetic on replay) — consecutive
+    // calls of the same tool must each get their own pill. running→done of one
+    // call share a key and land on the same card.
+    const cardKey = key ?? name;
+    let card = this.stack.querySelector<HTMLElement>(`.tool[data-tool="${CSS.escape(cardKey)}"]`);
     if (!card) {
       const started = Date.now();
-      this.#toolStart.set(key, started);
+      this.#toolStart.set(cardKey, started);
       const row = el("button", { class: "tool__row", type: "button", "aria-expanded": "false" }, [
         icon(SPINNER, "tool__icon tool__icon--run"),
         el("span", { class: "tool__name" }, [name]),
@@ -285,7 +309,7 @@ export class Chat {
         row.setAttribute("aria-expanded", String(open));
         body.hidden = !open;
       };
-      card = el("div", { class: "tool", "data-tool": key }, [row, body]);
+      card = el("div", { class: "tool", "data-tool": cardKey }, [row, body]);
       const host = this.#live?.tools ?? null;
       if (host) {
         host.append(card);
@@ -301,7 +325,7 @@ export class Chat {
     const dur = card.querySelector(".tool__dur") as HTMLElement;
     const body = card.querySelector(".tool__body") as HTMLElement;
 
-    const elapsed = Date.now() - (this.#toolStart.get(key) ?? Date.now());
+    const elapsed = ms ?? Date.now() - (this.#toolStart.get(cardKey) ?? Date.now());
     if (status === "running") {
       iconBox.className = "tool__icon tool__icon--run";
       iconBox.innerHTML = SPINNER;
