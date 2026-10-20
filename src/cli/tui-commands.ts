@@ -1,6 +1,13 @@
 import { Service } from "../agent/service.js";
 import { GatewayClient } from "../gateway/ws-client.js";
 import { TuiApp, tuiHelp, type TuiDeps, type Item } from "../tui/app.js";
+import {
+  addProvider,
+  formatProviders,
+  parseProviderAddArgs,
+  removeProvider,
+  testProvider,
+} from "../config/providers.js";
 
 // --- TUI: embedded (no sockets, fastest on a phone) ------------------------
 
@@ -25,6 +32,7 @@ export async function tuiLocal(): Promise<number> {
         text,
         isMainSession: true,
         source: "tui",
+        model: modelOverride,
         reply: async () => {},
         onDelta: () => {},
         onTool: () => {},
@@ -44,9 +52,46 @@ export async function tuiLocal(): Promise<number> {
             service.loop.isBusy(sessionKey) ? "yes" : "no"
           }`;
         case "model": {
-          if (!args) return `model: ${modelOverride ?? service.config.agents.defaults.model}`;
-          modelOverride = args.trim();
-          return `model override for this session: ${modelOverride}`;
+          const raw = args.trim();
+          if (!raw) return `model: ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"}`;
+          const save = /\s--save$/.test(raw);
+          const ref = save ? raw.replace(/\s--save$/, "").trim() : raw;
+          if (save) {
+            const result = service.configSvc.setPath("agents.defaults.model", ref);
+            if (!result.ok) return result.errors.join("; ");
+            service.applyConfig();
+            modelOverride = ref;
+            return `default model saved: ${ref}`;
+          }
+          modelOverride = ref;
+          return `model override for this session: ${modelOverride}  (add --save to make it default)`;
+        }
+        case "provider": {
+          const [sub = "list", ...rest] = args.split(/\s+/).filter(Boolean);
+          switch (sub) {
+            case "list":
+              return formatProviders(service.config);
+            case "add": {
+              if (!rest[0]) return "usage: /provider add <name> [baseUrl|apiKey] [apiKey] [models,a,b]";
+              const opts = parseProviderAddArgs(rest);
+              const added = await addProvider(service.configSvc, opts.name ?? "", opts);
+              if (added.ok) service.applyConfig();
+              return added.message;
+            }
+            case "remove": {
+              if (!rest[0]) return "usage: /provider remove <name>";
+              const removed = removeProvider(service.configSvc, rest[0]);
+              if (removed.ok) service.applyConfig();
+              return removed.message;
+            }
+            case "test": {
+              if (!rest[0]) return "usage: /provider test <name>";
+              const tested = await testProvider(service.config, rest[0]);
+              return tested.message;
+            }
+            default:
+              return `unknown /provider ${sub} — try: list, add, remove, test`;
+          }
         }
         case "tools":
           return `tools: ${service.loop.tools.map((t) => t.name).join(", ")}`;

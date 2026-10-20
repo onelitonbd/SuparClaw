@@ -137,6 +137,7 @@ export class AgentLoop {
           messages,
           tools: schema.length > 0 ? schema : undefined,
           signal: controller.signal,
+          model: input.model,
         })) {
           if (event.type === "text") {
             text += event.text;

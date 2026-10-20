@@ -251,6 +251,10 @@ button.pill:hover { border-color:var(--border-hover); color:var(--text-strong); 
 .picker-item .ref { font-family:var(--font-mono); color:var(--text-strong); }
 .picker-item .prov { color:var(--muted); font-size:var(--control-ui-text-xs); }
 .picker-item:hover,.picker-item.sel { background:var(--bg-hover); border-color:var(--border); }
+.picker-add { margin-top:var(--space-2); padding:var(--space-2); width:100%; text-align:left;
+  background:transparent; border:1px dashed var(--border); border-radius:var(--radius-sm);
+  color:var(--muted); font-size:var(--control-ui-text-sm); cursor:pointer; }
+.picker-add:hover { color:var(--accent); border-color:var(--accent); }
 
 /* ---------- settings ---------- */
 #settings-view { overflow-y:auto; padding:var(--space-6) var(--space-5); }

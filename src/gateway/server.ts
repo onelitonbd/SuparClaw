@@ -200,6 +200,7 @@ export class Gateway {
             text,
             isMainSession: params["isMainSession"] === true,
             source: "gateway",
+            model: typeof params["model"] === "string" && params["model"] ? params["model"] : undefined,
             reply: async (final) => this.#broadcast("chat.reply", { sessionKey, text: final }),
             onDelta: async (delta) => this.#broadcast("chat.delta", { sessionKey, delta }),
             onTool: async (event) => this.#broadcast("chat.tool", { sessionKey, event }),

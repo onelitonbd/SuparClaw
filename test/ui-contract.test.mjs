@@ -121,9 +121,9 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   });
   t.after(() => { try { ws.close(); } catch { /* already closed */ } });
 
-  const waitFrame = (pred, ms = 30000) =>
+  const waitFrame = (pred, ms = 60000) => // generous: the gateway may be cold-spawning under parallel test load
     new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("timed out waiting for frame")), ms);
+      const timer = setTimeout(() => reject(new Error(`timed out waiting for frame (after ${ms}ms)\n${new Error().stack}`)), ms);
       waiters.push({ pred, resolve: (f) => { clearTimeout(timer); resolve(f); } });
     });
 

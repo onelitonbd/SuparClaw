@@ -457,8 +457,8 @@ export async function runTui(deps: TuiDeps, stdin: NodeJS.ReadStream = process.s
 const HINTS = "\u23ce send \u00b7 ^L model \u00b7 ^P session \u00b7 ^O tools \u00b7 ^D quit";
 
 export const tuiHelp = [
-  "Commands: /help /status /tools /skills /model <id> /session <key> /new /clear /abort /quit",
-  "Keys: ⏎ send · ⇧⏎ newline · ^L model · ^P session · ^O tool output · ^T thinking · ^C clear · ^D quit",
+  "Commands: /help /status /model <id> [--save] /provider <list|add|remove|test> /tools /skills /session <key> /new /clear /abort /quit",
+  "Keys: ⏎ send · ⇧⏎ newline · ^L model · ^P session · ^O tool output · ^T thinking · ^C stop · ^C^C quit",
 ].join("\n");
 
 export const terminalWidth = width;

@@ -21,7 +21,14 @@ export function pickModel(opts: {
     render: (box, close) => {
       const search = el("input", { placeholder: "filter models…  (↑↓ move · ⏎ select)", autocomplete: "off", spellcheck: "false" });
       const list = el("div", { class: "picker-list" });
-      box.append(search, list);
+      // pinned action: jump straight into provider setup
+      const addProvider = el("button", { class: "picker-add", type: "button" }, ["＋ Add provider…"]);
+      addProvider.onclick = () => {
+        close();
+        location.hash = "#/settings";
+        setTimeout(() => document.getElementById("add-provider")?.click(), 60);
+      };
+      box.append(search, list, addProvider);
 
       const renderList = () => {
         const q = search.value.trim();

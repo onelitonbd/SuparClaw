@@ -72,6 +72,8 @@ interface StreamOptions {
   signal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;
+  /** Per-run override; falls back to agents.defaults.model. */
+  model?: string;
 }
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
@@ -109,7 +111,7 @@ export class LlmClient {
 
   /** Stream one completion, walking the fallback chain on retryable failures. */
   async *stream(opts: StreamOptions): AsyncGenerator<StreamEvent> {
-    const chain = [this.#defaults.model, ...this.#defaults.fallbacks].filter(Boolean);
+    const chain = [opts.model ?? this.#defaults.model, ...this.#defaults.fallbacks].filter(Boolean);
     if (chain.length === 0) throw new LlmError("no model configured — set agents.defaults.model and a provider");
     let lastError: Error | null = null;
     for (const modelRef of chain) {

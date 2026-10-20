@@ -36,6 +36,8 @@ import {
   buildRegistry,
   resolveModel,
   parseToolArgs,
+  AgentLoop,
+  createLogger,
 } from "../dist/lib.js";
 
 test("config defaults are applied and unknown keys rejected", () => {
@@ -165,3 +167,42 @@ test("model resolution and tool argument parsing", () => {
 });
 
 // tiny fs helpers so the test file stays dependency-free
+test("a run's model override reaches the LLM (so /model really changes the model)", async () => {
+  const dir = scratch("sc-loop-");
+  const store = Store.open(join(dir, "state.sqlite"));
+  const { config, errors } = parseConfig({});
+  assert.equal(errors.length, 0);
+
+  const seen = [];
+  const fakeLlm = {
+    stream(opts) {
+      seen.push(opts.model);
+      return (async function* () {
+        yield { type: "text", text: "hello" };
+        yield { type: "done", finishReason: "stop" };
+      })();
+    },
+  };
+
+  const loop = new AgentLoop({
+    config,
+    store,
+    log: createLogger({ level: "error" }),
+    llm: fakeLlm,
+  });
+
+  const events = [];
+  await loop.run({
+    sessionKey: "test:main",
+    text: "hi",
+    model: "provider/chosen-model",
+    onEvent: (e) => events.push(e.type),
+  });
+  assert.equal(seen[0], "provider/chosen-model", "the override reaches llm.stream");
+
+  await loop.run({ sessionKey: "test:main", text: "hi again", onEvent: () => {} });
+  assert.equal(seen[1], undefined, "without an override the configured default is used");
+
+  assert.ok(events.includes("start") && events.includes("final"), `run lifecycle events: ${events}`);
+  store.close();
+});
