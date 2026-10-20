@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,7 +28,11 @@ globalThis.HTMLElement = domGlobals.HTMLElement;
 const outDir = mkdtempSync(join(TEST_TMP, "sc-ui-render-"));
 const { build } = await import("esbuild");
 await build({
-  entryPoints: [join(ROOT, "ui/src/dom.ts"), join(ROOT, "ui/src/markdown.ts")],
+  entryPoints: [
+    join(ROOT, "ui/src/dom.ts"),
+    join(ROOT, "ui/src/markdown.ts"),
+    join(ROOT, "ui/src/chat.ts"),
+  ],
   bundle: true,
   format: "esm",
   outdir: outDir,
@@ -36,6 +41,7 @@ await build({
 });
 const { el, icon } = await import(pathToFileURL(join(outDir, "dom.mjs")).href);
 const { renderMarkdown } = await import(pathToFileURL(join(outDir, "markdown.mjs")).href);
+const { Chat } = await import(pathToFileURL(join(outDir, "chat.mjs")).href);
 
 const SPARKLE =
   '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>';
@@ -71,4 +77,75 @@ test("renderMarkdown escapes raw HTML in model output", () => {
   assert.ok(html.includes("&lt;img"), "tags are escaped, not parsed");
   assert.ok(!html.includes("<img"), "no live img element in output");
   assert.ok(html.includes("<strong>bold</strong>"), "markdown still renders");
+});
+
+test("renderMarkdown terminates on orphan lines (|x|, stray fences) — was an infinite loop", () => {
+  const script = join(outDir, "hang-check.mjs");
+  writeFileSync(script, `
+    import { renderMarkdown } from ${JSON.stringify(pathToFileURL(join(outDir, "markdown.mjs")).href)};
+    const nasty = [
+      "| x |",
+      "text before\\n| orphan |\\ntext after",
+      "text\\n\\\`\\\`\\\`js extra\\nnot a fence",
+      "hello\\n\\n| a | b |\\n|---|---|",  // valid table still works
+    ];
+    for (const src of nasty) renderMarkdown(src);
+    console.log("terminated");
+  `);
+  // pre-fix this hung forever; the timeout is the assertion
+  const out = execFileSync(process.execPath, [script], { timeout: 5000, encoding: "utf8" });
+  assert.match(out, /terminated/, "every nasty input completes");
+  assert.ok(renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |").includes("<table>"), "tables still render");
+});
+
+test("replaceThread renders history, keeps a live stream, survives a bad row", async () => {
+  const dom2 = parseHTML(readFileSync(join(ROOT, "ui/index.html"), "utf8"));
+  globalThis.document = dom2.document;
+  globalThis.HTMLElement = dom2.HTMLElement;
+  globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
+  const chat = new Chat(dom2.document.body, {
+    send: () => {},
+    abort: () => {},
+    approve: () => {},
+  });
+
+  // plain history reload
+  let n = chat.replaceThread([
+    { role: "user", content: "q1" },
+    { role: "assistant", content: "a1" },
+    { role: "tool", content: "skipped" },
+  ]);
+  assert.equal(n, 2, "user + assistant rows render, tool rows are skipped");
+  assert.equal(dom2.document.querySelectorAll("#stack .msg").length, 2);
+
+  // one bad row must not take the thread with it (render isolation)
+  n = chat.replaceThread([
+    { role: "user", content: "ok" },
+    { role: "assistant", content: "fine" },
+  ]);
+  assert.equal(n, 2);
+
+  // empty history → empty state, not a blank screen
+  chat.replaceThread([]);
+  assert.ok(dom2.document.querySelector("#stack .empty"), "empty state shown");
+
+  // a run that is still streaming keeps its bubble across a history reload
+  chat.replaceThread([{ role: "user", content: "old" }]);
+  chat.assistantStart();
+  chat.delta("streaming ");
+  chat.delta("text");
+  chat.replaceThread([{ role: "user", content: "old" }]);
+  const msgs = dom2.document.querySelectorAll("#stack .msg");
+  assert.equal(msgs.length, 2, "history row + preserved live bubble");
+  assert.ok(msgs[1].className.includes("msg--assistant"), "the live bubble is assistant");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok((msgs[1].textContent ?? "").includes("streaming text"), "live text survives the reload");
+});
+
+test("loadHistory replaces via replaceThread and never clears before the fetch", () => {
+  const src = readFileSync(join(ROOT, "ui/src/main.ts"), "utf8");
+  const fn = src.slice(src.indexOf("async function loadHistory"), src.indexOf("function statusTools"));
+  assert.ok(fn.includes("chat.replaceThread"), "history reload goes through replaceThread");
+  assert.ok(!fn.includes("chat.clear()"), "no clear-before-fetch (the blank-screen failure mode)");
+  assert.ok(fn.indexOf("gateway.request") < fn.indexOf("chat.replaceThread"), "fetch first, replace after");
 });

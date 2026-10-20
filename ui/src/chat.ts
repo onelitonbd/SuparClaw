@@ -149,6 +149,40 @@ export class Chat {
     this.#renderEmpty();
   }
 
+  /**
+   * Replace the transcript with fetched history rows — the ONLY safe way to
+   * reload a thread. A run that is still streaming keeps its bubble (history
+   * predates it), one bad row cannot kill the rest, and an empty result shows
+   * the empty state rather than a blank screen.
+   */
+  replaceThread(rows: { role: string; content: string }[]): number {
+    const live = this.#live;
+    const liveText = this.#streamText;
+    this.stack.innerHTML = "";
+    this.#live = null;
+    this.#streamText = "";
+    let rendered = 0;
+    for (const row of rows) {
+      try {
+        if (row.role === "user") {
+          this.user(row.content);
+          rendered++;
+        } else if (row.role === "assistant" && row.content) {
+          this.assistant(row.content);
+          rendered++;
+        }
+      } catch {
+        /* one bad message must not take the thread with it */
+      }
+    }
+    if (rendered === 0) this.#renderEmpty();
+    if (live) {
+      this.assistantStart();
+      this.delta(liveText);
+    }
+    return rendered;
+  }
+
   /** ---- transcript writers ---- */
 
   user(text: string): void {

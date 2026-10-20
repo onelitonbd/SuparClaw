@@ -178,6 +178,22 @@ export class Store {
     this.db.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(name, id);
   }
 
+  /**
+   * Change a session's KEY (what the UI calls "rename"): the messages hang off
+   * the session id, so they follow the row. Rejects a missing source or a
+   * target key that already exists — silent no-ops here used to strand the UI
+   * on an empty session after a rename.
+   */
+  renameSessionKey(oldKey: string, newKey: string): { ok: boolean; error?: string } {
+    if (!oldKey || !newKey) return { ok: false, error: "old and new session keys are required" };
+    if (oldKey === newKey) return { ok: true };
+    const row = this.getSessionByKey(oldKey);
+    if (!row) return { ok: false, error: `no such session: ${oldKey}` };
+    if (this.getSessionByKey(newKey)) return { ok: false, error: `a session named ${newKey} already exists` };
+    this.db.prepare("UPDATE sessions SET key = ? WHERE id = ?").run(newKey, row.id);
+    return { ok: true };
+  }
+
   // ---- messages ---------------------------------------------------------
   appendMessage(sessionId: string, role: string, content: string, runId?: string): number {
     const now = Date.now();

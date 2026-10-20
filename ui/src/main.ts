@@ -197,18 +197,28 @@ async function switchSession(key: string): Promise<void> {
 }
 
 async function loadHistory(): Promise<void> {
-  chat.clear();
-  try {
-    const res = await gateway.request("chat.history", { sessionKey, limit: 60 });
-    const messages = (res as any).messages ?? [];
-    for (const m of messages) {
-      if (m.role === "user") chat.user(String(m.content ?? ""));
-      else if (m.role === "assistant" && m.content) chat.assistant(String(m.content));
+  // Fetch first, replace after: a failed request must never wipe the visible
+  // transcript (clear-before-fetch silently blanked the chat whenever the
+  // gateway was briefly unreachable). One retry for a gateway that is still
+  // settling after a reconnect.
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await gateway.request("chat.history", { sessionKey, limit: 60 });
+      const messages = (res as any).messages ?? [];
+      const rendered = chat.replaceThread(
+        messages.map((m: any) => ({ role: String(m.role ?? ""), content: String(m.content ?? "") })),
+      );
+      if (rendered === 0) {
+        chat.notice(`Session started · ${statusTools()} tools enabled`);
+      }
+      return;
+    } catch (err) {
+      lastError = err as Error;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
     }
-    if (messages.length === 0) {
-      chat.notice(`Session started · ${statusTools()} tools enabled`);
-    }
-  } catch { /* ignore */ }
+  }
+  chat.notice(`could not load history: ${lastError?.message ?? "gateway unavailable"}`);
 }
 
 function statusTools(): number {
@@ -242,10 +252,7 @@ function newSession(): void {
     onConfirm: async (v) => {
       const name = (v.name || `s${Date.now().toString(36)}`).replace(/\s+/g, "-");
       const key = `main:${name}`;
-      try {
-        await gateway.request("sessions.rename", { sessionKey: key, newKey: key }); // ensure row exists
-      } catch { /* ignore */ }
-      await switchSession(key);
+      await switchSession(key); // loadHistory creates the row server-side
       chat.notice(`session ${key}`);
     },
   });

@@ -263,15 +263,20 @@ export class Gateway {
         }
         case "chat.history": {
           const sessionKey = String(params["sessionKey"] ?? "main:main");
-          const session = service.store.ensureSession(sessionKey);
+          // Read path: a history fetch must never create a session. The old
+          // ensureSession() here spawned ghost rows in the sidebar whenever
+          // the UI asked about a key that no longer existed.
+          const session = service.store.getSessionByKey(sessionKey);
           send(
             okFrame(id, {
               sessionKey,
-              messages: service.store.recentMessages(session.id, Number(params["limit"] ?? 40)).map((m) => ({
-                role: m.role,
-                content: m.content,
-                createdAt: m.created_at,
-              })),
+              messages: session
+                ? service.store.recentMessages(session.id, Number(params["limit"] ?? 40)).map((m) => ({
+                    role: m.role,
+                    content: m.content,
+                    createdAt: m.created_at,
+                  }))
+                : [],
             }),
           );
           return;
@@ -290,7 +295,22 @@ export class Gateway {
           send(okFrame(id, { sessions: service.store.listSessions(Number(params["limit"] ?? 50)) }));
           return;
         case "sessions.rename": {
-          service.store.renameSession(String(params["id"] ?? ""), String(params["name"] ?? ""));
+          // The web UI renames a session KEY ({sessionKey, newKey}) — the
+          // messages follow the row. The old handler read {id, name} which the
+          // UI never sent, so every rename was a silent no-op and the UI's
+          // localStorage then pointed at a session that had no messages.
+          const oldKey = String(params["sessionKey"] ?? params["id"] ?? "");
+          const newKey = String(params["newKey"] ?? "");
+          if (newKey) {
+            const result = service.store.renameSessionKey(oldKey, newKey);
+            if (!result.ok) {
+              send(errFrame(id, "bad_request", result.error ?? "rename failed"));
+              return;
+            }
+            send(okFrame(id, { renamed: true, sessionKey: newKey }));
+            return;
+          }
+          service.store.renameSession(oldKey, String(params["name"] ?? ""));
           send(okFrame(id, { renamed: true }));
           return;
         }
