@@ -25,6 +25,8 @@ export class Settings {
   #tab: TabId = "model";
   /** Models tab drill-down: provider name when its model list is open. */
   #modelsProvider: string | null = null;
+  /** Search text on the provider model list (survives re-renders). */
+  #modelQuery = "";
 
   constructor(root: HTMLElement, onChanged: () => void) {
     this.#root = root;
@@ -278,6 +280,15 @@ export class Settings {
       }
     };
 
+    const search = el("input", {
+      class: "inp",
+      id: "model-search",
+      placeholder: "Search models…",
+      autocomplete: "off",
+      spellcheck: "false",
+      value: this.#modelQuery,
+    }) as HTMLInputElement;
+
     const head = el("div", { class: "settings__body" }, [
       el("div", { class: "card" }, [
         el("div", { class: "prov__head" }, [
@@ -298,62 +309,92 @@ export class Settings {
       head.append(el("div", { class: "card" }, [
         el("p", { class: "hint" }, ["No models fetched from this provider yet — try Refresh."]),
       ]));
+      this.#root.append(head);
+      return;
     }
 
-    for (const ref of rows) {
-      const entry = byRef.get(ref) as any;
-      const on = Boolean(entry?.enabled);
-      const tail = ref.startsWith(`${provider}/`) ? ref.slice(provider.length + 1) : ref;
-      const hintCtx = details[ref]?.contextWindow as number | undefined;
-      const ctx = entry?.contextWindow || hintCtx;
+    // Search box + one compact list (hairline rows), not one card per model.
+    const list = el("div", { class: "list" });
+    const renderRows = (): void => {
+      list.innerHTML = "";
+      const q = this.#modelQuery.trim().toLowerCase();
+      const shown = rows.filter((ref) => !q || ref.toLowerCase().includes(q));
+      if (shown.length === 0) {
+        list.append(el("div", { class: "row" }, [
+          el("span", { class: "hint" }, [`No models match "${this.#modelQuery.trim()}"`]),
+        ]));
+        return;
+      }
+      for (const ref of shown) {
+        const entry = byRef.get(ref) as any;
+        const on = Boolean(entry?.enabled);
+        const tail = ref.startsWith(`${provider}/`) ? ref.slice(provider.length + 1) : ref;
+        const hintCtx = details[ref]?.contextWindow as number | undefined;
+        const ctx = entry?.contextWindow || hintCtx;
 
-      const check = el("input", {
-        type: "checkbox",
-        class: "model-check",
-        "aria-label": `select ${ref}`,
-        id: `sel-${ref.replace(/[^a-z0-9]+/gi, "-")}`,
-      }) as HTMLInputElement;
-      check.checked = on;
-      check.onchange = () => {
-        void (async () => {
-          try {
-            await gateway.request("models.save", {
-              id: entry?.id,
-              ref,
-              label: entry?.label ?? "",
-              contextWindow: entry?.contextWindow ?? hintCtx ?? 0,
-              maxTokens: entry?.maxTokens ?? 0,
-              temperature: entry?.temperature,
-              reasoningEffort: entry?.reasoningEffort ?? "inherit",
-              enabled: check.checked,
-            });
-            toast(check.checked ? `${tail} is in the system` : `${tail} removed from the system`, "ok");
-            await this.render();
-          } catch (err) {
-            check.checked = !check.checked;
-            toast((err as Error).message, "err");
-          }
-        })();
-      };
+        const check = el("input", {
+          type: "checkbox",
+          class: "model-check",
+          "aria-label": `select ${ref}`,
+          id: `sel-${ref.replace(/[^a-z0-9]+/gi, "-")}`,
+        }) as HTMLInputElement;
+        check.checked = on;
+        check.onchange = () => {
+          void (async () => {
+            try {
+              await gateway.request("models.save", {
+                id: entry?.id,
+                ref,
+                label: entry?.label ?? "",
+                contextWindow: entry?.contextWindow ?? hintCtx ?? 0,
+                maxTokens: entry?.maxTokens ?? 0,
+                temperature: entry?.temperature,
+                reasoningEffort: entry?.reasoningEffort ?? "inherit",
+                enabled: check.checked,
+              });
+              toast(check.checked ? `${tail} is in the system` : `${tail} removed from the system`, "ok");
+              await this.render();
+            } catch (err) {
+              check.checked = !check.checked;
+              toast((err as Error).message, "err");
+            }
+          })();
+        };
 
-      const tune = el("button", { class: "btn sm", type: "button" }, [entry ? "Tune" : "Configure"]);
-      const openTune = () => this.#modelTune(ref, entry, hintCtx, () => void this.render());
-      tune.onclick = openTune;
+        const tune = el("button", { class: "btn sm", type: "button" }, [entry ? "Tune" : "Configure"]);
+        const openTune = () => this.#modelTune(ref, entry, hintCtx, () => void this.render());
+        tune.onclick = openTune;
 
-      const name = el("span", { class: "prov__name mono", style: "flex:1;cursor:pointer;margin-left:10px" }, [
-        tail,
-        ctx ? el("span", { class: "prov__count", style: "margin-left:8px" }, [`${Math.round(ctx / 1000)}k ctx`]) : el("span", {}),
-      ]);
-      (name as HTMLElement).onclick = openTune;
+        const name = el("span", { class: "mono", style: "flex:1;cursor:pointer;font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, [
+          tail,
+        ]) as HTMLElement;
+        name.title = ref;
+        name.onclick = openTune;
 
-      head.append(el("div", { class: "card" }, [
-        el("div", { class: "prov" }, [
+        list.append(el("div", { class: "row", style: "padding:10px 16px" }, [
           check,
           name,
-          el("div", { class: "prov__row" }, [tune]),
+          ctx ? el("span", { class: "row__label", style: "white-space:nowrap" }, [`${Math.round(ctx / 1000)}k`]) : el("span", {}),
+          tune,
+        ]));
+      }
+    };
+    renderRows();
+
+    search.oninput = () => {
+      this.#modelQuery = search.value;
+      renderRows();
+    };
+
+    head.append(
+      el("div", { class: "card", style: "padding:12px 16px" }, [
+        el("div", { class: "modal__field", style: "margin:0" }, [
+          el("label", { class: "lbl", for: "model-search" }, [`${rows.length} fetched models`]),
+          search,
         ]),
-      ]));
-    }
+      ]),
+      el("div", { class: "card", style: "padding:0;overflow:hidden" }, [list]),
+    );
 
     this.#root.append(head);
   }
