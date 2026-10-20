@@ -1224,8 +1224,6 @@ textarea:focus-visible {
 
 .thought__title { font-weight: 600; }
 .thought__status { opacity: .7; font-size: 11px; }
-.thought__row svg:last-child { margin-left: auto; transition: transform .15s ease; }
-.thought__row[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
 
 .thought__body {
   padding: 8px 12px 10px;

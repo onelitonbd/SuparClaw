@@ -192,6 +192,7 @@ export class Chat {
   clear(): void {
     this.stack.innerHTML = "";
     this.#live = null;
+    this.#looseThought = null;
     this.#streamText = "";
     this.#renderEmpty();
   }
@@ -207,6 +208,7 @@ export class Chat {
     const liveText = this.#streamText;
     this.stack.innerHTML = "";
     this.#live = null;
+    this.#looseThought = null;
     this.#streamText = "";
     let rendered = 0;
     for (const [index, row] of rows.entries()) {
@@ -304,6 +306,7 @@ export class Chat {
     live.status.classList.remove("is-live");
     if (live.thought) live.thought.status.textContent = "";
     this.#live = null;
+    this.#looseThought = null;
     this.#streamText = "";
     this.setBusy(false);
     this.#scrollToBottom();
@@ -320,6 +323,7 @@ export class Chat {
     live.status.classList.remove("is-live");
     live.status.classList.add("is-error");
     this.#live = null;
+    this.#looseThought = null;
     this.#streamText = "";
     this.setBusy(false);
     this.#scrollToBottom();
@@ -409,47 +413,44 @@ export class Chat {
     this.#scrollToBottom();
   }
 
-  /* ---- thinking preview ---- */
+  /* ---- thinking preview (always visible — never collapsed, never toggled) ---- */
 
-  /** Collapsible thinking block shared by live streams and history replay. */
-  #thought(initial = ""): ThoughtBlock {
-    const body = el("div", { class: "thought__body", hidden: "" });
-    if (initial) body.append(el("div", {}, [initial]));
-    const status = el("span", { class: "thought__status mono" }, [initial ? "" : "Thinking…"]);
-    const toggle = el(
-      "button",
-      { class: "thought__row", type: "button", "aria-expanded": initial ? "false" : "true" },
-      [icon(SPARKLE), el("span", { class: "thought__title" }, ["Thinking"]), status, icon(CHEVRON)],
+  /** Thinking block shared by live streams and history replay. Body is always
+   * shown: the preview must never hide what the model is thinking (the user
+   * rejected both the on/off toggle and collapsed-by-default blocks). */
+  #thought(): ThoughtBlock {
+    const body = el("div", { class: "thought__body" });
+    const status = el("span", { class: "thought__status mono" }, ["Thinking…"]);
+    const head = el(
+      "div",
+      { class: "thought__row" },
+      [icon(SPARKLE), el("span", { class: "thought__title" }, ["Thinking"]), status],
     );
-    if (initial) body.hidden = true;
-    const root = el("div", { class: "thought" }, [toggle, body]);
-    toggle.onclick = () => {
-      const open = toggle.getAttribute("aria-expanded") !== "true";
-      toggle.setAttribute("aria-expanded", String(open));
-      body.hidden = !open;
-      this.#scrollToBottom();
-    };
-    return { root, body, status, text: initial };
+    const root = el("div", { class: "thought" }, [head, body]);
+    return { root, body, status, text: "" };
   }
 
   /**
    * Stream a thinking fragment. Lands in the live bubble's thought block
    * (positioned above the tools/answer), or as its own block if the run has
-   * not opened a bubble yet.
+   * not opened a bubble yet — fragments accumulate into ONE visible block.
    */
   reasoningDelta(text: string): void {
     if (!this.#live) {
-      const block = this.#thought("");
-      this.#clearEmpty();
-      this.stack.append(block.root);
+      if (!this.#looseThought) {
+        this.#looseThought = this.#thought();
+        this.#clearEmpty();
+        this.stack.append(this.#looseThought.root);
+      }
+      const block = this.#looseThought;
       block.text += text;
-      block.body.innerHTML = renderMarkdown(block.text);
-      this.#scrollToBottom();
+      block.status.textContent = "Thinking…";
+      this.#scheduleThoughtRender(block);
       return;
     }
     const live = this.#live;
     if (!live.thought) {
-      const block = this.#thought("");
+      const block = this.#thought();
       live.thought = block;
       live.root.insertBefore(block.root, live.tools);
     }
@@ -458,6 +459,9 @@ export class Chat {
     block.status.textContent = "Thinking…";
     this.#scheduleThoughtRender(block);
   }
+
+  /** Standalone thinking block reused across fragments until the run ends. */
+  #looseThought: ThoughtBlock | null = null;
 
   #thoughtPending = new Set<ThoughtBlock>();
   #thoughtFrame = 0;
@@ -468,19 +472,20 @@ export class Chat {
     this.#thoughtFrame = requestAnimationFrame(() => {
       this.#thoughtFrame = 0;
       for (const b of this.#thoughtPending) {
-        b.body.hidden = false;
         b.body.innerHTML = renderMarkdown(b.text);
-        b.root.querySelector<HTMLElement>(".thought__row")?.setAttribute("aria-expanded", "true");
       }
       this.#thoughtPending.clear();
       this.#scrollToBottom();
     });
   }
 
-  /** A complete, saved thinking segment (history replay) — collapsed by default. */
+  /** A complete, saved thinking segment (history replay) — always visible. */
   reasoning(text: string): void {
     this.#clearEmpty();
-    const block = this.#thought(text);
+    const block = this.#thought();
+    block.text = text;
+    block.body.innerHTML = renderMarkdown(text);
+    block.status.textContent = "";
     this.stack.append(block.root);
     this.#scrollToBottom();
   }

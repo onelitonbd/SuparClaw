@@ -78,7 +78,10 @@ export class Service {
   bootstrap(): { created: string[]; token: string } {
     const created: string[] = [];
     const ws = workspaceDir();
-    if (!existsSync(join(ws, "AGENTS.md"))) created.push(...writeWorkspaceTemplates(ws));
+    // Self-healing: writeWorkspaceTemplates skips files that already exist, so
+    // call it unconditionally — older workspaces (AGENTS.md-only) still get
+    // SOUL.md/IDENTITY.md and keep their identity with them.
+    created.push(...writeWorkspaceTemplates(ws));
     let token = this.config.gateway.auth.token;
     if (this.config.gateway.auth.mode === "token" && !token) {
       token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");

@@ -288,7 +288,7 @@ test("gateway: session thinking level persists across refresh and reasoning save
   assert.equal(fresh.payload.thinking, "medium");
 });
 
-test("ui: thinking preview streams, replays from storage, and stays visible", async () => {
+test("ui: thinking preview streams, replays from storage, and never hides", async () => {
   const { build } = await import("esbuild");
   const { parseHTML } = await import("linkedom");
   const outDir = mkdtempSync(join(TEST_TMP, "sc-thinkui-"));
@@ -309,18 +309,29 @@ test("ui: thinking preview streams, replays from storage, and stays visible", as
   globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
   const chat = new Chat(dom.document.body, { send: () => {}, abort: () => {}, approve: () => {} });
 
-  // live preview streams into a collapsible block inside the running bubble
-  chat.assistantStart();
+  // THE reported bug: thinking arrives BEFORE any bubble opens (the common
+  // case) and was rendered-but-hidden. It must be visible immediately.
   chat.reasoningDelta("Step one: ");
   chat.reasoningDelta("inspect the config.");
+  await new Promise((r) => setTimeout(r, 30));
+  let thought = dom.document.querySelector("#stack .thought");
+  assert.ok(thought, "standalone thinking block exists");
+  assert.match(thought.textContent ?? "", /Step one: inspect the config\./, "fragments accumulate");
+  assert.equal(thought.querySelector(".thought__body")?.hasAttribute("hidden"), false, "standalone body visible — not hidden");
+  assert.equal(thought.querySelector("button"), null, "no collapse toggle — thinking is always shown");
+
+  // inside a live bubble the preview is visible too
+  chat.assistantStart();
+  chat.reasoningDelta("Second thought.");
   chat.delta("Here is the answer.");
   await new Promise((r) => setTimeout(r, 30));
-  const thought = dom.document.querySelector("#stack .thought");
-  assert.ok(thought, "live thinking block exists");
-  assert.match(thought.textContent ?? "", /Step one: inspect the config\./, "fragments accumulate");
-  assert.equal(thought.querySelector(".thought__row")?.getAttribute("aria-expanded"), "true", "expands while streaming");
+  const inBubble = [...dom.document.querySelectorAll("#stack .thought")].find((n) =>
+    /Second thought/.test(n.textContent ?? ""),
+  );
+  assert.ok(inBubble, "live bubble thinking block exists");
+  assert.equal(inBubble.querySelector(".thought__body")?.hasAttribute("hidden"), false, "live body visible");
 
-  // reload: saved segments come back as reviewable blocks (nothing lost)
+  // reload: saved segments come back fully visible (nothing collapsed)
   chat.finish("Here is the answer.");
   const n = chat.replaceThread([
     { role: "user", content: "q" },
@@ -334,10 +345,61 @@ test("ui: thinking preview streams, replays from storage, and stays visible", as
   const blocks = dom.document.querySelectorAll("#stack .thought");
   assert.equal(blocks.length, 2, "both saved segments present");
   assert.match(blocks[0].textContent ?? "", /check the docs first/);
-  assert.equal(blocks[0].querySelector(".thought__row")?.getAttribute("aria-expanded"), "false", "replays collapsed for review");
+  assert.equal(blocks[0].querySelector(".thought__body")?.hasAttribute("hidden"), false, "replays visible — never collapsed");
+  assert.equal(blocks[0].querySelector("button"), null, "no toggle on replay blocks either");
   assert.match(blocks[1].textContent ?? "", /Second segment/);
 
   // thinking preview is always visible — no view toggle exists anymore
   assert.equal(typeof chat.setThinkingView, "undefined", "the on/off button is gone by request");
   assert.equal(dom.document.querySelectorAll("#stack .thought").length, 2, "both saved segments stay visible");
+});
+
+test("llm: thinking streamed only as reasoning_details still reaches the preview", async (t) => {
+  const { LlmClient } = await import("../dist/lib.js");
+  let round = 0;
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      round += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      if (round === 1) {
+        // Some OpenAI-compat gateways stream thinking ONLY as reasoning_details
+        // fragments (no reasoning/reasoning_content string) — the preview must
+        // still see it.
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{ delta: { reasoning_details: [{ type: "reasoning.text", text: "Silent plan: " }, { type: "reasoning.text", text: "read the config first." }] } }],
+          })}\n\n`,
+        );
+      } else {
+        // Stacks that send BOTH the string and the details must not double-emit.
+        res.write(
+          `data: ${JSON.stringify({
+            choices: [{ delta: { reasoning_content: "dup.", reasoning_details: [{ type: "reasoning.text", text: "dup." }] } }],
+          })}\n\n`,
+        );
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "done" } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+      res.end();
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => server.listen(port, "127.0.0.1", r));
+  t.after(() => server.close());
+  const llm = new LlmClient(
+    { mock: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["m1"] }, other: { baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["z"] } },
+    { model: "mock/m1", fallbacks: [] },
+  );
+
+  const events1 = [];
+  for await (const e of llm.stream({ messages: [{ role: "user", content: "hi" }] })) events1.push(e);
+  const onlyDetails = events1.filter((e) => e.type === "reasoning").map((e) => e.text).join("");
+  assert.equal(onlyDetails, "Silent plan: read the config first.", "details-only thinking is visible in the preview");
+
+  const events2 = [];
+  for await (const e of llm.stream({ messages: [{ role: "user", content: "hi" }] })) events2.push(e);
+  const both = events2.filter((e) => e.type === "reasoning").map((e) => e.text).join("");
+  assert.equal(both, "dup.", "string + details on one chunk emits once — no double blocks");
 });

@@ -145,6 +145,21 @@ export const CONFIG_SCHEMA: SchemaNode = {
       t: "object",
       default: {},
       fields: {
+        // Who the agent is. Injected into every prompt as a hard identity
+        // anchor (OpenClaw's agents.identity parity): the model must never
+        // forget its name or claim to be the underlying foundation model.
+        identity: {
+          t: "object",
+          default: {},
+          fields: {
+            name: { t: "string", default: "SuparClaw" },
+            emoji: { t: "string", default: "🦀" },
+            theme: {
+              t: "string",
+              default: "a warm, sharp, resourceful personal AI companion that lives on the user's own device",
+            },
+          },
+        },
         defaults: {
           t: "object",
           default: {},
@@ -244,6 +259,7 @@ export interface SuparClawConfig {
     allowedOrigins: string[];
   };
   agents: {
+    identity: { name: string; emoji: string; theme: string };
     defaults: {
       id: string;
       model: string;

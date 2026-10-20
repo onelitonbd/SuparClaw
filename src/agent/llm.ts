@@ -551,9 +551,31 @@ export class LlmClient {
         // Thinking deltas, whatever the vendor calls them: DeepSeek/Nvidia NIM
         // send `reasoning_content`, OpenAI-style backends `reasoning`, some
         // stacks `thinking`. They arrive before/around the answer text.
-        const thinking = delta["reasoning_content"] ?? delta["reasoning"] ?? delta["thinking"];
+        let thinking = delta["reasoning_content"] ?? delta["reasoning"] ?? delta["thinking"];
+        if (thinking && typeof thinking === "object") {
+          // Some stacks send {thoughts:[...]} / {summary:...} objects.
+          const t = thinking as { text?: unknown; summary?: unknown; thoughts?: unknown };
+          const parts = [t.text, t.summary, ...(Array.isArray(t.thoughts) ? t.thoughts : [])].filter(
+            (p): p is string => typeof p === "string" && p.length > 0,
+          );
+          thinking = parts.join("");
+        }
         if (typeof thinking === "string" && thinking.length > 0) {
           yield { type: "reasoning", text: thinking };
+        } else {
+          // Providers that stream thinking ONLY as reasoning_details fragments
+          // (some OpenAI-compat gateways) would otherwise be invisible — the
+          // UI preview must see every thought. Skip when the string fields
+          // already carried this chunk's thinking (many stacks send both).
+          for (const frag of [delta["reasoning_details"], message?.["reasoning_details"]]) {
+            if (!Array.isArray(frag)) continue;
+            for (const raw of frag as Record<string, unknown>[]) {
+              const piece = raw?.["text"] ?? raw?.["summary"];
+              if (typeof piece === "string" && piece.length > 0) {
+                yield { type: "reasoning", text: piece };
+              }
+            }
+          }
         }
         const content = delta["content"];
         if (typeof content === "string" && content.length > 0) {
