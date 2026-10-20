@@ -2,73 +2,166 @@
 <html lang="en" data-theme="claw" data-theme-mode="dark">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-<meta name="theme-color" content="#0e1015" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
 <meta name="color-scheme" content="dark light" />
+<meta name="theme-color" content="#0e1015" />
 <title>SuparClaw</title>
 <!--
-  Design tokens follow OpenClaw's Control UI stylesheet
-  (ui/src/styles/base.css, MIT licensed, Copyright OpenClaw contributors):
-  same surfaces, signature accent, type scale, spacing, radii and shadows.
-  SuparClaw reuses the tokens and writes its own, much smaller app on top.
+  Shell + visual system follow OpenClaw's Control UI
+  (ui/src/styles/**, MIT licensed, Copyright OpenClaw contributors):
+  same tokens, shell grid, bubbles, tool cards, composer and settings
+  controls — vendored in ui/vendor/openclaw (see NOTICE.md there).
+  SuparClaw writes its own, much smaller app on top of that system.
 -->
 <link rel="stylesheet" href="./styles.css" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='10' fill='%23ff5c5c'/%3E%3C/svg%3E" />
+<style>
+  /* First paint before styles.css arrives: never flash white on a dark theme. */
+  html { background: #0e1015; color-scheme: dark; }
+  html[data-theme-mode="light"] { background: #faf9f7; color-scheme: light; }
+  html, body { min-height: 100%; }
+  body { margin: 0; background: inherit; color-scheme: inherit; }
+</style>
 </head>
 <body>
-<div id="app">
-  <header class="rail">
-    <button class="icon-btn only-mobile" id="drawer-btn" title="Sessions" aria-label="Sessions">☰</button>
-    <div class="brand"><span class="dot" id="brand-dot"></span> SuparClaw</div>
-    <button class="pill session-pill" id="session-pill" title="Current session">main:main</button>
-    <div class="spacer"></div>
-    <button class="pill model-pill" id="model-pill" title="Choose model (⌘L)">model…</button>
-    <span class="pill state-pill" id="conn-pill">connecting…</span>
-    <button class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings">⚙</button>
-    <button class="icon-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
-  </header>
+<div id="app" class="shell shell--chat">
 
-  <aside id="sidebar">
-    <div class="side-head">
-      <span class="side-title">Sessions</span>
-      <button class="icon-btn" id="new-session" title="New session">＋</button>
-    </div>
-    <div id="sessions" class="sessions"></div>
-    <div id="stats" class="stats"></div>
-  </aside>
-
-  <main id="main">
-    <section id="chat-view" class="view">
-      <div id="thread" class="thread">
-        <div class="empty" id="empty-state">
-          <div class="empty-title">No messages yet</div>
-          <div class="empty-sub">Ask anything — it can read your workspace and run tools.</div>
-          <div class="suggestions" id="suggestions"></div>
+  <!-- Narrow-viewport header (desktop hides it; the sidebar owns navigation) -->
+  <header class="topbar">
+    <div class="topnav-shell">
+      <button class="topbar-icon-btn topbar-nav-toggle" id="drawer-btn" type="button"
+              aria-label="Open sessions" aria-expanded="false">
+        <span class="nav-collapse-toggle__icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
+        </span>
+        <span class="gateway-status-dot" id="brand-dot" aria-hidden="true"></span>
+      </button>
+      <div class="topnav-shell__content">
+        <div class="topbar-brand">
+          <span class="topbar-brand__title">SuparClaw</span>
         </div>
       </div>
-      <button id="jump" class="jump" hidden>↓ latest</button>
-      <footer id="composer" class="composer">
-        <div class="composer-inner">
-          <div class="approval-bar" id="approval-bar" hidden></div>
-          <div class="composer-box">
-            <textarea id="input" rows="1" placeholder="Message SuparClaw…" spellcheck="false"></textarea>
-            <div class="composer-actions">
-              <span class="hint" id="hint">Enter send · Shift+Enter newline · Esc stop</span>
-              <span class="hint" id="tok"></span>
-              <button class="btn stop" id="stop-btn" hidden>■ Stop</button>
-              <button class="btn primary send" id="send-btn" disabled>Send</button>
+      <div class="topnav-shell__actions">
+        <button class="topbar-icon-btn" id="settings-btn" type="button" aria-label="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Navigation column: sidebar on desktop, off-canvas drawer on mobile -->
+  <div class="shell-nav" id="shell-nav">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-shell">
+        <div class="sidebar-shell__content">
+          <div class="sidebar-workspace-header">
+            <span class="sidebar-workspace-header__mark" aria-hidden="true">S</span>
+            <span class="sidebar-workspace-header__main">SuparClaw</span>
+            <button class="btn btn--icon btn--sm" id="new-session" type="button" title="New session" aria-label="New session">＋</button>
+          </div>
+          <div class="sidebar-recent-sessions">
+            <div class="sidebar-recent-sessions__group">
+              <div class="sidebar-recent-sessions__head">
+                <span class="sidebar-recent-sessions__label-text">Sessions</span>
+              </div>
+              <div class="sidebar-recent-sessions__list" id="sessions"></div>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar-shell__footer">
+          <div class="sc-stats" id="stats"></div>
+          <div class="sidebar-footer-bar">
+            <div class="sidebar-footer-actions">
+              <button class="btn btn--ghost btn--sm" id="theme-btn" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
+              <button class="btn btn--ghost btn--sm" id="settings-btn-side" type="button" title="Settings" aria-label="Settings">⚙</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Settings replaces the sidebar while the settings route is open -->
+    <section class="settings-sidebar" id="settings-sidebar" hidden>
+      <div class="settings-sidebar__header">
+        <button class="settings-sidebar__back" id="settings-back" type="button">
+          <span class="settings-sidebar__back-icon" aria-hidden="true">←</span>
+          <span>Back</span>
+          <kbd class="settings-sidebar__esc">esc</kbd>
+        </button>
+        <h1 class="settings-sidebar__title">Settings</h1>
+      </div>
+      <nav class="settings-sidebar__nav" id="settings-nav"></nav>
+    </section>
+  </div>
+  <button class="shell-nav-backdrop" id="nav-backdrop" type="button" tabindex="-1" aria-hidden="true"></button>
+
+  <main class="content content--chat" id="content">
+
+    <!-- Chat -->
+    <div class="chat chat--bubbles" id="chat-view">
+      <header class="chat-pane__header">
+        <div class="chat-pane__header-leading">
+          <button class="sc-session-chip" id="session-pill" type="button" title="Current session">
+            <span class="sc-session-chip__key">main:main</span>
+          </button>
+        </div>
+        <div class="chat-pane__header-trailing">
+          <span class="sc-conn" id="conn-pill" data-state="connecting">connecting…</span>
+          <button class="btn btn--icon btn--sm" id="clear-btn" type="button" title="Clear transcript" aria-label="Clear transcript">⌫</button>
+        </div>
+      </header>
+
+      <div class="chat-thread" id="thread" tabindex="0" aria-label="Transcript">
+        <div class="chat-thread-inner" id="thread-inner">
+          <div id="empty-state" class="sc-empty">
+            <div class="sc-empty__mark" aria-hidden="true">✳</div>
+            <div class="sc-empty__title">No messages yet</div>
+            <div class="sc-empty__sub">Ask anything — it can read your workspace and run tools.</div>
+            <div class="agent-chat__suggestions" id="suggestions"></div>
+          </div>
+        </div>
+      </div>
+      <button id="jump" class="sc-jump" type="button" hidden>↓ latest</button>
+
+      <footer class="chat-footer" id="composer">
+        <div class="agent-chat__input agent-chat__input--chat">
+          <div class="agent-chat__composer-status" id="approval-bar" data-tone="warn" hidden></div>
+          <div class="agent-chat__composer-shell">
+            <div class="agent-chat__composer-input-row">
+              <div class="agent-chat__composer-combobox">
+                <textarea id="input" rows="1" placeholder="Message SuparClaw…" spellcheck="false" autocomplete="off"></textarea>
+              </div>
+            </div>
+            <div class="agent-chat__composer-footer">
+              <div class="agent-chat__composer-lead agent-chat__composer-meta">
+                <span class="hint" id="hint">Enter send · Shift+Enter newline · Esc stop</span>
+              </div>
+              <div class="agent-chat__composer-trail">
+                <div class="agent-chat__composer-meta agent-chat__composer-context" id="tok"></div>
+                <div class="agent-chat__composer-controls">
+                  <button class="chat-controls__inline-select-trigger" id="model-btn" type="button" title="Choose model (⌘L)">
+                    <span class="chat-controls__model-option-name" id="model-name">model…</span>
+                  </button>
+                </div>
+                <div class="agent-chat__composer-actions">
+                  <button class="btn sc-stop" id="stop-btn" type="button" hidden>■ Stop</button>
+                  <button class="btn primary" id="send-btn" type="button" disabled>Send</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       </footer>
-    </section>
+    </div>
 
-    <section id="settings-view" class="view" hidden></section>
+    <!-- Settings (shell switches to .shell--settings while open) -->
+    <section id="settings-view" class="sc-settings" hidden></section>
   </main>
 </div>
 
-<div id="backdrop" hidden><div class="modal" id="modal" role="dialog" aria-modal="true"></div></div>
-<div id="toasts"></div>
+<!-- Modal + toasts: styled in-app, native prompt/confirm/alert are banned -->
+<dialog id="modal" class="oc-modal-dialog" aria-modal="true"></dialog>
+<div id="toasts" aria-live="polite"></div>
 <script type="module" src="./app.js"></script>
 </body>
 </html>

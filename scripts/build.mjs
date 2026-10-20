@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Single-file bundle build. No native deps, no postinstall work.
-import { rm, mkdir, copyFile } from "node:fs/promises";
+import { rm, mkdir, copyFile, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import * as esbuild from "esbuild";
@@ -73,7 +73,28 @@ await mkdir(uiOut, { recursive: true });
     metafile: true,
   });
   await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
-  await copyFile(join(root, "ui/styles.css"), join(uiOut, "styles.css"));
+  // Stylesheet = OpenClaw's vendored cascade (assembly order in MANIFEST.txt)
+  // + SuparClaw's own overlay, inlined and minified.
+  const vendorDir = join(root, "ui/vendor/openclaw");
+  const manifest = (await readFile(join(vendorDir, "MANIFEST.txt"), "utf8"))
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const sheets = [
+    `/* SuparClaw stylesheet.
+       Portions: OpenClaw Control UI styles (MIT, © OpenClaw contributors,
+       https://github.com/openclaw/openclaw — see ui/vendor/openclaw/NOTICE.md).
+       Assembled from ${manifest.length} vendored sheets + ui/sc-overlay.css. */`,
+  ];
+  for (const file of manifest) sheets.push(await readFile(join(vendorDir, file), "utf8"));
+  sheets.push(await readFile(join(root, "ui/sc-overlay.css"), "utf8"));
+  let css = sheets.join("\n");
+  css = css.replace(/^[ \t]*@import[^;]*;[ \t]*$/gm, ""); // already inlined above
+  const min = await esbuild.transform(css, { loader: "css", minify: !dev });
+  await writeFile(join(uiOut, "styles.css"), min.code, "utf8");
   const bytes = Object.values(res.metafile.outputs).reduce((n, o) => n + o.bytes, 0);
-  console.log(`[build] ui: ${(bytes / 1024).toFixed(0)} KB in ${Math.round(performance.now() - t0)}ms`);
+  console.log(
+    `[build] ui: js ${(bytes / 1024).toFixed(0)} KB + css ${(Buffer.byteLength(min.code) / 1024).toFixed(0)} KB ` +
+      `(${manifest.length} vendored sheets) in ${Math.round(performance.now() - t0)}ms`,
+  );
 }

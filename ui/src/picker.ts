@@ -19,16 +19,23 @@ export function pickModel(opts: {
     confirmLabel: "",
     cancelLabel: "Close",
     render: (box, close) => {
-      const search = el("input", { placeholder: "filter models…  (↑↓ move · ⏎ select)", autocomplete: "off", spellcheck: "false" });
-      const list = el("div", { class: "picker-list" });
+      const picker = el("div", { class: "model-picker" });
+      const search = el("input", {
+        class: "settings-input",
+        placeholder: "filter models…  (↑↓ move · ⏎ select)",
+        autocomplete: "off",
+        spellcheck: "false",
+      });
+      const list = el("div", { class: "model-picker__list" });
       // pinned action: jump straight into provider setup
       const addProvider = el("button", { class: "picker-add", type: "button" }, ["＋ Add provider…"]);
       addProvider.onclick = () => {
         close();
         location.hash = "#/settings";
-        setTimeout(() => document.getElementById("add-provider")?.click(), 60);
+        setTimeout(() => document.getElementById("add-provider")?.click(), 120);
       };
-      box.append(search, list, addProvider);
+      picker.append(search, list, addProvider);
+      box.append(picker);
 
       const renderList = () => {
         const q = search.value.trim();
@@ -38,34 +45,38 @@ export function pickModel(opts: {
           .sort((a, b) => b.score - a.score || a.ref.localeCompare(b.ref));
         list.innerHTML = "";
         if (scored.length === 0) {
-          list.append(el("p", { style: "color:var(--muted);padding:12px" }, ["no models match — add providers in Settings"]));
+          list.append(el("p", { class: "model-picker__empty" }, ["no models match — add a provider in Settings"]));
           return;
         }
         let group = "";
         for (const [i, r] of scored.entries()) {
           if (r.provider !== group) {
             group = r.provider;
-            list.append(el("div", { class: "picker-group" }, [group]));
+            list.append(el("div", { class: "model-picker__group" }, [group]));
           }
-          const item = el("button", { class: `picker-item${i === selection ? " sel" : ""}`, type: "button" }, [
-            el("span", { class: "check" }, [r.ref === opts.current ? "✓" : ""]),
-            el("span", { class: "ref" }, [r.provider === "default" ? r.ref : r.ref.slice(r.provider.length + 1)]),
-            el("span", { class: "prov" }, [r.provider === "default" ? "" : r.provider]),
+          const item = el("button", {
+            class: `model-picker__option${i === selection ? " sel" : ""}`,
+            type: "button",
+          }, [
+            el("span", { class: "model-picker__check" }, [r.ref === opts.current ? "✓" : ""]),
+            el("span", { class: "model-picker__provider-icon" }, [r.provider.slice(0, 2)]),
+            el("span", { class: "model-picker__ref" }, [r.ref]),
+            el("span", { class: "model-picker__prov" }, [r.provider === "default" ? "" : r.provider]),
           ]);
           item.onclick = () => { opts.onPick(r.ref); close(); };
           item.onmouseenter = () => {
             selection = i;
-            list.querySelectorAll(".picker-item").forEach((n) => n.classList.remove("sel"));
+            list.querySelectorAll(".model-picker__option").forEach((n) => n.classList.remove("sel"));
             item.classList.add("sel");
           };
           list.append(item);
         }
-        (list.querySelectorAll(".picker-item")[0] as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
+        (list.querySelectorAll(".model-picker__option")[0] as HTMLElement | null)?.scrollIntoView({ block: "nearest" });
       };
 
       search.oninput = () => { selection = 0; renderList(); };
       search.onkeydown = (e) => {
-        const items = Array.from(list.querySelectorAll(".picker-item")) as HTMLElement[];
+        const items = Array.from(list.querySelectorAll(".model-picker__option")) as HTMLElement[];
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
           e.preventDefault();
           selection = Math.min(items.length - 1, Math.max(0, selection + (e.key === "ArrowDown" ? 1 : -1)));

@@ -3,9 +3,20 @@
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
+  attrs?: Record<string, string | undefined>,
+  children?: (Node | string)[],
+): HTMLElementTagNameMap[K];
+/** Custom elements (OpenClaw uses a few: openclaw-modal-actions, …). */
+export function el(
+  tag: string,
+  attrs?: Record<string, string | undefined>,
+  children?: (Node | string)[],
+): HTMLElement;
+export function el(
+  tag: string,
   attrs: Record<string, string | undefined> = {},
   children: (Node | string)[] = [],
-): HTMLElementTagNameMap[K] {
+): HTMLElement {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (v === undefined) continue;
@@ -22,12 +33,14 @@ export const esc = (s: string): string =>
 export function toast(text: string, kind: "info" | "error" = "info"): void {
   const host = document.getElementById("toasts");
   if (!host) return;
-  const node = el("div", { class: `toast${kind === "error" ? " err" : ""}` }, [text]);
+  const node = el("div", { class: `app-toast${kind === "error" ? " app-toast--error" : ""}` }, [
+    el("span", { class: "app-toast__icon" }, [kind === "error" ? "!" : "✓"]),
+    el("span", { class: "app-toast__message" }, [text]),
+  ]);
   host.append(node);
   setTimeout(() => {
-    node.style.transition = "opacity .25s";
-    node.style.opacity = "0";
-    setTimeout(() => node.remove(), 260);
+    node.classList.add("is-leaving");
+    setTimeout(() => node.remove(), 220);
   }, 3200);
 }
 
@@ -44,41 +57,51 @@ export interface ModalSpec {
 
 /** Styled modal. Returns a close() function; Esc and backdrop click close it. */
 export function modal(spec: ModalSpec): () => void {
-  const backdrop = document.getElementById("backdrop") as HTMLElement;
-  const box = document.getElementById("modal") as HTMLElement;
-  box.innerHTML = "";
+  const dlg = document.getElementById("modal") as HTMLDialogElement | null;
+  if (!dlg) return () => {};
+  dlg.innerHTML = "";
 
   const close = () => {
-    backdrop.hidden = true;
+    if (dlg.open) dlg.close();
     document.removeEventListener("keydown", onKey, true);
   };
+  // Esc is handled natively by <dialog>; we only stop it from reaching the app
+  // (which would abort a running turn behind the dialog).
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") { e.stopPropagation(); close(); }
+    if (e.key === "Escape") e.stopPropagation();
   };
+  dlg.addEventListener("close", () => document.removeEventListener("keydown", onKey, true), { once: true });
+  // A click on the ::backdrop lands on the dialog element itself.
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) close();
+  });
 
-  box.append(el("h4", {}, [spec.title]));
-  if (spec.body) box.append(typeof spec.body === "string" ? el("p", {}, [spec.body]) : spec.body);
+  const body = el("div", { class: "oc-modal-dialog__body" });
+  body.append(el("h4", {}, [spec.title]));
+  if (spec.body) {
+    body.append(typeof spec.body === "string" ? el("p", { class: "sc-dialog-body" }, [spec.body]) : spec.body);
+  }
 
   const inputs: Record<string, HTMLInputElement> = {};
   for (const f of spec.fields ?? []) {
     const input = el("input", {
       id: `f-${f.name}`, type: f.type ?? "text", value: f.value ?? "", placeholder: f.placeholder ?? "",
-      autocomplete: "off", spellcheck: "false",
+      autocomplete: "off", spellcheck: "false", class: "settings-input",
     });
     inputs[f.name] = input;
-    box.append(el("div", { class: "field" }, [el("label", { for: `f-${f.name}` }, [f.label]), input]));
+    body.append(el("div", { class: "field" }, [el("label", { for: `f-${f.name}` }, [f.label]), input]));
   }
 
-  if (spec.render) spec.render(box, close);
+  if (spec.render) spec.render(body, close);
 
-  const actions = el("div", { class: "actions" }, []);
+  const actions = el("openclaw-modal-actions");
   actions.append(el("button", { class: "btn", id: "modal-cancel" }, [spec.cancelLabel ?? "Cancel"]));
   if (spec.confirmLabel !== "") {
     actions.append(
       el("button", { class: `btn primary${spec.danger ? " danger" : ""}`, id: "modal-ok" }, [spec.confirmLabel ?? "Confirm"]),
     );
   }
-  box.append(actions);
+  dlg.append(body, actions);
 
   (actions.querySelector("#modal-cancel") as HTMLElement).onclick = close;
   const ok = actions.querySelector("#modal-ok") as HTMLElement | null;
@@ -89,15 +112,14 @@ export function modal(spec: ModalSpec): () => void {
       void spec.onConfirm?.(values);
       if (!spec.render) close();
     };
-    box.addEventListener("keydown", (e) => {
+    dlg.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement)) { e.preventDefault(); ok.click(); }
     });
   }
 
-  backdrop.hidden = false;
-  backdrop.onclick = (e) => { if (e.target === backdrop) close(); };
   document.addEventListener("keydown", onKey, true);
-  setTimeout(() => (box.querySelector("input") as HTMLInputElement | null)?.focus(), 30);
+  dlg.showModal();
+  setTimeout(() => (body.querySelector("input") as HTMLInputElement | null)?.focus(), 30);
   return close;
 }
 

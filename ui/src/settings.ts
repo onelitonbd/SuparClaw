@@ -1,4 +1,6 @@
-// Settings: provider setup, default model, fallbacks, gateway summary.
+// Settings: model defaults, providers, gateway, runtime — laid out with
+// OpenClaw's settings vocabulary (.settings-workspace > .settings-group >
+// .settings-section__header + .settings-row > .settings-row__control).
 
 import { el, esc, modal, toast } from "./dom.js";
 import { gateway } from "./rpc.js";
@@ -16,7 +18,7 @@ export class Settings {
 
   async render(): Promise<void> {
     this.#root.innerHTML = "";
-    const wrap = el("div", { class: "wrap" });
+    const wrap = el("div", { class: "settings-workspace" });
 
     let config: any = {};
     let models: string[] = [];
@@ -40,29 +42,32 @@ export class Settings {
     const defaults = config.agents?.defaults ?? {};
     const gw = config.gateway ?? {};
 
-    wrap.append(el("button", { class: "back-link", id: "back" }, ["← back to chat"]));
+    // On phones the settings sidebar (which owns the back button) lives in the
+    // off-canvas drawer, so the workspace carries its own way out.
+    const back = el("button", { class: "btn btn--xs sc-settings-back", id: "settings-back-inline" }, ["← back to chat"]);
+    back.onclick = () => { location.hash = ""; };
+    wrap.append(back);
 
     // ---- defaults ----
-    const modelInput = el("input", { value: defaults.model ?? "", placeholder: "provider/model", list: "model-list" });
+    const modelInput = el("input", {
+      class: "settings-input", value: defaults.model ?? "", placeholder: "provider/model", list: "model-list",
+    });
     const datalist = el("datalist", { id: "model-list" });
     for (const m of models) datalist.append(el("option", { value: m }));
-    const fallbackInput = el("input", { value: (defaults.fallbacks ?? []).join(", "), placeholder: "provider/model, provider/model" });
+    const fallbackInput = el("input", {
+      class: "settings-input", value: (defaults.fallbacks ?? []).join(", "), placeholder: "provider/model, provider/model",
+    });
 
-    const defaultsCard = el("div", { class: "card-block" }, [
-      el("h2", {}, ["Model"]),
-      el("p", { class: "desc" }, ["Used for every new message. Type to pick an existing model or write any provider/model reference."]),
-      el("div", { class: "grid2" }, [
-        el("div", { class: "field" }, [el("label", {}, ["default model"]), modelInput]),
-        el("div", { class: "field" }, [el("label", {}, ["fallbacks (comma separated)"]), fallbackInput]),
-      ]),
-      el("div", { class: "row-actions" }, [
-        el("button", { class: "btn primary", id: "save-model" }, ["Save model"]),
-      ]),
+    const defaultsCard = el("section", { class: "settings-group" }, [
+      header("Model", "Used for every new message. Type to pick an existing model or write any provider/model reference.",
+        [el("button", { class: "btn primary", id: "save-model" }, ["Save"])]),
+      row("default model", modelInput),
+      row("fallbacks (comma separated)", fallbackInput),
     ]);
     wrap.append(defaultsCard, datalist);
 
     // ---- providers ----
-    const table = el("table", { class: "data" }, [
+    const table = el("table", { class: "sc-table" }, [
       el("thead", {}, [el("tr", {}, [
         el("th", {}, ["provider"]), el("th", {}, ["base url"]), el("th", {}, ["models"]), el("th", {}, [""]),
       ])]),
@@ -74,7 +79,9 @@ export class Settings {
       tbody.innerHTML = "";
       const names = Object.keys(providers);
       if (names.length === 0) {
-        tbody.append(el("tr", {}, [el("td", { colspan: "4", style: "color:var(--muted)" }, ["no providers yet — add one below"])]));
+        tbody.append(el("tr", {}, [
+          el("td", { colspan: "4", class: "sc-empty-row" }, ["no providers yet — add one below"]),
+        ]));
       }
       for (const name of names) {
         const p = providers[name] as Provider;
@@ -83,10 +90,10 @@ export class Settings {
           el("td", { class: "mono" }, [esc(p.baseUrl ?? "")]),
           el("td", {}, [String((p.models ?? []).length)]),
         ]);
-        const actions = el("td", { style: "text-align:right;white-space:nowrap" });
-        const edit = el("button", { class: "btn" }, ["Edit"]);
+        const actions = el("td", { class: "sc-actions" });
+        const edit = el("button", { class: "btn btn--xs" }, ["Edit"]);
         edit.onclick = () => this.#providerForm(name, providers, renderProviders);
-        const del = el("button", { class: "btn danger", style: "margin-left:6px" }, ["Remove"]);
+        const del = el("button", { class: "btn btn--xs danger" }, ["Remove"]);
         del.onclick = () => this.#removeProvider(name, providers, renderProviders);
         actions.append(edit, del);
         tr.append(actions);
@@ -95,53 +102,50 @@ export class Settings {
     };
     renderProviders();
 
-    const providersCard = el("div", { class: "card-block" }, [
-      el("h2", {}, ["Providers"]),
-      el("p", { class: "desc" }, ["Any OpenAI-compatible endpoint: OpenAI, OpenRouter, Groq, Ollama, LM Studio, or your own server. Changes apply live — no restart."]),
+    const providersCard = el("section", { class: "settings-group" }, [
+      header("Providers",
+        "Any OpenAI-compatible endpoint: OpenAI, OpenRouter, Groq, Ollama, LM Studio, or your own server. Changes apply live — no restart.",
+        [
+          el("button", { class: "btn btn--xs", id: "test-models" }, ["Test models"]),
+          el("button", { class: "btn btn--xs primary", id: "add-provider" }, ["＋ Add provider"]),
+        ]),
       table,
-      el("div", { class: "row-actions" }, [
-        el("button", { class: "btn", id: "test-models" }, ["Test list models"]),
-        el("button", { class: "btn primary", id: "add-provider" }, ["＋ Add provider"]),
-      ]),
     ]);
     wrap.append(providersCard);
 
     // ---- gateway ----
-    const gwCard = el("div", { class: "card-block" }, [
-      el("h2", {}, ["Gateway"]),
-      el("p", { class: "desc" }, [`Listening on 127.0.0.1:${gw.port ?? 18790}. Remote clients need the token printed by `, el("code", {}, ["sc token"]), "."]),
-      el("div", { class: "grid2" }, [
-        el("div", { class: "field" }, [el("label", {}, ["auth mode"]), (() => {
-          const s = el("select");
-          for (const m of ["token", "none"]) s.append(el("option", { value: m, selected: gw.auth?.mode === m ? "" : undefined }, [m]));
-          s.value = gw.auth?.mode ?? "token";
-          return s;
-        })()]),
-        el("div", { class: "field" }, [el("label", {}, ["loopback bypass"]), (() => {
-          const s = el("select");
-          for (const [v, label] of [["true", "on (this phone needs no token)"], ["false", "off (always require token)"]] as const) {
-            s.append(el("option", { value: v }, [label]));
-          }
-          s.value = String(gw.auth?.loopbackBypass ?? true);
-          return s;
-        })()]),
-      ]),
-      el("div", { class: "row-actions" }, [
-        el("button", { class: "btn primary", id: "save-gw" }, ["Save gateway"]),
-      ]),
+    const modeSelect = el("select", { class: "settings-select" });
+    for (const m of ["token", "none"]) modeSelect.append(el("option", { value: m }, [m]));
+    modeSelect.value = gw.auth?.mode ?? "token";
+    const bypassSelect = el("select", { class: "settings-select" });
+    for (const [v, label] of [["true", "on (this phone needs no token)"], ["false", "off (always require token)"]] as const) {
+      bypassSelect.append(el("option", { value: v }, [label]));
+    }
+    bypassSelect.value = String(gw.auth?.loopbackBypass ?? true);
+
+    const gwCard = el("section", { class: "settings-group" }, [
+      header("Gateway", `Listening on 127.0.0.1:${gw.port ?? 18790}. Remote clients need the token printed by sc token.`,
+        [el("button", { class: "btn primary", id: "save-gw" }, ["Save"])]),
+      row("auth mode", modeSelect),
+      row("loopback bypass", bypassSelect),
     ]);
     wrap.append(gwCard);
 
-    // ---- status ----
-    wrap.append(el("div", { class: "card-block" }, [
-      el("h2", {}, ["Runtime"]),
-      el("p", { class: "desc" }, [`tools ${tools} · skills ${skills} · telegram ${config.channels?.telegram?.enabled ? "on" : "off"} · cron ${config.cron?.enabled ? "on" : "off"}`]),
+    // ---- runtime ----
+    wrap.append(el("section", { class: "settings-group" }, [
+      header("Runtime", "What this gateway is running right now."),
+      el("div", { class: "sc-stat-row" }, [
+        stat("tools", String(tools)),
+        stat("skills", String(skills)),
+        stat("models", String(models.length)),
+        stat("telegram", config.channels?.telegram?.enabled ? "on" : "off"),
+        stat("cron", config.cron?.enabled ? "on" : "off"),
+      ]),
     ]));
 
     this.#root.append(wrap);
 
     // ---- wiring ----
-    (wrap.querySelector("#back") as HTMLElement).onclick = () => { location.hash = ""; };
     (wrap.querySelector("#add-provider") as HTMLElement).onclick = () =>
       this.#providerForm(null, providers, renderProviders);
     (wrap.querySelector("#save-model") as HTMLElement).onclick = async () => {
@@ -161,12 +165,9 @@ export class Settings {
       }
     };
     (wrap.querySelector("#save-gw") as HTMLElement).onclick = async () => {
-      const mode = (wrap.querySelector("#save-gw")!.closest(".card-block")!.querySelector("select") as HTMLSelectElement).value;
-      const selects = wrap.querySelectorAll(".card-block select") as NodeListOf<HTMLSelectElement>;
-      const bypass = selects[1]?.value === "true";
       await this.#setMany([
-        ["gateway.auth.mode", mode],
-        ["gateway.auth.loopbackBypass", bypass],
+        ["gateway.auth.mode", modeSelect.value],
+        ["gateway.auth.loopbackBypass", bypassSelect.value === "true"],
       ], "gateway saved — reconnecting");
       location.reload();
     };
@@ -244,4 +245,27 @@ export class Settings {
       },
     });
   }
+}
+
+/* ---- layout helpers ---- */
+
+function header(title: string, desc: string, actions: HTMLElement[] = []): HTMLElement {
+  return el("div", { class: "settings-section__header" }, [
+    el("div", { class: "settings-section__copy" }, [
+      el("h2", { class: "settings-section__heading" }, [title]),
+      el("p", { class: "settings-section__desc" }, [desc]),
+    ]),
+    el("div", { class: "settings-section__actions" }, actions),
+  ]);
+}
+
+function row(label: string, control: HTMLElement): HTMLElement {
+  return el("div", { class: "settings-row" }, [
+    el("span", { class: "settings-row__text" }, [label]),
+    el("div", { class: "settings-row__control" }, [control]),
+  ]);
+}
+
+function stat(label: string, value: string): HTMLElement {
+  return el("span", { class: "sc-stat" }, [`${label} `, el("b", {}, [value])]);
 }

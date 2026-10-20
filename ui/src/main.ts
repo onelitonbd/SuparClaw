@@ -1,4 +1,8 @@
-// SuparClaw Control UI — app shell: rail, sidebar, routing, event wiring.
+// SuparClaw Control UI — app shell: sidebar, drawer, routing, event wiring.
+//
+// Layout follows OpenClaw's shell: a CSS grid (.shell) with a nav column
+// (.shell-nav > .sidebar) and a content column (.content). Below 900px the
+// shell switches to .shell--mobile-nav and the nav becomes an overlay drawer.
 
 import { Chat } from "./chat.js";
 import { el, esc, fmtTime, modal, toast } from "./dom.js";
@@ -12,6 +16,8 @@ let sessionKey = localStorage.getItem("sc.session") || "main:main";
 let currentModel = "";
 let busy = false;
 let models: string[] = [];
+
+const app = $("app");
 
 /* ---------------- chat ---------------- */
 
@@ -91,10 +97,13 @@ const connPill = $("conn-pill");
 const brandDot = $("brand-dot");
 
 gateway.onState = (state: ConnState) => {
-  connPill.textContent =
-    state === "online" ? "connected" : state === "connecting" ? "connecting…" :
+  const label =
+    state === "online" ? "connected" :
+    state === "connecting" ? "connecting…" :
     state === "unauthorized" ? "unauthorized" : "disconnected";
-  connPill.className = "pill state-pill " + (state === "online" ? "online" : state === "connecting" ? "" : "offline");
+  connPill.textContent = label;
+  connPill.dataset.state = state;
+  brandDot.dataset.state = state;
   if (state === "online") { void refresh(); void loadHistory(); }
   if (state === "unauthorized") askToken();
 };
@@ -126,7 +135,7 @@ async function refresh(): Promise<void> {
     const status = statusRes as any;
     models = (modelRes as any).models ?? [];
     currentModel = status.model || models[0] || "";
-    $("model-pill").textContent = currentModel || "choose model…";
+    $("model-name").textContent = currentModel || "choose model…";
     renderSessions((sessionRes as any).sessions ?? []);
     renderStats(status);
   } catch { /* gateway reconnecting */ }
@@ -147,11 +156,17 @@ function renderSessions(list: { key: string; last_msg_at?: number; title?: strin
   for (const s of list) {
     if (seen.has(s.key)) continue;
     seen.add(s.key);
-    const btn = el("button", { class: `session${s.key === sessionKey ? " active" : ""}` }, [
-      el("span", { class: "key" }, [s.key]),
-      el("span", { class: "meta" }, [s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages"]),
+    const btn = el("button", {
+      class: `sidebar-recent-session${s.key === sessionKey ? " sidebar-recent-session--active" : ""}`,
+      type: "button",
+      title: `${s.key} — long-press to rename`,
+    }, [
+      el("span", { class: "sidebar-recent-session__name" }, [s.key]),
+      el("span", { class: "sidebar-recent-session__subtitle" }, [
+        s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
+      ]),
     ]);
-    btn.onclick = () => switchSession(s.key);
+    btn.onclick = () => void switchSession(s.key);
     btn.oncontextmenu = (e) => { e.preventDefault(); renameSession(s.key); };
     host.append(btn);
   }
@@ -168,7 +183,7 @@ async function switchSession(key: string): Promise<void> {
   if (key === sessionKey) return;
   sessionKey = key;
   localStorage.setItem("sc.session", key);
-  $("session-pill").textContent = key;
+  $("session-pill").querySelector(".sc-session-chip__key")!.textContent = key;
   closeDrawer();
   await loadHistory();
   void refresh();
@@ -182,7 +197,6 @@ async function loadHistory(): Promise<void> {
       if (m.role === "user") chat.user(String(m.content ?? ""));
       else if (m.role === "assistant" && m.content) chat.assistant(String(m.content));
     }
-    $("session-pill").textContent = sessionKey;
   } catch { /* ignore */ }
 }
 
@@ -222,14 +236,14 @@ function newSession(): void {
   });
 }
 
-/* ---------------- rail + routing ---------------- */
+/* ---------------- model + chrome ---------------- */
 
-$("model-pill").onclick = () => {
+function openModelPicker(): void {
   pickModel({
     current: currentModel,
     models,
     onPick: async (ref) => {
-      $("model-pill").textContent = ref;
+      $("model-name").textContent = ref;
       try {
         await gateway.request("config.set", { path: "agents.defaults.model", value: ref });
         currentModel = ref;
@@ -240,7 +254,9 @@ $("model-pill").onclick = () => {
       }
     },
   });
-};
+}
+
+$("model-btn").onclick = openModelPicker;
 
 $("theme-btn").onclick = () => {
   const root = document.documentElement;
@@ -249,20 +265,64 @@ $("theme-btn").onclick = () => {
   localStorage.setItem("sc.theme", root.dataset.themeMode);
 };
 
-$("settings-btn").onclick = () => { location.hash = location.hash === "#/settings" ? "" : "#/settings"; };
+$("clear-btn").onclick = () => {
+  chat.clear();
+  toast("transcript cleared");
+};
+
 $("new-session").onclick = newSession;
-$("drawer-btn").onclick = () => $("sidebar").classList.toggle("open");
+$("settings-btn").onclick = () => { location.hash = "#/settings"; };
+$("settings-btn-side").onclick = () => { location.hash = "#/settings"; };
+$("settings-back").onclick = () => { location.hash = ""; };
+$("session-pill").onclick = () => { void loadHistory(); };
+
+/* ---------------- drawer (mobile nav) ---------------- */
+
+const drawerBtn = $("drawer-btn");
+
+function isMobile(): boolean {
+  return window.matchMedia("(max-width: 900px)").matches;
+}
+
+function applyLayout(): void {
+  const mobile = isMobile();
+  app.classList.toggle("shell--mobile-nav", mobile);
+  app.classList.toggle("shell--nav-collapsed", mobile);
+  if (!mobile) closeDrawer();
+}
+
+function openDrawer(): void {
+  app.classList.add("shell--nav-drawer-open");
+  drawerBtn.setAttribute("aria-expanded", "true");
+}
 
 function closeDrawer(): void {
-  $("sidebar").classList.remove("open");
+  app.classList.remove("shell--nav-drawer-open");
+  drawerBtn.setAttribute("aria-expanded", "false");
 }
+
+drawerBtn.onclick = () => {
+  if (app.classList.contains("shell--nav-drawer-open")) closeDrawer();
+  else openDrawer();
+};
+$("nav-backdrop").onclick = closeDrawer;
+window.addEventListener("resize", applyLayout);
+
+/* ---------------- routing ---------------- */
 
 function route(): void {
   const settings = location.hash === "#/settings";
+  app.classList.toggle("shell--settings", settings);
+  $("content").classList.toggle("content--chat", !settings);
   $("chat-view").hidden = settings;
   $("settings-view").hidden = !settings;
+  $("sidebar").hidden = settings;
+  $("settings-sidebar").hidden = !settings;
   if (settings) {
     new Settings($("settings-view"), () => { void refresh(); }).render();
+    closeDrawer();
+  } else {
+    $("settings-sidebar").innerHTML = "";
   }
 }
 window.addEventListener("hashchange", route);
@@ -270,7 +330,7 @@ window.addEventListener("hashchange", route);
 document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "l") {
     e.preventDefault();
-    $("model-pill").click();
+    openModelPicker();
   }
   if (e.key === "Escape" && busy) void gateway.request("chat.abort", { sessionKey });
 });
@@ -278,10 +338,9 @@ document.addEventListener("keydown", (e) => {
 /* ---------------- boot ---------------- */
 
 if (localStorage.getItem("sc.theme")) document.documentElement.dataset.themeMode = localStorage.getItem("sc.theme")!;
-$("session-pill").textContent = sessionKey;
-$("session-pill").title = `session ${sessionKey} — right-click a session to rename`;
-$("session-pill").onclick = () => { void loadHistory(); };
-brandDot.classList.add("busy");
+$("session-pill").querySelector(".sc-session-chip__key")!.textContent = sessionKey;
+$("session-pill").title = `session ${sessionKey}`;
+applyLayout();
 route();
 gateway.connect();
 void health();
