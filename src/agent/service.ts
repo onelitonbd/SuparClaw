@@ -40,6 +40,8 @@ export interface ChatPayload {
   reasoning?: string;
   /** chat.send parity: force the queue mode just for this message. */
   queueMode?: QueueMode;
+  /** Inline media for vision turns (Telegram inbound photos — P1 A5). */
+  attachments?: { kind: "image"; dataUri: string; name: string }[];
   reply: (text: string) => void | Promise<void>;
   /** Final text plus provider usage when the loop captured it (HTTP surfaces). */
   onFinal?: (text: string, usage?: Record<string, number>) => void | Promise<void>;
@@ -765,6 +767,7 @@ export class Service {
       reasoning: payload.reasoning,
       source: payload.source,
       queueMode,
+      attachments: payload.attachments,
       // Channel (durable-ingress style) inputs never coalesce in collect mode.
       exclusive: payload.source === "telegram",
       onEvent: (event) => {

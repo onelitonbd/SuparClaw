@@ -1,6 +1,8 @@
 import type { Context } from "grammy";
 import type { Service } from "../agent/service.js";
 import type { Logger } from "../util/log.js";
+import { workspaceDir } from "../util/paths.js";
+import { downloadInboundMedia, mediaPlaceholder, planInboundMedia, type InboundMedia } from "./telegram-media.js";
 import {
   addProvider,
   canonicalModelRef,
@@ -39,6 +41,8 @@ export function parseCommand(text: string): BotCommand | null {
 
 interface PendingMessage {
   texts: string[];
+  /** Inbound media queued with these texts (P1 A5); placeholders fill on flush. */
+  media: InboundMedia[];
   timer: NodeJS.Timeout;
   firstAt: number;
 }
@@ -144,10 +148,13 @@ export class TelegramChannel {
       }
     }
 
-    if (!text.trim()) return;
+    // Inbound media (P1 A5): captions double as the message text; media-only
+    // messages must still reach the agent (a photo with no caption is a turn).
+    const media = planInboundMedia(msg as unknown as Record<string, unknown>);
+    if (!text.trim() && media.length === 0) return;
 
     const command = parseCommand(text);
-    if (command) {
+    if (command && media.length === 0) {
       await this.#onCommand(ctx, command);
       return;
     }
@@ -155,15 +162,22 @@ export class TelegramChannel {
     const key = `${chatId}`;
     const topicId = (msg as { message_thread_id?: number }).message_thread_id;
     const sessionKey = `telegram:${chatId}${topicId ? `:topic:${topicId}` : isGroup ? `:group` : ""}`;
+    void sessionKey; // (keying lives in #flush; kept for readability)
 
     const existing = this.#pending.get(key);
     if (existing) {
-      existing.texts.push(text);
+      if (text.trim()) existing.texts.push(text);
+      existing.media.push(...media);
       clearTimeout(existing.timer);
       existing.timer = setTimeout(() => void this.#flush(key), cfg.batchMs);
       return;
     }
-    const entry: PendingMessage = { texts: [text], firstAt: Date.now(), timer: setTimeout(() => void this.#flush(key), cfg.batchMs) };
+    const entry: PendingMessage = {
+      texts: text.trim() ? [text] : [],
+      media: [...media],
+      firstAt: Date.now(),
+      timer: setTimeout(() => void this.#flush(key), cfg.batchMs),
+    };
     this.#pending.set(key, entry);
   }
 
@@ -271,20 +285,52 @@ export class TelegramChannel {
     const bot = this.#bot;
     if (!bot) return;
 
-    const text = pending.texts.join("\n\n").slice(0, 8000);
     const chatId = Number(key);
+    const cfg = this.service.config.channels.telegram;
+
+    // Inbound media pipeline (P1 A5): download via getFile into
+    // <workspace>/media/telegram/<chatId>/ (unsanitized names never reach the
+    // fs), then fold placeholders into the turn text. Photos additionally
+    // become vision attachments when channels.telegram.vision is on.
+    const saved: Awaited<ReturnType<typeof downloadInboundMedia>>[] = [];
+    if (pending.media.length > 0) {
+      const stamp = `${Date.now().toString(36)}`;
+      for (const [i, m] of pending.media.slice(0, 10).entries()) {
+        saved.push(
+          await downloadInboundMedia(m, {
+            chatId,
+            workspace: workspaceDir(),
+            maxBytes: Math.max(1, cfg.mediaMaxMb) * 1048576,
+            token: cfg.token,
+            stamp: `${stamp}-${i}`,
+            getFile: (fileId) => bot.api.getFile(fileId).then((f) => ({ file_path: f.file_path })),
+          }),
+        );
+      }
+      if (pending.media.length > 10) this.log.warn(`telegram: dropped ${pending.media.length - 10} media item(s) over the 10/turn cap`);
+    }
+    const placeholders = saved.map((s) => mediaPlaceholder(s)).join("\n");
+    const attachments = cfg.vision
+      ? saved
+          .filter((s) => s.dataUri !== undefined)
+          .map((s) => ({ kind: "image" as const, dataUri: s.dataUri!, name: s.media.fileName ?? "photo.jpg" }))
+      : [];
+    const text = [pending.texts.join("\n\n"), placeholders]
+      .filter((s) => s.trim().length > 0)
+      .join("\n")
+      .slice(0, 8000);
 
     const preview = await bot.api.sendMessage(chatId, "…", { link_preview_options: { is_disabled: true } }).catch(() => null);
 
     let lastEdit = 0;
     let statusLines: string[] = [];
-    const cfg = this.service.config.channels.telegram;
 
     await this.service.send({
       sessionKey: key.startsWith("telegram:") ? key : `telegram:${key}`,
       text,
       isMainSession: false,
       source: "telegram",
+      attachments,
       onDelta: async () => {
         if (!preview || cfg.streaming === "off") return;
         const now = Date.now();

@@ -337,9 +337,37 @@ function wireMessages(messages: ChatMessage[], opts?: { signToolCalls?: boolean 
   });
 }
 
+/** OpenAI chat-content parts — user turns with media (P1 A5 vision turns). */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+/**
+ * Provider rejects multimodal/content-part arrays → the turn retries once
+ * text-only (their text-only fallback rule). Error shapes here cover
+ * OpenAI, Gemini-via-proxies, Ollama and Ollama-style 415/422s.
+ */
+export function isVisionUnsupportedError(err: unknown): boolean {
+  const e = err as { message?: string; status?: number } | null;
+  if (!e || typeof e.message !== "string") return false;
+  if (e.status !== undefined && e.status !== 400 && e.status !== 415 && e.status !== 422) return false;
+  const m = e.message.toLowerCase();
+  return (
+    m.includes("image_url") ||
+    m.includes("image input") ||
+    m.includes("multimodal") ||
+    m.includes("vision") ||
+    m.includes("content part") ||
+    m.includes("unsupported content") ||
+    m.includes("does not support images") ||
+    m.includes("not a text model") ||
+    (m.includes("invalid type") && m.includes("image"))
+  );
+}
+
 export type ChatMessage =
   | { role: "system"; content: string }
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | ContentPart[] }
   | {
       role: "assistant";
       content: string | null;
@@ -1111,8 +1139,20 @@ function ollamaMessages(messages: ChatMessage[]): unknown[] {
       out.push({ role: "tool", name: m.name, content: m.content ?? "" });
       continue;
     }
-    const { role, content } = m as { role: string; content?: string };
-    out.push({ role, content: content ?? "" });
+    // Content-part arrays (vision turns): Ollama takes text + bare b64 images.
+    if (Array.isArray(m.content)) {
+      const entry: Record<string, unknown> = {
+        role: m.role,
+        content: m.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n"),
+      };
+      const images = m.content
+        .filter((p) => p.type === "image_url")
+        .map((p) => (p as { image_url: { url: string } }).image_url.url.replace(/^data:[^;]+;base64,/, ""));
+      if (images.length > 0) entry["images"] = images;
+      out.push(entry);
+      continue;
+    }
+    out.push({ role: m.role, content: m.content ?? "" });
   }
   return out;
 }

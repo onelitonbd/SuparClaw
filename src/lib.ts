@@ -40,6 +40,8 @@ export { handleSlashExtension, slashHelp, slashCommands, SLASH_CATALOG } from ".
 export { handleHooksRequest, hookTokenFingerprint, type HookService } from "./gateway/webhooks.js";
 export { handleOpenAiRequest, type OpenAiService } from "./gateway/openai-http.js";
 export { isContextOverflowError, planCompactSpan, summarizerPrompt, renderSpan, clampSpanInput } from "./agent/compaction.js";
+export { planInboundMedia, mediaPlaceholder, mediaFileName, downloadInboundMedia } from "./channels/telegram-media.js";
+export { isVisionUnsupportedError } from "./agent/llm.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 

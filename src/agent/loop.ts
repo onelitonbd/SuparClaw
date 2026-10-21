@@ -6,7 +6,7 @@ import type { Logger } from "../util/log.js";
 import { loadWorkspaceContext, todayStamp } from "./workspace.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
 import { buildRegistry, toolsToSchema, type SubagentCtl, type ToolContext, type ToolSpec } from "./tools.js";
-import { LlmClient, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
+import { LlmClient, isVisionUnsupportedError, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
 import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
@@ -51,6 +51,8 @@ export interface RunInput {
   internal?: boolean;
   /** Metadata when this turn IS a sub-agent child run. */
   subagent?: { parentKey: string; label: string; taskName: string; depth: number };
+  /** Inline media for the injected user turn (P1 A5 photos → vision parts). */
+  attachments?: { kind: "image"; dataUri: string; name: string }[];
   onEvent: (event: RunEvent) => void;
 }
 
@@ -579,6 +581,7 @@ export class AgentLoop {
       };
 
       let overflowRetried = false;
+      let visionFallbackDone = false;
       for (let turn = 0, lastThoughtRow = ""; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
         // Boundaries before every model call: drained steers append after the
         // previous round's tool results, in arrival order.
@@ -631,6 +634,26 @@ export class AgentLoop {
             }
           }
         } catch (err) {
+          // Vision fallback (their text-only rule, P1 A5): a provider that
+          // rejects content-part arrays retries THIS turn once with a
+          // text-only note — the photo stays saved under media/ for fs_read.
+          if (
+            input.attachments &&
+            input.attachments.length > 0 &&
+            !visionFallbackDone &&
+            text === "" &&
+            thought === "" &&
+            toolCalls.length === 0 &&
+            isVisionUnsupportedError(err)
+          ) {
+            visionFallbackDone = true;
+            this.deps.log.warn(`provider rejected image parts — retrying text-only (${sessionKey})`);
+            const note = `[image omitted - provider text-only]`;
+            input = { ...input, attachments: undefined, text: `${note}\n${input.text}` };
+            messages = await this.#buildMessages(session.id, sessionKey, input, isMain);
+            turn--;
+            continue;
+          }
           // Overflow recovery (their compact+retry rule): when the provider
           // rejects the request for context size AFTER the retry + fallback
           // chain, compact the transcript now and retry exactly once — only
@@ -848,7 +871,7 @@ export class AgentLoop {
   }
 
   /** Guard against concurrent sweeps on one session (auto-trigger + /compact + overflow). */
-  #compactBusy = new Map<string, Promise<string>>();
+  #compactBusy = new Map<string, Promise<string | null>>();
 
   async #buildMessagesWithCompaction(
     sessionId: string,
@@ -984,7 +1007,19 @@ export class AgentLoop {
       `Today's note file: memory/${todayStamp()}.md`,
     ].filter(Boolean);
 
-    return [{ role: "system", content: systemParts.join("\n\n") }, ...history, { role: "user", content: input.text }];
+    // Vision turns (P1 A5): photo attachments ride as OpenAI content parts;
+    // text stays first so text-only renderers keep working off part[0].
+    const finalUser: ChatMessage =
+      input.attachments && input.attachments.length > 0
+        ? {
+            role: "user",
+            content: [
+              { type: "text", text: input.text },
+              ...input.attachments.map((a) => ({ type: "image_url" as const, image_url: { url: a.dataUri } })),
+            ],
+          }
+        : { role: "user", content: input.text };
+    return [{ role: "system", content: systemParts.join("\n\n") }, ...history, finalUser];
   }
 
   /**

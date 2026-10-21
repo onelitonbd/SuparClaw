@@ -342,6 +342,14 @@ export const CONFIG_SCHEMA: SchemaNode = {
             groupPolicy: { t: "enum", values: ["allowlist", "open", "off"], default: "allowlist" },
             groupAllowFrom: { t: "array", of: { t: "string" }, default: [] },
             mentionGated: { t: "bool", default: true },
+          // Inbound media (P1 A5): photos are fetched for the vision turn,
+          // everything else lands in <workspace>/media as a placeholder the
+          // agent can fs_read on request. Cap = whole MB (their fractional
+          // mediaMaxMb, rounded up for our int fields).
+          mediaMaxMb: { t: "int", min: 1, max: 100, default: 20 },
+          // false → save photos to media/ like documents, never attach images
+          // to model turns (their text-only surface for vision-blind setups).
+          vision: { t: "bool", default: true },
             streaming: { t: "enum", values: ["off", "partial", "progress"], default: "progress" },
             batchMs: { t: "int", min: 0, max: 5000, default: 300 },
           },
@@ -539,6 +547,8 @@ export interface SuparClawConfig {
       groupPolicy: "allowlist" | "open" | "off";
       groupAllowFrom: string[];
       mentionGated: boolean;
+      mediaMaxMb: number;
+      vision: boolean;
       streaming: "off" | "partial" | "progress";
       batchMs: number;
     };
