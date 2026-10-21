@@ -4,6 +4,7 @@ import type { SuparClawConfig } from "../config/schema.js";
 import type { Store } from "../state/db.js";
 import type { Logger } from "../util/log.js";
 import { todayStamp } from "./workspace.js";
+import { searchMemoryFiles, rankTranscriptHits } from "./memory-search.js";
 import { discoverSkills, readSkillBody, skillsCatalog, writeSkill, type SkillMeta } from "./skills.js";
 
 export interface JsonSchema {
@@ -78,19 +79,6 @@ export function safePath(workspace: string, p: string): string {
 }
 
 const MAX_READ = 60_000;
-
-/** Daily notes, newest first: ["memory/2026-10-20.md", …]. */
-function listDailyNotes(workspace: string): string[] {
-  try {
-    return readdirSync(join(workspace, "memory"))
-      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
-      .sort()
-      .reverse()
-      .map((f) => `memory/${f}`);
-  } catch {
-    return [];
-  }
-}
 
 /** Termux bash first, then ordinary shells — exec must work off-phone too. */
 function findShell(): string {
@@ -217,70 +205,67 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     tools.push(
       {
         name: "memory_append",
-        description: `Append a note to today's daily memory file (memory/${todayStamp()}.md).`,
+        description: `Append a note to today's daily memory file (memory/${todayStamp()}.md). Optional write-time importance 1-10 (their annotation format) is scored once here and later multiplies search relevance.`,
         parameters: {
           type: "object",
-          properties: { note: str("Markdown note to append") },
+          properties: {
+            note: str("Markdown note to append"),
+            importance: int("Optional 1-10 write-time importance (durable facts ~9, trivia ~2)"),
+          },
           required: ["note"],
         },
         async run(args, ctx) {
           const stamp = todayStamp();
           mkdirSync(join(ctx.workspace, "memory"), { recursive: true });
-          appendFileSync(join(ctx.workspace, "memory", `${stamp}.md`), `\n- ${String(args["note"]).replace(/\n/g, " ")}\n`, "utf8");
+          const note = String(args["note"]).replace(/\n/g, " ");
+          // Write-time importance is theirs: 1-10 integer or neutral-absent.
+          // Garbage input degrades to neutral instead of failing the save.
+          const rawImp = args["importance"];
+          const parsed = rawImp === undefined ? Number.NaN : Math.trunc(Number(rawImp));
+          const imp = Number.isFinite(parsed) && parsed >= 1 ? Math.min(10, parsed) : null;
+          const tag = imp === null ? "" : ` <!-- importance: ${imp} -->`;
+          appendFileSync(join(ctx.workspace, "memory", `${stamp}.md`), `\n- ${note}${tag}\n`, "utf8");
           return `noted in memory/${stamp}.md`;
         },
       },
       {
         name: "memory_search",
         description:
-          "Search memory notes (MEMORY.md, memory/*.md) and past transcripts across all sessions. Returns dated, source-labelled snippets.",
+          "Search memory notes (MEMORY.md, USER.md, memory/*.md) and past transcripts across all sessions. Results are ranked by the fixed OpenClaw-style stack: keyword relevance (every query term first, then any-term) × recency decay (30-day half-life, dated daily notes only; MEMORY.md/USER.md are evergreen) × write-time importance (<!-- importance: 1-10 --> annotations), then MMR diversity ordering. Returns scored, dated, source-labelled snippets.",
         parameters: {
           type: "object",
-          properties: { query: str("Search terms"), limit: int("Max results (default 8)") },
+          properties: {
+            query: str("Search terms"),
+            maxResults: int("Max results (default 6, cap 25). Aliases accepted: max_results, limit."),
+          },
           required: ["query"],
         },
         async run(args, ctx) {
           const q = String(args["query"] ?? "").trim();
           if (!q) return "error: empty query";
-          const limit = Math.min(Math.max(Number(args["limit"] ?? 8), 1), 20);
-          const needle = q.toLowerCase();
-          const results: string[] = [];
-
-          // 1. workspace memory: curated MEMORY.md first, then daily notes newest-first
-          const files = ["MEMORY.md", ...listDailyNotes(ctx.workspace)];
-          for (const rel of files) {
-            if (results.length >= limit) break;
-            let text: string;
-            try {
-              text = readFileSync(join(ctx.workspace, rel), "utf8");
-            } catch {
-              continue;
-            }
-            const at = text.toLowerCase().indexOf(needle);
-            if (at === -1) continue;
-            const start = Math.max(0, at - 70);
-            const snippet = text.slice(start, at + needle.length + 130).replace(/\s+/g, " ").trim();
-            results.push(`[memory/${rel}] …${snippet}…`);
+          // Their alias contract: maxResults > max_results > limit; only the
+          // selected value is validated — an invalid higher-priority value is
+          // an error, never a silent fall-through to a valid alias.
+          const pick = args["maxResults"] ?? args["max_results"] ?? args["limit"];
+          let maxResults = 6;
+          if (pick !== undefined) {
+            const n = Number(pick);
+            if (!Number.isFinite(n) || n < 1) return "error: maxResults must be a positive integer";
+            maxResults = Math.min(Math.floor(n), 25);
           }
 
-          // 2. transcripts across every session (FTS5 with LIKE fallback)
-          if (results.length < limit) {
-            const rows = ctx.store.searchMessagesAll(q, limit - results.length);
-            for (const row of rows) {
-              const at = row.content.toLowerCase().indexOf(needle);
-              const snippet =
-                at === -1
-                  ? row.content.slice(0, 160).replace(/\s+/g, " ")
-                  : row.content
-                      .slice(Math.max(0, at - 70), at + needle.length + 130)
-                      .replace(/\s+/g, " ")
-                      .trim();
-              const when = new Date(row.created_at).toISOString().slice(0, 10);
-              results.push(`[${when} · ${row.session_key} · ${row.role}] …${snippet}…`);
-            }
-          }
-
-          return results.length > 0 ? results.join("\n\n") : "no matches";
+          const memHits = searchMemoryFiles(ctx.workspace, q, { maxResults });
+          const rows = ctx.store.searchMessagesAll(q, 50);
+          const hits = rankTranscriptHits(
+            rows.filter((r) => r.role === "user" || r.role === "assistant"),
+            q,
+            memHits,
+            { maxResults },
+          );
+          if (hits.length === 0) return "no matches";
+          return hits
+            .map((h) => `[${h.score.toFixed(2)}${h.date ? ` · ${h.date}` : ""} · ${h.source}] ${h.snippet}`)
+            .join("\n\n");
         },
       },
     );

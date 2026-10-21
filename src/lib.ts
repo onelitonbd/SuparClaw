@@ -8,6 +8,20 @@ export { parseKeys } from "./tui/keys.js";
 export { parseConfig, validate, applyDefaults, emptyConfig, CONFIG_SCHEMA, modelProfiles, modelProfile } from "./config/schema.js";
 export { parseFrontmatter, discoverSkills, matchSkills, skillsCatalog, writeSkill, skillSlug, readSkillBody } from "./agent/skills.js";
 export { Store } from "./state/db.js";
+export {
+  tokenize,
+  chunkMarkdown,
+  importanceOf,
+  datedNoteDate,
+  decayFactor,
+  importanceMultiplier,
+  mmrReorder,
+  searchMemoryFiles,
+  rankTranscriptHits,
+  memoryFiles,
+  type MemoryHit,
+  type TranscriptRow,
+} from "./agent/memory-search.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
 export { buildRegistry, toolsToSchema, safePath } from "./agent/tools.js";
 export { LlmClient, resolveModel, parseToolArgs, parseRetryAfter, parseRetryHint, LlmError, providerErrorText, googleThoughtSignature, reasoningTokens, SKIP_THOUGHT_SIGNATURE } from "./agent/llm.js";
