@@ -21,6 +21,7 @@ import {
 } from "../agent/exec-policy.js";
 import { DREAM_SESSION_KEY, armDream, cleanTitle, titlePrompt, type DreamHandle, runSweep, promotePreview, backfillPreview, lightStage, consolidateGated } from "../agent/dream.js";
 import { writeWorkspaceTemplates, todayStamp } from "../agent/workspace.js";
+import { handleSlashExtension } from "./slash-commands.js";
 import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileCheck, profileId, resolveAuthProfileOrder } from "../agent/auth.js";
 import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
@@ -643,7 +644,7 @@ export class Service {
    * /subagents, /stop). Returns null for ordinary messages, or a payload
    * rewrite (or a direct reply) for commands.
    */
-  #commands(rawText: string, payload: ChatPayload): { rewrite?: string; reply?: string; mode?: QueueMode } | null {
+  async #commands(rawText: string, payload: ChatPayload): Promise<{ rewrite?: string; reply?: string; mode?: QueueMode } | null> {
     const raw = rawText.trim();
     if (!raw.startsWith("/")) return null;
     const [head, ...restParts] = raw.split(/\s+/);
@@ -702,8 +703,8 @@ export class Service {
       if (!rest) return { reply: "usage: /steer <message>" };
       return { rewrite: rest, mode: "steer" };
     }
-    // /stop — cancel queued work first, then the active run (their order).
-    if (cmd === "/stop") {
+    // /stop (alias /abort) — cancel queued work first, then the active run (their order).
+    if (cmd === "/stop" || cmd === "/abort") {
       this.denyApprovalsFor(payload.sessionKey);
       const stopped = this.loop.abort(payload.sessionKey);
       return { reply: stopped ? "Stopped — queued inputs cancelled, active run aborted." : "Nothing to stop in this session." };
@@ -717,15 +718,31 @@ export class Service {
         .join("\n");
       return { reply: `Sub-agents:\n${text}` };
     }
-    return null;
+    // Partial #10: the shared extension router (help/status/dream/title/…).
+    // Every surface funnels here, so a command answers the same way no matter
+    // where it was typed. Unknown `/…` text gets a catalog pointer instead of
+    // confusing the model with noise (matches Telegram's existing behavior).
+    const ext = await handleSlashExtension(this, cmd, rest, payload);
+    if (ext !== null) return { reply: ext };
+    return { reply: `unknown command ${cmd} — try /commands` };
   }
 
   /** One entry point for every surface: TUI, WS clients, Telegram, cron. */
   async send(payload: ChatPayload): Promise<void> {
     // Command surface first (never reaches the model).
-    const cmd = this.#commands(payload.text, payload);
+    const cmd = await this.#commands(payload.text, payload);
     if (cmd?.reply !== undefined) {
       await payload.reply(cmd.reply);
+      // Sockets render replies through the broadcast "chat" envelope, not the
+      // reply callback (which the gateway intentionally no-ops) — so record the
+      // exchange in the transcript and emit final/idle like a real reply did.
+      // Without this, command replies only ever reached direct-callback
+      // channels (local TUI / Telegram) and vanished on every socket surface.
+      const sess = this.store.ensureSession(payload.sessionKey);
+      this.store.appendMessage(sess.id, "user", payload.text);
+      this.store.appendMessage(sess.id, "assistant", cmd.reply);
+      this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event: { type: "final", runId: `cmd-${Date.now().toString(36)}`, text: cmd.reply } } satisfies ServiceEvent);
+      this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event: { type: "idle", sessionKey: payload.sessionKey } } satisfies ServiceEvent);
       return;
     }
     const text = cmd?.rewrite ?? payload.text;

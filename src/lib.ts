@@ -36,6 +36,7 @@ export { Service } from "./agent/service.js";export { renderMarkdown as renderUi
 export { fuzzy } from "../ui/src/dom.js";
 export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, testProvider, maskKey, defaultModelLine, parseProviderAddArgs, canonicalModelRef } from "./config/providers.js";
 export { ConfigService } from "./config/load.js";
+export { handleSlashExtension, slashHelp, slashCommands, SLASH_CATALOG } from "./agent/slash-commands.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 

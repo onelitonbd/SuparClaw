@@ -487,7 +487,8 @@ export async function runTui(deps: TuiDeps, stdin: NodeJS.ReadStream = process.s
 const HINTS = "\u23ce send \u00b7 ^L model \u00b7 ^P session \u00b7 ^O tools \u00b7 ^D quit";
 
 export const tuiHelp = [
-  "Commands: /help /status /model <id> [--save] /provider <list|add|remove|test> /tools /skills /session <key> /new /clear /abort /exec [mode|global <mode>|reset] /quit",
+  "TUI-local: /help /model <id> [--save] /provider <list|add|remove|test> /session <key> /new /clear /quit",
+  "Everywhere (web chat resolves the same): /status /stop /queue /steer /followup /dream [on|off|status|run|log] /title <text> /export-session /tools /skills /exec [mode|global <mode>|reset] — full list: /commands",
   "Keys: ⏎ send · ⇧⏎ newline · ^L model · ^P session · ^O tool output · ^T thinking · ^C stop · ^C^C quit",
   "Approvals: y once · a allow always (this directory) · n deny",
 ].join("\n");

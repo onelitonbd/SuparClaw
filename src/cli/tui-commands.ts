@@ -53,39 +53,6 @@ export async function tuiLocal(): Promise<number> {
       switch (name) {
         case "help":
           return tuiHelp;
-        case "status":
-          return `model ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"} · busy: ${
-            service.loop.isBusy(sessionKey) ? "yes" : "no"
-          }`;
-        case "exec": {
-          // /exec [deny|allowlist|ask|full|reset] — per-session override or global set
-          const arg = args.trim();
-          const current = service.getSessionExecMode(sessionKey);
-          const global = service.approvalsState().mode;
-          if (!arg) {
-            return `exec mode: ${current ?? global} (${current ? "session override" : "global"}) · /exec deny|allowlist|ask|full · /exec global <mode> · /exec reset`;
-          }
-          if (arg === "reset") {
-            service.setSessionExecMode(sessionKey, null);
-            return `session override cleared — exec mode: ${service.approvalsState().mode}`;
-          }
-          let target = arg;
-          let scope: "session" | "global" = "session";
-          if (arg.startsWith("global ")) {
-            target = arg.slice(7).trim();
-            scope = "global";
-          }
-          const m = target as "deny" | "allowlist" | "ask" | "full";
-          if (!["deny", "allowlist", "ask", "full"].includes(m)) return `usage: /exec [deny|allowlist|ask|full|global <mode>|reset]`;
-          if (scope === "global") {
-            const r = service.configSvc.setPath("tools.exec.mode", m);
-            if (!r.ok) return `config rejected: ${r.errors.join("; ")}`;
-            await service.applyConfig();
-            return `global exec mode: ${m}`;
-          }
-          service.setSessionExecMode(sessionKey, m);
-          return `session exec mode: ${m}`;
-        }
         case "model": {
           const raw = args.trim();
           if (!raw) return `model: ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"}`;
@@ -133,12 +100,6 @@ export async function tuiLocal(): Promise<number> {
               return `unknown /provider ${sub} — try: list, add, remove, test`;
           }
         }
-        case "tools":
-          return `tools: ${service.loop.tools.map((t) => t.name).join(", ")}`;
-        case "skills":
-          return service.loop.skills
-            .map((s) => `${s.eligible ? "•" : "○"} ${s.name} — ${s.description || "(no description)"}${s.reason ? ` [${s.reason}]` : ""}`)
-            .join("\n") || "(no skills)";
         case "session": {
           if (!args) return `session: ${sessionKey}`;
           sessionKey = args.trim();
@@ -150,15 +111,29 @@ export async function tuiLocal(): Promise<number> {
         case "clear":
           if (app) app.items = [];
           return "transcript cleared";
-        case "abort":
-          service.loop.abort(sessionKey);
-          return "aborted";
         case "quit":
         case "exit":
           app?.quit();
           return "";
-        default:
-          return `unknown command /${name} — try /help`;
+        default: {
+          // Unified surface (Partial #10): every command the TUI doesn't own
+          // goes through the shared router in service.send, so web chat and
+          // Telegram resolve the exact same text to the exact same reply. The
+          // reply arrives via the service subscription below as the usual
+          // chat events (final/idle), never double-rendered here.
+          void service.send({
+            sessionKey,
+            text: `/${name}${args ? ` ${args}` : ""}`,
+            isMainSession: true,
+            source: "tui",
+            model: modelOverride,
+            reply: async () => {},
+            onDelta: () => {},
+            onTool: () => {},
+            onApproval: () => {},
+          });
+          return null;
+        }
       }
     },
     listSessions: async () => service.store.listSessions(50).map((s) => s.key),
@@ -298,41 +273,28 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
     },
     onCommand: async (name, args) => {
       if (name === "help") return tuiHelp;
-      if (name === "exec") {
-        try {
-          const arg = args.trim();
-          if (!arg) {
-            const st = (await client.request("approvals.get")) as { mode?: string };
-            return `exec mode (global): ${st.mode ?? "?"} · /exec deny|allowlist|ask|full · /exec global <mode> · /exec reset`;
-          }
-          if (arg === "reset") {
-            const r = (await client.request("session.execMode", { sessionKey, mode: null })) as { global?: string };
-            return `session override cleared — exec mode: ${r.global ?? "?"}`;
-          }
-          let scopeMode = arg;
-          let endpoint = "session.execMode";
-          let params: Record<string, unknown> = { sessionKey, mode: arg };
-          if (arg.startsWith("global ")) {
-            scopeMode = arg.slice(7).trim();
-            endpoint = "approvals.setMode";
-            params = { mode: scopeMode };
-          }
-          const res = (await client.request(endpoint, params)) as { mode?: string; execMode?: string; sessionKey?: string };
-          return endpoint === "approvals.setMode"
-            ? `global exec mode: ${res.mode ?? scopeMode}`
-            : `session exec mode: ${res.execMode ?? scopeMode}`;
-        } catch (err) {
-          return `exec mode change failed: ${(err as Error).message}`;
-        }
-      }
       if (name === "session" && args) {
         sessionKey = args.trim();
         return `session: ${sessionKey}`;
+      }
+      if (name === "new") {
+        sessionKey = `main:${Date.now().toString(36)}`;
+        void app?.loadHistory();
+        return `new session: ${sessionKey}`;
       }
       if (name === "quit" || name === "exit") {
         app?.quit();
         return "";
       }
+      // Unified surface (Partial #10): forward every other command to the
+      // gateway — it runs the shared router and the reply arrives over the
+      // chat envelope as a normal final event.
+      void client.request("chat.send", {
+        sessionKey,
+        text: `/${name}${args ? ` ${args}` : ""}`,
+        isMainSession: true,
+        key: crypto.randomUUID(),
+      });
       return null;
     },
     listSessions: async () => {
