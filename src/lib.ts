@@ -22,3 +22,30 @@ export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, tes
 export { ConfigService } from "./config/load.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
+
+/**
+ * Where a message arrived from, for the prompt's "Session:" line. OpenClaw
+ * spells this out in a "Group Chat Context" section; the model must know a
+ * DM vs a group vs a forum topic differs (a group reply should assume others
+ * are reading). Derived from the session key — the host, never the model,
+ * picks the channel.
+ */
+export function channelLabel(sessionKey: string): string {
+  const k = String(sessionKey ?? "").trim();
+  if (k === "main:main" || k === "main") return "the web chat (main session)";
+  const parts = k.split(":");
+  const head = parts[0] ?? "";
+  if (head === "telegram") {
+    if (parts.includes("topic")) return "Telegram (forum topic)";
+    if (parts.includes("group")) return "Telegram (group chat)";
+    return "Telegram (direct message)";
+  }
+  if (head === "web" || head === "ui") return "the web chat";
+  if (head === "tui" || head === "term") return "the terminal UI";
+  if (head === "system") return "a system/automation task";
+  return `a ${head || "unknown"} chat`;
+}
+
+// Dreaming + auto-title helpers (also the test-facing surface — dist/ bundles
+// only sc and lib entries, so tests reach these through dist/lib.js).
+export { dreamPrompt, titlePrompt, cleanTitle, DREAM_SESSION_KEY } from "./agent/dream.js";

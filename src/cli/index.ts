@@ -71,6 +71,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./provider.js")).providerCmd(rest);
     case "models":
       return (await import("./provider.js")).modelsCmd(rest);
+    case "dream":
+      return (await import("./dream-commands.js")).dreamCmd(rest);
     case "doctor":
       return (await import("./doctor.js")).doctor();
     case "security":

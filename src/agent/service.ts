@@ -8,7 +8,9 @@ import { createLogger, type Logger } from "../util/log.js";
 import { dbPath, ensureDirs, logsDir, stateDir, workspaceDir } from "../util/paths.js";
 import { AgentLoop, type RunEvent } from "../agent/loop.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
-import { writeWorkspaceTemplates } from "../agent/workspace.js";
+import { modelProfile } from "../config/schema.js";
+import { DREAM_SESSION_KEY, armDream, cleanTitle, dreamPrompt, titlePrompt, type DreamHandle } from "../agent/dream.js";
+import { writeWorkspaceTemplates, todayStamp } from "../agent/workspace.js";
 import { TelegramChannel } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
 
@@ -30,7 +32,9 @@ export interface ChatPayload {
 export type ServiceEvent =
   | { type: "chat"; sessionKey: string; event: RunEvent }
   | { type: "presence"; online: boolean }
-  | { type: "tick"; at: number };
+  | { type: "tick"; at: number }
+  /** Session row changed (auto-title landed) — UIs refresh their list. */
+  | { type: "session.updated"; sessionKey: string; name: string };
 
 const APPROVAL_TIMEOUT_MS = 90_000;
 
@@ -44,6 +48,9 @@ export class Service {
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
+  #dream: DreamHandle | null = null;
+  #dreamSig = "";
+  #titleBusy = new Set<string>();
   #approvals = new Map<string, (ok: boolean) => void>();
   #closing = false;
 
@@ -116,6 +123,7 @@ export class Service {
         void this.#startTelegram();
       }
       if (this.#cron) void this.#cron.reconcile();
+      void this.armDreaming();
       this.log.info("config hot-reloaded");
     });
   }
@@ -132,6 +140,83 @@ export class Service {
   /** Re-arm cron jobs changed outside the daemon (sc cron add, other tools). */
   async cronReconcile(): Promise<void> {
     if (this.#cron) await this.#cron.reconcile();
+  }
+
+  /** Arm (or re-arm) the dreaming sweep from config.memory.dreaming. */
+  async armDreaming(): Promise<void> {
+    const d = this.config.memory?.dreaming;
+    const sig = `${d?.enabled ? "1" : "0"}|${d?.schedule ?? ""}`;
+    if (sig === this.#dreamSig) return;
+    this.#dreamSig = sig;
+    this.#dream?.stop();
+    this.#dream = null;
+    if (!d?.enabled || !d.schedule) return;
+    try {
+      this.#dream = await armDream(d.schedule, () => this.dreamNow());
+      this.log.info(`dreaming sweep armed (${d.schedule})`);
+    } catch (err) {
+      this.log.error(`dreaming schedule invalid (${d.schedule}): ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * One dreaming sweep: consolidate the daily notes into MEMORY.md and write
+   * the DREAMS.md diary entry. Also the `sc dream` / `dream.run` manual path —
+   * an empty sweep ("nothing new") is a normal outcome.
+   */
+  async dreamNow(): Promise<string> {
+    const today = todayStamp();
+    this.events.emit("event", { type: "chat", sessionKey: DREAM_SESSION_KEY, event: { type: "start", runId: "dream-" + today, sessionKey: DREAM_SESSION_KEY } } satisfies ServiceEvent);
+    let text = "";
+    await this.loop.run({
+      sessionKey: DREAM_SESSION_KEY,
+      text: dreamPrompt(today),
+      isMainSession: true,
+      reasoning: "off",
+      onEvent: (event) => {
+        if (event.type === "delta") text += event.text;
+      },
+    });
+    const summary = text || "nothing new";
+    this.log.info(`dreaming sweep done: ${summary.slice(0, 120)}`);
+    return summary;
+  }
+
+  /**
+   * OpenClaw-style session naming: once the first reply settles, a tiny model
+   * call turns the opening user message into a 2-6 word title. Non-blocking,
+   * one attempt per session, and it never disturbs the chat path.
+   */
+  async #maybeAutoTitle(sessionKey: string): Promise<void> {
+    try {
+      if (sessionKey.startsWith("system:") || sessionKey === DREAM_SESSION_KEY) return;
+      if (this.#titleBusy.has(sessionKey)) return;
+      const row = this.store.getSessionByKey(sessionKey);
+      if (!row || row.name) return;
+      const msgs = this.store.recentMessages(row.id, 50);
+      const firstUser = msgs.find((m) => m.role === "user");
+      if (!firstUser) return;
+      this.#titleBusy.add(sessionKey);
+      let raw = "";
+      const stream = this.loop.llm.stream({
+        messages: [{ role: "user", content: titlePrompt(firstUser.content.slice(0, 400)) }],
+        model: modelProfile(this.config, "").ref,
+        maxTokens: 24,
+      });
+      for await (const ev of stream) {
+        if (ev.type === "text") raw += ev.text;
+      }
+      const title = cleanTitle(raw);
+      if (!title) return;
+      this.store.renameSession(row.id, title);
+      this.log.info(`session auto-titled: ${sessionKey} -> ${title}`);
+      this.events.emit("event", { type: "session.updated", sessionKey, name: title } satisfies ServiceEvent);
+    } catch (err) {
+      // Best-effort by design — log and move on.
+      this.log.warn(`auto-title failed for ${sessionKey}: ${(err as Error).message}`);
+    } finally {
+      this.#titleBusy.delete(sessionKey);
+    }
   }
 
   async startChannels(): Promise<void> {
@@ -155,6 +240,9 @@ export class Service {
     if (config.channels.telegram.enabled && config.channels.telegram.token) {
       await this.#startTelegram();
     }
+    // The dreaming sweep has its own timer (config.memory.dreaming), separate
+    // from the user's cron jobs — it must not show up in `sc cron list`.
+    void this.armDreaming();
     // Config edits made outside config.set (sc config set, hand edits) must
     // reach the running daemon too.
     this.watchConfig();
@@ -172,6 +260,8 @@ export class Service {
       reasoning: payload.reasoning,
       onEvent: (event) => {
         this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event } satisfies ServiceEvent);
+        // Auto-title fires once the reply settles: non-blocking, best-effort.
+        if (event.type === "final") void this.#maybeAutoTitle(payload.sessionKey);
         if (event.type === "delta") void payload.onDelta?.(event.text);
         else if (event.type === "tool") void payload.onTool?.(event);
         else if (event.type === "approval") void payload.onApproval?.(event);
@@ -338,6 +428,7 @@ export class Service {
     this.#closing = true;
     this.configSvc.stop();
     this.#cron?.stop();
+    this.#dream?.stop();
     await this.#telegram?.stop();
     this.store.close();
     this.log.info("service stopped");

@@ -37,6 +37,12 @@ const chat = new Chat(document.body, {
 
 gateway.on((event, payload) => {
   if (event === "tick") return;
+  if (event === "session.updated") {
+    // Auto-title landed on a session row — re-render the list so the name
+    // shows up (in any open UI) without a reload.
+    void refresh();
+    return;
+  }
   if (event === "chat") {
     const p = payload ?? {};
     if (p.sessionKey && p.sessionKey !== sessionKey) return;
@@ -226,7 +232,7 @@ $("think").addEventListener("change", async () => {
 
 /* ---------------- sessions drawer ---------------- */
 
-function renderSessions(list: { key: string; last_msg_at?: number; title?: string }[]): void {
+function renderSessions(list: { key: string; last_msg_at?: number; title?: string; name?: string | null }[]): void {
   const host = $("sessions");
   host.innerHTML = "";
   if (list.length === 0) list = [{ key: sessionKey }];
@@ -239,7 +245,7 @@ function renderSessions(list: { key: string; last_msg_at?: number; title?: strin
       type: "button",
     }, [
       el("span", { class: "session__text" }, [
-        el("span", { class: "session__title" }, [s.title || s.key]),
+        el("span", { class: "session__title" }, [s.name || s.title || s.key]),
         el("span", { class: "session__meta" }, [
           s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
         ]),

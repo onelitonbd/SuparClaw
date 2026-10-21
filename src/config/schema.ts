@@ -186,6 +186,23 @@ export const CONFIG_SCHEMA: SchemaNode = {
         },
       },
     },
+    memory: {
+      t: "object",
+      default: {},
+      fields: {
+        // Dreaming: the nightly consolidation sweep (OpenClaw's dreaming),
+        // distilled daily notes -> curated MEMORY.md + a DREAMS.md diary entry.
+        dreaming: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: true },
+            // Standard 5-field cron, run by the gateway daemon.
+            schedule: { t: "string", default: "0 4 * * *" },
+          },
+        },
+      },
+    },
     providers: {
       t: "record",
       default: {},
@@ -342,6 +359,7 @@ export interface SuparClawConfig {
     exec: { enabled: boolean; approvals: boolean; timeoutMs: number };
   };
   cron: { enabled: boolean; timezone: string };
+  memory: { dreaming: { enabled: boolean; schedule: string } };
 }
 
 export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: string[] } {

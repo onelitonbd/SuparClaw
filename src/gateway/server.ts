@@ -313,6 +313,15 @@ export class Gateway {
             }),
           );
           return;
+        case "dream.run": {
+          // Manual dreaming trigger (same sweep as the nightly schedule):
+          // consolidates memory/YYYY-MM-DD.md notes into MEMORY.md and appends
+          // the dated "Deep Sleep" entry to DREAMS.md. Awaits the sweep — with
+          // a real provider this can take a minute or two.
+          const text = await service.dreamNow();
+          send(okFrame(id, { text }));
+          return;
+        }
         case "sessions.list":
           send(okFrame(id, { sessions: service.store.listSessions(Number(params["limit"] ?? 50)) }));
           return;

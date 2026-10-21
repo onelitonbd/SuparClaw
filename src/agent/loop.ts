@@ -7,6 +7,7 @@ import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkill
 import { buildRegistry, toolsToSchema, type ToolContext, type ToolSpec } from "./tools.js";
 import { LlmClient, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
 import { skillsDir, workspaceDir } from "../util/paths.js";
+import { channelLabel } from "../lib.js";
 
 export type RunEvent =
   | { type: "start"; runId: string; sessionKey: string }
@@ -391,7 +392,8 @@ export class AgentLoop {
     const systemParts = [
       basePrompt(this.deps.config.agents.identity ?? {}),
       `Current date: ${new Date().toString()}`,
-      `Session: ${sessionKey}`,
+      `Session: ${sessionKey} (${channelLabel(sessionKey)})`,
+      `Where this message came from: ${channelLabel(sessionKey)}. A direct message can be answered privately; in a group or topic chat others can read your reply, so keep it on-topic and mention people by name when needed.`,
       skillsCatalog(this.skills),
       skillBlocks.length > 0 ? `## Skills loaded for this turn\n\n${skillBlocks.join("\n\n")}` : "",
       ctx.text,
