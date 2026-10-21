@@ -85,7 +85,54 @@ export async function modelsCmd(args: string[]): Promise<number> {
   const [sub, ...rest] = args;
   if (sub === "plugins") return modelsPlugins(rest);
   if (sub === "auth") return modelsAuth(rest);
+  if (sub === "local") return modelsLocal(rest);
   return (await import("./provider.js")).modelsCmd(args);
+}
+
+// `sc models local` — their implicit local-services discovery:
+// scans loopback for Ollama/LM Studio/vLLM/SGLang/llama.cpp, prints what it
+// found, and --add writes the provider entry (api flavor + merged models).
+async function modelsLocal(args: string[]): Promise<number> {
+  const cfg = openConfig();
+  const { scanLocalServices, addLocalService, LOCAL_SERVICES } = await import("../agent/local-services.js");
+  const results = await scanLocalServices();
+
+  const positional = args.find((a) => !a.startsWith("--") && a !== "--json");
+  const addFlag = flag(args, "--add") ?? positional;
+  if (addFlag) {
+    const targets = addFlag === "all" ? results.filter((r) => r.running) : results.filter((r) => r.id === addFlag.toLowerCase());
+    if (targets.length === 0) {
+      console.error(`no running local service named "${addFlag}" — scanned: ${results.map((r) => `${r.id}:${r.running ? "up" : "down"}`).join(" ")}`);
+      return 1;
+    }
+    for (const t of targets) {
+      const res = addLocalService(cfg, t.id, t);
+      console.log(res.message);
+      if (!res.ok) return 1;
+    }
+    const first = targets[0]!;
+    if (args.includes("--set-default") && first.models.length) {
+      cfg.setPath("agents.defaults.model", `${first.id}/${first.models[0]}`);
+      console.log(`default model → ${first.id}/${first.models[0]}`);
+    } else if (first.models.length) {
+      console.log(`pick a model with: sc config set agents.defaults.model ${first.id}/<model>  (or in Settings → Models)`);
+    }
+    return 0;
+  }
+
+  if (args.includes("--json")) {
+    console.log(JSON.stringify({ services: results }, null, 2));
+    return 0;
+  }
+  for (const r of results) {
+    const head = `${r.id.padEnd(10)} ${r.running ? "running" : (r.error ?? "not running")}`;
+    console.log(head.padEnd(40) + (r.running && r.models.length ? `${r.models.length} model(s) · ` : "") + (r.running ? r.note : ""));
+    for (const m of r.models.slice(0, 8)) console.log(`${"".padEnd(40)} - ${m}${r.hints[m]?.contextWindow ? ` (ctx ${Math.round(r.hints[m].contextWindow! / 1000)}k)` : ""}`);
+  }
+  const running = results.filter((r) => r.running);
+  const found = running.length > 0;
+  console.log(found ? `\nadd with: sc models local --add ${running[0]!.id}   (any of: ${running.map((r) => r.id).join(", ")})` : `\nno local services detected — install Ollama (port ${LOCAL_SERVICES[0]!.port}) or LM Studio (${LOCAL_SERVICES[1]!.port}) and re-run`);
+  return 0;
 }
 
 async function modelsPlugins(args: string[]): Promise<number> {

@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from "node:fs";
 import { watch, type FSWatcher } from "node:fs";
+import { dirname, basename } from "node:path";
 import JSON5 from "json5";
 import { configPath } from "../util/paths.js";
 import { emptyConfig, parseConfig, type SuparClawConfig } from "./schema.js";
@@ -139,7 +140,13 @@ export class ConfigService {
   watchForChanges(onChange?: (config: SuparClawConfig) => void): void {
     if (this.#watcher) return;
     try {
-      this.#watcher = watch(this.path, () => {
+      // Watch the parent directory, not the file: writes are atomic via a
+      // temp file + rename, and a path-bound watcher dies after the first
+      // rename (inode swap). Filter events to our config filename.
+      const dir = dirname(this.path);
+      const file = basename(this.path);
+      this.#watcher = watch(dir, (_event, filename) => {
+        if (filename && filename.toString() !== file) return;
         if (this.#timer) clearTimeout(this.#timer);
         this.#timer = setTimeout(() => {
           const load = readConfigFile(this.path);
@@ -157,6 +164,14 @@ export class ConfigService {
     } catch (err) {
       this.log.warn(`config hot-reload unavailable: ${(err as Error).message}`);
     }
+  }
+
+  /** Close the fs watcher (and any pending debounce); idempotent. */
+  stopWatching(): void {
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = null;
+    this.#watcher?.close();
+    this.#watcher = null;
   }
 
   stop(): void {

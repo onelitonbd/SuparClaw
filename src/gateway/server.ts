@@ -215,6 +215,8 @@ export class Gateway {
       "sessions.rename",
       "models.list",
       "models.plugins",
+      "models.local.scan",
+      "models.local.add",
       "models.auth.list",
       "models.auth.addKey",
       "models.auth.beginDeviceCode",
@@ -506,6 +508,16 @@ export class Gateway {
         case "models.plugins": {
           const { pluginSummaries } = await import("../agent/provider-plugins.js");
           send(okFrame(id, { plugins: pluginSummaries() }));
+          return;
+        }
+        case "models.local.scan": {
+          send(okFrame(id, await service.modelsLocalScan()));
+          return;
+        }
+        case "models.local.add": {
+          const out = await service.modelsLocalAdd(String(params["service"] ?? ""), params["setDefault"] === true);
+          if (!out.ok) send(errFrame(id, "bad_request", out.error ?? "could not add"));
+          else send(okFrame(id, out));
           return;
         }
         case "models.auth.list": {

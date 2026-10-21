@@ -117,6 +117,14 @@ export const PROVIDER_PLUGINS: ProviderPlugin[] = [
     authMethods: ["api-key"],
     recommended: "glm-4.6",
   },
+  {
+    id: "ollama-cloud",
+    label: "Ollama Cloud (hosted :cloud models)",
+    baseUrl: "https://ollama.com/v1",
+    env: "OLLAMA_API_KEY",
+    authMethods: ["api-key"],
+    recommended: "gpt-oss:120b-cloud",
+  },
 ];
 
 export const pluginById = (id: string): ProviderPlugin | undefined =>

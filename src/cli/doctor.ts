@@ -184,6 +184,38 @@ export async function doctor(): Promise<number> {
     }
   }
 
+  // local services (Partial #7 — their local autodetect): what is running vs
+  // what's configured, including the "configured but daemon is down" case.
+  {
+    try {
+      const { scanLocalServices } = await import("../agent/local-services.js");
+      const results = await scanLocalServices();
+      const up = results.filter((r) => r.running);
+      const cfgNames = Object.keys(load.config.providers ?? {});
+      const broken = results.filter((r) => !r.running && cfgNames.includes(r.id));
+      if (broken.length) {
+        checks.push({
+          name: "local",
+          status: "warn",
+          detail: `${broken.map((r) => r.id).join(", ")} configured but not running (${broken[0]?.error ?? "down"})`,
+          fix: `start the service, or fix providers.${broken[0]?.id}.baseUrl — replies against it currently fail fast with the provider error`,
+        });
+      } else if (up.length) {
+        const unconfigured = up.filter((r) => !cfgNames.includes(r.id));
+        checks.push({
+          name: "local",
+          status: "ok",
+          detail: `${up.map((r) => `${r.id} (${r.models.length})`).join(", ")} running` + (unconfigured.length ? ` · unconfigured: ${unconfigured.map((r) => r.id).join(", ")}` : ""),
+          fix: unconfigured.length ? `sc models local --add ${unconfigured[0]?.id}` : undefined,
+        });
+      } else {
+        checks.push({ name: "local", status: "ok", detail: "no local services running (sc models local scans after installing one)" });
+      }
+    } catch {
+      checks.push({ name: "local", status: "warn", detail: "local scan failed" });
+    }
+  }
+
   // model
   const model = load.config.agents.defaults.model;
   const providers = Object.keys(load.config.providers);

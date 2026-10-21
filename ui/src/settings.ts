@@ -308,6 +308,15 @@ export class Settings {
       body.append(card);
     }
 
+    // Local services card (their implicit local discovery): lazy scan so the
+    // tab never waits on a dead 11434 — results fill in when they arrive.
+    const localCard = el("div", { class: "card" }, [
+      el("div", { class: "row__label" }, ["Local services"]),
+      el("p", { class: "hint" }, ["scanning this device for Ollama / LM Studio / vLLM / SGLang / llama.cpp…"]),
+    ]);
+    body.append(localCard);
+    void this.#fillLocalServices(localCard, names);
+
     // Their Settings → Models → Connect provider: plugins not yet configured.
     const fresh = plugins.filter((p: any) => !names.includes(p.id));
     if (fresh.length) {
@@ -328,6 +337,61 @@ export class Settings {
     }
 
     this.#root.append(body);
+  }
+
+  /** Local services discovery rows: state dot, models with ctx hints, Add. */
+  async #fillLocalServices(card: HTMLElement, configuredNames: string[]): Promise<void> {
+    let scan: any = null;
+    try {
+      scan = (await gateway.request("models.local.scan", {})) as any;
+    } catch {
+      /* older gateway: leave the placeholder as-is */
+    }
+    if (!scan?.services || !this.#root.contains(card)) return;
+    card.innerHTML = "";
+    card.append(el("div", { class: "row__label" }, ["Local services"]));
+    const running = scan.services.filter((s: any) => s.running);
+    if (running.length === 0 && scan.services.every((s: any) => !s.running)) {
+      card.append(el("p", { class: "hint" }, ["no local services running — install Ollama or LM Studio and they'll appear here."]));
+      return;
+    }
+    for (const svc of scan.services) {
+      const isConfigured = configuredNames.includes(svc.id);
+      const add = el("button", { class: "btn sm", type: "button" }, [
+        !svc.running ? "" : isConfigured ? "↻ re-scan" : "Add",
+      ]);
+      if (!svc.running) (add as HTMLButtonElement).disabled = true;
+      (add as HTMLButtonElement).onclick = async () => {
+        add.disabled = true;
+        try {
+          const res: any = await gateway.request("models.local.add", { service: svc.id });
+          if (!res.ok) throw new Error(res.message ?? "add failed");
+          toast(`${res.message}`, "ok");
+          await this.render();
+        } catch (err) {
+          toast((err as Error).message, "err");
+          add.disabled = false;
+        }
+      };
+      card.append(el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, [svc.id]),
+        el("span", { class: "row__value" }, [
+          svc.running
+            ? `running · ${svc.models.length} model(s) · ${svc.api === "ollama" ? "native api" : "openai-compat"}${isConfigured ? " · configured" : ""}`
+            : (svc.error ?? "not running"),
+        ]),
+        add,
+      ]));
+      if (svc.running && svc.models.length) {
+        card.append(el("div", { class: "hint", style: "padding:0 4px 4px" }, [
+          svc.models
+            .slice(0, 6)
+            .map((m: string) => `${m}${svc.hints?.[m]?.contextWindow ? ` (ctx ${Math.round(svc.hints[m].contextWindow / 1000)}k)` : ""}`)
+            .join("  ·  ") + (svc.models.length > 6 ? `  ·  +${svc.models.length - 6} more` : ""),
+        ]));
+      }
+    }
+    card.append(el("p", { class: "hint" }, ["CLI: sc models local --add <service> — Ollama uses the native /api/chat wire (their warning: /v1 compat breaks tool calling)."]));
   }
 
   /** Profile chip: status dot, expiry, ordering, remove — material never shown. */

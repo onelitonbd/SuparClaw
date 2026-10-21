@@ -113,3 +113,6 @@ export {
   type DeviceAuthorization,
   type TokenSuccess,
 } from "./agent/oauth-device.js";
+
+// Local services (Partial #7)
+export { LOCAL_SERVICES, localServiceById, probeLocalService, scanLocalServices, addLocalService, type LocalServiceInfo, type LocalScanResult } from "./agent/local-services.js";

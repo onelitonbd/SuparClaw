@@ -12,6 +12,8 @@ export interface Preset {
   baseUrl: string;
   needsKey: boolean;
   note?: string;
+  /** Native wire protocol when not OpenAI-compatible (Ollama). */
+  api?: "openai-completions" | "ollama";
 }
 
 export const PRESETS: Preset[] = [
@@ -19,7 +21,10 @@ export const PRESETS: Preset[] = [
   { name: "openrouter", label: "OpenRouter (many models, one key)", baseUrl: "https://openrouter.ai/api/v1", needsKey: true },
   { name: "groq", label: "Groq (fast, cheap)", baseUrl: "https://api.groq.com/openai/v1", needsKey: true },
   { name: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", needsKey: true },
-  { name: "ollama", label: "Ollama (on this device)", baseUrl: "http://127.0.0.1:11434/v1", needsKey: false },
+  // Ollama: native API host (their warning — the /v1 compat URL breaks tool
+  // calls). Sent over the wire with api:"ollama"; previous /v1 entries keep
+  // working untouched.
+  { name: "ollama", label: "Ollama (on this device)", baseUrl: "http://127.0.0.1:11434", needsKey: false, api: "ollama" },
   { name: "lmstudio", label: "LM Studio (on this device)", baseUrl: "http://127.0.0.1:1234/v1", needsKey: false },
   { name: "custom", label: "Custom OpenAI-compatible URL", baseUrl: "", needsKey: true },
 ];
@@ -96,11 +101,26 @@ export async function refreshProviderModels(
   cfg: ConfigService,
   name: string,
 ): Promise<{ models: string[]; hints?: Record<string, ModelHint>; error?: string }> {
-  const p = cfg.current.providers?.[name] as ProviderRecord | undefined;
+  const p = cfg.current.providers?.[name] as (ProviderRecord & { api?: string }) | undefined;
   if (!p) return { models: [], error: `no such provider: ${name}` };
   const key = `${name}@${p.baseUrl}`;
   const saved = (p.models ?? []).filter(Boolean);
-  const found = await fetchModels(p.baseUrl ?? "", p.apiKey ?? "");
+  const found =
+    p.api === "ollama"
+      ? await (async () => {
+          try {
+            const res = await fetch(`${String(p.baseUrl ?? "").replace(/\/+$/, "")}/api/tags`, {
+              headers: p.apiKey ? { authorization: `Bearer ${p.apiKey}` } : {},
+              signal: AbortSignal.timeout(12_000),
+            });
+            if (!res.ok) return { models: [] as string[], hints: undefined, error: `HTTP ${res.status}` };
+            const body = (await res.json()) as { models?: { name?: string }[] };
+            return { models: (body.models ?? []).map((m) => m.name).filter((n): n is string => Boolean(n)), hints: undefined, error: undefined };
+          } catch (err) {
+            return { models: [] as string[], hints: undefined, error: (err as Error).message };
+          }
+        })()
+      : await fetchModels(p.baseUrl ?? "", p.apiKey ?? "");
   if (found.error || found.models.length === 0) {
     return { models: saved, hints: cache.get(key)?.hints, error: found.error ?? "empty listing" };
   }
@@ -275,6 +295,7 @@ export async function addProvider(
     baseUrl,
     apiKey: (opts.apiKey ?? "").trim(),
     models,
+    ...(preset?.api ? { api: preset.api } : {}),
   });
   if (!saved.ok) return { ok: false, message: saved.errors.join("; ") || "could not save" };
 

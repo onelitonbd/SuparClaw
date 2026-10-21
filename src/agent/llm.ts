@@ -377,6 +377,8 @@ export interface ProviderConfig {
   apiKey: string;
   headers?: Record<string, string>;
   models?: string[];
+  /** Wire protocol: OpenAI-compat default, or Ollama's native /api/chat. */
+  api?: "openai-completions" | "ollama";
   /**
    * Set when the provider's credentials resolve to an ineligible auth profile
    * — requests against it short-circuit with a reason-coded auth error instead
@@ -391,6 +393,7 @@ export interface ResolvedModel {
   baseUrl: string;
   apiKey: string;
   headers: Record<string, string>;
+  api: "openai-completions" | "ollama";
   authError?: string;
 }
 
@@ -496,6 +499,7 @@ function build(
     baseUrl,
     apiKey: cfg.apiKey,
     headers: cfg.headers ?? {},
+    api: cfg.api ?? "openai-completions",
     authError: cfg.authError,
   };
 }
@@ -644,6 +648,13 @@ export class LlmClient {
       throw new LlmError(`Auth profile credentials are missing or expired.\n↳ Auth reason [${resolved.authError.split(":")[0]}]: ${resolved.authError}`, 401);
     }
     const profileId = this.#authHooks?.profileOf[resolved.provider];
+    // Ollama's native API (their warning stands: /v1 compat breaks tool
+    // calling — raw tool JSON leaks into text). Same retry/fallback ladder,
+    // NDJSON wire instead of SSE.
+    if (resolved.api === "ollama") {
+      yield* this.#ollamaStreamOnce(resolved, opts, profileId);
+      return;
+    }
     // Gemini/Vertex tool rounds need their functionCall parts signed (real
     // signature or Google's documented stand-in); other backends must see
     // unchanged bodies.
@@ -920,6 +931,215 @@ export class LlmClient {
     // Full clean stream on a profile-bound credential → clear cooldown,
     // record last-good (their last-used/last-ok pair).
     if (profileId) this.#authHooks?.onOutcome(profileId, true);
+  }
+
+  /**
+   * Ollama native /api/chat (NDJSON). Events map onto the same StreamEvent
+   * vocabulary — text, reasoning (native `thinking` field), complete
+   * tool_calls, eval-counts as usage — so the loop sees no difference.
+   */
+  async *#ollamaStreamOnce(
+    resolved: ResolvedModel,
+    opts: StreamOptions,
+    profileId: string | undefined,
+  ): AsyncGenerator<StreamEvent> {
+    const body: Record<string, unknown> = {
+      model: resolved.model,
+      messages: ollamaMessages(opts.messages),
+      stream: true,
+    };
+    if (opts.tools?.length) body["tools"] = opts.tools;
+    const options: Record<string, unknown> = {};
+    if (opts.temperature !== undefined) options["temperature"] = opts.temperature;
+    if (opts.maxTokens !== undefined) options["num_predict"] = opts.maxTokens;
+    if (Object.keys(options).length > 0) body["options"] = options;
+    // Thinking models: an explicit "off" silences thinking entirely; anything
+    // else enables it when the model supports thinking (their capability rule
+    // — non-thinking models simply ignore the flag).
+    body["think"] = opts.reasoning !== "off";
+
+    let res: Response;
+    try {
+      res = await fetch(`${resolved.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(resolved.apiKey ? { authorization: `Bearer ${resolved.apiKey}` } : {}),
+          ...resolved.headers,
+        },
+        body: JSON.stringify(body),
+        signal: opts.signal,
+      });
+    } catch (err) {
+      if ((err as Error).name === "AbortError") throw err;
+      throw new LlmError(`network: ${(err as Error).message} — is Ollama running at ${resolved.baseUrl}?`, undefined, true);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      if (profileId && (res.status === 401 || res.status === 403)) {
+        this.#authHooks?.onOutcome(profileId, false);
+      }
+      // Model present-but-not-pulled failures are terminal for this model —
+      // the next fallback gets its clean turn (their catalog-warning spirit).
+      throw new LlmError(
+        `HTTP ${res.status} from ollama: ${text.slice(0, 500) || res.statusText}`,
+        res.status,
+        res.status === 404 ? false : RETRYABLE_STATUS.has(res.status),
+        RETRYABLE_STATUS.has(res.status) ? parseRetryAfter(res.headers.get("retry-after")) : undefined,
+      );
+    }
+    if (!res.body) throw new LlmError("ollama returned an empty stream", undefined, true);
+
+    const thinkSplit = new ThinkSplitter();
+    let sawReasoningText = false;
+    const calls: ToolCall[] = [];
+    let usage: Record<string, number> | null = null;
+    let finishReason = "stop";
+    try {
+      for await (const line of iterateLines(res.body)) {
+        let payload: {
+          message?: {
+            role?: string;
+            content?: string;
+            thinking?: string;
+            tool_calls?: { function?: { name?: string; arguments?: unknown } }[];
+          };
+          done?: boolean;
+          done_reason?: string;
+          prompt_eval_count?: number;
+          eval_count?: number;
+        };
+        try {
+          payload = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const message = payload.message;
+        if (message) {
+          if (typeof message.thinking === "string" && message.thinking.length > 0) {
+            sawReasoningText = true;
+            yield { type: "reasoning", text: message.thinking };
+          }
+          if (typeof message.content === "string" && message.content.length > 0) {
+            const parts = thinkSplit.push(message.content);
+            for (const t of parts.thinking) {
+              sawReasoningText = true;
+              yield { type: "reasoning", text: t };
+            }
+            for (const c of parts.content) {
+              if (c.length > 0) yield { type: "text", text: c };
+            }
+          }
+          // Complete tool calls arrive as full objects (no streaming deltas,
+          // no ids — ids are minted downstream by normalizeCallIds).
+          for (const raw of message.tool_calls ?? []) {
+            const name = raw.function?.name ?? "";
+            if (!name) continue;
+            const args = raw.function?.arguments;
+            calls.push({
+              id: "",
+              name,
+              args: typeof args === "string" ? args : JSON.stringify(args ?? {}),
+            });
+          }
+        }
+        if (payload.done) {
+          finishReason =
+            payload.done_reason === "length" ? "length" : payload.done_reason === "tool_calls" ? "tool_calls" : "stop";
+          if (typeof payload.prompt_eval_count === "number" || typeof payload.eval_count === "number") {
+            usage = {
+              prompt_tokens: payload.prompt_eval_count ?? 0,
+              completion_tokens: payload.eval_count ?? 0,
+              total_tokens: (payload.prompt_eval_count ?? 0) + (payload.eval_count ?? 0),
+            };
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as Error).name === "AbortError") throw err;
+      throw new LlmError(`stream interrupted: ${(err as Error).message}`, undefined, true);
+    }
+
+    const tail = thinkSplit.flush();
+    for (const t of tail.thinking) {
+      sawReasoningText = true;
+      yield { type: "reasoning", text: t };
+    }
+    for (const c of tail.content) {
+      if (c.length > 0) yield { type: "text", text: c };
+    }
+    if (!sawReasoningText && opts.reasoning !== undefined && opts.reasoning !== "inherit" && opts.reasoning !== "off") {
+      yield {
+        type: "reasoning",
+        text: `No thinking preview arrived (model may not support native thinking — level ${opts.reasoning}).`,
+      };
+    }
+    if (calls.length > 0) {
+      yield { type: "tool_calls", calls: normalizeCallIds(calls), reasoningDetails: [], messageSignatures: {}, messageExtraContent: {} };
+    }
+    if (usage) yield { type: "usage", usage };
+    yield { type: "done", finishReason };
+    if (profileId) this.#authHooks?.onOutcome(profileId, true);
+  }
+}
+
+/** Ollama message wire-shape: OpenAI history → native fields (tool_call ids
+ * dropped; string args rehydrated to objects; vendor extras stripped). */
+function ollamaMessages(messages: ChatMessage[]): unknown[] {
+  const out: Record<string, unknown>[] = [];
+  for (const m of messages) {
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      out.push({
+        role: "assistant",
+        content: m.content ?? "",
+        tool_calls: m.tool_calls.map((c) => ({
+          function: {
+            name: c.name,
+            arguments: (() => {
+              try {
+                return JSON.parse(c.args.trim() || "{}");
+              } catch {
+                return {};
+              }
+            })(),
+          },
+        })),
+      });
+      continue;
+    }
+    if (m.role === "tool") {
+      out.push({ role: "tool", name: m.name, content: m.content ?? "" });
+      continue;
+    }
+    const { role, content } = m as { role: string; content?: string };
+    out.push({ role, content: content ?? "" });
+  }
+  return out;
+}
+
+/** NDJSON line iterator (Ollama streams one JSON object per line, no prefix). */
+async function* iterateLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl = buffer.indexOf("\n");
+      while (nl !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line) yield line;
+        nl = buffer.indexOf("\n");
+      }
+    }
+    buffer += decoder.decode();
+    const rest = buffer.trim();
+    if (rest) yield rest;
+  } finally {
+    reader.releaseLock();
   }
 }
 

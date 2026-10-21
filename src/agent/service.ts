@@ -434,6 +434,33 @@ export class Service {
     this.events.emit("event", { type: "models.auth", profiles: this.authProfilesView() });
   }
 
+  // ══ local services (Partial #7) — implicit discovery + one-tap add ════
+
+  async modelsLocalScan() {
+    const { scanLocalServices } = await import("./local-services.js");
+    const results = await scanLocalServices();
+    return {
+      services: results,
+      configured: Object.fromEntries(
+        Object.entries(this.config.providers ?? {})
+          .filter(([name]) => results.some((r) => r.id === name)),
+      ),
+    };
+  }
+
+  async modelsLocalAdd(id: string, setDefault: boolean) {
+    const { scanLocalServices, addLocalService } = await import("./local-services.js");
+    const scan = (await scanLocalServices()).find((r) => r.id === id);
+    if (!scan) return { ok: false, error: `unknown local service "${id}"` };
+    const res = addLocalService(this.configSvc, id, scan);
+    if (!res.ok) return { ok: false, error: res.message };
+    if (setDefault && res.models.length) {
+      this.configSvc.setPath("agents.defaults.model", `${id}/${res.models[0]}`);
+    }
+    this.applyConfig();
+    return { ok: true, models: res.models, message: res.message };
+  }
+
   /**
    * What the web UI Memory tab shows (OpenClaw's Dreams tab, adapted): the
    * dreaming enabled state, schedule, next run, last sweep, and the memory

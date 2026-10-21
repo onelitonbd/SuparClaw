@@ -174,6 +174,7 @@ export function resolveConfiguredProviders(
       apiKey: typeof raw["apiKey"] === "string" ? raw["apiKey"] : "",
       headers: (raw["headers"] ?? {}) as Record<string, string>,
       models: (raw["models"] ?? []) as string[],
+      ...(raw["api"] === "ollama" ? { api: "ollama" as const } : {}),
     };
     if (!store || (boundProfileIds(raw, name).list.length + (boundProfileIds(raw, name).single ? 1 : 0)) === 0) {
       out[name] = base;

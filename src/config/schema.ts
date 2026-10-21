@@ -259,6 +259,9 @@ export const CONFIG_SCHEMA: SchemaNode = {
           models: { t: "array", of: { t: "string" }, default: [] },
           // Multiple stored profiles bound to this provider (ordered).
           authProfiles: { t: "array", of: { t: "string" }, default: [] },
+          // Wire protocol: OpenAI-compat by default; "ollama" = native
+          // /api/chat (their warning: the /v1 compat mode breaks tools).
+          api: { t: "enum", values: ["openai-completions", "ollama"], default: "openai-completions" },
         },
       },
     },
@@ -388,7 +391,14 @@ export interface SuparClawConfig {
   };
   providers: Record<
     string,
-    { baseUrl: string; apiKey: string; headers: Record<string, string>; models: string[]; authProfiles: string[] }
+    {
+      baseUrl: string;
+      apiKey: string;
+      headers: Record<string, string>;
+      models: string[];
+      authProfiles: string[];
+      api: "openai-completions" | "ollama";
+    }
   >;
   auth: { order: Record<string, string[]> };
   models: Record<
