@@ -194,54 +194,73 @@ test("llm: Retry-After parsing", () => {
 });
 
 test("loop: overlapping runs never interleave and busy state stays honest", async () => {
+  // Task-20 semantics: an input that arrives mid-run joins the active turn as
+  // a STEER (no abort, no parallel stream); a steer that lands with no
+  // remaining model boundary becomes the next followup turn. The slot stays
+  // honestly busy from the first start until the followup's idle.
   const dir = scratch("sc-fence-");
   const store = Store.open(join(dir, "state.sqlite"));
   const { config } = parseConfig({});
   config.agents.defaults.model = "x/y";
-  config.agents.defaults.queueMode = "steer";
+  config.messages.queue = { ...config.messages.queue, mode: "steer", debounceMs: 0 };
 
   let call = 0;
-  let release2 = () => {};
-  const gate2 = new Promise((r) => { release2 = r; });
+  let insideStream = () => {};
+  const entered = new Promise((r) => { insideStream = r; });
+  let release1 = () => {};
+  const gate1 = new Promise((r) => { release1 = r; });
   const fakeLlm = {
     setConfig() {},
     listModels() { return []; },
-    async *stream({ signal }) {
+    async *stream() {
       call += 1;
       if (call === 1) {
-        // run 1: block until steered/aborted
-        await new Promise((_, rej) => {
-          signal.addEventListener("abort", () => {
-            const e = new Error("aborted");
-            e.name = "AbortError";
-            rej(e);
-          });
-        });
+        insideStream();
+        // run 1: hold the model call open so a steer can arrive mid-turn
+        await gate1;
+        yield { type: "text", text: "one" };
+      } else {
+        yield { type: "text", text: "two ok" };
       }
-      // run 2 stays active until the test releases it, so busy state is observable
-      await gate2;
-      yield { type: "text", text: "ok" };
       yield { type: "done", finishReason: "stop" };
     },
   };
 
   const loop = new AgentLoop({ config, store, log: createLogger({ level: "error" }), llm: fakeLlm });
-  const seen = [];
-  const onEvent = (e) => seen.push(e.type);
-  const p1 = loop.run({ sessionKey: "s1", text: "one", onEvent }).catch(() => {});
-  await new Promise((r) => setTimeout(r, 20));
+  const timeline = [];
+  const mark = (tag) => (e) => timeline.push(`${tag}:${e.type}`);
+  const s1 = [];
+  const s2 = [];
+  const p1 = loop.run({ sessionKey: "s1", text: "one", onEvent: (e) => { mark("r1")(e); s1.push(e.type); } });
+  await entered;
   assert.ok(loop.isBusy("s1"));
 
-  const p2 = loop.run({ sessionKey: "s1", text: "two", onEvent });
+  // Second input: steered into the active turn — no new stream, no second start.
+  const p2 = loop.run({ sessionKey: "s1", text: "two", onEvent: (e) => { mark("r2")(e); s2.push(e.type); } });
+  await p2; // steer custody resolves as soon as the inbox accepts it
   await new Promise((r) => setTimeout(r, 20));
-  assert.ok(loop.isBusy("s1"), "the successor owns the slot while running (was: false — the race)");
-  release2();
-  await Promise.all([p1, p2]);
+  assert.deepEqual(s2, ["queued"], `steer caller events: ${s2.join(",")}`);
+  assert.equal(call, 1, "no parallel stream while the turn is active");
+  assert.ok(loop.isBusy("s1"));
 
-  // exactly one idle, and it comes at the very end (superseded runs stay quiet)
-  assert.equal(seen.filter((t) => t === "idle").length, 1, `events: ${seen.join(",")}`);
-  assert.equal(seen[seen.length - 1], "idle");
+  // The steer lands after the final answer boundary → followup turn.
+  release1();
+  await p1;
+  for (let i = 0; i < 200 && (call < 2 || loop.isBusy("s1")); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(call, 2, "the steered input ran as its own followup turn");
+  assert.deepEqual(s2.slice(1), ["dequeued", "start", "delta", "final", "idle"], `followup events: ${s2.join(",")}`);
+
+  // Sequencing: run 1 finishes cleanly BEFORE the followup starts; exactly one
+  // final answer per turn; busy is false only after the followup's idle.
+  assert.deepEqual(s1.filter((t) => t === "start").length, 1, `r1 events: ${s1.join(",")}`);
+  assert.equal(timeline.indexOf("r1:final") < timeline.indexOf("r2:start"), true, `timeline: ${timeline.join(",")}`);
+  assert.equal(timeline[timeline.length - 1], "r2:idle", `timeline: ${timeline.join(",")}`);
   assert.equal(loop.isBusy("s1"), false);
+
+  // Transcript: one assistant answer per role, steer text present exactly once.
+  const msgs = store.recentMessages(store.listSessions()[0].id, 100);
+  assert.equal(msgs.filter((m) => m.role === "assistant").length, 2);
+  assert.equal(msgs.filter((m) => m.role === "user" && m.content === "two").length, 1);
   store.close();
 });
 

@@ -469,7 +469,11 @@ export async function listGateways(): Promise<GatewayProc[]> {
     const bin = argv[1] ?? "";
     if (!/\/(sc|sc\.js)$/.test(bin) || argv[2] !== "gateway") continue;
     if (argv[3] === "--child") continue; // the supervisor row already stands for it
-    const port = mine?.pid === pid ? mine?.port ?? null : null;
+    // The pid file records the CHILD's pid and the supervisor's; a supervised
+    // gateway is listed under its supervisor row, which must therefore also
+    // inherit the port — otherwise every managed gateway shows port:null and
+    // `sc status` reports a perfectly healthy daemon as offline.
+    const port = mine && (mine.pid === pid || mine.supervisor === pid) ? mine.port : null;
     out.push({
       pid,
       uptimeSec: procUptimeSec(pid),

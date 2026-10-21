@@ -205,6 +205,10 @@ export class Gateway {
       "chat.history",
       "chat.abort",
       "chat.approval",
+      "queue.set",
+      "queue.status",
+      "subagents.list",
+      "subagents.cancel",
       "sessions.list",
       "sessions.patch",
       "sessions.rename",
@@ -269,11 +273,15 @@ export class Gateway {
           // "chat" envelopes. Broadcasting again from these callbacks produced
           // a second copy of every event — doubled streaming text and a
           // duplicate assistant bubble per reply in every client.
+          const queueMode = ["steer", "followup", "collect", "interrupt"].includes(String(params["queueMode"]))
+            ? (params["queueMode"] as "steer" | "followup" | "collect" | "interrupt")
+            : undefined;
           void service.send({
             sessionKey,
             text,
             isMainSession: params["isMainSession"] === true,
             source: "gateway",
+            queueMode,
             model: typeof params["model"] === "string" && params["model"] ? params["model"] : undefined,
             reasoning:
               typeof params["reasoning"] === "string" && params["reasoning"] ? params["reasoning"] : undefined,
@@ -304,8 +312,65 @@ export class Gateway {
           return;
         }
         case "chat.abort":
-          send(okFrame(id, { aborted: service.loop.abort(String(params["sessionKey"] ?? "main:main")) }));
+          // runId cancels just that queued/steering input; without it, queued
+          // work is cancelled first, then the active run (their order).
+          send(
+            okFrame(id, {
+              aborted: service.loop.abort(
+                String(params["sessionKey"] ?? "main:main"),
+                typeof params["runId"] === "string" && params["runId"] ? params["runId"] : undefined,
+              ),
+            }),
+          );
           return;
+        case "queue.set": {
+          // Per-session /queue override (mode + optional debounce/cap/drop).
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const MODE = ["steer", "followup", "collect", "interrupt"];
+          const mode = MODE.includes(String(params["mode"])) ? String(params["mode"]) : null;
+          const reset = params["reset"] === true;
+          const opts: { debounceMs?: number; cap?: number; drop?: string } = {};
+          if (typeof params["debounceMs"] === "number" && params["debounceMs"] >= 0) opts.debounceMs = params["debounceMs"];
+          if (typeof params["cap"] === "number" && params["cap"] >= 1) opts.cap = Math.floor(params["cap"]);
+          if (typeof params["drop"] === "string" && ["summarize", "old", "new"].includes(params["drop"])) opts.drop = params["drop"];
+          // No explicit mode/opts → keep the session's existing override.
+          const cur = service.store.getSessionByKey(sessionKey);
+          let curOpts: { debounceMs?: number; cap?: number; drop?: string } | null = null;
+          try { curOpts = cur?.queue_opts ? JSON.parse(cur.queue_opts) : null; } catch { curOpts = null; }
+          service.store.setSessionQueue(
+            sessionKey,
+            reset ? null : (mode ?? cur?.queue_mode ?? null),
+            reset ? null : (Object.keys(opts).length > 0 ? opts : curOpts),
+          );
+          send(okFrame(id, { ok: true, ...service.loop.queueStatus(sessionKey) }));
+          return;
+        }
+        case "queue.status": {
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          send(okFrame(id, service.loop.queueStatus(sessionKey)));
+          return;
+        }
+        case "subagents.list": {
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          send(okFrame(id, { sessionKey, children: service.subagents?.list(sessionKey) ?? [] }));
+          return;
+        }
+        case "subagents.cancel": {
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const target = String(params["target"] ?? "");
+          const rows = service.subagents?.list(sessionKey) ?? [];
+          const row =
+            rows.find((r) => r.task_name === target) ??
+            rows.find((r) => r.child_session_key === target) ??
+            rows.find((r) => r.run_id === target);
+          if (!row || !service.subagents) {
+            send(errFrame(id, "not_found", `no running sub-agent matching "${target}"`));
+            return;
+          }
+          const stopped = service.subagents.cancel(row.child_session_key);
+          send(okFrame(id, { cancelled: stopped, childSessionKey: row.child_session_key }));
+          return;
+        }
         case "chat.approval":
           send(
             okFrame(id, {

@@ -24,6 +24,36 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Re-discover skills after a tool writes one (`skill_save`). */
   refreshSkills?: () => void;
+  /** Session this tool call belongs to (set by the agent loop). */
+  sessionKey?: string;
+  /** Set by sessions_yield when this turn should end waiting for children. */
+  yieldArmed?: boolean;
+  /** Sub-agent control surface, wired by the service (spawn/yield/list/send). */
+  subagents?: SubagentCtl;
+}
+
+/** The sub-agent operations the session family of tools can invoke. */
+export interface SubagentCtl {
+  spawn(
+    parentKey: string,
+    opts: {
+      task: string;
+      label?: string;
+      taskName?: string;
+      model?: string;
+      thinking?: string;
+      context?: "isolated" | "fork";
+    },
+  ): Promise<
+    | { accepted: true; childSessionKey: string; runId: string; taskName: string; context: string; resolvedModel?: string }
+    | { accepted: false; error: string }
+  >;
+  /** Children still running for a parent. */
+  activeChildren(parentKey: string): { childSessionKey: string; label: string; task: string; status: string; runId: string }[];
+  /** Send input to another session (steer into it or queue a followup). */
+  send(targetKey: string, text: string, mode: "steer" | "followup" | "notify"): Promise<{ ok: boolean; error?: string; detail?: string }>;
+  /** Abort a child's active run (and queued work) by session key. */
+  cancel(childSessionKey: string): boolean;
 }
 
 export interface ToolSpec {
@@ -420,6 +450,138 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
     });
   }
+
+  // ----- session family (OpenClaw sessions_spawn / sessions_yield / subagents) -----
+  tools.push(
+    {
+      name: "sessions_spawn",
+      description:
+        "Spawn a background sub-agent to work a task in its own session. Returns immediately; the completion is announced back to you as a later turn. Use for research, coding, reviews and other slow or tool-heavy work you should not block the conversation on.",
+      parameters: {
+        type: "object",
+        properties: {
+          task: { type: "string", description: "What the sub-agent should do, fully briefed." },
+          taskName: {
+            type: "string",
+            description: "Stable handle [a-z][a-z0-9_-]{0,63} to target this child later (list/cancel).",
+          },
+          label: { type: "string", description: "Short title for the work (shown in lists)." },
+          model: { type: "string", description: "Optional model override for the child." },
+          thinking: { type: "string", description: "Optional thinking-level override for the child." },
+          context: {
+            type: "string",
+            enum: ["isolated", "fork"],
+            description: "isolated (default): fresh transcript. fork: copy your current conversation into the child first — use sparingly.",
+          },
+        },
+        required: ["task"],
+      },
+      async run(args, ctx) {
+        if (!ctx.subagents || !ctx.sessionKey) return "error: sub-agent support is not available in this runtime";
+        const res = await ctx.subagents.spawn(ctx.sessionKey, {
+          task: String(args["task"] ?? ""),
+          label: args["label"] ? String(args["label"]) : undefined,
+          taskName: args["taskName"] ? String(args["taskName"]) : undefined,
+          model: args["model"] ? String(args["model"]) : undefined,
+          thinking: args["thinking"] ? String(args["thinking"]) : undefined,
+          context: args["context"] === "fork" ? "fork" : "isolated",
+        });
+        if (!res.accepted) return `error: ${res.error}`;
+        return (
+          `Sub-agent accepted.\nchildSessionKey: ${res.childSessionKey}\nrunId: ${res.runId}\n` +
+          `taskName: ${res.taskName}\ncontext: ${res.context}` +
+          (res.resolvedModel ? `\nmodel: ${res.resolvedModel}` : "") +
+          `\nIt returns to you with \"… completed\" as a later message; meanwhile keep working or end your turn.`
+        );
+      },
+    },
+    {
+      name: "sessions_yield",
+      description:
+        "End your turn and wait for your running sub-agents; their completions arrive as your next message. Use ONLY when your next step depends on results from children you already spawned.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "Private note to yourself for when the turn resumes." },
+        },
+      },
+      async run(args, ctx) {
+        if (!ctx.subagents || !ctx.sessionKey) return "error: sub-agent support is not available in this runtime";
+        const active = ctx.subagents.activeChildren(ctx.sessionKey);
+        if (active.length === 0) {
+          return "nothing_pending: no sub-agents are running for this session — just answer normally.";
+        }
+        ctx.yieldArmed = true;
+        const privateNote = args["message"] ? ` Note saved for the resuming turn: ${String(args["message"])}` : "";
+        return `yielded: waiting for ${active.length} sub-agent(s): ${active.map((c) => c.label || c.childSessionKey).join(", ")}.${privateNote}`;
+      },
+    },
+    {
+      name: "subagents",
+      description:
+        "List your background sub-agents (running and recent) with status and run ids, or cancel one by taskName/session key/run id.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["list", "cancel"], description: "list (default) or cancel." },
+          target: { type: "string", description: "taskName, child session key, or run id to cancel." },
+        },
+      },
+      async run(args, ctx) {
+        if (!ctx.sessionKey) return "error: missing session context";
+        const store = ctx.store;
+        const action = String(args["action"] ?? "list");
+        if (action === "cancel") {
+          const target = String(args["target"] ?? "").trim();
+          if (!target) return "error: target required (taskName, session key, or run id)";
+          const rows = store.subagentsFor(ctx.sessionKey, { limit: 50 });
+          const row =
+            rows.find((r) => r.task_name === target) ??
+            rows.find((r) => r.child_session_key === target) ??
+            rows.find((r) => r.run_id === target);
+          if (!row) return `error: no sub-agent matching \"${target}\" in this session`;
+          if (row.status !== "running") return `Already finished (status: ${row.status}).`;
+          if (!ctx.subagents) return "error: cancellation is not available in this runtime";
+          const stopped = ctx.subagents.cancel(row.child_session_key);
+          return stopped
+            ? `Cancelled ${row.task_name || row.label || row.child_session_key}; its completion will announce as aborted.`
+            : `error: could not abort ${row.child_session_key} (already settling?)`;
+        }
+        const rows = store.subagentsFor(ctx.sessionKey, { limit: 20 });
+        if (rows.length === 0) return "No sub-agents for this session.";
+        return rows
+          .map((r) => {
+            const state = r.status === "running" ? "running" : `${r.status}`;
+            const line = `- ${r.task_name || r.label || r.child_session_key} — ${state}` + (r.result_stats ? ` (${r.result_stats})` : "");
+            return line;
+          })
+          .join("\n");
+      },
+    },
+    {
+      name: "session_send",
+      description:
+        "Send guidance into another session: steer injects into its live turn at the next boundary, followup queues a separate turn, notify leaves context for its next turn.",
+      parameters: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string", description: "Target session key." },
+          text: { type: "string", description: "Message content." },
+          mode: { type: "string", enum: ["steer", "followup", "notify"], description: "Delivery mode (default: followup)." },
+        },
+        required: ["sessionKey", "text"],
+      },
+      async run(args, ctx) {
+        if (!ctx.subagents) return "error: sub-agent support is not available in this runtime";
+        const res = await ctx.subagents.send(
+          String(args["sessionKey"] ?? ""),
+          String(args["text"] ?? ""),
+          (args["mode"] as "steer" | "followup" | "notify") || "followup",
+        );
+        return res.ok ? `ok: ${res.detail ?? "delivered"}` : `error: ${res.error ?? "delivery failed"}`;
+      },
+    },
+  );
 
   return tools;
 }

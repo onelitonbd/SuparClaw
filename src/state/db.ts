@@ -12,6 +12,26 @@ export interface SessionRow {
   meta: string | null;
   /** Session thinking-level override ("low"…/"max", "off"); null = inherited. */
   thinking?: string | null;
+  /** Per-session queue-mode override (steer|followup|collect|interrupt); null = config. */
+  queue_mode?: string | null;
+  /** JSON {debounceMs?, cap?, drop?} /queue options; null = none. */
+  queue_opts?: string | null;
+}
+
+export interface SubagentRow {
+  child_session_key: string;
+  parent_session_key: string;
+  run_id: string;
+  label: string;
+  task: string;
+  task_name: string;
+  depth: number;
+  status: string;          // running | done | error | aborted | interrupted
+  outcome: string | null;  // final assistant text (<= 12k) once finished
+  result_stats: string | null;
+  delivery: string;        // pending | delivered | not_required
+  spawned_at: number;
+  ended_at: number | null;
 }
 
 export interface MessageRow {
@@ -81,6 +101,22 @@ const MIGRATIONS: string[][] = [
        status TEXT NOT NULL,
        result TEXT
      );`,
+    `CREATE TABLE IF NOT EXISTS subagents (
+       child_session_key TEXT PRIMARY KEY,
+       parent_session_key TEXT NOT NULL,
+       run_id TEXT NOT NULL,
+       label TEXT NOT NULL DEFAULT '',
+       task TEXT NOT NULL DEFAULT '',
+       task_name TEXT NOT NULL DEFAULT '',
+       depth INTEGER NOT NULL DEFAULT 1,
+       status TEXT NOT NULL DEFAULT 'running',
+       outcome TEXT,
+       result_stats TEXT,
+       delivery TEXT NOT NULL DEFAULT 'pending',
+       spawned_at INTEGER NOT NULL,
+       ended_at INTEGER
+     );`,
+    `CREATE INDEX IF NOT EXISTS subagents_parent_idx ON subagents(parent_session_key, spawned_at);`,
     `CREATE TABLE IF NOT EXISTS tool_log (
        id INTEGER PRIMARY KEY AUTOINCREMENT,
        run_id TEXT NOT NULL,
@@ -131,6 +167,12 @@ export class Store {
     );
     if (!sessionCols.has("thinking")) {
       db.exec("ALTER TABLE sessions ADD COLUMN thinking TEXT");
+    }
+    if (!sessionCols.has("queue_mode")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN queue_mode TEXT");
+    }
+    if (!sessionCols.has("queue_opts")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN queue_opts TEXT");
     }
     return new Store(db, fts);
   }
@@ -349,5 +391,93 @@ export class Store {
     return this.db
       .prepare("SELECT job_id, started_at, status, result FROM job_runs ORDER BY id DESC LIMIT ?")
       .all(limit) as unknown as { job_id: string; started_at: number; status: string; result: string }[];
+  }
+
+  /** Per-session /queue override (mode + optional drop/debounce/cap options). */
+  setSessionQueue(
+    key: string,
+    mode: string | null,
+    opts: { debounceMs?: number; cap?: number; drop?: string } | null,
+  ): void {
+    const row = this.ensureSession(key);
+    this.db
+      .prepare("UPDATE sessions SET queue_mode = ?, queue_opts = ? WHERE id = ?")
+      .run(mode, opts ? JSON.stringify(opts) : null, row.id);
+  }
+
+  registerSubagent(row: SubagentRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO subagents(child_session_key, parent_session_key, run_id, label, task, task_name, depth, status, delivery, spawned_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        row.child_session_key,
+        row.parent_session_key,
+        row.run_id,
+        row.label,
+        row.task,
+        row.task_name,
+        row.depth,
+        row.status,
+        row.delivery,
+        row.spawned_at,
+      );
+  }
+
+  getSubagent(childSessionKey: string): SubagentRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM subagents WHERE child_session_key = ?")
+      .get(childSessionKey) as SubagentRow | undefined;
+  }
+
+  finishSubagent(
+    childSessionKey: string,
+    patch: { status: string; outcome?: string | null; resultStats?: string | null; delivery?: string },
+  ): void {
+    this.db
+      .prepare(
+        "UPDATE subagents SET status = ?, outcome = COALESCE(?, outcome), result_stats = COALESCE(?, result_stats), delivery = COALESCE(?, delivery), ended_at = ? WHERE child_session_key = ?",
+      )
+      .run(patch.status, patch.outcome ?? null, patch.resultStats ?? null, patch.delivery ?? null, Date.now(), childSessionKey);
+  }
+
+  markSubagentDelivered(childSessionKey: string): void {
+    this.db
+      .prepare("UPDATE subagents SET delivery = 'delivered' WHERE child_session_key = ?")
+      .run(childSessionKey);
+  }
+
+  /** Children of a parent session, newest last. activeOnly hides settled rows. */
+  subagentsFor(parentSessionKey: string, opts?: { activeOnly?: boolean; limit?: number }): SubagentRow[] {
+    const limit = opts?.limit ?? 50;
+    if (opts?.activeOnly) {
+      return this.db
+        .prepare(
+          "SELECT * FROM subagents WHERE parent_session_key = ? AND status = 'running' ORDER BY spawned_at ASC LIMIT ?",
+        )
+        .all(parentSessionKey, limit) as unknown as SubagentRow[];
+    }
+    const rows = this.db
+      .prepare("SELECT * FROM subagents WHERE parent_session_key = ? ORDER BY spawned_at DESC LIMIT ?")
+      .all(parentSessionKey, limit) as unknown as SubagentRow[];
+    return rows.reverse();
+  }
+
+  /** Finished children whose completion the parent has not been told about yet. */
+  pendingSubagentDeliveries(parentSessionKey: string): SubagentRow[] {
+    return this.db
+      .prepare(
+        "SELECT * FROM subagents WHERE parent_session_key = ? AND status != 'running' AND delivery = 'pending' ORDER BY spawned_at ASC",
+      )
+      .all(parentSessionKey) as unknown as SubagentRow[];
+  }
+
+  /** Boot recovery: any child still 'running' after a restart is interrupted. */
+  sweepInterruptedSubagents(): number {
+    const res = this.db
+      .prepare("UPDATE subagents SET status = 'interrupted', ended_at = ? WHERE status = 'running'")
+      .run(Date.now());
+    return Number(res.changes);
   }
 }

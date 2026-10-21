@@ -31,6 +31,8 @@ const chat = new Chat(document.body, {
   },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
   approve: (callId, approve) => { void gateway.request("chat.approval", { callId, approve }); },
+  // Remove just that queued message (their chat.abort runId parity).
+  cancelQueued: (runId) => { void gateway.request("chat.abort", { sessionKey, runId }); },
 });
 
 /* ---------------- events ---------------- */
@@ -72,12 +74,27 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
     case "tool":
       chat.tool(
         String(e.name ?? "tool"),
-        (e.status as "running" | "done" | "error") ?? "running",
+        (e.status as "running" | "done" | "error" | "pending" | "skipped") ?? "running",
         e.detail as string | undefined,
         e.ms as number | undefined,
         e.callId as string | undefined,
       );
       break;
+    case "queued":
+      // Waiting input keeps its identity — the ✕ row cancels just that one.
+      chat.queued(String(e.runId ?? crypto.randomUUID()), String(e.text ?? ""));
+      if (String(e.mode ?? "") === "steer") chat.notice("steering into the active turn…");
+      break;
+    case "dequeued":
+      chat.dequeued(String(e.runId ?? ""), String(e.reason ?? ""));
+      break;
+    case "steered":
+      chat.dequeued(String(e.runId ?? ""));
+      break;
+    case "collect": {
+      for (const rid of (e.runIds as string[] | undefined) ?? []) chat.dequeued(rid);
+      break;
+    }
     case "retry": {
       // Always visible (no collapse): show what failed and that a retry is
       // running - "error ... retrying (attempt N/7)".
@@ -284,6 +301,11 @@ async function loadHistory(): Promise<void> {
       if (rendered === 0) {
         chat.notice(`Session started · ${statusTools()} tools enabled`);
       }
+      // Waiting inputs survive reconnects (they stay queued until consumed).
+      try {
+        const q = await gateway.request("queue.status", { sessionKey });
+        chat.queueReplace(((q as any).queued ?? []) as { runId: string; text: string; at: number }[]);
+      } catch { /* older gateway: no queue surface yet */ }
       return;
     } catch (err) {
       lastError = err as Error;
@@ -388,6 +410,75 @@ $("theme-btn").onclick = () => {
 $("settings-btn").onclick = () => {
   location.hash = location.hash === "#/settings" ? "" : "#/settings";
 };
+
+/* ---------------- sub-agents panel (their Subagents view, compact) ---------------- */
+
+function openSubagentsPanel(): void {
+  type Row = {
+    child_session_key: string; run_id: string; label: string; task_name: string;
+    status: string; result_stats: string | null; outcome: string | null;
+  };
+  const renderRows = async (box: HTMLElement, refill: () => Promise<Row[]>) => {
+    box.innerHTML = "";
+    let rows: Row[] = [];
+    try {
+      rows = await refill();
+    } catch {
+      box.append(el("div", { class: "sgalist__empty" }, ["could not load sub-agents"]));
+      return;
+    }
+    if (rows.length === 0) {
+      box.append(el("div", { class: "sgalist__empty" }, ["No sub-agents for this session yet."]));
+      return;
+    }
+    const running = rows.filter((r) => r.status === "running");
+    const finished = rows.filter((r) => r.status !== "running");
+    const list = el("div", { class: "sgalist" });
+    if (running.length > 0) list.append(el("div", { class: "qrow__label" }, ["Running"]));
+    for (const r of running) {
+      const stop = el("button", { class: "btn sm row__stop", type: "button" }, ["Stop"]);
+      stop.onclick = async () => {
+        try {
+          await gateway.request("subagents.cancel", { sessionKey, target: r.run_id });
+          toast("sub-agent stopping…", "ok");
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      };
+      list.append(el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, [r.label || r.task_name || r.child_session_key]),
+        el("span", { class: "row__meta row__meta--run" }, ["running…"]),
+        stop,
+      ]));
+    }
+    if (finished.length > 0) list.append(el("div", { class: "qrow__label" }, ["Finished"]));
+    for (const r of finished) {
+      const open = el("button", { class: "btn sm row__stop", type: "button" }, ["Open"]);
+      open.onclick = () => void switchSession(r.child_session_key);
+      list.append(el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, [r.label || r.task_name || r.child_session_key]),
+        el("span", { class: "row__meta" }, [`${r.status}${r.result_stats ? ` · ${r.result_stats}` : ""}`]),
+        open,
+      ]));
+    }
+    box.append(list);
+  };
+  const fetchRows = async (): Promise<Row[]> => ((await gateway.request("subagents.list", { sessionKey })) as any).children ?? [];
+  modal({
+    title: "Sub-agents",
+    cancelLabel: "Close",
+    render: (box) => {
+      const rerender = () => void renderRows(box, fetchRows);
+      rerender();
+      const refreshBtn = el("button", { class: "btn sm", type: "button" }, ["↻ Refresh"]);
+      refreshBtn.style.marginTop = "10px";
+      refreshBtn.onclick = rerender;
+      box.append(refreshBtn);
+    },
+  });
+}
+
+$("subagents-btn").onclick = () => openSubagentsPanel();
 $("settings-back").onclick = () => { location.hash = ""; };
 $("session-btn").onclick = () => { void loadHistory(); };
 

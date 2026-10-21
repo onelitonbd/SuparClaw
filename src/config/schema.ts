@@ -169,7 +169,27 @@ export const CONFIG_SCHEMA: SchemaNode = {
             fallbacks: { t: "array", of: { t: "string" }, default: [] },
             maxToolIterations: { t: "int", min: 1, max: 40, default: 12 },
             contextBudgetChars: { t: "int", min: 2000, default: 60000 },
+            // Legacy alias — superseded by messages.queue.mode. Kept so old
+            // configs still validate; the new section wins when both exist.
             queueMode: { t: "enum", values: ["steer", "followup"], default: "followup" },
+            // Global lane caps (OpenClaw command-queue parity). 0 = auto:
+            // max(8, cpu parallelism * 4), their default main-lane formula.
+            maxConcurrent: { t: "int", min: 0, default: 0 },
+            subagents: {
+              t: "object",
+              default: {},
+              fields: {
+                // Per-spawning-session child budget + background-lane budget.
+                maxConcurrent: { t: "int", min: 1, default: 8 },
+                // Model/thinking overrides for children (empty = inherit caller).
+                model: { t: "string", default: "" },
+                thinking: { t: "string", default: "" },
+                // 1 = children cannot spawn children. Raise for orchestrators.
+                maxDepth: { t: "int", min: 1, max: 4, default: 1 },
+                // Prompt guidance only: inherit → prefer in :main, suggest elsewhere.
+                delegationMode: { t: "enum", values: ["inherit", "prefer", "suggest"], default: "inherit" },
+              },
+            },
             // Thinking effort sent to the provider (reasoning_effort).
             // "inherit" = don't send the field at all (the provider/model keeps
             // its own default); "off" omits it too on custom routes (many
@@ -186,12 +206,34 @@ export const CONFIG_SCHEMA: SchemaNode = {
         },
       },
     },
+    // Inbound message queueing (OpenClaw command-queue parity): what new input
+    // does while a session already has an active run. Per-session /queue
+    // overrides and byChannel win over the session default here.
+    messages: {
+      t: "object",
+      default: {},
+      fields: {
+        queue: {
+          t: "object",
+          default: {},
+          fields: {
+            // steer (default): inject into the live turn at tool boundaries.
+            // followup: run after the active turn, per message.
+            // collect: merge compatible queued messages into one turn after
+            // the quiet window. interrupt: abort active work, run the newest.
+            mode: { t: "enum", values: ["steer", "followup", "collect", "interrupt"], default: "steer" },
+            cap: { t: "int", min: 1, default: 20 },
+            drop: { t: "enum", values: ["summarize", "old", "new"], default: "summarize" },
+            debounceMs: { t: "int", min: 0, default: 500 },
+            byChannel: { t: "record", of: { t: "enum", values: ["steer", "followup", "collect", "interrupt"] }, default: {} },
+          },
+        },
+      },
+    },
     memory: {
       t: "object",
       default: {},
       fields: {
-        // Dreaming: the nightly consolidation sweep (OpenClaw's dreaming),
-        // distilled daily notes -> curated MEMORY.md + a DREAMS.md diary entry.
         dreaming: {
           t: "object",
           default: {},
@@ -319,6 +361,14 @@ export interface SuparClawConfig {
       maxToolIterations: number;
       contextBudgetChars: number;
       queueMode: "steer" | "followup";
+      maxConcurrent: number;
+      subagents: {
+        maxConcurrent: number;
+        model: string;
+        thinking: string;
+        maxDepth: number;
+        delegationMode: "inherit" | "prefer" | "suggest";
+      };
       reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
       reasoningView: "on" | "off";
     };
@@ -359,6 +409,15 @@ export interface SuparClawConfig {
     exec: { enabled: boolean; approvals: boolean; timeoutMs: number };
   };
   cron: { enabled: boolean; timezone: string };
+  messages: {
+    queue: {
+      mode: "steer" | "followup" | "collect" | "interrupt";
+      cap: number;
+      drop: "summarize" | "old" | "new";
+      debounceMs: number;
+      byChannel: Record<string, "steer" | "followup" | "collect" | "interrupt">;
+    };
+  };
   memory: { dreaming: { enabled: boolean; schedule: string } };
 }
 

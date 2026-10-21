@@ -8,7 +8,7 @@ import { width } from "../util/ansi.js";
 export type Item =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; streaming?: boolean }
-  | { kind: "tool"; name: string; status: "running" | "done" | "error"; detail?: string }
+  | { kind: "tool"; name: string; status: "running" | "done" | "error" | "skipped"; detail?: string }
   | { kind: "system"; text: string };
 
 export type Approval = { callId: string; tool: string; args: Record<string, unknown> };

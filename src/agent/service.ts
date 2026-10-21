@@ -6,7 +6,8 @@ import type { SuparClawConfig } from "../config/schema.js";
 import { Store } from "../state/db.js";
 import { createLogger, type Logger } from "../util/log.js";
 import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } from "../util/paths.js";
-import { AgentLoop, type RunEvent } from "../agent/loop.js";
+import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
+import { Subagents } from "../agent/subagents.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile } from "../config/schema.js";
 import { DREAM_SESSION_KEY, armDream, cleanTitle, dreamPrompt, titlePrompt, type DreamHandle } from "../agent/dream.js";
@@ -23,6 +24,8 @@ export interface ChatPayload {
   model?: string;
   /** Per-run thinking effort override; unset means session/default policy. */
   reasoning?: string;
+  /** chat.send parity: force the queue mode just for this message. */
+  queueMode?: QueueMode;
   reply: (text: string) => void | Promise<void>;
   onDelta?: (delta: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
@@ -53,6 +56,10 @@ export class Service {
   #titleBusy = new Set<string>();
   #approvals = new Map<string, (ok: boolean) => void>();
   #closing = false;
+  /** Sub-agent lifecycle owner (spawn/yield/announce/cancel). */
+  #subagents: Subagents | null = null;
+  /** Channel sinks for internal announcements (telegram replies need a send). */
+  #channelSinks = new Map<string, (text: string) => void | Promise<void>>();
 
   constructor(configPathOverride?: string) {
     ensureDirs();
@@ -72,9 +79,31 @@ export class Service {
       log: this.log,
       llm,
       requestApproval: (callId, tool, args) => this.requestApproval(callId, tool, args),
+      onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
+    // Boot recovery: children still "running" when the gateway restarted are
+    // interrupted — their results stay in the awaiting-delivery prompt block.
+    const swept = this.store.sweepInterruptedSubagents();
+    if (swept > 0) this.log.info(`subagents: ${swept} interrupted run(s) swept on boot`);
+    this.#subagents = new Subagents({
+      store: this.store,
+      log: this.log,
+      loop: this.loop,
+      config: () => this.config,
+      emitChild: (sessionKey, event) => {
+        this.events.emit("event", { type: "chat", sessionKey, event } satisfies ServiceEvent);
+        // Announcement/wake turns must reach the session's channel (Telegram
+        // gets a real outgoing message, not just the event stream).
+        if (event.type === "final") void this.#channelSinks.get(sessionKey)?.(event.text);
+      },
+    });
+    this.loop.setSubagents(this.#subagents);
 
     this.events.setMaxListeners(64);
+  }
+
+  get subagents(): Subagents | null {
+    return this.#subagents;
   }
 
   get config(): SuparClawConfig {
@@ -319,16 +348,115 @@ export class Service {
     this.watchConfig();
   }
 
+  /**
+   * Chat commands shared by every surface (their /queue, /followup, /steer,
+   * /subagents, /stop). Returns null for ordinary messages, or a payload
+   * rewrite (or a direct reply) for commands.
+   */
+  #commands(rawText: string, payload: ChatPayload): { rewrite?: string; reply?: string; mode?: QueueMode } | null {
+    const raw = rawText.trim();
+    if (!raw.startsWith("/")) return null;
+    const [head, ...restParts] = raw.split(/\s+/);
+    const rest = raw.slice((head ?? "").length).trim();
+    const cmd = (head ?? "").toLowerCase();
+    const MODES = ["steer", "followup", "collect", "interrupt"];
+
+    // /queue — show or set this session's override (their per-session /queue).
+    if (cmd === "/queue") {
+      const firstArg = (restParts[0] ?? "").toLowerCase();
+      if (!rest) {
+        const status = this.loop.queueStatus(payload.sessionKey);
+        const session = this.store.getSessionByKey(payload.sessionKey);
+        return {
+          reply:
+            `Queue for this session: mode ${status.mode}` +
+            (session?.queue_mode ? " (session override)" : " (config)") +
+            `, ${status.queued.length} queued input(s), ${status.steering} steering.`,
+        };
+      }
+      if (["default", "reset"].includes(firstArg)) {
+        this.store.setSessionQueue(payload.sessionKey, null, null);
+        return { reply: "Queue mode reset — the config default applies again." };
+      }
+      if (!MODES.includes(firstArg)) {
+        return { reply: `unknown queue mode "${firstArg}" — use ${MODES.join(", ")} (or /queue default to reset)` };
+      }
+      const opts: { debounceMs?: number; cap?: number; drop?: string } = {};
+      for (const part of restParts.slice(1)) {
+        const [k, v] = part.split(":");
+        if (k === "debounce" && v) {
+          const m = /^(\d+(?:\.\d+)?)(ms|s)?$/.exec(v);
+          if (m) opts.debounceMs = Math.round(Number(m[1]) * (m[2] === "s" ? 1000 : 1));
+        }
+        if (k === "cap" && v && Number(v) >= 1) opts.cap = Math.floor(Number(v));
+        if (k === "drop" && v && ["summarize", "old", "new"].includes(v)) opts.drop = v;
+      }
+      this.store.setSessionQueue(payload.sessionKey, firstArg, Object.keys(opts).length > 0 ? opts : null);
+      return {
+        reply:
+          `Queue mode for this session: ${firstArg}` +
+          (opts.debounceMs !== undefined ? `, debounce ${opts.debounceMs}ms` : "") +
+          (opts.cap !== undefined ? `, cap ${opts.cap}` : "") +
+          (opts.drop !== undefined ? `, drop ${opts.drop}` : "") +
+          ". (/queue default resets to config.)",
+      };
+    }
+    // /followup <msg> — one specific message as its own turn, mode untouched.
+    if (cmd === "/followup") {
+      if (!rest) return { reply: "usage: /followup <message>" };
+      return { rewrite: rest, mode: "followup" };
+    }
+    // /steer <msg> (alias /tell) — inject into the live turn at the next
+    // boundary; when nothing is active it starts an ordinary turn.
+    if (cmd === "/steer" || cmd === "/tell") {
+      if (!rest) return { reply: "usage: /steer <message>" };
+      return { rewrite: rest, mode: "steer" };
+    }
+    // /stop — cancel queued work first, then the active run (their order).
+    if (cmd === "/stop") {
+      const stopped = this.loop.abort(payload.sessionKey);
+      return { reply: stopped ? "Stopped — queued inputs cancelled, active run aborted." : "Nothing to stop in this session." };
+    }
+    // /subagents — the Running/Finished panel as text (UI has the real panel).
+    if (cmd === "/subagents") {
+      const rows = (this.#subagents?.list(payload.sessionKey, 20) ?? []).reverse();
+      if (rows.length === 0) return { reply: "No sub-agents for this session." };
+      const text = rows
+        .map((r) => `- ${r.label || r.task_name} — ${r.status === "running" ? "running…" : r.status}${r.result_stats ? ` [${r.result_stats}]` : ""}`)
+        .join("\n");
+      return { reply: `Sub-agents:\n${text}` };
+    }
+    return null;
+  }
+
   /** One entry point for every surface: TUI, WS clients, Telegram, cron. */
   async send(payload: ChatPayload): Promise<void> {
-    // Lifecycle events (start/delta/tool/final/idle) all come from the loop with
+    // Command surface first (never reaches the model).
+    const cmd = this.#commands(payload.text, payload);
+    if (cmd?.reply !== undefined) {
+      await payload.reply(cmd.reply);
+      return;
+    }
+    const text = cmd?.rewrite ?? payload.text;
+    const queueMode = cmd?.mode ?? payload.queueMode;
+
+    // Remember how to reach this session's channel for internal announcements.
+    if (payload.source === "telegram") {
+      this.#channelSinks.set(payload.sessionKey, payload.reply);
+    }
+
+    // Lifecycle events (start/delta/tool/approval/final/idle) all come from the loop with
     // the real runId — no synthetic start here, so surfaces never see two runs.
     await this.loop.run({
       sessionKey: payload.sessionKey,
-      text: payload.text,
+      text,
       isMainSession: payload.isMainSession,
       model: payload.model,
       reasoning: payload.reasoning,
+      source: payload.source,
+      queueMode,
+      // Channel (durable-ingress style) inputs never coalesce in collect mode.
+      exclusive: payload.source === "telegram",
       onEvent: (event) => {
         this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event } satisfies ServiceEvent);
         // Auto-title fires once the reply settles: non-blocking, best-effort.

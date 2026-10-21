@@ -17,6 +17,7 @@ export { auditConfig, type Finding } from "./cli/audit.js";
 export { splitForTelegram } from "./channels/telegram.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
+export { Subagents } from "./agent/subagents.js";
 export { Service } from "./agent/service.js";export { renderMarkdown as renderUiMarkdown, escapeHtml } from "../ui/src/markdown.js";
 export { fuzzy } from "../ui/src/dom.js";
 export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, testProvider, maskKey, defaultModelLine, parseProviderAddArgs, canonicalModelRef } from "./config/providers.js";

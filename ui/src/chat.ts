@@ -52,9 +52,10 @@ export interface ChatHandlers {
   send(text: string): void;
   abort(): void;
   approve(callId: string, approve: boolean): void;
+  cancelQueued(runId: string): void;
 }
 
-type ToolStatus = "running" | "done" | "error" | "pending";
+type ToolStatus = "running" | "done" | "error" | "pending" | "skipped";
 
 const SPARKLE =
   '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>';
@@ -105,6 +106,9 @@ export class Chat {
   #stopBtn: HTMLButtonElement;
   #composer: HTMLElement;
   #approval: HTMLElement;
+  #qrow: HTMLElement;
+  /** Waiting queue items by runId (rendered above the composer). */
+  #queueItems = new Map<string, { text: string; at: number }>();
   #jump: HTMLElement;
   #tok: HTMLElement;
   #handlers: ChatHandlers;
@@ -126,6 +130,7 @@ export class Chat {
     this.#stopBtn = root.querySelector("#stop-btn") as HTMLButtonElement;
     this.#composer = root.querySelector("#composer") as HTMLElement;
     this.#approval = root.querySelector("#approval") as HTMLElement;
+    this.#qrow = root.querySelector("#qrow") as HTMLElement;
     this.#jump = root.querySelector("#jump") as HTMLElement;
     this.#tok = root.querySelector("#tok") as HTMLElement;
 
@@ -444,6 +449,11 @@ export class Chat {
       iconBox.className = "tool__icon tool__icon--wait";
       iconBox.innerHTML = PAUSE;
       dur.textContent = "waiting";
+    } else if (status === "skipped") {
+      // Skipped to process an incoming message (steering boundary) — not a failure.
+      iconBox.className = "tool__icon tool__icon--skip";
+      iconBox.innerHTML = PAUSE;
+      dur.textContent = "skipped";
     } else {
       iconBox.className = "tool__icon tool__icon--err";
       iconBox.innerHTML = CROSS;
@@ -536,6 +546,38 @@ export class Chat {
     block.status.textContent = "";
     this.stack.append(block.root);
     this.#scrollToBottom();
+  }
+
+  /** ---- message queue row (their "waiting messages above the composer") ---- */
+
+  queued(runId: string, text: string): void {
+    this.#queueItems.set(runId, { text, at: Date.now() });
+    this.#renderQueue();
+  }
+
+  dequeued(runId: string, reason?: string): void {
+    if (this.#queueItems.delete(runId)) this.#renderQueue();
+    if (reason === "overflow") this.notice("queue full — the oldest queued message was dropped", "notice--error");
+  }
+
+  queueReplace(items: { runId: string; text: string; at: number }[]): void {
+    this.#queueItems = new Map(items.map((i) => [i.runId, { text: i.text, at: i.at }]));
+    this.#renderQueue();
+  }
+
+  #renderQueue(): void {
+    this.#qrow.innerHTML = "";
+    if (this.#queueItems.size === 0) {
+      this.#qrow.hidden = true;
+      return;
+    }
+    this.#qrow.hidden = false;
+    this.#qrow.append(el("span", { class: "qrow__label" }, [`${this.#queueItems.size} waiting`]));
+    for (const [runId, item] of this.#queueItems) {
+      const x = el("button", { class: "qrow__x", type: "button", title: "Remove from queue" }, ["×"]);
+      x.onclick = () => this.#handlers.cancelQueued(runId);
+      this.#qrow.append(el("span", { class: "qrow__item", title: item.text }, [item.text.slice(0, 48), x]));
+    }
   }
 
   /** ---- approvals ---- */
