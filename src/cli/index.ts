@@ -31,6 +31,8 @@ commands:
   security [audit]     review gateway/tool/channel security posture
   stop                    stop a running gateway (pid file)
   config <get|set|path>  read or write config values
+  sessions search <query> [--session key] [--limit n] [--all] [--json]
+                        full-text search past session transcripts
   token [--rotate]      show (or regenerate) the gateway token
   pair <list|approve|revoke>  manage Telegram DM access
   cron <list|add|remove>       scheduled prompts
@@ -93,6 +95,8 @@ export async function main(argv: string[]): Promise<number> {
       return tokenCmd(rest);
     case "service":
       return (await import("./service.js")).serviceCmd(rest);
+    case "sessions":
+      return sessionsCmd(rest);
     case "stop":
       return stopCmd(rest);
     case "version":
@@ -143,6 +147,135 @@ async function init(): Promise<number> {
   console.log(`    ${fg.accent("4")}  sc chat              say hello`);
   console.log(`    ${fg.accent("5")}  sc gateway           run the daemon\n`);
   void service.stop();
+  return 0;
+}
+
+/**
+ * `sc sessions search <query> [--session key] [--limit n] [--all] [--json]`
+ * OpenClaw parity (their `openclaw sessions search`): ranked transcript hits
+ * with session key, role, ISO timestamp and a one-line snippet. Talks to the
+ * live gateway's sessions.search first (operator view incl. remote config);
+ * when no gateway answers, opens the local store directly — like `sc status`.
+ * Exit non-zero only when BOTH paths fail.
+ */
+async function sessionsCmd(args: string[]): Promise<number> {
+  const sub = args[0];
+  if (sub !== "search") {
+    console.error("usage: sc sessions search <query> [--session key] [--limit n] [--all] [--json]");
+    return sub ? 2 : 0;
+  }
+  const sessionKeys: string[] = [];
+  let limit = 25;
+  let all = false;
+  let json = false;
+  let tokenOverride: string | undefined;
+  const words: string[] = [];
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--session" && args[i + 1]) sessionKeys.push(args[++i]!);
+    else if (a === "--limit" && args[i + 1]) limit = Math.max(1, Math.min(Number(args[++i]) || 25, 25));
+    else if (a === "--all") all = true;
+    else if (a === "--json") json = true;
+    else if (a === "--token" && args[i + 1]) tokenOverride = args[++i];
+    else if (!a.startsWith("--")) words.push(a);
+  }
+  const query = words.join(" ").trim();
+  if (!query) {
+    console.error("the query must contain text");
+    return 2;
+  }
+
+  type SearchResult = {
+    titleHits: { sessionKey: string; title: string | null; lastMsgAt: number }[];
+    messageHits: { sessionKey: string; title: string | null; messageId: number; role: string; createdAt: number; snippet: string }[];
+  };
+  const opts = {
+    limit,
+    sessionKeys: sessionKeys.length > 0 ? sessionKeys : undefined,
+    scope: (all ? "all" : "visible") as "all" | "visible",
+  };
+
+  // Path 1 — live gateway over WS (its authorized view, same as the UI box).
+  // SUPARCLAW_OFFLINE=1 skips this path: scripted/test runs that must only
+  // read the local store never accidentally answer from a running daemon.
+  if (process.env.SUPARCLAW_OFFLINE !== "1") try {
+    const { readConfigFile } = await import("../config/load.js");
+    const { listGateways } = await import("./service.js");
+    const { GatewayClient } = await import("../gateway/ws-client.js");
+    const live = readConfigFile();
+    const cfg = (live.config ?? {}) as unknown as Record<string, unknown>;
+    const gw = (cfg["gateway"] ?? {}) as Record<string, unknown>;
+    const auth = (gw["auth"] ?? {}) as Record<string, unknown>;
+    const token =
+      tokenOverride ?? process.env["SUPARCLAW_TOKEN"] ?? String(auth["token"] ?? "");
+    const ports: number[] = [];
+    const cfgPort = Number(gw["port"]);
+    if (Number.isFinite(cfgPort) && cfgPort > 0) ports.push(cfgPort);
+    const envPort = Number.parseInt(process.env["SUPARCLAW_GATEWAY_PORT"] ?? "", 10);
+    if (Number.isFinite(envPort) && envPort > 0) ports.push(envPort);
+    for (const p of await listGateways()) if (p.port) ports.push(p.port);
+    ports.push(18790);
+    for (const port of [...new Set(ports)]) {
+      try {
+        const client = await GatewayClient.connect(`ws://127.0.0.1:${port}/ws`, token);
+        const result = (await client.request("sessions.search", { query, ...opts })) as SearchResult;
+        client.close();
+        const code = printSessionSearch(result, json);
+        // One-shot query tool: the RPC is complete and the answer is printed.
+        // The WS close-frame ACK can hang (supervised child handoffs), which
+        // would pin the CLI's event loop after its work is done — exit now.
+        setImmediate(() => process.exit(code));
+        return code;
+      } catch {
+        continue; // try the next candidate port
+      }
+    }
+  } catch {
+    /* fall through to the offline store */
+  }
+
+  // Path 2 — no gateway answered: read the store directly (offline parity).
+  try {
+    if (!existsSync(dbPath())) {
+      console.error("no workspace here — start the gateway (sc gateway) or point SUPARCLAW_HOME at one");
+      return 2;
+    }
+    const { Store } = await import("../state/db.js");
+    const store = Store.open(dbPath());
+    const result = store.searchSessions(query, opts) as SearchResult;
+    store.close();
+    return printSessionSearch(result, json);
+  } catch (err) {
+    console.error(`sessions search failed: ${(err as Error).message}`);
+    console.error("start the gateway (sc gateway) or point SUPARCLAW_HOME at a workspace");
+    return 2;
+  }
+}
+
+function printSessionSearch(
+  result: {
+    titleHits: { sessionKey: string; title: string | null; lastMsgAt: number }[];
+    messageHits: { sessionKey: string; title: string | null; messageId: number; role: string; createdAt: number; snippet: string }[];
+  },
+  json: boolean,
+): number {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  const home = process.env["HOME"] ?? "";
+  const clean = (s: string) => s.replaceAll(home, "~").replace(/\s+/g, " ").trim();
+  const iso = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 16);
+  let shown = 0;
+  for (const h of result.messageHits) {
+    console.log(`${iso(h.createdAt)}  ${h.role.padEnd(9)}  ${h.sessionKey}  ${clean(h.snippet)}`);
+    shown++;
+  }
+  for (const h of result.titleHits) {
+    console.log(`${iso(h.lastMsgAt)}  ${"title".padEnd(9)}  ${h.sessionKey}  ${clean(h.title ?? h.sessionKey)}`);
+    shown++;
+  }
+  if (shown === 0) console.log("no matching sessions");
   return 0;
 }
 

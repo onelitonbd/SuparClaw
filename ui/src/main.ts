@@ -249,7 +249,12 @@ $("think").addEventListener("change", async () => {
 
 /* ---------------- sessions drawer ---------------- */
 
+// Cache of the plain drawer list so session search can restore it (Esc /
+// clear) without another round trip.
+let lastSessionList: { key: string; last_msg_at?: number; title?: string; name?: string | null }[] = [];
+
 function renderSessions(list: { key: string; last_msg_at?: number; title?: string; name?: string | null }[]): void {
+  lastSessionList = list;
   const host = $("sessions");
   host.innerHTML = "";
   if (list.length === 0) list = [{ key: sessionKey }];
@@ -285,7 +290,7 @@ async function switchSession(key: string): Promise<void> {
   void refresh();
 }
 
-async function loadHistory(): Promise<void> {
+async function loadHistory(anchorMid?: number): Promise<void> {
   // Fetch first, replace after: a failed request must never wipe the visible
   // transcript (clear-before-fetch silently blanked the chat whenever the
   // gateway was briefly unreachable). One retry for a gateway that is still
@@ -293,11 +298,28 @@ async function loadHistory(): Promise<void> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await gateway.request("chat.history", { sessionKey, limit: 60 });
+      const res = await gateway.request("chat.history", {
+        sessionKey,
+        limit: anchorMid ? 40 : 60,
+        ...(anchorMid ? { messageId: anchorMid } : {}),
+      });
       const messages = (res as any).messages ?? [];
       const rendered = chat.replaceThread(
-        messages.map((m: any) => ({ role: String(m.role ?? ""), content: String(m.content ?? "") })),
+        messages.map((m: any) => ({
+          id: typeof m.id === "number" ? m.id : undefined,
+          role: String(m.role ?? ""),
+          content: String(m.content ?? ""),
+        })),
       );
+      if (anchorMid !== undefined) {
+        // Reopen parity: land on the search hit's own row with a brief pulse.
+        const node = chat.anchorMap.get(anchorMid);
+        if (node) {
+          node.scrollIntoView({ block: "center" });
+          node.classList.add("msg--anchor");
+          setTimeout(() => node.classList.remove("msg--anchor"), 2400);
+        }
+      }
       if (rendered === 0) {
         chat.notice(`Session started · ${statusTools()} tools enabled`);
       }
@@ -314,6 +336,121 @@ async function loadHistory(): Promise<void> {
   }
   chat.notice(`could not load history: ${lastError?.message ?? "gateway unavailable"}`);
 }
+
+/* ---------------- session search (Partial #3) ---------------- */
+
+// Live search inside the sessions drawer (their palette/Threads parity in our
+// list shape): Sessions group = title/identifier matches, Messages group =
+// exact-word transcript hits (last word stays a prefix). Server-side search —
+// the drawer never downloads a roster to search.
+let searchSeq = 0;
+
+function snippetNodes(snippet: string): (Node | string)[] {
+  // Server marks hits with « »; escape everything else, promote marks to <mark>.
+  const out: (Node | string)[] = [];
+  let rest = snippet;
+  for (;;) {
+    const open = rest.indexOf("«");
+    const close = open < 0 ? -1 : rest.indexOf("»", open);
+    if (open < 0 || close < 0) { out.push(rest); break; }
+    out.push(rest.slice(0, open));
+    out.push(el("mark", {}, [rest.slice(open + 1, close)]));
+    rest = rest.slice(close + 1);
+  }
+  return out;
+}
+
+async function openSearchHit(sessionKeyHit: string, messageId?: number): Promise<void> {
+  if (sessionKeyHit !== sessionKey) {
+    sessionKey = sessionKeyHit;
+    localStorage.setItem("sc.session", sessionKeyHit);
+    $("session-title").textContent = sessionKeyHit;
+  }
+  closeDrawer();
+  await loadHistory(messageId);
+  void refresh();
+}
+
+function renderSessionSearch(q: string, result: { titleHits?: any[]; messageHits?: any[] }): void {
+  const host = $("sessions");
+  host.innerHTML = "";
+  const titleHits = result.titleHits ?? [];
+  const messageHits = result.messageHits ?? [];
+  host.append(el("div", { class: "srccap" }, [
+    `${titleHits.length} sessions · ${messageHits.length} messages`,
+    el("button", { class: "srccap__clear", type: "button" }, ["clear"]),
+  ]));
+  host.querySelector(".srccap__clear")?.addEventListener("click", () => {
+    const input = $("sessions-search") as HTMLInputElement;
+    input.value = "";
+    input.dispatchEvent(new Event("input"));
+    input.focus();
+  });
+  for (const h of titleHits) {
+    const btn = el("button", { class: "session searchrow", type: "button" }, [
+      el("span", { class: "session__text" }, [
+        el("span", { class: "session__title" }, [h.title || h.sessionKey]),
+        el("span", { class: "session__meta" }, [
+          `${h.sessionKey}${h.lastMsgAt ? ` · ${fmtTime(h.lastMsgAt)}` : ""}`,
+        ]),
+      ]),
+    ]);
+    btn.onclick = () => void openSearchHit(String(h.sessionKey));
+    host.append(btn);
+  }
+  for (const h of messageHits) {
+    const btn = el("button", { class: "session searchrow searchrow--msg", type: "button" }, [
+      el("span", { class: "session__text" }, [
+        el("span", { class: "session__title" }, [h.title || h.sessionKey]),
+        el("span", { class: "session__meta" }, [
+          `${h.role}${h.createdAt ? ` · ${fmtTime(h.createdAt)}` : ""}`,
+        ]),
+        el("span", { class: "searchrow__snippet" }, snippetNodes(String(h.snippet ?? ""))),
+      ]),
+    ]);
+    const mid = Number(h.messageId);
+    btn.onclick = () => void openSearchHit(String(h.sessionKey), Number.isFinite(mid) ? mid : undefined);
+    host.append(btn);
+  }
+  if (titleHits.length + messageHits.length === 0) {
+    host.append(el("div", { class: "srccap" }, [`no matches for “${q}”`]));
+  }
+}
+
+function initSessionSearch(): void {
+  const input = $("sessions-search") as HTMLInputElement | null;
+  if (!input) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const run = async (): Promise<void> => {
+    const q = input.value.trim();
+    if (q.length < 2) { searchSeq++; renderSessions(lastSessionList); return; }
+    const seq = ++searchSeq;
+    try {
+      const res = await gateway.request("sessions.search", { query: q, limit: 25 });
+      if (seq !== searchSeq) return; // a newer keystroke already answered
+      renderSessionSearch(q, res as { titleHits?: any[]; messageHits?: any[] });
+    } catch {
+      // Search must never blank the drawer: keep whatever is on screen.
+    }
+  };
+  input.oninput = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => void run(), 150);
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Escape") {
+      input.value = "";
+      input.dispatchEvent(new Event("input"));
+      input.blur();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const first = document.querySelector("#sessions .searchrow") as HTMLButtonElement | null;
+      first?.click();
+    }
+  };
+}
+
+initSessionSearch();
 
 function statusTools(): number {
   return toolCount;

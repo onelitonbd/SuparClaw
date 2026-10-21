@@ -213,23 +213,36 @@ export class Chat {
    * replay used to scatter every tool card into its own "Assistant Tools"
    * bubble with thinking floating between them.
    */
-  replaceThread(rows: { role: string; content: string }[]): number {
+  /** messageId → rendered node, so session-search hits can scroll+highlight
+   *  their anchor after a thread reload. Rebuilt on every replaceThread. */
+  readonly anchorMap = new Map<number, HTMLElement>();
+
+  replaceThread(rows: { role: string; content: string; id?: number }[]): number {
     const live = this.#live;
     const liveText = this.#streamText;
     this.stack.innerHTML = "";
+    this.anchorMap.clear();
     this.#live = null;
     this.#looseThought = null;
     this.#streamText = "";
     let rendered = 0;
 
     type ReplayTool = { name: string; status: ToolStatus; detail: string; ms?: number; key: string };
-    type TurnGroup = { thoughts: string[]; tools: ReplayTool[]; text: string };
+    type TurnGroup = { thoughts: string[]; tools: ReplayTool[]; text: string; ids: number[] };
     let group: TurnGroup | null = null;
-    const newGroup = (): TurnGroup => ({ thoughts: [], tools: [], text: "" });
+    const newGroup = (): TurnGroup => ({ thoughts: [], tools: [], text: "", ids: [] });
+    const markAnchor = (id?: number): void => {
+      if (id === undefined) return;
+      const node = this.stack.lastElementChild as HTMLElement | null;
+      if (node) this.anchorMap.set(id, node);
+    };
     const flushGroup = (): void => {
       if (!group) return;
       const has = group.text || group.tools.length > 0 || group.thoughts.length > 0;
+      const { ids } = group;
       if (has) this.#renderTurn(group);
+      // Group rows share one rendered turn: every member id anchors to it.
+      if (has) for (const id of ids) markAnchor(id);
       group = null;
     };
 
@@ -238,9 +251,11 @@ export class Chat {
         if (row.role === "user") {
           flushGroup();
           this.user(row.content);
+          markAnchor(row.id);
           rendered++;
         } else if (row.role === "assistant" && row.content) {
           group ??= newGroup();
+          group.ids.push(row.id ?? -1);
           group.text += (group.text ? "\n\n" : "") + row.content;
           rendered++;
         } else if (row.role === "tool" && row.content) {
@@ -252,6 +267,7 @@ export class Chat {
           const duration = timed?.[2] ? Number(timed[2]) : undefined;
           const output = lines.slice(1).join("\n");
           group ??= newGroup();
+          group.ids.push(row.id ?? -1);
           group.tools.push({
             name,
             status: output.startsWith("error") ? "error" : "done",
@@ -265,9 +281,11 @@ export class Chat {
           // user saw live — errors were live-only and vanished on refresh.
           flushGroup();
           this.fail(row.content);
+          markAnchor(row.id);
           rendered++;
         } else if (row.role === "reasoning" && row.content) {
           group ??= newGroup();
+          group.ids.push(row.id ?? -1);
           group.thoughts.push(row.content);
           rendered++;
         }

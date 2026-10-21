@@ -54,6 +54,101 @@ export interface JobRow {
   created_at: number;
 }
 
+// ---- session search types & query helpers --------------------------------
+
+export interface SessionTitleHit {
+  sessionKey: string;
+  title: string | null;
+  lastMsgAt: number;
+}
+
+export interface SessionMessageHit {
+  sessionKey: string;
+  title: string | null;
+  messageId: number;
+  role: string;
+  createdAt: number;
+  snippet: string;
+}
+
+export interface SessionSearchResult {
+  titleHits: SessionTitleHit[];
+  messageHits: SessionMessageHit[];
+}
+
+/** Query words are literal text: punctuation never becomes FTS syntax
+ *  (their rule). Split on non-word, drop empties, cap at 6 tokens. */
+function tokenizeQuery(query: string): string[] {
+  return query
+    .replace(/[^\p{L}\p{N}_]/gu, " ")
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
+    .slice(0, 6);
+}
+
+/** FTS5 MATCH: every word; the LAST word as a prefix (their UI rule). Each
+ *  token is double-quoted through an escape so injected quotes stay literal. */
+function buildMatch(tokens: string[]): string {
+  const esc = (t: string) => `"${t.replace(/"/g, '""')}"`;
+  const parts = tokens.map(esc);
+  if (parts.length > 0) parts[parts.length - 1] += "*";
+  return parts.join(" AND ");
+}
+
+/** Visibility + optional sessionKeys restriction for search scopes. */
+function keysPredicate(sessionKeys: string[] | undefined, scope: "visible" | "all"): (key: string) => boolean {
+  if (sessionKeys && sessionKeys.length > 0) {
+    const set = new Set(sessionKeys);
+    return (k) => set.has(k);
+  }
+  return scope === "visible" ? (k) => !k.startsWith("subagent:") : () => true;
+}
+
+/** One-line snippet with «» markers around the first matching token. */
+function makeSnippet(content: string, tokens: string[]): string {
+  const plain = content.replace(/\s+/g, " ").trim();
+  const lower = plain.toLowerCase();
+  let at = -1;
+  for (const t of tokens) {
+    const i = lower.indexOf(t.toLowerCase());
+    if (i >= 0 && (at < 0 || i < at)) at = i;
+  }
+  if (at < 0) return plain.slice(0, 300) + (plain.length > 300 ? "…" : "");
+  const start = Math.max(0, at - 60);
+  const end = Math.min(plain.length, at + 220);
+  const body = plain.slice(start, end);
+  // Mark every token occurrence inside the window (case-insensitive).
+  let out = "";
+  const window = body.toLowerCase();
+  const marks: [number, number][] = [];
+  for (const t of tokens) {
+    const q = t.toLowerCase();
+    let i = 0;
+    while ((i = window.indexOf(q, i)) >= 0) {
+      marks.push([i, i + q.length]);
+      i += q.length;
+    }
+  }
+  marks.sort((a, b) => a[0] - b[0]);
+  let pos = 0;
+  for (const [a, b] of marks) {
+    if (a < pos) continue;
+    out += body.slice(pos, a) + "«" + body.slice(a, b) + "»";
+    pos = b;
+  }
+  out += body.slice(pos);
+  return (start > 0 ? "…" : "") + out + (end < plain.length ? "…" : "");
+}
+
+/** LIKE-fallback safety net: with FTS the MATCH already enforces tokens; on
+ *  the LIKE path require every token to appear (last as prefix anywhere). */
+function hitsMayContainAllTokens(content: string, tokens: string[], fts: boolean): boolean {
+  if (fts) return true;
+  const hay = content.toLowerCase();
+  return tokens.every((t) => hay.includes(t.toLowerCase()));
+}
+
 const MIGRATIONS: string[][] = [
   [
     `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);`,
@@ -348,6 +443,124 @@ export class Store {
          WHERE m.content LIKE ? ORDER BY m.id DESC LIMIT ?`,
       )
       .all(like, limit) as unknown as (MessageRow & { session_key: string })[];
+  }
+
+  // ---- sessions search ----------------------------------------------------
+  /**
+   * Session search (Partial #3 — OpenClaw session-search parity). Two hit
+   * groups, mirroring their palette: title hits (token match, last token
+   * prefix) and transcript hits over user/assistant text only (tool results,
+   * reasoning and error rows are excluded). Query words are literal text —
+   * punctuation never becomes FTS syntax; the last word is a prefix match.
+   * scope "visible" keeps subagent lanes out (their palette rule), "all"
+   * includes them.
+   */
+  searchSessions(
+    query: string,
+    opts: { limit?: number; sessionKeys?: string[]; scope?: "visible" | "all" } = {},
+  ): SessionSearchResult {
+    const limit = Math.max(1, Math.min(opts.limit ?? 25, 25));
+    const scope = opts.scope ?? "visible";
+    const tokens = tokenizeQuery(query);
+    const empty: SessionSearchResult = { titleHits: [], messageHits: [] };
+    if (tokens.length === 0) return empty;
+    const restrict = keysPredicate(opts.sessionKeys, scope);
+
+    // Group 1 — Sessions (titles/identifiers): LIKE per token; literal keys
+    // keep substring matching (their identifier rule).
+    const titleRows = this.listSessions(200).filter((s) => {
+      if (!restrict(s.key)) return false;
+      const hay = `${(s.name ?? "").toLowerCase()} ${s.key.toLowerCase()}`;
+      return tokens.every((t, i) => {
+        const q = t.toLowerCase();
+        if (i === tokens.length - 1) {
+          // Last word prefixes title word starts; identifiers match anywhere.
+          const name = (s.name ?? "").toLowerCase();
+          if (name && name.split(/[\s\-_/:]+/).some((w) => w.startsWith(q))) return true;
+          return s.key.toLowerCase().includes(q);
+        }
+        return hay.includes(q);
+      });
+    });
+
+    // Group 2 — Messages (transcripts): FTS over user/assistant rows only.
+    const match = buildMatch(tokens);
+    const like = `%${tokens.map((t) => t.replace(/[%_]/g, "")).join(" ")}%`;
+    let rows: (MessageRow & { session_key: string; session_name: string | null; snippet: string | null })[] = [];
+    if (this.fts) {
+      try {
+        rows = this.db
+          .prepare(
+            `SELECT m.*, s.key AS session_key, s.name AS session_name,
+                    snippet(fts_messages, 0, '«', '»', '…', 28) AS snippet
+             FROM fts_messages f
+             JOIN messages m ON m.id = f.message_id
+             JOIN sessions s ON s.id = m.session_id
+             WHERE fts_messages MATCH ? AND m.role IN ('user','assistant')
+             ORDER BY rank, m.created_at DESC LIMIT ?`,
+          )
+          .all(match, limit * 4) as unknown as typeof rows;
+      } catch {
+        rows = [];
+      }
+    }
+    if (rows.length === 0) {
+      rows = (this.db
+        .prepare(
+          `SELECT m.*, s.key AS session_key, s.name AS session_name
+           FROM messages m JOIN sessions s ON s.id = m.session_id
+           WHERE m.content LIKE ? AND m.role IN ('user','assistant')
+           ORDER BY m.id DESC LIMIT ?`,
+        )
+        .all(like, limit * 8) as unknown as typeof rows).map((r) => ({
+        ...r,
+        snippet: makeSnippet(r.content, tokens),
+      }));
+    }
+    const messageHits: SessionMessageHit[] = [];
+    const perSession = new Map<string, number>();
+    for (const r of rows) {
+      if (!restrict(r.session_key)) continue;
+      if (hitsMayContainAllTokens(r.content, tokens, this.fts) === false) continue;
+      const n = perSession.get(r.session_key) ?? 0;
+      if (n >= 3) continue;
+      perSession.set(r.session_key, n + 1);
+      messageHits.push({
+        sessionKey: r.session_key,
+        title: r.session_name,
+        messageId: r.id,
+        role: r.role,
+        createdAt: r.created_at,
+        snippet: r.snippet ?? makeSnippet(r.content, tokens),
+      });
+      if (messageHits.length >= limit) break;
+    }
+    return {
+      titleHits: titleRows.slice(0, limit).map((s) => ({
+        sessionKey: s.key,
+        title: s.name,
+        lastMsgAt: s.last_msg_at,
+      })),
+      messageHits,
+    };
+  }
+
+  /** Anchored transcript window: the returned span is bounded by limit
+   *  (their rule) with a before-heavier bias for context; a missing or
+   *  off-session anchor yields an EMPTY list, never the tail. */
+  messagesAround(sessionId: string, messageId: number, limit = 30): MessageRow[] {
+    const anchor = this.db
+      .prepare("SELECT id FROM messages WHERE id = ? AND session_id = ?")
+      .get(messageId, sessionId) as { id: number } | undefined;
+    if (!anchor) return [];
+    const total = Math.max(1, limit);
+    const before = this.db
+      .prepare("SELECT * FROM messages WHERE session_id = ? AND id < ? ORDER BY id DESC LIMIT ?")
+      .all(sessionId, messageId, Math.ceil((total - 1) / 2)) as unknown as MessageRow[];
+    const after = this.db
+      .prepare("SELECT * FROM messages WHERE session_id = ? AND id >= ? ORDER BY id ASC LIMIT ?")
+      .all(sessionId, messageId, total - before.length) as unknown as MessageRow[];
+    return [...before.reverse(), ...after];
   }
 
   // ---- cron jobs --------------------------------------------------------

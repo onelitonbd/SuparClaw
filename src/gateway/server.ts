@@ -210,6 +210,7 @@ export class Gateway {
       "subagents.list",
       "subagents.cancel",
       "sessions.list",
+      "sessions.search",
       "sessions.patch",
       "sessions.rename",
       "models.list",
@@ -297,18 +298,40 @@ export class Gateway {
           // ensureSession() here spawned ghost rows in the sidebar whenever
           // the UI asked about a key that no longer existed.
           const session = service.store.getSessionByKey(sessionKey);
+          // Anchored read (their session-search rule): reopen the transcript
+          // surrounded around a search hit's messageId; a missing or off-path
+          // anchor returns empty — never the newest tail.
+          const anchor = Number.isFinite(Number(params["messageId"])) ? Number(params["messageId"]) : undefined;
+          const rows = session
+            ? anchor !== undefined
+              ? service.store.messagesAround(session.id, anchor, Number(params["limit"] ?? 40))
+              : service.store.recentMessages(session.id, Number(params["limit"] ?? 40))
+            : [];
           send(
             okFrame(id, {
               sessionKey,
-              messages: session
-                ? service.store.recentMessages(session.id, Number(params["limit"] ?? 40)).map((m) => ({
-                    role: m.role,
-                    content: m.content,
-                    createdAt: m.created_at,
-                  }))
-                : [],
+              anchor: anchor ?? null,
+              messages: rows.map((m) => ({
+                id: m.id,
+                role: m.role,
+                content: m.content,
+                createdAt: m.created_at,
+              })),
             }),
           );
+          return;
+        }
+        case "sessions.search": {
+          // Session search (Partial #3): literal-word FTS over user/assistant
+          // transcript text (tool rows excluded), plus token-matched titles.
+          // { query, limit?, sessionKeys? (repeatable narrowing), scope? }
+          const query = String(params["query"] ?? "");
+          const result = service.store.searchSessions(query.slice(0, 4096), {
+            limit: Math.max(1, Math.min(Number(params["limit"] ?? 25) || 25, 25)),
+            sessionKeys: Array.isArray(params["sessionKeys"]) ? (params["sessionKeys"] as string[]).map(String) : undefined,
+            scope: params["scope"] === "all" ? "all" : "visible",
+          });
+          send(okFrame(id, result));
           return;
         }
         case "chat.abort":
