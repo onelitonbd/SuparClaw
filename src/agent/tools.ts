@@ -263,6 +263,12 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             { maxResults },
           );
           if (hits.length === 0) return "no matches";
+          // Recall log: drives the dreaming deep phase's relevance/diversity
+          // signals (their recall-trace input). Sources in candidate form.
+          ctx.store.recordMemoryRecall(
+            q,
+            hits.map((h) => (h.source.startsWith("session · ") ? `session:${h.source.split(" · ")[1]}` : h.source)),
+          );
           return hits
             .map((h) => `[${h.score.toFixed(2)}${h.date ? ` · ${h.date}` : ""} · ${h.source}] ${h.snippet}`)
             .join("\n\n");

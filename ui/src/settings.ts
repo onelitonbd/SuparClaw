@@ -861,14 +861,14 @@ export class Settings {
       ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never";
     const counts = status?.counts ?? { memoryLines: 0, dailyNotes: 0, diaryEntries: 0 };
 
-    // Card 1 — dreaming controls. The nightly sweep consolidates the raw
-    // memory/YYYY-MM-DD.md notes into the curated MEMORY.md and writes the
-    // dated Deep Sleep entry to DREAMS.md.
+    // Card 1 — dreaming controls. The nightly sweep now runs three phases
+    // (light stage → REM themes → deep gate+consolidate) and reports its
+    // verdict, staged backlog and rejected-by-category counts here.
     const enabled = el("input", { type: "checkbox", id: "mem-dream-enabled" }) as HTMLInputElement;
     enabled.checked = status ? status.enabled !== false : true;
     const schedule = el("input", {
       class: "inp mono", id: "mem-dream-schedule",
-      value: String(status?.schedule ?? "0 4 * * *"), placeholder: "0 4 * * *",
+      value: String(status?.schedule ?? "0 3 * * *"), placeholder: "0 3 * * *",
     });
 
     const stateLine = !status
@@ -907,7 +907,7 @@ export class Settings {
     save.onclick = async () => {
       await this.#setMany([
         ["memory.dreaming.enabled", enabled.checked],
-        ["memory.dreaming.schedule", schedule.value.trim() || "0 4 * * *"],
+        ["memory.dreaming.schedule", schedule.value.trim() || "0 3 * * *"],
       ], "dreaming saved");
       // Re-armed by the config hot-reload — re-render to show the new next run.
       await this.render();
@@ -920,11 +920,20 @@ export class Settings {
       ]),
       el("div", { class: "row" }, [
         el("span", { class: "row__label" }, ["Last sweep"]),
-        el("span", { class: "row__value" }, [fmt(status?.lastDreamAt)]),
+        el("span", { class: "row__value" }, [status?.lastVerdict ? `${fmt(status?.lastDreamAt)} — ${String(status.lastVerdict).slice(0, 80)}` : fmt(status?.lastDreamAt)]),
       ]),
       el("div", { class: "row" }, [
         el("span", { class: "row__label" }, ["Counts"]),
         el("span", { class: "row__value" }, [`${counts.memoryLines} curated lines · ${counts.dailyNotes} daily notes · ${counts.diaryEntries} diary entries`]),
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Phases"]),
+        el("span", { class: "row__value" }, [
+          `${counts.staged ?? 0} staged · ${counts.promotedToday ?? 0} promoted today` +
+            (status?.lastRejected && Object.keys(status.lastRejected).length
+              ? ` · last rejected {${Object.entries(status.lastRejected).map(([k, v]: [string, unknown]) => `${k}:${v}`).join(", ")}}`
+              : ""),
+        ]),
       ]),
       el("div", { class: "modal__field" }, [
         el("label", { class: "lbl", for: "mem-dream-schedule" }, ["Schedule (cron)"]),

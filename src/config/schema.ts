@@ -239,8 +239,8 @@ export const CONFIG_SCHEMA: SchemaNode = {
           default: {},
           fields: {
             enabled: { t: "bool", default: true },
-            // Standard 5-field cron, run by the gateway daemon.
-            schedule: { t: "string", default: "0 4 * * *" },
+            // Standard 5-field cron, run by the gateway daemon (their 0 3 default).
+            schedule: { t: "string", default: "0 3 * * *" },
           },
         },
       },

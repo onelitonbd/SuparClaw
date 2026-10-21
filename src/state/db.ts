@@ -225,6 +225,46 @@ const MIGRATIONS: string[][] = [
     // FTS is optional: some SQLite builds omit FTS5, so every caller must fall back to LIKE.
     `CREATE VIRTUAL TABLE IF NOT EXISTS fts_messages USING fts5(content, session_id UNINDEXED, message_id UNINDEXED);`,
   ],
+  [
+    // Dreaming depth (Partial #5): phased sweep state. Candidates are the
+    // short-term recall store; recalls are memory_search hit logs feeding the
+    // deep signals; preimages snapshot MEMORY.md before every rewrite.
+    `CREATE TABLE IF NOT EXISTS dream_candidates (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       text TEXT NOT NULL,
+       source TEXT NOT NULL,
+       day TEXT NOT NULL,
+       kind TEXT NOT NULL,
+       importance INTEGER,
+       staged_at INTEGER NOT NULL,
+       staged_via TEXT NOT NULL DEFAULT 'sweep',
+       promoted_at INTEGER
+     );`,
+    `CREATE INDEX IF NOT EXISTS dream_candidates_day_idx ON dream_candidates(day);`,
+    `CREATE TABLE IF NOT EXISTS dream_recalls (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       query TEXT NOT NULL,
+       sources TEXT NOT NULL,
+       created_at INTEGER NOT NULL
+     );`,
+    `CREATE TABLE IF NOT EXISTS dream_preimages (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       content TEXT NOT NULL,
+       created_at INTEGER NOT NULL
+     );`,
+    `CREATE TABLE IF NOT EXISTS dream_runs (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       day TEXT NOT NULL,
+       light_staged INTEGER NOT NULL,
+       themes TEXT NOT NULL,
+       promoted INTEGER NOT NULL,
+       merged INTEGER NOT NULL,
+       superseded INTEGER NOT NULL,
+       rejected TEXT NOT NULL,
+       verdict TEXT NOT NULL,
+       created_at INTEGER NOT NULL
+     );`,
+  ],
 ];
 
 export class Store {
@@ -693,4 +733,127 @@ export class Store {
       .run(Date.now());
     return Number(res.changes);
   }
+
+  // ---- dreaming (Partial #5) ------------------------------------------------
+
+  /** Recent owner interactive transcript lines for light-phase ingestion —
+   *  user/assistant text only; subagent/system/cron lanes excluded. */
+  dreamTranscriptLines(sinceMs: number, limit = 150): (MessageRow & { session_key: string })[] {
+    return this.db
+      .prepare(
+        `SELECT m.*, s.key AS session_key FROM messages m
+         JOIN sessions s ON s.id = m.session_id
+         WHERE m.created_at >= ? AND m.role IN ('user','assistant')
+           AND s.key NOT LIKE 'subagent:%' AND s.key NOT LIKE 'system:%' AND s.key NOT LIKE 'cron:%'
+         ORDER BY m.created_at DESC LIMIT ?`,
+      )
+      .all(sinceMs, limit) as unknown as (MessageRow & { session_key: string })[];
+  }
+
+  /** Light-phase staging. Dedupe against existing identical text+source. */
+  stageDreamCandidate(c: { text: string; source: string; day: string; kind: string; importance: number | null; stagedVia: string }): boolean {
+    const seen = this.db
+      .prepare("SELECT 1 FROM dream_candidates WHERE text = ? AND source = ? AND promoted_at IS NULL LIMIT 1")
+      .get(c.text, c.source);
+    if (seen) return false;
+    this.db
+      .prepare("INSERT INTO dream_candidates (text, source, day, kind, importance, staged_at, staged_via) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(c.text, c.source, c.day, c.kind, c.importance, Date.now(), c.stagedVia);
+    return true;
+  }
+
+  dreamCandidates(opts: { minDay?: string; stagedSinceMs?: number; includePromoted?: boolean; via?: string } = {}): DreamCandidateRow[] {
+    const where = ["1=1"];
+    const args: unknown[] = [];
+    if (opts.minDay) {
+      where.push("day >= ?");
+      args.push(opts.minDay);
+    }
+    if (opts.stagedSinceMs) {
+      where.push("staged_at >= ?");
+      args.push(opts.stagedSinceMs);
+    }
+    if (!opts.includePromoted) where.push("promoted_at IS NULL");
+    if (opts.via) {
+      where.push("staged_via = ?");
+      args.push(opts.via);
+    }
+    return this.db
+      .prepare(`SELECT * FROM dream_candidates WHERE ${where.join(" AND ")} ORDER BY day DESC, id ASC`)
+      .all(...(args as never[])) as unknown as DreamCandidateRow[];
+  }
+
+  markDreamCandidatesPromoted(ids: number[]): void {
+    const now = Date.now();
+    const stmt = this.db.prepare("UPDATE dream_candidates SET promoted_at = ? WHERE id = ?");
+    for (const id of ids) stmt.run(now, id);
+  }
+
+  /** Backfill rollback: remove only artifacts staged via backfill lanes. */
+  rollbackDreamBackfill(): number {
+    const res = this.db.prepare("DELETE FROM dream_candidates WHERE staged_via = 'backfill'").run();
+    return Number(res.changes);
+  }
+
+  /** memory_search recall logging — drives the relevance/diversity signals. */
+  recordMemoryRecall(query: string, sources: string[]): void {
+    if (!query.trim() || sources.length === 0) return;
+    this.db
+      .prepare("INSERT INTO dream_recalls (query, sources, created_at) VALUES (?, ?, ?)")
+      .run(query, JSON.stringify(sources.slice(0, 12)), Date.now());
+  }
+
+  /** Recall log rows newer than `sinceMs` (signals only need recent history). */
+  dreamRecalls(sinceMs: number): { query: string; sources: string; created_at: number }[] {
+    return this.db
+      .prepare("SELECT query, sources, created_at FROM dream_recalls WHERE created_at >= ? ORDER BY id ASC")
+      .all(sinceMs) as unknown as { query: string; sources: string; created_at: number }[];
+  }
+
+  saveDreamPreimage(content: string): void {
+    this.db.prepare("INSERT INTO dream_preimages (content, created_at) VALUES (?, ?)").run(content, Date.now());
+  }
+
+  latestDreamPreimage(): { content: string; created_at: number } | undefined {
+    return this.db
+      .prepare("SELECT content, created_at FROM dream_preimages ORDER BY id DESC LIMIT 1")
+      .get() as { content: string; created_at: number } | undefined;
+  }
+
+  recordDreamRun(run: Omit<DreamRunRow, "id" | "created_at">): void {
+    this.db
+      .prepare(
+        "INSERT INTO dream_runs (day, light_staged, themes, promoted, merged, superseded, rejected, verdict, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(run.day, run.light_staged, run.themes, run.promoted, run.merged, run.superseded, run.rejected, run.verdict, Date.now());
+  }
+
+  lastDreamRun(): DreamRunRow | undefined {
+    return this.db.prepare("SELECT * FROM dream_runs ORDER BY id DESC LIMIT 1").get() as DreamRunRow | undefined;
+  }
+}
+
+export interface DreamCandidateRow {
+  id: number;
+  text: string;
+  source: string;
+  day: string;
+  kind: string;
+  importance: number | null;
+  staged_at: number;
+  staged_via: string;
+  promoted_at: number | null;
+}
+
+export interface DreamRunRow {
+  id: number;
+  day: string;
+  light_staged: number;
+  themes: string;
+  promoted: number;
+  merged: number;
+  superseded: number;
+  rejected: string;
+  verdict: string;
+  created_at: number;
 }

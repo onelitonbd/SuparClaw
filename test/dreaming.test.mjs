@@ -53,35 +53,16 @@ function startMockProvider(port) {
         ]);
         return;
       }
-      if (text.includes("memory consolidation sweep")) {
-        const hasToolResult = text.includes('\\"role\\": \\"tool\\"') || text.includes('"role":"tool"') || text.includes('"role": "tool"');
-        if (!hasToolResult) {
-          const args1 = JSON.stringify({
-            path: "MEMORY.md",
-            content: "# MEMORY\n\n## Stable\n- Durable Fact: user prefers compact bullet lists.\n",
-          });
-          const args2 = JSON.stringify({
-            path: "DREAMS.md",
-            content: "# DREAMS\n\n## Deep Sleep - 2026-01-01\n- promoted: durable fact into MEMORY.md\n",
-          });
-          sse([
-            {
-              choices: [{
-                delta: {
-                  tool_calls: [
-                    { index: 0, id: "call_1", type: "function", function: { name: "fs_write", arguments: args1 } },
-                    { index: 1, id: "call_2", type: "function", function: { name: "fs_write", arguments: args2 } },
-                  ],
-                },
-              }],
-            },
-            { choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { total_tokens: 20 } },
-          ]);
-          return;
-        }
+      // Deep consolidation: the sweep's ONLY model call — a tool-free
+      // completion that must return JSON ops (their operations contract).
+      if (text.includes("deep-consolidation step")) {
+        const ops = JSON.stringify({
+          ops: [{ op: "add", text: "Durable Fact: user prefers compact bullet lists", importance: 8, trigger: "bullet lists", source: "memory/notes.md" }],
+          diary: "One durable list preference moved into long-term memory.",
+        });
         sse([
-          { choices: [{ delta: { content: "promoted 1 fact into MEMORY.md" } }] },
-          { choices: [{ delta: {}, finish_reason: "stop" }], usage: { total_tokens: 12 } },
+          { choices: [{ delta: { content: ops } }] },
+          { choices: [{ delta: {}, finish_reason: "stop" }], usage: { total_tokens: 20 } },
         ]);
         return;
       }
@@ -134,8 +115,8 @@ const wsClient = async (url) => {
   };
 };
 
-const { channelLabel, dreamPrompt, titlePrompt, cleanTitle } = await import("../dist/lib.js");
-const dream = { dreamPrompt, titlePrompt, cleanTitle };
+const { channelLabel, titlePrompt, cleanTitle, consolidationPrompt } = await import("../dist/lib.js");
+const dream = { titlePrompt, cleanTitle };
 
 test("channel labels name the surface the message arrived on", () => {
   assert.equal(channelLabel("main:main"), "the web chat (main session)");
@@ -146,14 +127,20 @@ test("channel labels name the surface the message arrived on", () => {
   assert.match(channelLabel("tui:main"), /terminal UI/);
 });
 
-test("dream prompt and title cleanup follow the OpenClaw rules", () => {
-  const prompt = dream.dreamPrompt("2026-10-21");
+test("consolidation prompt + title cleanup follow the OpenClaw rules", () => {
+  // The sweep's single model call: tool-free consolidation over GATED
+  // candidates, returning ops — their operations, not freeform rewriting.
+  const decision = (text, source, day) => ({
+    verdict: "promote",
+    cluster: { members: [], rep: { text, source, day, importance: null } },
+    signals: { score: 0.9 },
+  });
+  const prompt = consolidationPrompt([decision("gateway host lives at home", "memory/2026-10-20.md", "2026-10-20")], "# Memory\n");
   assert.match(prompt, /MEMORY\.md/);
-  assert.match(prompt, /DREAMS\.md/);
-  assert.match(prompt, /Deep Sleep - 2026-10-21/);
-  assert.match(prompt, /nothing new/);
-  assert.match(prompt, /Skip today's note/);
-  assert.match(prompt, /Skip secrets/);
+  assert.match(prompt, /memory\/2026-10-20\.md/, "candidate provenance included");
+  assert.match(prompt, /ONLY JSON/, "ops contract, not prose");
+  assert.match(prompt, /durable facts only/);
+  assert.match(prompt, /supersede/);
   assert.ok(dream.titlePrompt("hello").includes("2-6 words"));
   assert.equal(dream.cleanTitle('"Fix Telegram Bot Replies"\nmore lines'), "Fix Telegram Bot Replies");
   assert.equal(dream.cleanTitle("Short."), "Short");
@@ -183,15 +170,24 @@ test("sc dream consolidates daily notes into MEMORY.md + DREAMS.md", async (t) =
     JSON.stringify({ baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: "x", models: ["m1"] }),
   ]);
 
+  // Recent notes repeated across days — the only pattern deep's gates let through.
+  const wsSeed = join(home, ".suparclaw", "workspace", "memory");
+  mkdirSync(wsSeed, { recursive: true });
+  const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  writeFileSync(join(wsSeed, `${day(2)}.md`), "- user actually prefers compact bullet lists\n");
+  writeFileSync(join(wsSeed, `${day(1)}.md`), "- user actually prefers compact bullet lists\n");
+
   const res = await run(["dream"]);
   assert.equal(res.code, 0, `sc dream exits clean:\n${res.out}`);
-  assert.match(res.out, /promoted 1 fact into MEMORY\.md/, "sweep summary is printed");
+  assert.match(res.out, /promoted 1/, "sweep summary reports the applied op");
 
   const wsDir = join(home, ".suparclaw", "workspace");
   const memory = readFileSync(join(wsDir, "MEMORY.md"), "utf8");
-  assert.match(memory, /Durable Fact: user prefers compact bullet lists/, "MEMORY.md got the promoted fact");
+  assert.match(memory, /Durable Fact: user prefers compact bullet lists/, "MEMORY.md got the model op");
+  assert.match(memory, /<!-- importance: 8 -->/, "write-time annotation applied");
   const dreams = readFileSync(join(wsDir, "DREAMS.md"), "utf8");
   assert.match(dreams, /## Deep Sleep - /, "DREAMS.md has a dated diary entry");
+  assert.match(dreams, /One durable list preference moved into long-term memory/, "model diary line used");
 });
 
 test("sessions auto-title after the first reply and broadcast the rename", async (t) => {
@@ -233,10 +229,12 @@ test("sessions auto-title after the first reply and broadcast the rename", async
   }
   assert.ok(healthy, `gateway never became healthy:\n${gwLog}`);
 
-  // One raw daily note for the sweep (and the count the status reports).
+  // Recent repeated notes for the sweep (and the count the status reports).
   const workDir = join(home, ".suparclaw", "workspace");
   mkdirSync(join(workDir, "memory"), { recursive: true });
-  writeFileSync(join(workDir, "memory", "2026-01-01.md"), "- user prefers compact bullet lists\n");
+  const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  writeFileSync(join(workDir, "memory", `${day(2)}.md`), "- user prefers compact bullet lists as a rule\n");
+  writeFileSync(join(workDir, "memory", `${day(1)}.md`), "- user prefers compact bullet lists as a rule\n");
 
   const client = await wsClient(`ws://127.0.0.1:${port}/ws`);
   t.after(() => client.ws.close());
@@ -262,17 +260,23 @@ test("sessions auto-title after the first reply and broadcast the rename", async
 
   // dream.run: the same sweep the nightly schedule runs, over the gateway.
   const dreamRes = await client.request("dream.run", {});
-  assert.match(String(dreamRes.payload?.text ?? ""), /promoted 1 fact into MEMORY\.md/);
+  assert.match(String(dreamRes.payload?.text ?? ""), /promoted 1/);
 
   // dream.status: the Dreams-tab facts — dreaming off here, but counts and
   // the last sweep must reflect the dream.run that just finished.
   const statusRes = await client.request("dream.status", {});
   assert.equal(statusRes.ok, true, `dream.status ok: ${JSON.stringify(statusRes)}`);
   assert.equal(statusRes.payload?.enabled, false);
-  assert.equal(statusRes.payload?.schedule, "0 4 * * *");
+  assert.equal(statusRes.payload?.schedule, "0 3 * * *");
   assert.equal(statusRes.payload?.counts?.diaryEntries, 1, "one Deep Sleep entry");
   assert.ok(statusRes.payload?.counts?.memoryLines > 0, "curated MEMORY.md lines counted");
-  assert.equal(statusRes.payload?.counts?.dailyNotes, 1, "the seeded daily note is counted");
+  assert.equal(statusRes.payload?.counts?.dailyNotes, 2, "the seeded daily notes are counted");
+  assert.equal(
+    statusRes.payload?.counts?.staged,
+    2,
+    "promoted note rows left staging; the 2 chat transcript lines (user+assistant) remain under-gated",
+  );
+  assert.equal(statusRes.payload?.counts?.promotedToday, 2, "both note rows of the promoted cluster counted today");
   assert.ok(statusRes.payload?.lastDreamAt > 0, "last sweep timestamp from the diary mtime");
   assert.equal(statusRes.payload?.nextRunAt, null, "disabled dreaming schedules nothing");
 

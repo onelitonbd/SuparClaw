@@ -64,6 +64,29 @@ export function channelLabel(sessionKey: string): string {
 
 // Dreaming + auto-title helpers (also the test-facing surface — dist/ bundles
 // only sc and lib entries, so tests reach these through dist/lib.js).
-export { dreamPrompt, titlePrompt, cleanTitle, DREAM_SESSION_KEY } from "./agent/dream.js";
+export {
+  titlePrompt,
+  cleanTitle,
+  DREAM_SESSION_KEY,
+  runSweep,
+  lightFromFiles,
+  lightFromTranscripts,
+  lightStage,
+  remThemes,
+  deepCluster,
+  deepSignals,
+  deepDecide,
+  consolidationPrompt,
+  parseConsolidation,
+  applyConsolidationOps,
+  appendOnlyPromotion,
+  consolidateGated,
+  promotePreview,
+  backfillPreview,
+  type RawLine,
+  type DeepDecision,
+  type DreamTheme,
+  type SweepVerdict,
+} from "./agent/dream.js";
 
 

@@ -10,7 +10,7 @@ import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
 import { Subagents } from "../agent/subagents.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile } from "../config/schema.js";
-import { DREAM_SESSION_KEY, armDream, cleanTitle, dreamPrompt, titlePrompt, type DreamHandle } from "../agent/dream.js";
+import { DREAM_SESSION_KEY, armDream, cleanTitle, titlePrompt, type DreamHandle, runSweep, promotePreview, backfillPreview, lightStage, consolidateGated } from "../agent/dream.js";
 import { writeWorkspaceTemplates, todayStamp } from "../agent/workspace.js";
 import { TelegramChannel } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
@@ -193,22 +193,59 @@ export class Service {
    * the DREAMS.md diary entry. Also the `sc dream` / `dream.run` manual path —
    * an empty sweep ("nothing new") is a normal outcome.
    */
+  /**
+   * One dreaming sweep (Partial #5): light stages, REM reflects, deep scores
+   * and gates, then a tool-free consolidation completion writes MEMORY.md
+   * (append-only fallback when the model is unavailable). The completion runs
+   * on the agent's default model without a chat session, like theirs.
+   */
   async dreamNow(): Promise<string> {
-    const today = todayStamp();
-    this.events.emit("event", { type: "chat", sessionKey: DREAM_SESSION_KEY, event: { type: "start", runId: "dream-" + today, sessionKey: DREAM_SESSION_KEY } } satisfies ServiceEvent);
-    let text = "";
-    await this.loop.run({
-      sessionKey: DREAM_SESSION_KEY,
-      text: dreamPrompt(today),
-      isMainSession: true,
-      reasoning: "off",
-      onEvent: (event) => {
-        if (event.type === "delta") text += event.text;
-      },
+    this.events.emit("event", { type: "chat", sessionKey: DREAM_SESSION_KEY, event: { type: "start", runId: "dream-sweep", sessionKey: DREAM_SESSION_KEY } } satisfies ServiceEvent);
+    const verdict = await runSweep({
+      store: this.store,
+      workspace: workspaceDir(),
+      llmComplete: (prompt) => this.#dreamCompletion(prompt),
     });
-    const summary = text || "nothing new";
-    this.log.info(`dreaming sweep done: ${summary.slice(0, 120)}`);
-    return summary;
+    this.log.info(`dreaming sweep done: ${verdict.summary.slice(0, 120)}`);
+    return verdict.summary;
+  }
+
+  /** Tool-free background completion shared by dream consolidation/diary. */
+  async #dreamCompletion(prompt: string): Promise<string> {
+    let out = "";
+    const stream = this.loop.llm.stream({
+      messages: [{ role: "user", content: prompt }],
+      model: modelProfile(this.config, "").ref,
+      maxTokens: 1600,
+    });
+    for await (const ev of stream) {
+      if (ev.type === "text") out += ev.text;
+    }
+    return out;
+  }
+
+  /** `sc dream promote` — deep-phase preview over the staged recall store. */
+  dreamPromotePreview(limit: number) {
+    return promotePreview(this.store, workspaceDir(), limit);
+  }
+
+  /** `sc dream promote --apply` — consolidate the gated candidates now. */
+  async dreamPromoteApply(limit: number) {
+    const gated = this.dreamPromotePreview(limit).filter((d) => d.verdict === "promote");
+    return consolidateGated({ store: this.store, workspace: workspaceDir(), llmComplete: (p) => this.#dreamCompletion(p) }, gated, todayStamp());
+  }
+
+  /** `sc dream backfill` lanes (their rem-backfill): preview/stage/rollback. */
+  dreamBackfillPreview(days: number) {
+    return backfillPreview(workspaceDir(), days);
+  }
+
+  dreamBackfillApply(days: number) {
+    return lightStage(this.store, backfillPreview(workspaceDir(), days), "backfill");
+  }
+
+  dreamBackfillRollback(): number {
+    return this.store.rollbackDreamBackfill();
   }
 
   /**
@@ -222,7 +259,9 @@ export class Service {
     scheduleError?: string;
     nextRunAt: number | null;
     lastDreamAt: number | null;
-    counts: { memoryLines: number; dailyNotes: number; diaryEntries: number };
+    lastVerdict: string | null;
+    lastRejected: Record<string, number>;
+    counts: { memoryLines: number; dailyNotes: number; diaryEntries: number; staged: number; promotedToday: number };
   }> {
     const d = this.config.memory.dreaming;
     let scheduleError: string | undefined;
@@ -234,7 +273,7 @@ export class Service {
         nextRunAt = this.#dream?.nextRunAt() ?? probe.nextRun()?.getTime() ?? null;
         probe.stop();
       } catch {
-        scheduleError = `invalid cron schedule "${d.schedule}" (want 5 fields, e.g. 0 4 * * *)`;
+        scheduleError = `invalid cron schedule "${d.schedule}" (want 5 fields, e.g. 0 3 * * *)`;
       }
     }
     const ws = workspaceDir();
@@ -252,16 +291,31 @@ export class Service {
     } catch {
       /* no diary yet */
     }
+    const all = this.store.dreamCandidates({ includePromoted: true });
+    const todayStart = Date.parse(`${todayStamp()}T00:00:00Z`);
+    const staged = all.filter((c) => c.promoted_at === null).length;
+    const promotedToday = all.filter((c) => (c.promoted_at ?? 0) >= todayStart).length;
+    const lastRun = this.store.lastDreamRun();
+    let lastRejected: Record<string, number> = {};
+    try {
+      lastRejected = lastRun ? (JSON.parse(lastRun.rejected) as Record<string, number>) : {};
+    } catch {
+      lastRejected = {};
+    }
     return {
       enabled: d.enabled,
       schedule: d.schedule,
       scheduleError,
       nextRunAt,
       lastDreamAt,
+      lastVerdict: lastRun?.verdict ?? null,
+      lastRejected,
       counts: {
         memoryLines: memory ? memory.split("\n").filter((l) => l.trim()).length : 0,
         dailyNotes,
         diaryEntries: diary ? (diary.match(/^## Deep Sleep - /gm) ?? []).length : 0,
+        staged,
+        promotedToday,
       },
     };
   }
