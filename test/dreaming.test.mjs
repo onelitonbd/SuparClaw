@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -233,6 +233,11 @@ test("sessions auto-title after the first reply and broadcast the rename", async
   }
   assert.ok(healthy, `gateway never became healthy:\n${gwLog}`);
 
+  // One raw daily note for the sweep (and the count the status reports).
+  const workDir = join(home, ".suparclaw", "workspace");
+  mkdirSync(join(workDir, "memory"), { recursive: true });
+  writeFileSync(join(workDir, "memory", "2026-01-01.md"), "- user prefers compact bullet lists\n");
+
   const client = await wsClient(`ws://127.0.0.1:${port}/ws`);
   t.after(() => client.ws.close());
   client.send({ type: "connect", params: { token: "" } });
@@ -258,6 +263,25 @@ test("sessions auto-title after the first reply and broadcast the rename", async
   // dream.run: the same sweep the nightly schedule runs, over the gateway.
   const dreamRes = await client.request("dream.run", {});
   assert.match(String(dreamRes.payload?.text ?? ""), /promoted 1 fact into MEMORY\.md/);
+
+  // dream.status: the Dreams-tab facts — dreaming off here, but counts and
+  // the last sweep must reflect the dream.run that just finished.
+  const statusRes = await client.request("dream.status", {});
+  assert.equal(statusRes.ok, true, `dream.status ok: ${JSON.stringify(statusRes)}`);
+  assert.equal(statusRes.payload?.enabled, false);
+  assert.equal(statusRes.payload?.schedule, "0 4 * * *");
+  assert.equal(statusRes.payload?.counts?.diaryEntries, 1, "one Deep Sleep entry");
+  assert.ok(statusRes.payload?.counts?.memoryLines > 0, "curated MEMORY.md lines counted");
+  assert.equal(statusRes.payload?.counts?.dailyNotes, 1, "the seeded daily note is counted");
+  assert.ok(statusRes.payload?.lastDreamAt > 0, "last sweep timestamp from the diary mtime");
+  assert.equal(statusRes.payload?.nextRunAt, null, "disabled dreaming schedules nothing");
+
+  // dream.diary: the reader content — diary entry plus the curated file.
+  const diaryRes = await client.request("dream.diary", {});
+  assert.equal(diaryRes.ok, true, `dream.diary ok: ${JSON.stringify(diaryRes)}`);
+  assert.match(String(diaryRes.payload?.dreams ?? ""), /## Deep Sleep - /);
+  assert.match(String(diaryRes.payload?.memory ?? ""), /Durable Fact: user prefers compact bullet lists/);
+  assert.ok(String(diaryRes.payload?.dreamsPath ?? "").endsWith("DREAMS.md"));
   const wsDir = join(home, ".suparclaw", "workspace");
   assert.ok(existsSync(join(wsDir, "DREAMS.md")), "gateway dream.run wrote the diary");
 });

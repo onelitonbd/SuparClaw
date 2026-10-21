@@ -1266,3 +1266,29 @@ textarea:focus-visible {
     transition: none !important;
   }
 }
+
+/* Memory tab: dream diary + curated memory readers (details/summary cards). */
+.diary { padding: 0; overflow: hidden; }
+.diary > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.diary > summary::-webkit-details-marker { display: none; }
+.diary > summary:hover { background: var(--hover); }
+.diary[open] > summary { border-bottom: 1px solid var(--line); }
+.diary__body {
+  margin: 0;
+  padding: 12px 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink2);
+  max-height: 320px;
+  overflow: auto;
+}

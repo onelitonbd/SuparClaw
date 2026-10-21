@@ -49,6 +49,8 @@ export function cleanTitle(raw: string): string | null {
 
 export interface DreamHandle {
   stop(): void;
+  /** Epoch ms of the next scheduled fire, or null when the job is stopped. */
+  nextRunAt(): number | null;
 }
 
 /** Arm the dream schedule on its own croner timer (not the user's cron jobs). */
@@ -57,5 +59,8 @@ export async function armDream(schedule: string, fire: () => Promise<unknown>): 
   const cron = new Cron(schedule, { protect: true }, () => {
     void fire().catch(() => {});
   });
-  return { stop: () => cron.stop() };
+  return {
+    stop: () => cron.stop(),
+    nextRunAt: () => cron.nextRun()?.getTime() ?? null,
+  };
 }

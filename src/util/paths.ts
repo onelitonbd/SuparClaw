@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 
 export const APP = "suparclaw";
 export const DEFAULT_PORT = 18790;
@@ -88,4 +88,12 @@ export function webUiRoot(): string {
 
 export function prefixDir(): string {
   return process.env.PREFIX ?? "";
+}
+/** Read a UTF-8 text file, or null when it is missing/unreadable. */
+export function readTextSafe(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
 }

@@ -6,7 +6,7 @@ import { gateway } from "./rpc.js";
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "models" | "providers" | "skills" | "tools" | "gateway" | "runtime";
+type TabId = "model" | "models" | "providers" | "skills" | "tools" | "memory" | "gateway" | "runtime";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "model", label: "Defaults" },
@@ -14,6 +14,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "providers", label: "Providers" },
   { id: "skills", label: "Skills" },
   { id: "tools", label: "Tools" },
+  { id: "memory", label: "Memory" },
   { id: "gateway", label: "Gateway" },
   { id: "runtime", label: "Runtime" },
 ];
@@ -96,6 +97,7 @@ export class Settings {
     } else if (this.#tab === "providers") this.#renderProviders(providers);
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") this.#renderTools(tools);
+    else if (this.#tab === "memory") await this.#renderMemory();
     else if (this.#tab === "gateway") this.#renderGateway(gw);
     else this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
@@ -739,6 +741,153 @@ export class Settings {
     ]);
 
     this.#root.append(tiles, list);
+  }
+
+  /* ---------------- memory (OpenClaw's Dreams tab, adapted) ---------------- */
+
+  async #renderMemory(): Promise<void> {
+    let status: any = null;
+    let diary: any = null;
+    try {
+      [status, diary] = await Promise.all([
+        gateway.request("dream.status"),
+        gateway.request("dream.diary"),
+      ]);
+    } catch (err) {
+      toast(`could not load memory: ${(err as Error).message}`, "err");
+    }
+
+    const body = el("div", { class: "settings__body" });
+    const fmt = (ms: number | null | undefined): string =>
+      ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never";
+    const counts = status?.counts ?? { memoryLines: 0, dailyNotes: 0, diaryEntries: 0 };
+
+    // Card 1 — dreaming controls. The nightly sweep consolidates the raw
+    // memory/YYYY-MM-DD.md notes into the curated MEMORY.md and writes the
+    // dated Deep Sleep entry to DREAMS.md.
+    const enabled = el("input", { type: "checkbox", id: "mem-dream-enabled" }) as HTMLInputElement;
+    enabled.checked = status ? status.enabled !== false : true;
+    const schedule = el("input", {
+      class: "inp mono", id: "mem-dream-schedule",
+      value: String(status?.schedule ?? "0 4 * * *"), placeholder: "0 4 * * *",
+    });
+
+    const stateLine = !status
+      ? "could not reach the gateway"
+      : status.scheduleError
+        ? status.scheduleError
+        : status.enabled === false
+          ? "off — no sweep scheduled"
+          : `on — next sweep ${fmt(status.nextRunAt)}`;
+    const stateValue = el("span", { class: "row__value", style: status?.scheduleError ? "color:var(--err)" : "" }, [stateLine]);
+
+    const runBtn = el("button", { class: "btn", type: "button" }, ["Dream now"]);
+    const runNote = el("p", { class: "hint" }, [""]);
+    runNote.style.display = "none";
+    runBtn.onclick = async () => {
+      runBtn.disabled = true;
+      runBtn.textContent = "Dreaming…";
+      runNote.style.display = "";
+      runNote.textContent = "Sweeping the daily notes into MEMORY.md — a real sweep can take a minute or two.";
+      try {
+        const res: any = await gateway.request("dream.run");
+        toast("dream sweep done", "ok");
+        // Re-render so counts, diary and next-run all refresh.
+        await this.render();
+        toast(`deep sleep: ${String(res?.text ?? "nothing new").slice(0, 120)}`, "ok");
+      } catch (err) {
+        toast((err as Error).message, "err");
+        runBtn.disabled = false;
+        runBtn.textContent = "Dream now";
+        runNote.textContent = "";
+        runNote.style.display = "none";
+      }
+    };
+
+    const save = el("button", { class: "btn pri", type: "button" }, ["Save"]);
+    save.onclick = async () => {
+      await this.#setMany([
+        ["memory.dreaming.enabled", enabled.checked],
+        ["memory.dreaming.schedule", schedule.value.trim() || "0 4 * * *"],
+      ], "dreaming saved");
+      // Re-armed by the config hot-reload — re-render to show the new next run.
+      await this.render();
+    };
+
+    body.append(el("div", { class: "card" }, [
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Dreaming"]),
+        stateValue,
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Last sweep"]),
+        el("span", { class: "row__value" }, [fmt(status?.lastDreamAt)]),
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Counts"]),
+        el("span", { class: "row__value" }, [`${counts.memoryLines} curated lines · ${counts.dailyNotes} daily notes · ${counts.diaryEntries} diary entries`]),
+      ]),
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "mem-dream-schedule" }, ["Schedule (cron)"]),
+        schedule,
+        el("p", { class: "hint" }, ["5 fields, server time. Default 0 4 * * * runs the sweep nightly at 04:00. It never appears in your cron jobs."]),
+      ]),
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "mem-dream-enabled" }, ["Enabled"]),
+        enabled,
+      ]),
+      el("div", { class: "modal__foot" }, [save, runBtn]),
+      runNote,
+      el("p", { class: "hint" }, [
+        "The sweep is read-only on your daily notes: it only edits MEMORY.md and appends to DREAMS.md. An empty sweep records nothing new — by design.",
+      ]),
+    ]));
+
+    // Card 2 — the dream diary (Deep Sleep entries, newest first). Humans-only:
+    // the diary never feeds back into memory (OpenClaw's rule).
+    const entries: { date: string; body: string }[] = [];
+    const content = String(diary?.dreams ?? "");
+    if (content.trim()) {
+      const parts = content.split(/^## Deep Sleep - /m);
+      for (const p of parts.slice(1)) {
+        const nl = p.indexOf("\n");
+        entries.push({
+          date: (nl === -1 ? p : p.slice(0, nl)).trim(),
+          body: (nl === -1 ? "" : p.slice(nl + 1)).trim(),
+        });
+      }
+      entries.reverse();
+    }
+    const diaryList = el("div", { class: "settings__body" });
+    if (entries.length === 0) {
+      diaryList.append(el("p", { class: "hint" }, ["No diary entries yet — press Dream now, or wait for the schedule."]));
+    }
+    for (const e of entries.slice(0, 30)) {
+      diaryList.append(el("details", { class: "card diary" }, [
+        el("summary", {}, [
+          el("span", { class: "row__label" }, [`Deep Sleep — ${e.date}`]),
+          el("span", { class: "row__value" }, [`${e.body.split("\n").filter((l) => l.trim()).length} lines`]),
+        ]),
+        el("pre", { class: "diary__body" }, [e.body || "nothing new"]),
+      ]));
+    }
+    body.append(el("div", { class: "card" }, [
+      el("div", { class: "row__label" }, ["Dream diary"]),
+      el("p", { class: "hint" }, [
+        `${counts.diaryEntries} entries in ${diary?.dreamsPath ?? "DREAMS.md"}. For human reading — never promoted back into memory.`,
+      ]),
+    ]), diaryList);
+
+    // Card 3 — the curated MEMORY.md the sweep (and memory tools) maintain.
+    body.append(el("details", { class: "card diary" }, [
+      el("summary", {}, [
+        el("span", { class: "row__label" }, ["Curated memory (MEMORY.md)"]),
+        el("span", { class: "row__value" }, [`${counts.memoryLines} lines`]),
+      ]),
+      el("pre", { class: "diary__body" }, [String(diary?.memory ?? "").trim() || "(empty — the sweep promotes durable facts here)"]),
+    ]));
+
+    this.#root.append(body);
   }
 
   /* ---------------- helpers ---------------- */

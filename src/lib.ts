@@ -1,4 +1,5 @@
 // Test surface: internals are exported so the test suite can import the built bundle.
+export { readTextSafe } from "./util/paths.js";
 export { Screen, clipToWidth, rule } from "./tui/renderer.js";
 export { renderMarkdown, renderInline } from "./tui/markdown.js";
 export { palette, theme, detectLightMode, markdownTheme } from "./tui/theme.js";
@@ -49,3 +50,5 @@ export function channelLabel(sessionKey: string): string {
 // Dreaming + auto-title helpers (also the test-facing surface — dist/ bundles
 // only sc and lib entries, so tests reach these through dist/lib.js).
 export { dreamPrompt, titlePrompt, cleanTitle, DREAM_SESSION_KEY } from "./agent/dream.js";
+
+

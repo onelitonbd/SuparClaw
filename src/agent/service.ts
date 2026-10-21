@@ -1,11 +1,11 @@
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigService } from "../config/load.js";
 import type { SuparClawConfig } from "../config/schema.js";
 import { Store } from "../state/db.js";
 import { createLogger, type Logger } from "../util/log.js";
-import { dbPath, ensureDirs, logsDir, stateDir, workspaceDir } from "../util/paths.js";
+import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } from "../util/paths.js";
 import { AgentLoop, type RunEvent } from "../agent/loop.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile } from "../config/schema.js";
@@ -180,6 +180,77 @@ export class Service {
     const summary = text || "nothing new";
     this.log.info(`dreaming sweep done: ${summary.slice(0, 120)}`);
     return summary;
+  }
+
+  /**
+   * What the web UI Memory tab shows (OpenClaw's Dreams tab, adapted): the
+   * dreaming enabled state, schedule, next run, last sweep, and the memory
+   * counts (curated lines, daily notes, diary entries).
+   */
+  async dreamStatus(): Promise<{
+    enabled: boolean;
+    schedule: string;
+    scheduleError?: string;
+    nextRunAt: number | null;
+    lastDreamAt: number | null;
+    counts: { memoryLines: number; dailyNotes: number; diaryEntries: number };
+  }> {
+    const d = this.config.memory.dreaming;
+    let scheduleError: string | undefined;
+    let nextRunAt: number | null = null;
+    if (d.enabled) {
+      try {
+        const { Cron } = await import("croner");
+        const probe = new Cron(d.schedule);
+        nextRunAt = this.#dream?.nextRunAt() ?? probe.nextRun()?.getTime() ?? null;
+        probe.stop();
+      } catch {
+        scheduleError = `invalid cron schedule "${d.schedule}" (want 5 fields, e.g. 0 4 * * *)`;
+      }
+    }
+    const ws = workspaceDir();
+    const memory = readTextSafe(join(ws, "MEMORY.md"));
+    const diary = readTextSafe(join(ws, "DREAMS.md"));
+    let dailyNotes = 0;
+    try {
+      dailyNotes = readdirSync(join(ws, "memory")).filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f)).length;
+    } catch {
+      /* no memory/ dir yet */
+    }
+    let lastDreamAt: number | null = null;
+    try {
+      lastDreamAt = Math.trunc(statSync(join(ws, "DREAMS.md")).mtimeMs);
+    } catch {
+      /* no diary yet */
+    }
+    return {
+      enabled: d.enabled,
+      schedule: d.schedule,
+      scheduleError,
+      nextRunAt,
+      lastDreamAt,
+      counts: {
+        memoryLines: memory ? memory.split("\n").filter((l) => l.trim()).length : 0,
+        dailyNotes,
+        diaryEntries: diary ? (diary.match(/^## Deep Sleep - /gm) ?? []).length : 0,
+      },
+    };
+  }
+
+  /**
+   * The diary + curated memory for the Memory tab reader. The diary is for
+   * humans only - it is never promoted back into memory (OpenClaw's rule).
+   */
+  dreamDiary(): { dreamsPath: string; dreams: string; memoryPath: string; memory: string } {
+    const ws = workspaceDir();
+    const dreamsPath = join(ws, "DREAMS.md");
+    const memoryPath = join(ws, "MEMORY.md");
+    return {
+      dreamsPath,
+      dreams: readTextSafe(dreamsPath) ?? "",
+      memoryPath,
+      memory: readTextSafe(memoryPath) ?? "",
+    };
   }
 
   /**

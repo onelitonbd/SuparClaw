@@ -322,6 +322,16 @@ export class Gateway {
           send(okFrame(id, { text }));
           return;
         }
+        case "dream.status":
+          // The Memory settings tab (OpenClaw's Dreams tab): dreaming state,
+          // schedule, next run, last sweep, and the memory counts.
+          send(okFrame(id, await service.dreamStatus()));
+          return;
+        case "dream.diary":
+          // DREAMS.md + MEMORY.md for the tab's reader. Humans-only content —
+          // the diary never feeds back into memory.
+          send(okFrame(id, service.dreamDiary()));
+          return;
         case "sessions.list":
           send(okFrame(id, { sessions: service.store.listSessions(Number(params["limit"] ?? 50)) }));
           return;
