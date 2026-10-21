@@ -5,7 +5,7 @@ export { renderMarkdown, renderInline } from "./tui/markdown.js";
 export { palette, theme, detectLightMode, markdownTheme } from "./tui/theme.js";
 export { Editor } from "./tui/editor.js";
 export { parseKeys } from "./tui/keys.js";
-export { parseConfig, validate, applyDefaults, emptyConfig, CONFIG_SCHEMA, modelProfiles, modelProfile } from "./config/schema.js";
+export { parseConfig, validate, applyDefaults, emptyConfig, CONFIG_SCHEMA, modelProfiles, modelProfile, execModeOf, type ExecMode, type ExecAskFallback } from "./config/schema.js";
 export { parseFrontmatter, discoverSkills, matchSkills, skillsCatalog, writeSkill, skillSlug, readSkillBody } from "./agent/skills.js";
 export { Store } from "./state/db.js";
 export {
@@ -116,3 +116,27 @@ export {
 
 // Local services (Partial #7)
 export { LOCAL_SERVICES, localServiceById, probeLocalService, scanLocalServices, addLocalService, type LocalServiceInfo, type LocalScanResult } from "./agent/local-services.js";
+export {
+  evaluateExec,
+  splitChain,
+  tokenizeArgv,
+  globMatcher,
+  hashArgv,
+  safeBinCheck,
+  inlineEvalCarrier,
+  runDirectChain,
+  emptyApprovalsDoc,
+  loadApprovalsDoc,
+  saveApprovalsDoc,
+  ledgerEntries,
+  mintAlwaysEntry,
+  addManualEntry,
+  revokeEntry,
+  resolveBinary,
+  newEntryId,
+  type AllowlistEntry,
+  type ApprovalsDoc,
+  type ExecVerdict,
+  type ChainOp,
+  type SegmentPlan,
+} from "./agent/exec-policy.js";

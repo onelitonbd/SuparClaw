@@ -14,6 +14,8 @@ export interface JsonSchema {
   additionalProperties?: boolean;
 }
 
+import type { ExecVerdict } from "./exec-policy.js";
+
 export interface ToolContext {
   workspace: string;
   stateDir: string;
@@ -22,6 +24,8 @@ export interface ToolContext {
   log: Logger;
   config: SuparClawConfig;
   approved: boolean;
+  /** exec-policy verdict attached to this call (allowlist/direct route info). */
+  execVerdict?: ExecVerdict;
   signal?: AbortSignal;
   /** Re-discover skills after a tool writes one (`skill_save`). */
   refreshSkills?: () => void;
@@ -419,11 +423,23 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
       needsApproval: true,
         async run(args, ctx) {
-          if (config.tools.exec.approvals && !ctx.approved) {
+          if (!ctx.approved) {
             return "error: execution needs approval — ask the user to approve, then retry";
           }
           const { execFile } = await import("node:child_process");
           const timeoutMs = Math.min(Number(args["timeoutMs"] ?? config.tools.exec.timeoutMs), 600_000);
+          // Allowlist/safe-bin verdicts run argv-direct — the policy matched
+          // literal tokens, so no shell may re-interpret them (globs, $PATH
+          // lookups, re-quoting all stay off). Full/shell verdicts keep the
+          // login shell exactly as before.
+          if (ctx.execVerdict?.route === "direct") {
+            const { runDirectChain } = await import("./exec-policy.js");
+            const result = await runDirectChain(ctx.execVerdict.segments, ctx.execVerdict.ops, {
+              cwd: ctx.workspace,
+              timeoutMs,
+            });
+            return result.output.slice(0, 60_000) || "(no output)";
+          }
           return await new Promise<string>((resolvePromise) => {
             execFile(
               findShell(),

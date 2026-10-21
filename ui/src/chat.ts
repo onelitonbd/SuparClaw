@@ -51,7 +51,7 @@ export function prettyError(message: string): string {
 export interface ChatHandlers {
   send(text: string): void;
   abort(): void;
-  approve(callId: string, approve: boolean): void;
+  approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
 }
 
@@ -119,7 +119,7 @@ export class Chat {
   #raf = 0;
   #autoScroll = true;
   #toolStart = new Map<string, number>();
-  #pendingApprovals = new Map<string, { tool: string; args: unknown }>();
+  #pendingApprovals = new Map<string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }>();
 
   constructor(root: HTMLElement, handlers: ChatHandlers) {
     this.#handlers = handlers;
@@ -600,14 +600,14 @@ export class Chat {
 
   /** ---- approvals ---- */
 
-  approval(callId: string, tool: string, args: unknown): void {
-    this.#pendingApprovals.set(callId, { tool, args });
+  approval(callId: string, tool: string, args: unknown, exec?: { mode: string; mintable: boolean; reason: string }): void {
+    this.#pendingApprovals.set(callId, { tool, args, exec });
     this.#renderApprovals();
   }
 
   #renderApprovals(): void {
     const first = this.#pendingApprovals.entries().next().value as
-      | [string, { tool: string; args: unknown }]
+      | [string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }]
       | undefined;
     if (!first) {
       this.#approval.hidden = true;
@@ -620,15 +620,33 @@ export class Chat {
     (document.getElementById("approval-tool") as HTMLElement).textContent = pending.tool;
     (document.getElementById("approval-args") as HTMLElement).textContent =
       typeof pending.args === "string" ? pending.args : JSON.stringify(pending.args ?? {});
-    (document.getElementById("approval-deny") as HTMLElement).onclick = () => this.#resolve(callId, false);
-    (document.getElementById("approval-allow") as HTMLElement).onclick = () => this.#resolve(callId, true);
+    const why = document.getElementById("approval-why") as HTMLElement;
+    if (pending.exec) {
+      why.textContent = `${pending.exec.reason} · mode ${pending.exec.mode}`;
+      why.hidden = false;
+    } else {
+      why.hidden = true;
+    }
+    // Allow-always mints a grant bound to exact argv in this directory — the
+    // policy refuses to mint carriers, so don't offer the button there.
+    const always = document.getElementById("approval-always") as HTMLButtonElement;
+    if (pending.exec && !pending.exec.mintable) {
+      always.disabled = true;
+      always.title = "Inline-eval/substitution — per-run approval only";
+    } else {
+      always.disabled = false;
+      always.title = "Always allow this exact command in this directory";
+    }
+    (document.getElementById("approval-deny") as HTMLElement).onclick = () => this.#resolve(callId, "deny");
+    always.onclick = () => this.#resolve(callId, "always");
+    (document.getElementById("approval-allow") as HTMLElement).onclick = () => this.#resolve(callId, "once");
   }
 
-  #resolve(callId: string, approve: boolean): void {
+  #resolve(callId: string, decision: "once" | "always" | "deny"): void {
     this.#pendingApprovals.delete(callId);
     this.#renderApprovals();
-    this.#handlers.approve(callId, approve);
-    this.notice(approve ? "approved" : "denied");
+    this.#handlers.approve(callId, decision);
+    this.notice(decision === "deny" ? "denied" : decision === "always" ? "always allowed (this directory)" : "approved once");
   }
 
   /** ---- internals ---- */

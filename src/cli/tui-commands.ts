@@ -14,6 +14,8 @@ import {
 
 export async function tuiLocal(): Promise<number> {
   const service = new Service();
+  // The local terminal is an always-connected approval surface.
+  service.setApprovalSurface(() => true);
   service.bootstrap();
   let sessionKey = "main:main";
   let modelOverride: string | undefined;
@@ -40,9 +42,12 @@ export async function tuiLocal(): Promise<number> {
         onApproval: () => {},
       });
     },
-    onAbort: () => service.loop.abort(sessionKey),
-    onApproval: (callId, ok) => {
-      service.resolveApproval(callId, ok);
+    onAbort: () => {
+      service.denyApprovalsFor(sessionKey);
+      return service.loop.abort(sessionKey);
+    },
+    onApproval: (callId, decision) => {
+      service.resolveApproval(callId, decision);
     },
     onCommand: async (name, args) => {
       switch (name) {
@@ -52,6 +57,35 @@ export async function tuiLocal(): Promise<number> {
           return `model ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"} · busy: ${
             service.loop.isBusy(sessionKey) ? "yes" : "no"
           }`;
+        case "exec": {
+          // /exec [deny|allowlist|ask|full|reset] — per-session override or global set
+          const arg = args.trim();
+          const current = service.getSessionExecMode(sessionKey);
+          const global = service.approvalsState().mode;
+          if (!arg) {
+            return `exec mode: ${current ?? global} (${current ? "session override" : "global"}) · /exec deny|allowlist|ask|full · /exec global <mode> · /exec reset`;
+          }
+          if (arg === "reset") {
+            service.setSessionExecMode(sessionKey, null);
+            return `session override cleared — exec mode: ${service.approvalsState().mode}`;
+          }
+          let target = arg;
+          let scope: "session" | "global" = "session";
+          if (arg.startsWith("global ")) {
+            target = arg.slice(7).trim();
+            scope = "global";
+          }
+          const m = target as "deny" | "allowlist" | "ask" | "full";
+          if (!["deny", "allowlist", "ask", "full"].includes(m)) return `usage: /exec [deny|allowlist|ask|full|global <mode>|reset]`;
+          if (scope === "global") {
+            const r = service.configSvc.setPath("tools.exec.mode", m);
+            if (!r.ok) return `config rejected: ${r.errors.join("; ")}`;
+            await service.applyConfig();
+            return `global exec mode: ${m}`;
+          }
+          service.setSessionExecMode(sessionKey, m);
+          return `session exec mode: ${m}`;
+        }
         case "model": {
           const raw = args.trim();
           if (!raw) return `model: ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"}`;
@@ -162,7 +196,9 @@ export async function tuiLocal(): Promise<number> {
         app.push({ kind: "tool", name: e.name, status: e.status, detail: e.detail });
         break;
       case "approval":
-        app.approvals.push({ callId: e.callId, tool: e.tool, args: e.args });
+        app.approvals.push({ callId: e.callId, tool: e.tool, args: e.args, exec: e.exec });
+        app.setStatus("waiting for approval…");
+        app.markDirty();
         break;
       case "final":
         app.completeAssistant(e.text);
@@ -217,6 +253,7 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
         callId?: string;
         tool?: string;
         args?: Record<string, unknown>;
+        exec?: { mode: string; mintable: boolean; reason: string };
       };
     };
     if (data.sessionKey && data.sessionKey !== sessionKey) return;
@@ -232,7 +269,9 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
         app?.push({ kind: "tool", name: e.name ?? "?", status: (e.status as "running") ?? "done", detail: e.detail });
         break;
       case "approval":
-        app?.approvals.push({ callId: e.callId ?? "", tool: e.tool ?? "", args: e.args ?? {} });
+        app?.approvals.push({ callId: e.callId ?? "", tool: e.tool ?? "", args: e.args ?? {}, exec: e.exec });
+        app?.setStatus("waiting for approval…");
+        app?.markDirty();
         break;
       case "final":
         app?.completeAssistant(String(e.text ?? ""));
@@ -254,11 +293,38 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
       void client.request("chat.send", { sessionKey, text, isMainSession: true, key: crypto.randomUUID() });
     },
     onAbort: () => void client.request("chat.abort", { sessionKey }),
-    onApproval: (callId, ok) => {
-      void client.request("chat.approval", { callId, approve: ok });
+    onApproval: (callId, decision) => {
+      void client.request("chat.approval", { callId, decision });
     },
     onCommand: async (name, args) => {
       if (name === "help") return tuiHelp;
+      if (name === "exec") {
+        try {
+          const arg = args.trim();
+          if (!arg) {
+            const st = (await client.request("approvals.get")) as { mode?: string };
+            return `exec mode (global): ${st.mode ?? "?"} · /exec deny|allowlist|ask|full · /exec global <mode> · /exec reset`;
+          }
+          if (arg === "reset") {
+            const r = (await client.request("session.execMode", { sessionKey, mode: null })) as { global?: string };
+            return `session override cleared — exec mode: ${r.global ?? "?"}`;
+          }
+          let scopeMode = arg;
+          let endpoint = "session.execMode";
+          let params: Record<string, unknown> = { sessionKey, mode: arg };
+          if (arg.startsWith("global ")) {
+            scopeMode = arg.slice(7).trim();
+            endpoint = "approvals.setMode";
+            params = { mode: scopeMode };
+          }
+          const res = (await client.request(endpoint, params)) as { mode?: string; execMode?: string; sessionKey?: string };
+          return endpoint === "approvals.setMode"
+            ? `global exec mode: ${res.mode ?? scopeMode}`
+            : `session exec mode: ${res.execMode ?? scopeMode}`;
+        } catch (err) {
+          return `exec mode change failed: ${(err as Error).message}`;
+        }
+      }
       if (name === "session" && args) {
         sessionKey = args.trim();
         return `session: ${sessionKey}`;

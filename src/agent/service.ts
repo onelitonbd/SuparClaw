@@ -9,7 +9,16 @@ import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } fro
 import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
 import { Subagents } from "../agent/subagents.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
-import { modelProfile } from "../config/schema.js";
+import { modelProfile, execModeOf } from "../config/schema.js";
+import {
+  evaluateExec,
+  loadApprovalsDoc,
+  saveApprovalsDoc,
+  mintAlwaysEntry,
+  ledgerEntries,
+  type ApprovalsDoc,
+  type ExecVerdict,
+} from "../agent/exec-policy.js";
 import { DREAM_SESSION_KEY, armDream, cleanTitle, titlePrompt, type DreamHandle, runSweep, promotePreview, backfillPreview, lightStage, consolidateGated } from "../agent/dream.js";
 import { writeWorkspaceTemplates, todayStamp } from "../agent/workspace.js";
 import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileCheck, profileId, resolveAuthProfileOrder } from "../agent/auth.js";
@@ -43,7 +52,7 @@ export type ServiceEvent =
   /** Session row changed (auto-title landed) — UIs refresh their list. */
   | { type: "session.updated"; sessionKey: string; name: string };
 
-const APPROVAL_TIMEOUT_MS = 90_000;
+export type ApprovalDecision = "once" | "always" | "deny";
 
 export class Service {
   readonly log: Logger;
@@ -58,7 +67,21 @@ export class Service {
   #dream: DreamHandle | null = null;
   #dreamSig = "";
   #titleBusy = new Set<string>();
-  #approvals = new Map<string, (ok: boolean) => void>();
+  /**
+   * Pending human-decision calls. No timers (rule 9): a decision arrives from
+   * a connected surface, or from an abort; askFallback only applies when no
+   * surface is connected at all.
+   */
+  #approvals = new Map<string, {
+    resolve: (decision: ApprovalDecision) => void;
+    execVerdict?: ExecVerdict;
+    sessionKey: string;
+    workspace: string;
+  }>();
+  /** Which surface count currently counts as "someone is watching" (set by the gateway / local TUI). */
+  #approvalSurface: () => boolean = () => false;
+  /** Per-session exec mode overrides (/exec slash; null = follow global). */
+  #sessionExecModes = new Map<string, string>();
   #closing = false;
   /** Sub-agent lifecycle owner (spawn/yield/announce/cancel). */
   #subagents: Subagents | null = null;
@@ -86,7 +109,7 @@ export class Service {
       store: this.store,
       log: this.log,
       llm,
-      requestApproval: (callId, tool, args) => this.requestApproval(callId, tool, args),
+      requestApproval: (callId, tool, args, ctx) => this.requestApproval(callId, tool, args, ctx),
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are
@@ -681,6 +704,7 @@ export class Service {
     }
     // /stop — cancel queued work first, then the active run (their order).
     if (cmd === "/stop") {
+      this.denyApprovalsFor(payload.sessionKey);
       const stopped = this.loop.abort(payload.sessionKey);
       return { reply: stopped ? "Stopped — queued inputs cancelled, active run aborted." : "Nothing to stop in this session." };
     }
@@ -737,25 +761,167 @@ export class Service {
     });
   }
 
-  private requestApproval(callId: string, tool: string, args: Record<string, unknown>): Promise<boolean> {
-    this.log.info(`approval requested: ${tool} ${JSON.stringify(args).slice(0, 200)}`);
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => {
-        this.#approvals.delete(callId);
-        resolve(false);
-      }, APPROVAL_TIMEOUT_MS);
-      this.#approvals.set(callId, (ok) => {
-        clearTimeout(timer);
-        resolve(ok);
+  /** Register "which connected surface count counts as watching" (gateway or local TUI). */
+  setApprovalSurface(fn: () => boolean): void {
+    this.#approvalSurface = fn;
+  }
+
+  private requestApproval(
+    callId: string,
+    tool: string,
+    args: Record<string, unknown>,
+    ctx?: { sessionKey: string; workspace: string; onPrompt?: (info: { exec?: { mode: string; mintable: boolean; reason: string } }) => void },
+  ): Promise<boolean | { approved: boolean; execVerdict?: ExecVerdict }> {
+    const sessionKey = ctx?.sessionKey ?? "";
+    const workspace = ctx?.workspace ?? workspaceDir();
+
+    if (tool !== "exec") {
+      // Non-exec approvals stay boolean prompts (rare; configured tools).
+      this.log.info(`approval requested: ${tool} ${JSON.stringify(args).slice(0, 200)}`);
+      if (!this.#approvalSurface()) return Promise.resolve(false);
+      ctx?.onPrompt?.({});
+      return new Promise<{ approved: boolean }>((resolve) => {
+        this.#approvals.set(callId, {
+          sessionKey,
+          workspace,
+          resolve: (decision) => resolve({ approved: decision === "once" || decision === "always" }),
+        });
+      });
+    }
+
+    const command = String(args.command ?? "");
+    const doc = loadApprovalsDoc(this.store);
+    const exec = this.configSvc.current.tools.exec;
+    const verdict = evaluateExec({
+      config: this.configSvc.current,
+      doc,
+      command,
+      cwd: workspace,
+      pathEnv: process.env.PATH ?? "/bin:/usr/bin",
+      sessionMode: (this.#sessionExecModes.get(sessionKey) ?? undefined) as import("../config/schema.js").ExecMode | undefined,
+    });
+    this.log.info(`exec approval: mode=${verdict.mode} decision=${verdict.decision} reason=${verdict.reason} cmd=${command.slice(0, 120)}`);
+
+    if (verdict.decision === "allow") return Promise.resolve({ approved: true, execVerdict: verdict });
+    if (verdict.decision === "deny") return Promise.resolve({ approved: false, execVerdict: verdict });
+
+    // ask: nobody watching → askFallback verdict (deny keeps silent for cron).
+    if (!this.#approvalSurface()) {
+      const fb = exec.askFallback ?? "deny";
+      if (fb === "deny") {
+        this.log.info(`exec ask with no surface: askFallback=deny (${verdict.reason})`);
+        return Promise.resolve({ approved: false, execVerdict: verdict });
+      }
+      // allowlist/full fallback: re-decide under that mode
+      const fbVerdict = evaluateExec({
+        config: this.configSvc.current,
+        doc,
+        command,
+        cwd: workspace,
+        pathEnv: process.env.PATH ?? "/bin:/usr/bin",
+        sessionMode: fb,
+      });
+      this.log.info(`exec ask with no surface: askFallback=${fb} → ${fbVerdict.decision}`);
+      return Promise.resolve({ approved: fbVerdict.decision === "allow", execVerdict: fbVerdict });
+    }
+
+    ctx?.onPrompt?.({ exec: { mode: verdict.mode, mintable: verdict.mintable, reason: verdict.reason } });
+    return new Promise<{ approved: boolean; execVerdict: ExecVerdict }>((resolve) => {
+      this.#approvals.set(callId, {
+        sessionKey,
+        workspace,
+        execVerdict: verdict,
+        resolve: (decision) => {
+          if (decision === "always") {
+            // Mint the durable grant exactly at this boundary (allow-always =
+            // exact argv + cwd; nothing mints for carriers/unparseable input).
+            try {
+              const plan = verdict.segments[0];
+              if (verdict.mintable && plan) {
+                mintAlwaysEntry(this.store, {
+                  argv0: plan.argv0,
+                  argv: plan.argv,
+                  cwd: workspace,
+                  resolvedPath: plan.resolvedPath,
+                  command,
+                });
+                this.#broadcastApprovalsChanged();
+              }
+            } catch (err) {
+              this.log.warn(`allow-always mint failed: ${(err as Error).message}`);
+            }
+          }
+          resolve({ approved: decision !== "deny", execVerdict: verdict });
+        },
       });
     });
   }
 
-  resolveApproval(callId: string, ok: boolean): boolean {
-    const resolver = this.#approvals.get(callId);
-    if (!resolver) return false;
-    resolver(ok);
+  /** Resolve a pending decision. Legacy boolean accepted everywhere. */
+  resolveApproval(callId: string, decision: boolean | ApprovalDecision): boolean {
+    const pending = this.#approvals.get(callId);
+    if (!pending) return false;
+    this.#approvals.delete(callId);
+    pending.resolve(typeof decision === "boolean" ? (decision ? "once" : "deny") : decision);
     return true;
+  }
+
+  /** Deny every pending decision for one session (abort paths). */
+  denyApprovalsFor(sessionKey: string): number {
+    let n = 0;
+    for (const [callId, pending] of [...this.#approvals.entries()]) {
+      if (pending.sessionKey !== sessionKey) continue;
+      this.#approvals.delete(callId);
+      pending.resolve("deny");
+      n++;
+    }
+    return n;
+  }
+
+  /** Broadcasts that the ledger/policy changed so open UIs re-read. */
+  #broadcastApprovalsChanged(): void {
+    this.events.emit("event", { type: "approvals.updated", sessionKey: "", name: "" });
+  }
+
+  /** Effective exec policy snapshot for RPC/CLI display. */
+  approvalsState(): { enabled: boolean; mode: string; askFallback: string; strictInlineEval: boolean; entries: ReturnType<typeof ledgerEntries> } {
+    const exec = this.configSvc.current.tools.exec;
+    const doc = loadApprovalsDoc(this.store);
+    return {
+      enabled: exec.enabled,
+      mode: execModeOf(exec),
+      askFallback: exec.askFallback ?? "deny",
+      strictInlineEval: exec.strictInlineEval === true,
+      entries: ledgerEntries(doc),
+    };
+  }
+
+  approvalsDoc(): ApprovalsDoc {
+    return loadApprovalsDoc(this.store);
+  }
+
+  saveApprovalsDoc(doc: ApprovalsDoc): void {
+    saveApprovalsDoc(this.store, doc);
+    this.#broadcastApprovalsChanged();
+  }
+
+  /** Presets: mode + askFallback pairs in one move (their approvals --preset). */
+  setExecPreset(name: "cautious" | "deny-all" | "yolo"): string {
+    const presets = { cautious: { mode: "ask", askFallback: "deny" }, "deny-all": { mode: "deny", askFallback: "deny" }, yolo: { mode: "full", askFallback: "full" } } as const;
+    const p = presets[name];
+    this.configSvc.setPath("tools.exec.mode", p.mode);
+    this.configSvc.setPath("tools.exec.askFallback", p.askFallback);
+    this.#broadcastApprovalsChanged();
+    return `preset ${name}: mode=${p.mode} askFallback=${p.askFallback}`;
+  }
+
+  setSessionExecMode(sessionKey: string, mode: string | null): void {
+    if (mode === null) this.#sessionExecModes.delete(sessionKey);
+    else this.#sessionExecModes.set(sessionKey, mode);
+  }
+
+  getSessionExecMode(sessionKey: string): string | null {
+    return this.#sessionExecModes.get(sessionKey) ?? null;
   }
 
   subscribe(listener: (event: ServiceEvent) => void): () => void {

@@ -30,7 +30,7 @@ const chat = new Chat(document.body, {
     });
   },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
-  approve: (callId, approve) => { void gateway.request("chat.approval", { callId, approve }); },
+  approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
   // Remove just that queued message (their chat.abort runId parity).
   cancelQueued: (runId) => { void gateway.request("chat.abort", { sessionKey, runId }); },
 });
@@ -43,6 +43,12 @@ gateway.on((event, payload) => {
     // Auto-title landed on a session row — re-render the list so the name
     // shows up (in any open UI) without a reload.
     void refresh();
+    return;
+  }
+  if (event === "approvals.updated") {
+    // An allow-always grant was minted or a policy entry changed — an open
+    // Tools tab re-reads the ledger live.
+    if (settings && !$("settings-view").hidden) void settings.render();
     return;
   }
   if (event === "chat") {
@@ -104,8 +110,13 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       chat.notice(`error: ${error} — retrying (attempt ${attempt}/${max})...`, "notice--error");
       break;
     }
-    case "approval":
-      chat.approval(String(e.callId), String(e.tool), e.args);
+    case "approval": {
+      const exec = e.exec && typeof e.exec === "object"
+        ? (e.exec as { mode: string; mintable: boolean; reason: string })
+        : undefined;
+      chat.approval(String(e.callId), String(e.tool), e.args, exec);
+      break;
+    }
       break;
     case "final": {
       // A final for an already-rendered run must never append a second copy

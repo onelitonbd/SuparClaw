@@ -340,7 +340,21 @@ export const CONFIG_SCHEMA: SchemaNode = {
           default: {},
           fields: {
             enabled: { t: "bool", default: false },
+            // Legacy: approvals:false maps to mode=full (kept working).
             approvals: { t: "bool", default: true },
+            // deny | allowlist | ask | full — the exec policy mode (default ask).
+            // Empty string = follow the legacy approvals bool (⇒ ask/full). Set in config
+            // or via `sc approvals mode …`. We need "unset" as a third state, so the
+            // enumeration itself is validated wherever it's written.
+            mode: { t: "text", default: "" },
+            // When zero approval surfaces are connected (cron, idle daemon):
+            // where an ask verdict lands (default deny).
+            askFallback: { t: "enum", values: ["deny", "allowlist", "full"], default: "deny" },
+            // Never auto-allow inline-eval carriers (node -e, bash -c, awk…).
+            strictInlineEval: { t: "bool", default: false },
+            // stdin-safe bins allowed without prompting (profiles in exec-policy).
+            safeBins: { t: "array", of: { t: "string" }, default: ["cut", "uniq", "head", "tail", "tr", "wc"] },
+            safeBinTrustedDirs: { t: "array", of: { t: "string" }, default: ["/bin", "/usr/bin"] },
             // No time limits on the agent's work — this is only a safety cap
             // so a hung command cannot block a session forever (10 minutes).
             timeoutMs: { t: "int", min: 1000, max: 600000, default: 600000 },
@@ -430,7 +444,16 @@ export interface SuparClawConfig {
     fs: boolean;
     memory: boolean;
     web: { fetch: boolean; search: boolean };
-    exec: { enabled: boolean; approvals: boolean; timeoutMs: number };
+    exec: {
+      enabled: boolean;
+      approvals: boolean;
+      mode?: string;
+      askFallback: "deny" | "allowlist" | "full";
+      strictInlineEval: boolean;
+      safeBins: string[];
+      safeBinTrustedDirs: string[];
+      timeoutMs: number;
+    };
   };
   cron: { enabled: boolean; timezone: string };
   messages: {
@@ -449,6 +472,16 @@ export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: st
   const errors = validate(CONFIG_SCHEMA, raw ?? {});
   if (errors.length > 0) return { config: emptyConfig(), errors };
   return { config: applyDefaults(CONFIG_SCHEMA, raw ?? {}) as SuparClawConfig, errors: [] };
+}
+
+export type ExecMode = "deny" | "allowlist" | "ask" | "full";
+export type ExecAskFallback = "deny" | "allowlist" | "full";
+
+/** Effective exec mode: explicit mode wins; legacy approvals:false ⇒ full. */
+export function execModeOf(exec: { approvals?: boolean; mode?: string }): ExecMode {
+  const mode = exec.mode && exec.mode.trim() ? exec.mode.trim() : null;
+  if (mode === "deny" || mode === "allowlist" || mode === "ask" || mode === "full") return mode;
+  return exec.approvals === false ? "full" : "ask";
 }
 
 export function emptyConfig(): SuparClawConfig {

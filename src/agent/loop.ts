@@ -20,7 +20,7 @@ export type RunEvent =
   | { type: "retry"; model: string; attempt: number; max: number; error: string }
   | { type: "final"; runId: string; text: string; usage?: Record<string, number> }
   | { type: "error"; runId: string; message: string }
-  | { type: "approval"; callId: string; tool: string; args: Record<string, unknown> }
+  | { type: "approval"; callId: string; tool: string; args: Record<string, unknown>; exec?: { mode: string; mintable: boolean; reason: string } }
   /** Message accepted into the queue (or the steer inbox), not yet consumed. */
   | { type: "queued"; runId: string; text: string; position: number; mode: QueueMode }
   /** Queued item left the queue without becoming a turn itself. */
@@ -61,6 +61,17 @@ interface QueuedMessage {
   input: RunInput;
 }
 
+export interface ApprovalRequestCtx {
+  sessionKey: string;
+  workspace: string;
+  onPrompt?: (info: { exec?: { mode: string; mintable: boolean; reason: string } }) => void;
+}
+export interface ApprovalOutcome {
+  approved: boolean;
+  /** exec-policy verdict, when the call came through the exec evaluator. */
+  execVerdict?: import("./exec-policy.js").ExecVerdict;
+}
+
 export interface LoopDeps {
   config: SuparClawConfig;
   store: Store;
@@ -69,7 +80,19 @@ export interface LoopDeps {
   llm?: LlmClient;
   /** Sub-agent control surface for the session family of tools. */
   subagents?: SubagentCtl;
-  requestApproval?: (callId: string, tool: string, args: Record<string, unknown>) => Promise<boolean>;
+  /**
+   * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
+   * immediately and side-generate no UI. When a human must decide, the
+   * implementation calls ctx.onPrompt BEFORE awaiting — the loop turns that
+   * into the approval event with the exec-policy context attached. A boolean
+   * return stays supported for old harnesses (true = approved).
+   */
+  requestApproval?: (
+    callId: string,
+    tool: string,
+    args: Record<string, unknown>,
+    ctx?: ApprovalRequestCtx,
+  ) => Promise<boolean | ApprovalOutcome>;
   /** Fires once when a subagent child turn settles (registry + announce). */
   onRunFinished?: (
     sessionKey: string,
@@ -657,14 +680,21 @@ export class AgentLoop {
           onEvent({ type: "tool", callId: call.id, name: call.name, status: "running" });
 
           let approved = true;
-          if (spec.needsApproval && this.deps.config.tools.exec.approvals) {
-            onEvent({ type: "approval", callId: call.id, tool: call.name, args });
-            approved = (await this.deps.requestApproval?.(call.id, call.name, args)) ?? false;
+          let execVerdict: ApprovalOutcome["execVerdict"];
+          if (spec.needsApproval && this.deps.requestApproval) {
+            const outcome = await this.deps.requestApproval(call.id, call.name, args, {
+              sessionKey: session.key,
+              workspace: this.workspace,
+              onPrompt: (info) => onEvent({ type: "approval", callId: call.id, tool: call.name, args, exec: info.exec }),
+            });
+            // boolean stays supported for bare-bones harnesses / tests
+            approved = typeof outcome === "object" && outcome !== null ? outcome.approved : outcome === true;
+            execVerdict = typeof outcome === "object" && outcome !== null ? outcome.execVerdict : undefined;
           }
 
           let output: string;
           try {
-            const callCtx: ToolContext = { ...ctx, approved: true };
+            const callCtx: ToolContext = { ...ctx, approved: true, execVerdict };
             output = approved
               ? await spec.run(args, callCtx)
               : "error: user declined this action";

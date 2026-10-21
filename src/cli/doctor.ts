@@ -216,6 +216,51 @@ export async function doctor(): Promise<number> {
     }
   }
 
+  // exec approvals (Partial #8): effective policy, ledger health, common
+  // misconfigurations. Read-only — one line surfaces the whole trust surface.
+  {
+    const { execModeOf } = await import("../config/schema.js");
+    const { ledgerEntries, loadApprovalsDoc } = await import("../agent/exec-policy.js");
+    const { Store } = await import("../state/db.js");
+    const exec = load.config.tools.exec;
+    let entries = 0;
+    try {
+      const { dbPath } = await import("../util/paths.js");
+      entries = ledgerEntries(loadApprovalsDoc(Store.open(dbPath()))).length;
+    } catch {
+      /* ledger unreadable → report 0, the mode line still carries the policy */
+    }
+    const mode = execModeOf(exec);
+    if (!exec.enabled && mode !== "deny") {
+      checks.push({
+        name: "exec",
+        status: "warn",
+        detail: `exec tool disabled but mode=${mode} — the disable wins silently`,
+        fix: "tools.exec.enabled=false means the tool never registers; set mode=deny as well for a consistent policy posture",
+      });
+    } else if (exec.enabled && mode === "allowlist" && entries === 0) {
+      checks.push({
+        name: "exec",
+        status: "warn",
+        detail: "mode=allowlist with an empty ledger — every command will be denied",
+        fix: "sc approvals allow <pattern>, or switch: sc approvals preset cautious",
+      });
+    } else if (exec.enabled && mode === "full") {
+      checks.push({
+        name: "exec",
+        status: "warn",
+        detail: `mode=full — host commands run WITHOUT operator prompts (yolo posture), ${entries} ledger entries`,
+        fix: "sc approvals preset cautious to restore prompting",
+      });
+    } else {
+      checks.push({
+        name: "exec",
+        status: "ok",
+        detail: `${exec.enabled ? "enabled" : "disabled"} · mode=${mode} · askFallback=${exec.askFallback ?? "deny"} · ${entries} allowlist entries${exec.strictInlineEval ? " · strict inline eval" : ""}`,
+      });
+    }
+  }
+
   // model
   const model = load.config.agents.defaults.model;
   const providers = Object.keys(load.config.providers);

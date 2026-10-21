@@ -28,6 +28,8 @@ export class Settings {
   #modelsProvider: string | null = null;
   /** Search text on the provider model list (survives re-renders). */
   #modelQuery = "";
+  /** Live search on the exec allowlist ledger (rule: long lists get it). */
+  #execQuery = "";
 
   constructor(root: HTMLElement, onChanged: () => void) {
     this.#root = root;
@@ -100,7 +102,7 @@ export class Settings {
       }
     } else if (this.#tab === "providers") this.#renderProviders(providers);
     else if (this.#tab === "skills") this.#renderSkills(skills);
-    else if (this.#tab === "tools") this.#renderTools(tools);
+    else if (this.#tab === "tools") await this.#renderTools(tools);
     else if (this.#tab === "memory") await this.#renderMemory();
     else if (this.#tab === "gateway") this.#renderGateway(gw);
     else await this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
@@ -919,8 +921,170 @@ export class Settings {
 
   /* ---------------- tools ---------------- */
 
-  #renderTools(tools: any[]): void {
+  /* ---------------- tools: exec & approvals ---------------- */
+
+  async #execApprovalsCard(): Promise<HTMLElement> {
+    let st: any;
+    try {
+      st = await gateway.request("approvals.get");
+    } catch (err) {
+      return el("div", { class: "card" }, [
+        el("div", { class: "row__label" }, ["Exec & approvals"]),
+        el("p", { class: "hint", style: "color:var(--warn)" }, [`policy unread: ${(err as Error).message}`]),
+      ]);
+    }
+    const MODES = ["deny", "allowlist", "ask", "full"] as const;
+
+    const activePill = (active: boolean): string => (active ? "border-color:var(--accent);color:var(--accent);" : "");
+    const pills = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:10px 0" },
+      MODES.map((m) => {
+        const b = el("button", { class: "btn sm", type: "button", style: activePill(st.mode === m) }, [m]) as HTMLButtonElement;
+        b.onclick = async () => {
+          try {
+            await gateway.request("approvals.setMode", { mode: m });
+            toast(`exec mode: ${m}`);
+            void this.render();
+          } catch (err) { toast((err as Error).message, "err"); }
+        };
+        return b;
+      }));
+
+    const fb = el("select", { class: "inp" }, [
+      ...(["deny", "allowlist", "full"] as const).map((v) => {
+        const o = el("option", { value: v }, [v]) as HTMLOptionElement;
+        if (st.askFallback === v) o.selected = true;
+        return o;
+      }),
+    ]) as HTMLSelectElement;
+    fb.onchange = async () => {
+      try {
+        await gateway.request("approvals.setMode", { mode: st.mode, askFallback: fb.value });
+        toast(`no-surface fallback: ${fb.value}`);
+        void this.render();
+      } catch (err) { toast((err as Error).message, "err"); }
+    };
+
+    const strictBox = el("input", { type: "checkbox" }) as HTMLInputElement;
+    strictBox.checked = st.strictInlineEval === true;
+    strictBox.onchange = async () => {
+      try {
+        await gateway.request("approvals.setMode", { mode: st.mode, strictInlineEval: strictBox.checked });
+        toast(`strict inline eval ${strictBox.checked ? "on" : "off"}`);
+        void this.render();
+      } catch (err) { toast((err as Error).message, "err"); }
+    };
+
+    const presets = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+      (["cautious", "deny-all", "yolo"] as const).map((name) => {
+        const b = el("button", { class: "btn sm", type: "button" }, [name]) as HTMLButtonElement;
+        if (name === "yolo") b.style.color = "var(--warn)";
+        b.onclick = async () => {
+          try {
+            const r = await gateway.request("approvals.preset", { name }) as any;
+            toast(r.message ?? `preset ${name}`);
+            void this.render();
+          } catch (err) { toast((err as Error).message, "err"); }
+        };
+        return b;
+      }));
+
+    // ---- ledger (live search + compact rows; rule: long lists) ----
+    const entries: any[] = Array.isArray(st.entries) ? st.entries : [];
+    const list = el("div", { class: "list" });
+    const ago = (ts?: number) => {
+      if (!ts) return "never used";
+      const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
+      return m < 1 ? "used <1m ago" : m < 60 ? `used ${m}m ago` : m < 1440 ? `used ${Math.round(m / 60)}h ago` : `used ${Math.round(m / 1440)}d ago`;
+    };
+    const renderRows = (): void => {
+      list.innerHTML = "";
+      const q = this.#execQuery.trim().toLowerCase();
+      const shown = entries.filter((e) => !q || String(e.pattern).toLowerCase().includes(q) || String(e.argPattern ?? "").toLowerCase().includes(q));
+      if (shown.length === 0) {
+        list.append(el("div", { class: "row", style: "padding:10px 16px" }, [
+          el("span", { class: "hint" }, [entries.length === 0 ? "No allowlist entries — every new command asks." : "No entries match the search."]),
+        ]));
+        return;
+      }
+      for (const e of shown) {
+        const revoke = el("button", { class: "btn sm danger", type: "button", title: "Revoke entry" }, ["✕"]) as HTMLButtonElement;
+        revoke.onclick = async () => {
+          try {
+            await gateway.request("approvals.entry.revoke", { id: e.id });
+            toast("entry revoked");
+            void this.render();
+          } catch (err) { toast((err as Error).message, "err"); }
+        };
+        const kind = e.source === "allow-always"
+          ? el("span", { class: "prov__count", style: "color:var(--warn)" }, ["always"])
+          : el("span", { class: "prov__count" }, ["manual"]);
+        const detail = e.source === "allow-always"
+          ? `exact argv · ${String(e.cwd ?? "?").replace(/^\/data\/data\/com\.termux\/files\/home/, "~")} · ${ago(e.lastUsedAt)}`
+          : [e.argPattern ? `argv /${e.argPattern}/` : null, e.lastUsedAt ? ago(e.lastUsedAt) : null, e.lastResolvedPath ? e.lastResolvedPath : null].filter(Boolean).join(" · ") || "path/name match";
+        list.append(el("div", { class: "row", style: "padding:8px 16px;gap:8px;cursor:default" }, [
+          el("div", { style: "flex:1;min-width:0" }, [
+            el("div", { class: "mono", style: "font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, [String(e.pattern)]),
+            el("div", { class: "prov__url", style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, [detail]),
+          ]),
+          kind,
+          revoke,
+        ]));
+      }
+    };
+    renderRows();
+
+    const search = el("input", { class: "inp", placeholder: "Search entries…", value: this.#execQuery, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    search.oninput = () => { this.#execQuery = search.value; renderRows(); };
+
+    const patternInp = el("input", { class: "inp mono", placeholder: "rg or /opt/homebrew/bin/rg or ~/.local/bin/*" }) as HTMLInputElement;
+    const argInp = el("input", { class: "inp mono", placeholder: "argv regex (optional), e.g. ^safe\\.py$" }) as HTMLInputElement;
+    const addBtn = el("button", { class: "btn", type: "button" }, ["+ Add entry"]) as HTMLButtonElement;
+    addBtn.onclick = async () => {
+      try {
+        await gateway.request("approvals.entry.add", { pattern: patternInp.value, argPattern: argInp.value || undefined });
+        toast("allowlist entry added");
+        patternInp.value = "";
+        argInp.value = "";
+        void this.render();
+      } catch (err) { toast((err as Error).message, "err"); }
+    };
+
+    return el("div", { class: "card", style: "padding:12px 16px" }, [
+      el("div", { class: "prov__head" }, [
+        el("span", { class: "row__label" }, ["Exec & approvals"]),
+        el("span", { class: "prov__count", style: st.enabled ? "" : "color:var(--err)" }, [
+          st.enabled ? `mode ${st.mode} · ${entries.length} entries` : "exec disabled",
+        ]),
+      ]),
+      el("p", { class: "hint" }, [
+        "How host shell commands get authorized. Allowlist & safe bins run without prompts (argv-literal, no shell); misses follow the mode. Allow always mints an exact-argv grant bound to this directory.",
+      ]),
+      el("label", { class: "lbl" }, ["Mode"]), pills,
+      el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:6px 0 10px" }, [
+        el("div", { style: "display:flex;align-items:center;gap:8px" }, [
+          el("span", { class: "lbl", style: "margin:0" }, ["When nobody's watching"]), fb,
+        ]),
+        el("label", { class: "lbl", style: "margin:0;display:flex;align-items:center;gap:6px" }, [
+          strictBox, document.createTextNode("strict inline eval"),
+        ]),
+      ]),
+      el("div", { class: "modal__field" }, [el("label", { class: "lbl" }, ["Presets"]), presets]),
+      el("div", { class: "modal__field", style: "margin-top:14px" }, [
+        el("label", { class: "lbl" }, [`Allowlist (${entries.length})`]),
+        search,
+      ]),
+      el("div", { class: "card", style: "padding:0;overflow:hidden;margin:8px 0" }, [list]),
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl" }, ["Add manual entry"]),
+        patternInp, argInp, addBtn,
+      ]),
+    ]);
+  }
+
+  async #renderTools(tools: any[]): Promise<void> {
     const body = el("div", { class: "settings__body" });
+
+    body.append(await this.#execApprovalsCard());
 
     body.append(el("div", { class: "card" }, [
       el("div", { class: "row__label" }, ["Tools"]),
