@@ -17,6 +17,7 @@ import { modelProfiles } from "../config/schema.js";
 import { readSkillBody, skillSlug, writeSkill } from "../agent/skills.js";
 import { workspaceDir } from "../util/paths.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
+import { handleHooksRequest, type HookService } from "./webhooks.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
 
 // The thinking ladder the UI renders. OpenClaw keeps this provider-profile
@@ -992,6 +993,12 @@ export class Gateway {
     if (url === "/api/status") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(this.service.status()));
+      return;
+    }
+    // Inbound webhooks (P1 A4) — claimed before the static UI. A dedicated
+    // hook token guards these; static paths are untouched when disabled.
+    if (url === (this.service.config.hooks.path || "/hooks") || url.startsWith(`${this.service.config.hooks.path || "/hooks"}/`)) {
+      void handleHooksRequest(this.service as unknown as HookService, req, res);
       return;
     }
 

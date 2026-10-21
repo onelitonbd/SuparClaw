@@ -33,7 +33,7 @@ export interface ChatPayload {
   sessionKey: string;
   text: string;
   isMainSession?: boolean;
-  source: "tui" | "gateway" | "telegram" | "cron" | "cli";
+  source: "tui" | "gateway" | "telegram" | "cron" | "cli" | "webhook";
   /** Per-run model override (surface-level choice); unset means the default. */
   model?: string;
   /** Per-run thinking effort override; unset means session/default policy. */
@@ -1048,6 +1048,16 @@ export class Service {
         status: "fail",
         detail: "enabled but not connected — check channels.telegram.token",
       });
+    }
+
+    // Inbound webhooks: enabled without a token is a closed door — warn loudly.
+    const hk = config.hooks;
+    if (!hk.enabled) {
+      checks.push({ name: "hooks", status: "ok", detail: "disabled" });
+    } else if (!hk.token) {
+      checks.push({ name: "hooks", status: "warn", detail: `enabled but no hooks.token — ${hk.path} returns 503` });
+    } else {
+      checks.push({ name: "hooks", status: "ok", detail: `${hk.path} armed · token ${hk.token.slice(0, 4)}…${hk.token.slice(-2)}` });
     }
 
     return checks;

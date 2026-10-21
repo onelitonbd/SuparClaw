@@ -41,7 +41,7 @@ export interface RunInput {
   /** Per-run thinking effort override ("low"…/"max", "off", "inherit"). */
   reasoning?: string;
   /** Message surface — drives lane choice, byChannel queue mode, anonymity. */
-  source?: "tui" | "gateway" | "telegram" | "cron" | "cli" | "dream" | "subagent";
+  source?: "tui" | "gateway" | "telegram" | "cron" | "cli" | "dream" | "subagent" | "webhook";
   /** Per-call queue-mode override (`/followup`, chat.send queueMode, session_send). */
   queueMode?: QueueMode;
   /** Durable-ingress style inputs (channels) never coalesce in collect mode. */

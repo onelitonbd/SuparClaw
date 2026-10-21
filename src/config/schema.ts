@@ -427,6 +427,31 @@ export const CONFIG_SCHEMA: SchemaNode = {
         timezone: { t: "string", default: "local" },
       },
     },
+    // Inbound HTTP webhooks (P1 A4) — a dedicated hook token, not the
+    // gateway token; POST-only; disabled until enabled+token are both set.
+    hooks: {
+      t: "object",
+      default: {},
+      fields: {
+        enabled: { t: "bool", default: false },
+        token: { t: "string", default: "" },
+        path: { t: "string", default: "/hooks" },
+        allowRequestSessionKey: { t: "bool", default: false },
+        mappings: {
+          t: "record",
+          default: {},
+          of: {
+            t: "object",
+            fields: {
+              action: { t: "enum", values: ["wake", "agent"], default: "agent" },
+              text: { t: "string", default: "" },
+              message: { t: "string", default: "" },
+              sessionKey: { t: "string", default: "" },
+            },
+          },
+        },
+      },
+    },
   },
 };
 
@@ -527,6 +552,13 @@ export interface SuparClawConfig {
     };
   };
   cron: { enabled: boolean; timezone: string };
+  hooks: {
+    enabled: boolean;
+    token: string;
+    path: string;
+    allowRequestSessionKey: boolean;
+    mappings: Record<string, { action: "wake" | "agent"; text: string; message: string; sessionKey: string }>;
+  };
   messages: {
     queue: {
       mode: "steer" | "followup" | "collect" | "interrupt";
