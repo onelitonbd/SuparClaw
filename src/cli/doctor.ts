@@ -124,6 +124,66 @@ export async function doctor(): Promise<number> {
     checks.push({ name: "config", status: "ok", detail: cfgPath });
   }
 
+  // auth profiles (Partial #6 — their doctor-auth analog): stored credentials
+  // with expiry/cooldown problems, and providers whose default model is bound
+  // to an ineligible profile.
+  {
+    const { Store } = await import("../state/db.js");
+    const { dbPath } = await import("../util/paths.js");
+    const { profileCheck, resolveAuthProfileOrder, boundProfileIds } = await import("../agent/auth.js");
+    try {
+      const aStore = Store.open(dbPath());
+      try {
+        for (const row of aStore.authProfiles()) {
+          const check = profileCheck(row);
+          const { excluded } = resolveAuthProfileOrder(aStore, load.config, row.provider);
+          if (excluded.includes(row)) {
+            checks.push({
+              name: "auth",
+              status: "warn",
+              detail: `profile ${row.id} is excluded from the resolved auth order`,
+              fix: `sc models auth order get --provider ${row.provider} (or: sc models auth order clear --provider ${row.provider})`,
+            });
+          } else if (!check.ok) {
+            checks.push({
+              name: "auth",
+              status: check.reason === "cooldown" ? "warn" : "fail",
+              detail: `profile ${row.id}: ${check.reason}`,
+              fix: `sc models auth login --provider ${row.provider} --force (--profile-id ${row.id})`,
+            });
+          }
+        }
+        if (load.config.agents.defaults.model) {
+          const ref = load.config.agents.defaults.model;
+          const head = ref.includes("/") ? ref.slice(0, ref.indexOf("/")) : Object.keys(load.config.providers)[0];
+          const pcfg = head ? load.config.providers[head] : undefined;
+          if (pcfg) {
+            const { single, list } = boundProfileIds(pcfg as unknown as Record<string, unknown>, head ?? "");
+            const ids = list.length ? list : single ? [single] : [];
+            for (const pid of ids) {
+              const row = aStore.authProfile(pid);
+              if (!row) {
+                checks.push({
+                  name: "auth",
+                  status: "fail",
+                  detail: `providers.${head}.apiKey binds missing profile ${pid} — the default model has no credential`,
+                  fix: `sc models auth login --provider ${head} --profile-id ${pid}`,
+                });
+              }
+            }
+          }
+        }
+        if (checks.every((c) => c.name !== "auth")) {
+          checks.push({ name: "auth", status: "ok", detail: `${aStore.authProfiles().length} profile(s) healthy` });
+        }
+      } finally {
+        aStore.close();
+      }
+    } catch {
+      checks.push({ name: "auth", status: "warn", detail: "auth store unreadable — profiles skipped" });
+    }
+  }
+
   // model
   const model = load.config.agents.defaults.model;
   const providers = Object.keys(load.config.providers);

@@ -214,6 +214,14 @@ export class Gateway {
       "sessions.patch",
       "sessions.rename",
       "models.list",
+      "models.plugins",
+      "models.auth.list",
+      "models.auth.addKey",
+      "models.auth.beginDeviceCode",
+      "models.auth.pollDeviceCode",
+      "models.auth.remove",
+      "models.auth.order",
+      "models.auth.probe",
       "providers.add",
       "providers.remove",
       "providers.test",
@@ -492,7 +500,57 @@ export class Gateway {
           const result = await discoverModels(service.configSvc, {
             refresh: params["refresh"] === true,
           });
-          send(okFrame(id, { ...result, configured: modelProfiles(service.config) }));
+          send(okFrame(id, { ...result, configured: modelProfiles(service.config), auth: service.authProfilesView() }));
+          return;
+        }
+        case "models.plugins": {
+          const { pluginSummaries } = await import("../agent/provider-plugins.js");
+          send(okFrame(id, { plugins: pluginSummaries() }));
+          return;
+        }
+        case "models.auth.list": {
+          send(okFrame(id, { profiles: service.authProfilesView(String(params["provider"] ?? "") || undefined) }));
+          return;
+        }
+        case "models.auth.addKey": {
+          const out = await service.authLoginWithKey({
+            provider: String(params["provider"] ?? ""),
+            method: params["method"] === "token" ? "token" : "api_key",
+            material: String(params["key"] ?? ""),
+            label: String(params["label"] ?? ""),
+            setDefault: params["setDefault"] === true,
+          });
+          if (!out.ok) send(errFrame(id, "bad_request", out.error ?? "login failed"));
+          else send(okFrame(id, out));
+          return;
+        }
+        case "models.auth.beginDeviceCode": {
+          const out = await service.authBeginDeviceCode(String(params["provider"] ?? ""));
+          if (!out.ok) send(errFrame(id, "bad_request", out.error ?? "device login unavailable"));
+          else send(okFrame(id, out));
+          return;
+        }
+        case "models.auth.pollDeviceCode": {
+          const out = await service.authPollDeviceCode(String(params["flow"] ?? ""), {
+            setDefault: params["setDefault"] === true,
+          });
+          send(okFrame(id, out));
+          return;
+        }
+        case "models.auth.remove": {
+          const out = service.authRemove(String(params["profile"] ?? ""));
+          if (!out.ok) send(errFrame(id, "not_found", out.error ?? "no such profile"));
+          else send(okFrame(id, out));
+          return;
+        }
+        case "models.auth.order": {
+          const out = service.authSetOrder(String(params["provider"] ?? ""), Array.isArray(params["ids"]) ? (params["ids"] as string[]) : null);
+          send(okFrame(id, out));
+          return;
+        }
+        case "models.auth.probe": {
+          const out = await service.authProbe(String(params["provider"] ?? "") || undefined);
+          send(okFrame(id, { probe: out }));
           return;
         }
         case "models.save": {

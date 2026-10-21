@@ -265,6 +265,31 @@ const MIGRATIONS: string[][] = [
        created_at INTEGER NOT NULL
      );`,
   ],
+  // Auth profiles (Partial #6): the credential store — OpenClaw's
+  // auth_profile_store/state at our single-agent scale. Material stays in
+  // here; nothing that surfaces to logs/RPC ever returns it.
+  [
+    `CREATE TABLE IF NOT EXISTS auth_profiles (
+       id TEXT PRIMARY KEY,
+       provider TEXT NOT NULL,
+       type TEXT NOT NULL CHECK(type IN ('api_key','token','oauth')),
+       material TEXT NOT NULL,
+       expires INTEGER NOT NULL DEFAULT 0,
+       label TEXT NOT NULL DEFAULT '',
+       created_at INTEGER NOT NULL,
+       last_used_at INTEGER NOT NULL DEFAULT 0,
+       last_ok_at INTEGER NOT NULL DEFAULT 0,
+       fail_count INTEGER NOT NULL DEFAULT 0,
+       cooldown_until INTEGER NOT NULL DEFAULT 0
+     );`,
+    // Store-side per-provider profile order — wins over auth.order config
+    // (their resolveAuthProfileOrder: stored override beats config).
+    `CREATE TABLE IF NOT EXISTS auth_profile_order (
+       provider TEXT PRIMARY KEY,
+       profile_ids TEXT NOT NULL DEFAULT '[]',
+       updated_at INTEGER NOT NULL
+     );`,
+  ],
 ];
 
 export class Store {
@@ -750,8 +775,83 @@ export class Store {
       .all(sinceMs, limit) as unknown as (MessageRow & { session_key: string })[];
   }
 
+  // ══ auth profiles (Partial #6) ════════════════════════════════════════
+  /** Insert or replace (their `--force` semantics): reuse keeps last_used stats
+   * only when nothing is replaced; a reuse/force reset clears health. */
+  upsertAuthProfile(p: {
+    id: string;
+    provider: string;
+    type: "api_key" | "token" | "oauth";
+    material: string;
+    expires?: number;
+    label?: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO auth_profiles(id, provider, type, material, expires, label, created_at, last_used_at, last_ok_at, fail_count, cooldown_until)
+         VALUES(?,?,?,?,?,?,?,?,0,0,0)
+         ON CONFLICT(id) DO UPDATE SET type=excluded.type, material=excluded.material,
+           expires=excluded.expires, label=excluded.label, fail_count=0, cooldown_until=0`,
+      )
+      .run(p.id, p.provider, p.type, p.material, p.expires ?? 0, p.label ?? "", Date.now(), Date.now());
+  }
+
+  authProfile(id: string): AuthProfileRow | undefined {
+    return this.db.prepare("SELECT * FROM auth_profiles WHERE id=?").get(id) as AuthProfileRow | undefined;
+  }
+
+  authProfiles(provider?: string): AuthProfileRow[] {
+    return provider
+      ? (this.db.prepare("SELECT * FROM auth_profiles WHERE provider=? ORDER BY id").all(provider) as unknown as AuthProfileRow[])
+      : (this.db.prepare("SELECT * FROM auth_profiles ORDER BY provider, id").all() as unknown as AuthProfileRow[]);
+  }
+
+  removeAuthProfile(id: string): boolean {
+    this.db.prepare("DELETE FROM auth_profiles WHERE id=?").run(id);
+    // Also drop from any stored provider order (their: removal is not recreated).
+    for (const row of this.db.prepare("SELECT provider, profile_ids FROM auth_profile_order").all() as unknown as {
+      provider: string;
+      profile_ids: string;
+    }[]) {
+      const ids = JSON.parse(row.profile_ids) as string[];
+      if (ids.includes(id)) this.setAuthOrder(row.provider, ids.filter((x) => x !== id));
+    }
+    return (this.db.prepare("SELECT changes() AS c").get() as { c: number }).c > 0;
+  }
+
+  markAuthUsed(id: string, ok: boolean): void {
+    if (ok) {
+      this.db.prepare("UPDATE auth_profiles SET last_used_at=?, last_ok_at=?, fail_count=0, cooldown_until=0 WHERE id=?").run(Date.now(), Date.now(), id);
+    } else {
+      // Their cooldown ladder: 5m, 10m, 20m… capped at 60m, per profile only.
+      const row = this.authProfile(id);
+      if (!row) return;
+      const fails = row.fail_count + 1;
+      const cooldown = Date.now() + Math.min(5 * 60_000 * 2 ** (fails - 1), 60 * 60_000);
+      this.db.prepare("UPDATE auth_profiles SET last_used_at=?, fail_count=?, cooldown_until=? WHERE id=?").run(Date.now(), fails, cooldown, id);
+    }
+  }
+
+  authOrder(provider: string): string[] {
+    const row = this.db.prepare("SELECT profile_ids FROM auth_profile_order WHERE provider=?").get(provider) as
+      | { profile_ids: string }
+      | undefined;
+    return row ? (JSON.parse(row.profile_ids) as string[]) : [];
+  }
+
+  setAuthOrder(provider: string, ids: string[]): void {
+    if (ids.length === 0) {
+      this.db.prepare("DELETE FROM auth_profile_order WHERE provider=?").run(provider);
+    } else {
+      this.db
+        .prepare("INSERT INTO auth_profile_order(provider, profile_ids, updated_at) VALUES(?,?,?) ON CONFLICT(provider) DO UPDATE SET profile_ids=excluded.profile_ids, updated_at=excluded.updated_at")
+        .run(provider, JSON.stringify(ids), Date.now());
+    }
+  }
+
   /** Light-phase staging. Dedupe against existing identical text+source. */
   stageDreamCandidate(c: { text: string; source: string; day: string; kind: string; importance: number | null; stagedVia: string }): boolean {
+
     const seen = this.db
       .prepare("SELECT 1 FROM dream_candidates WHERE text = ? AND source = ? AND promoted_at IS NULL LIMIT 1")
       .get(c.text, c.source);
@@ -843,6 +943,20 @@ export interface DreamCandidateRow {
   staged_at: number;
   staged_via: string;
   promoted_at: number | null;
+}
+
+export interface AuthProfileRow {
+  id: string;
+  provider: string;
+  type: "api_key" | "token" | "oauth";
+  material: string;
+  expires: number;
+  label: string;
+  created_at: number;
+  last_used_at: number;
+  last_ok_at: number;
+  fail_count: number;
+  cooldown_until: number;
 }
 
 export interface DreamRunRow {

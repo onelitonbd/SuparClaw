@@ -23,6 +23,13 @@ export function isRedacted(value: unknown): boolean {
   return typeof value === "string" && value.startsWith(REDACTED_PREFIX);
 }
 
+/** Profile bindings (apiKey naming a stored profile id) are metadata, not
+ * secret material — the UI must show which profile a provider uses, so only
+ * literal-looking keys get masked (their "values that do not name a stored
+ * profile remain literal keys; the stored binding format stays visible"). */
+const looksLikeBinding = (value: string): boolean =>
+  /^[a-z0-9][a-z0-9-]*:[^/].+$/i.test(value) && value.length < 128;
+
 /** Deep-clone a config with every secret field masked. */
 export function redactSecrets(config: SuparClawConfig): SuparClawConfig {
   const out = structuredClone(config) as SuparClawConfig & {
@@ -31,7 +38,7 @@ export function redactSecrets(config: SuparClawConfig): SuparClawConfig {
   out.gateway.auth.token = maskSecret(out.gateway.auth.token);
   out.channels.telegram.token = maskSecret(out.channels.telegram.token);
   for (const provider of Object.values(out.providers)) {
-    provider.apiKey = maskSecret(provider.apiKey);
+    provider.apiKey = looksLikeBinding(provider.apiKey) ? provider.apiKey : maskSecret(provider.apiKey);
   }
   return out;
 }

@@ -252,10 +252,23 @@ export const CONFIG_SCHEMA: SchemaNode = {
         t: "object",
         fields: {
           baseUrl: { t: "string", default: "" },
+          // May hold a literal key OR the id of a compatible stored auth
+          // profile (profile binding — resolved at request time).
           apiKey: { t: "string", default: "" },
           headers: { t: "record", of: { t: "string" }, default: {} },
           models: { t: "array", of: { t: "string" }, default: [] },
+          // Multiple stored profiles bound to this provider (ordered).
+          authProfiles: { t: "array", of: { t: "string" }, default: [] },
         },
+      },
+    },
+    // Auth configuration — explicit per-provider profile order. A store-side
+    // override (sc models auth order set) wins over this config.
+    auth: {
+      t: "object",
+      default: {},
+      fields: {
+        order: { t: "record", of: { t: "array", of: { t: "string" }, default: [] }, default: {} },
       },
     },
     // Curated model profiles — the Settings "Models" tab. Unlike OpenClaw
@@ -375,8 +388,9 @@ export interface SuparClawConfig {
   };
   providers: Record<
     string,
-    { baseUrl: string; apiKey: string; headers: Record<string, string>; models: string[] }
+    { baseUrl: string; apiKey: string; headers: Record<string, string>; models: string[]; authProfiles: string[] }
   >;
+  auth: { order: Record<string, string[]> };
   models: Record<
     string,
     {

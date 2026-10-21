@@ -90,3 +90,26 @@ export {
 } from "./agent/dream.js";
 
 
+
+// Auth profiles + provider plugins (Partial #6)
+export {
+  resolveConfiguredProviders,
+  resolveAuthProfileOrder,
+  resolveProviderCredential,
+  boundProfileIds,
+  profileCheck,
+  profileStatus,
+  profileId,
+  markAuthOutcome,
+  type AuthReason,
+  type ProfileStatus,
+} from "./agent/auth.js";
+export { PROVIDER_PLUGINS, pluginById, pluginSummaries, type ProviderPlugin, type AuthMethodId } from "./agent/provider-plugins.js";
+export {
+  requestDeviceAuthorization,
+  pollDeviceToken,
+  deviceLogin,
+  DeviceFlowError,
+  type DeviceAuthorization,
+  type TokenSuccess,
+} from "./agent/oauth-device.js";

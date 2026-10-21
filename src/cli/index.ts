@@ -25,6 +25,10 @@ commands:
   setup                guided first-run setup: pick a provider, key and model
   provider <list|add|remove|test>  manage providers
   models [--refresh]     list available models (live fetch with --refresh)
+  models plugins         provider plugins + declared auth methods
+  models auth <login|paste-api-key|paste-token|list|order|remove|probe>
+                         OAuth/auth profiles — login (--provider, --method),
+                         order (get|set|clear), probe with reason codes
   init                 create workspace files and a gateway token
   status               show health and configuration summary
   doctor               diagnose this device
@@ -74,7 +78,7 @@ export async function main(argv: string[]): Promise<number> {
     case "provider":
       return (await import("./provider.js")).providerCmd(rest);
     case "models":
-      return (await import("./provider.js")).modelsCmd(rest);
+      return (await import("./models-commands.js")).modelsCmd(rest);
     case "dream":
       return (await import("./dream-commands.js")).dreamCmd(rest);
     case "doctor":

@@ -12,6 +12,10 @@ import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile } from "../config/schema.js";
 import { DREAM_SESSION_KEY, armDream, cleanTitle, titlePrompt, type DreamHandle, runSweep, promotePreview, backfillPreview, lightStage, consolidateGated } from "../agent/dream.js";
 import { writeWorkspaceTemplates, todayStamp } from "../agent/workspace.js";
+import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileCheck, profileId, resolveAuthProfileOrder } from "../agent/auth.js";
+import { pluginById } from "../agent/provider-plugins.js";
+import { deviceLogin } from "../agent/oauth-device.js";
+import { fetchModels } from "../config/providers.js";
 import { TelegramChannel } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
 
@@ -68,10 +72,14 @@ export class Service {
     this.store = Store.open(dbPath());
     this.store.setMeta("state_dir", stateDir());
     const config = this.configSvc.current;
+    // Auth-profile binding: providers resolve credentials from the stored
+    // profiles (literal keys untouched); health outcomes flow back to the
+    // profile store (cooldown/last-good).
     const llm = new LlmClient(
-      config.providers,
+      this.#authProviders().providers,
       { model: config.agents.defaults.model, fallbacks: config.agents.defaults.fallbacks },
       (info) => this.log.warn(`llm retry ${info.model} #${info.attempt}: ${info.error}`),
+      this.#authHooks(),
     );
     this.loop = new AgentLoop({
       config,
@@ -132,8 +140,19 @@ export class Service {
   applyConfig(_next?: SuparClawConfig): void {
     const config = this.config;
     this.loop.setConfig(config);
-    this.loop.llm.setConfig(config.providers, config.agents.defaults);
+    this.loop.llm.setConfig(this.#authProviders().providers, config.agents.defaults, this.#authHooks());
     this.log.info(`config applied — model ${config.agents.defaults.model || "(unset)"}`);
+  }
+
+  /** Effective providers with stored-profile bindings resolved to material. */
+  #authProviders(): { providers: Record<string, import("./llm.js").ProviderConfig>; profileOf: Record<string, string> } {
+    return resolveConfiguredProviders(this.store, this.config);
+  }
+
+  #authHooks(): { profileOf: Record<string, string>; onOutcome: (id: string, ok: boolean) => void } {
+    const { profileOf } = resolveConfiguredProviders(this.store, this.config);
+    const store = this.store;
+    return { profileOf, onOutcome: (id, ok) => markAuthOutcome(store, id, ok) };
   }
 
   /** Hot reload for edits made outside config.set (sc config set, hand edits). */
@@ -246,6 +265,173 @@ export class Service {
 
   dreamBackfillRollback(): number {
     return this.store.rollbackDreamBackfill();
+  }
+
+  // ══ auth profiles (Partial #6) — one entry point like their models auth ══
+
+  authProfilesView(provider?: string) {
+    const rows = provider ? this.store.authProfiles(provider) : this.store.authProfiles();
+    return rows.map((r) => profileStatus(r));
+  }
+
+  /** Paste-key login (Control UI "Connect provider" → api-key/token method). */
+  async authLoginWithKey(args: { provider: string; method: "api_key" | "token"; material: string; label?: string; setDefault?: boolean }): Promise<
+    { ok: boolean; error?: string; profile?: string; models?: number }
+  > {
+    const id = args.provider.toLowerCase().trim();
+    const descriptor = pluginById(id);
+    if (!descriptor) return { ok: false, error: `unknown provider "${args.provider}" (custom providers can bind any stored profile id in config)` };
+    if (!args.material.trim()) return { ok: false, error: "empty credential" };
+    const pid = profileId(id, args.method === "token" ? "token" : "key");
+    this.store.upsertAuthProfile({
+      id: pid,
+      provider: id,
+      type: args.method,
+      material: args.material.trim(),
+      label: args.label?.trim() || `${id} ${args.method === "token" ? "token" : "API key"}`,
+    });
+    this.#bindProvider(id, descriptor.baseUrl, pid);
+    this.applyConfig();
+    const models = await this.#refreshCatalog(id, args.material.trim());
+    if (args.setDefault && models.length) this.configSvc.setPath("agents.defaults.model", `${id}/${models[0] ?? "model"}`);
+    this.#broadcastAuthChanged();
+    return { ok: true, profile: pid, models: models.length };
+  }
+
+  /** In-flight device-code flows (gateway-mediated wizard, their RPC shape). */
+  #deviceFlows = new Map<string, { provider: string; done: Promise<{ ok: boolean; profile?: string; models?: number; error?: string }> }>();
+
+  async authBeginDeviceCode(provider: string): Promise<
+    | { ok: true; flow: string; userCode: string; verificationUri: string; interval: number; expiresIn: number }
+    | { ok: false; error: string }
+  > {
+    const id = provider.toLowerCase().trim();
+    const descriptor = pluginById(id);
+    if (!descriptor?.oauth) return { ok: false, error: `provider "${provider}" offers no device-code method` };
+    const flowId = crypto.randomUUID();
+    let visible: { userCode: string; verificationUri: string; interval: number; expiresIn: number } | null = null;
+    const done = deviceLogin({
+      descriptor: descriptor.oauth,
+      onCode: (a) => {
+        visible = { userCode: a.user_code, verificationUri: a.verification_uri_complete ?? a.verification_uri, interval: a.interval, expiresIn: a.expires_in };
+      },
+    })
+      .then(async (token) => {
+        const pid = profileId(id, "oauth");
+        this.store.upsertAuthProfile({
+          id: pid,
+          provider: id,
+          type: "oauth",
+          material: token.access_token,
+          expires: token.expiresAt,
+          label: `${id} device-code login`,
+        });
+        this.#bindProvider(id, descriptor.baseUrl, pid);
+        this.applyConfig();
+        const models = await this.#refreshCatalog(id, token.access_token);
+        this.#deviceFlows.delete(flowId);
+        this.#broadcastAuthChanged();
+        return { ok: true, profile: pid, models: models.length };
+      })
+      .catch((err) => {
+        this.#deviceFlows.delete(flowId);
+        return { ok: false, error: (err as Error).message };
+      });
+    this.#deviceFlows.set(flowId, { provider: id, done });
+    // The code arrives on the first network hop; surface it once known.
+    for (let i = 0; i < 100 && !visible; i++) await new Promise((r) => setTimeout(r, 50));
+    if (!visible) return { ok: false, error: "device-code request timed out reaching the provider" };
+    const v = visible as { userCode: string; verificationUri: string; interval: number; expiresIn: number };
+    return { ok: true, flow: flowId, userCode: v.userCode, verificationUri: v.verificationUri, interval: v.interval, expiresIn: v.expiresIn };
+  }
+
+  async authPollDeviceCode(flowId: string, opts: { setDefault?: boolean } = {}): Promise<
+    { status: "pending" } | { status: "ok"; profile: string; models: number } | { status: "denied" | "expired" | "failed"; error?: string }
+  > {
+    const flow = this.#deviceFlows.get(flowId);
+    if (!flow) return { status: "failed", error: "no such flow (expired or completed already)" };
+    const settled = await Promise.race([flow.done.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 0))]);
+    if (!settled) return { status: "pending" };
+    const out = await flow.done;
+    if (!out.ok) return { status: /denied|declined/i.test(out.error ?? "") ? "denied" : "expired", error: out.error };
+    if (opts.setDefault && out.models) {
+      const first = this.config.providers[flow.provider]?.models?.[0];
+      if (first) this.configSvc.setPath("agents.defaults.model", `${flow.provider}/${first}`);
+    }
+    return { status: "ok", profile: out.profile!, models: out.models ?? 0 };
+  }
+
+  authRemove(pid: string): { ok: boolean; error?: string } {
+    if (!this.store.authProfile(pid)) return { ok: false, error: `no profile "${pid}"` };
+    this.store.removeAuthProfile(pid);
+    for (const [name, p] of Object.entries(this.config.providers ?? {})) {
+      if (p.apiKey === pid) this.configSvc.setPath(`providers.${name}.apiKey`, "");
+      if ((p.authProfiles ?? []).includes(pid)) {
+        this.configSvc.setPath(`providers.${name}.authProfiles`, (p.authProfiles ?? []).filter((x) => x !== pid));
+      }
+    }
+    this.applyConfig();
+    this.#broadcastAuthChanged();
+    return { ok: true };
+  }
+
+  authSetOrder(provider: string, ids: string[] | null): { provider: string; order: string[]; source: string } {
+    if (ids) {
+      for (const p of ids) {
+        if (this.store.authProfile(p)?.provider !== provider) throw new Error(`no ${provider} profile "${p}"`);
+      }
+      this.store.setAuthOrder(provider, ids.length ? ids : []);
+      this.applyConfig();
+    }
+    const stored = this.store.authOrder(provider);
+    const eff = resolveAuthProfileOrder(this.store, this.config, provider);
+    return {
+      provider,
+      order: eff.ordered.map((r) => r.id),
+      source: stored.length ? "store" : "config",
+    };
+  }
+
+  /** Their models status --probe analog: eligibility + catalog reachability. */
+  async authProbe(provider?: string): Promise<Record<string, unknown>[]> {
+    const results: Record<string, unknown>[] = [];
+    for (const row of provider ? this.store.authProfiles(provider) : this.store.authProfiles()) {
+      const check = profileCheck(row);
+      const { excluded } = resolveAuthProfileOrder(this.store, this.config, row.provider);
+      const reason = excluded.some((r) => r.id === row.id) ? "excluded_by_auth_order" : check.reason;
+      const entry: Record<string, unknown> = { profile: row.id, provider: row.provider, status: "ok", reasonCode: reason ?? null };
+      if (reason) {
+        entry["status"] = "auth";
+      } else {
+        const base = String(this.config.providers[row.provider]?.baseUrl ?? "");
+        const found = base ? await fetchModels(base, row.material) : { models: [], error: "provider not configured" };
+        if (found.error) {
+          entry["status"] = "unknown";
+          entry["detail"] = found.error;
+        }
+        entry["models"] = found.models.length;
+      }
+      results.push(entry);
+    }
+    return results;
+  }
+
+  #bindProvider(provider: string, baseUrl: string, pid: string): void {
+    if (!this.config.providers[provider]) this.configSvc.setPath(`providers.${provider}`, {});
+    if (!this.config.providers[provider]?.baseUrl && baseUrl) this.configSvc.setPath(`providers.${provider}.baseUrl`, baseUrl);
+    this.configSvc.setPath(`providers.${provider}.apiKey`, pid);
+  }
+
+  async #refreshCatalog(provider: string, key: string): Promise<string[]> {
+    const base = String(this.config.providers[provider]?.baseUrl ?? "");
+    if (!base) return [];
+    const found = await fetchModels(base, key);
+    if (!found.error && found.models.length) this.configSvc.setPath(`providers.${provider}.models`, found.models.slice(0, 200));
+    return found.models;
+  }
+
+  #broadcastAuthChanged(): void {
+    this.events.emit("event", { type: "models.auth", profiles: this.authProfilesView() });
   }
 
   /**

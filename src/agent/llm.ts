@@ -377,6 +377,12 @@ export interface ProviderConfig {
   apiKey: string;
   headers?: Record<string, string>;
   models?: string[];
+  /**
+   * Set when the provider's credentials resolve to an ineligible auth profile
+   * — requests against it short-circuit with a reason-coded auth error instead
+   * of sending material-less HTTP 401s (their reason-code contract).
+   */
+  authError?: string;
 }
 
 export interface ResolvedModel {
@@ -385,6 +391,7 @@ export interface ResolvedModel {
   baseUrl: string;
   apiKey: string;
   headers: Record<string, string>;
+  authError?: string;
 }
 
 export class LlmError extends Error {
@@ -489,6 +496,7 @@ function build(
     baseUrl,
     apiKey: cfg.apiKey,
     headers: cfg.headers ?? {},
+    authError: cfg.authError,
   };
 }
 
@@ -532,22 +540,29 @@ export class LlmClient {
    */
   #googleExt = true;
 
+  /** Provider-name → profile-id map (auth.ts); metadata only, no material. */
+  #authHooks?: { profileOf: Record<string, string>; onOutcome: (profileId: string, ok: boolean) => void };
+
   constructor(
     providers: Record<string, ProviderConfig>,
     defaults: { model: string; fallbacks: string[] },
     private readonly onRetry?: (info: { model: string; attempt: number; error: string }) => void,
+    authHooks?: { profileOf: Record<string, string>; onOutcome: (profileId: string, ok: boolean) => void },
   ) {
     this.#providers = providers;
     this.#defaults = defaults;
+    this.#authHooks = authHooks;
   }
 
   /** Hot-swap providers/defaults after a config change (e.g. saved from the Control UI). */
   setConfig(
     providers: Record<string, ProviderConfig>,
     defaults: { model: string; fallbacks: string[] },
+    authHooks?: { profileOf: Record<string, string>; onOutcome: (profileId: string, ok: boolean) => void },
   ): void {
     this.#providers = providers;
     this.#defaults = defaults;
+    if (authHooks) this.#authHooks = authHooks;
   }
 
   listModels(): string[] {
@@ -622,6 +637,13 @@ export class LlmClient {
 
   async *#streamOnce(modelRef: string, opts: StreamOptions): AsyncGenerator<StreamEvent> {
     const resolved = resolveModel(modelRef, this.#providers);
+    // Auth-profile binding with an ineligible credential: their reason-coded
+    // error (first line kept byte-identical for script compatibility), not a
+    // doomed HTTP call. Non-retryable → the next fallback gets its turn.
+    if (resolved.authError) {
+      throw new LlmError(`Auth profile credentials are missing or expired.\n↳ Auth reason [${resolved.authError.split(":")[0]}]: ${resolved.authError}`, 401);
+    }
+    const profileId = this.#authHooks?.profileOf[resolved.provider];
     // Gemini/Vertex tool rounds need their functionCall parts signed (real
     // signature or Google's documented stand-in); other backends must see
     // unchanged bodies.
@@ -683,6 +705,11 @@ export class LlmClient {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      // Auth rejection on a profile-bound credential → per-profile cooldown
+      // (their auth_profile_state); the retry ladder is NOT this hook's job.
+      if (profileId && (res.status === 401 || res.status === 403)) {
+        this.#authHooks?.onOutcome(profileId, false);
+      }
       throw new LlmError(
         `HTTP ${res.status} from ${resolved.provider}: ${providerErrorText(text).slice(0, 500) || res.statusText}`,
         res.status,
@@ -890,6 +917,9 @@ export class LlmClient {
     }
     if (usage) yield { type: "usage", usage };
     yield { type: "done", finishReason };
+    // Full clean stream on a profile-bound credential → clear cooldown,
+    // record last-good (their last-used/last-ok pair).
+    if (profileId) this.#authHooks?.onOutcome(profileId, true);
   }
 }
 

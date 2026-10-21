@@ -67,15 +67,19 @@ export class Settings {
     let details: Record<string, any> = {};
     let tools: any[] = [];
     let skills: any[] = [];
+    let authProfiles: any[] = [];
+    let plugins: any[] = [];
     try {
-      const [cfg, modelRes, toolRes, skillRes] = await this.#load();
+      const [cfg, modelRes, toolRes, skillRes, pluginRes] = await this.#load();
       config = (cfg as any).config ?? {};
       models = (modelRes as any).models ?? [];
       modelsWarning = (modelRes as any).warning;
       configured = (modelRes as any).configured ?? [];
       details = (modelRes as any).details ?? {};
+      authProfiles = (modelRes as any).auth ?? [];
       tools = (toolRes as any).tools ?? [];
       skills = (skillRes as any).skills ?? [];
+      plugins = (pluginRes as any).plugins ?? [];
     } catch (err) {
       toast(`could not load config: ${(err as Error).message}`, "err");
     }
@@ -92,7 +96,7 @@ export class Settings {
       if (this.#modelsProvider) {
         this.#renderProviderModels(this.#modelsProvider, providers, configured, models, details, modelsWarning);
       } else {
-        this.#renderModels(providers, configured, models);
+        this.#renderModels(providers, configured, models, authProfiles, plugins);
       }
     } else if (this.#tab === "providers") this.#renderProviders(providers);
     else if (this.#tab === "skills") this.#renderSkills(skills);
@@ -241,6 +245,8 @@ export class Settings {
     providers: Record<string, Provider>,
     configured: any[],
     discovered: string[],
+    auth: any[] = [],
+    plugins: any[] = [],
   ): void {
     const selected = new Set(configured.filter((m) => m.enabled).map((m) => m.ref));
     const body = el("div", { class: "settings__body" });
@@ -248,20 +254,29 @@ export class Settings {
     body.append(el("div", { class: "card" }, [
       el("div", { class: "row__label" }, ["Models"]),
       el("p", { class: "hint" }, [
-        "Pick which models are in the system. Click a provider to see the models fetched from it — only checked models appear in the model picker and everywhere else.",
+        "Pick which models are in the system. Click a provider to see the models fetched from it — only checked models appear in the model picker and everywhere else. Connect signs a provider in via an auth profile (API key or OAuth device code).",
       ]),
     ]));
 
     const names = Object.keys(providers);
     if (names.length === 0) {
       body.append(el("div", { class: "card" }, [
-        el("p", { class: "hint" }, ["No providers yet — add one in the Providers tab first."]),
+        el("p", { class: "hint" }, ["No providers yet — connect one below, or add one in the Providers tab."]),
       ]));
     }
     for (const name of names) {
       const refs = discovered.filter((r) => r.startsWith(`${name}/`));
       const chosen = refs.filter((r) => selected.has(r)).length;
       const open = el("button", { class: "btn sm", type: "button" }, ["Open"]);
+      const mine = auth.filter((p: any) => p.provider === name);
+      const binding = (providers[name] as any)?.apiKey ?? "";
+      const bound = mine.find((p: any) => p.id === binding) ?? null;
+      const chips = mine.slice(0, 6).map((p: any) => this.#profileChip(p, name, mine));
+      const connect = el("button", { class: "btn sm", type: "button" }, [bound ? "Auth…" : "Connect"]);
+      connect.onclick = (e) => {
+        e.stopPropagation();
+        this.#connectProvider(name, plugins.find((p: any) => p.id === name) ?? null, binding);
+      };
       const card = el("div", { class: "card" }, [
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
@@ -269,7 +284,18 @@ export class Settings {
             el("span", { class: "prov__count" }, [`${chosen} of ${refs.length} selected`]),
           ]),
           el("div", { class: "prov__url" }, [providers[name]?.baseUrl ?? ""]),
-          el("div", { class: "prov__row" }, [open]),
+          el("div", { class: "row" }, [
+            el("span", { class: "row__label" }, ["Auth"]),
+            el("span", { class: "row__value" }, [
+              bound
+                ? `profile ${bound.id} · ${bound.ok ? "ok" : (bound.reason ?? "?")}`
+                : binding
+                  ? "inline key"
+                  : "none — connect below",
+            ]),
+          ]),
+          ...(chips.length ? [el("div", { class: "prov__row", style: "display:flex;gap:6px;flex-wrap:wrap" }, chips)] : []),
+          el("div", { class: "prov__row", style: "display:flex;gap:6px" }, [open, connect]),
         ]),
       ]);
       const go = () => {
@@ -282,7 +308,192 @@ export class Settings {
       body.append(card);
     }
 
+    // Their Settings → Models → Connect provider: plugins not yet configured.
+    const fresh = plugins.filter((p: any) => !names.includes(p.id));
+    if (fresh.length) {
+      const rows = fresh.slice(0, 12).map((p: any) => {
+        const b = el("button", { class: "btn sm", type: "button" }, ["Connect"]);
+        b.onclick = () => this.#connectProvider(p.id, p, "");
+        return el("div", { class: "row" }, [
+          el("span", { class: "row__label" }, [p.id]),
+          el("span", { class: "row__value" }, [p.label]),
+          b,
+        ]);
+      });
+      body.append(el("div", { class: "card" }, [
+        el("div", { class: "row__label" }, ["Connect provider"]),
+        el("p", { class: "hint" }, ["Provider plugins with declared auth flows — the same entry point as the CLI (`sc models auth login`)."]),
+        ...rows,
+      ]));
+    }
+
     this.#root.append(body);
+  }
+
+  /** Profile chip: status dot, expiry, ordering, remove — material never shown. */
+  #profileChip(p: any, provider: string, mine: any[]): HTMLElement {
+    const state = p.ok ? "✔" : p.reason === "cooldown" ? "◌" : "✖";
+    const chip = el(
+      "span",
+      {
+        class: "prov__count",
+        title: `${p.label || p.id}${p.reason ? ` — ${p.reason}` : ""} · fails ${p.failCount}`,
+        style: `cursor:pointer;border:1px solid var(--line);border-radius:999px;padding:2px 8px;${p.ok ? "" : "color:var(--err)"}`,
+      },
+      [`${state} ${p.id}${p.expires ? ` (${p.expiresIn})` : ""}`],
+    );
+    chip.onclick = async (e) => {
+      e.stopPropagation();
+      const idx = mine.findIndex((x: any) => x.id === p.id);
+      const up = idx > 0;
+      const move = up
+        ? [...mine.slice(0, idx - 1), mine[idx], mine[idx - 1], ...mine.slice(idx + 1)]
+        : mine;
+      if (up) {
+        await gateway.request("models.auth.order", { provider, ids: move.map((x: any) => x.id) });
+        await this.render();
+        return;
+      }
+      const ok = confirm(`Remove profile "${p.id}"? The provider binding is cleared with it.`);
+      if (!ok) return;
+      const res: any = await gateway.request("models.auth.remove", { profile: p.id });
+      res.ok === false ? toast(res.message ?? "remove failed", "err") : toast(`removed ${p.id}`, "ok");
+      await this.render();
+    };
+    return chip;
+  }
+
+  /** Connect provider modal — paste key/token first (their Connect-provider
+   * default), OAuth device-code offered when the plugin declares one. */
+  #connectProvider(name: string, plugin: any | null, currentBinding: string): void {
+    const methods: string[] = plugin?.authMethods?.length ? plugin.authMethods : ["api-key", "token"];
+    const methodSel = el("select", { class: "inp", id: "auth-method" }) as HTMLSelectElement;
+    for (const m of methods) {
+      const opt = el("option", { value: m }, [m === "device-code" ? "device code (OAuth — approve in a browser)" : m.replace("-", " ")]) as HTMLOptionElement;
+      methodSel.append(opt);
+    }
+    const keyInp = el("input", { class: "inp mono", id: "auth-key", type: "password", placeholder: "paste the credential", autocomplete: "off" }) as HTMLInputElement;
+    const keyRow = el("div", { class: "modal__field" }, [
+      el("label", { class: "lbl", for: "auth-key" }, [plugin?.env ? `key (env ${plugin.env} also exists)` : "key / token"]),
+      keyInp,
+    ]);
+    const setDef = el("input", { type: "checkbox", id: "auth-def" }) as HTMLInputElement;
+    const deviceBox = el("div", { class: "modal__field" }, []) as HTMLDivElement;
+    deviceBox.style.display = "none";
+    const syncMethod = () => {
+      const dc = methodSel.value === "device-code";
+      keyRow.style.display = dc ? "none" : "";
+      deviceBox.style.display = dc ? "block" : "";
+    };
+    methodSel.onchange = syncMethod;
+
+    let flowPoll: number | null = null;
+    const stopPoll = () => {
+      if (flowPoll !== null) clearInterval(flowPoll);
+      flowPoll = null;
+    };
+    modal({
+      title: `Connect ${name}`,
+      confirmLabel: "Connect",
+      render: (body, close) => {
+        const confirmBtn = () => {
+          const btn = document.querySelector("#modal-foot .btn.pri") as HTMLButtonElement | null;
+          return btn;
+        };
+        if (plugin?.authMethods?.includes("device-code")) {
+          const begin = el("button", { class: "btn", type: "button" }, ["Start device login"]);
+          const note = el("p", { class: "hint" }, ["Approve in any browser — no callback needed on this machine."]);
+          begin.onclick = async () => {
+            begin.disabled = true;
+            begin.textContent = "contacting provider…";
+            try {
+              const res = (await gateway.request("models.auth.beginDeviceCode", { provider: name })) as any;
+              if (!res.ok) throw new Error(res.message ?? "device login unavailable");
+              const { flow, userCode, verificationUri } = res;
+              note.textContent = "";
+              deviceBox.innerHTML = "";
+              const link = el("a", { href: verificationUri, target: "_blank", rel: "noopener" }, [verificationUri]);
+              deviceBox.append(
+                el("p", {}, ["1. open ", link]),
+                el("p", { class: "mono", style: "font-size:18px;letter-spacing:2px" }, [String(userCode)]),
+                el("p", { class: "hint" }, ["2. enter the code — this window polls until approved or expired."]),
+              );
+              flowPoll = window.setInterval(async () => {
+                try {
+                  const st = (await gateway.request("models.auth.pollDeviceCode", { flow, setDefault: setDef.checked })) as any;
+                  if (st.status === "pending") return;
+                  stopPoll();
+                  if (st.status === "ok") {
+                    toast(`connected ${st.profile} (${st.models ?? 0} models discovered)`, "ok");
+                    close();
+                    await this.render();
+                  } else {
+                    toast(`device login ${st.status}: ${st.error ?? ""}`, "err");
+                    close();
+                  }
+                } catch (err) {
+                  stopPoll();
+                  toast((err as Error).message, "err");
+                }
+              }, 3000);
+            } catch (err) {
+              toast((err as Error).message, "err");
+              begin.disabled = false;
+              begin.textContent = "Start device login";
+            }
+          };
+          deviceBox.innerHTML = "";
+          deviceBox.append(begin, note);
+          // confirm button only applies to paste-key flow; hide it for device-code
+          methodSel.onchange = () => {
+            syncMethod();
+            const b = confirmBtn();
+            if (b) b.style.display = methodSel.value === "device-code" ? "none" : "";
+          };
+          methodSel.onchange(new Event("change"));
+        }
+        body.append(
+          el("div", { class: "modal__field" }, [
+            el("label", { class: "lbl", for: "auth-method" }, ["Method"]),
+            methodSel,
+            el("p", { class: "hint" }, [
+              plugin?.label ?? name,
+              currentBinding ? ` · currently bound to ${currentBinding}` : "",
+              " — saves an auth profile and binds it to this provider (the CLI equivalent: sc models auth login).",
+            ]),
+          ]),
+          keyRow,
+          deviceBox,
+          el("div", { class: "modal__field" }, [
+            el("label", { class: "lbl" }, [setDef, " make it the default model"]),
+          ]),
+        );
+      },
+      onConfirm: async () => {
+        try {
+          const key = keyInp.value.trim();
+          if (!key) {
+            toast("paste the key first", "err");
+            return;
+          }
+          const res = (await gateway.request("models.auth.addKey", {
+            provider: name,
+            method: methodSel.value === "token" ? "token" : "api-key",
+            key,
+            setDefault: setDef.checked,
+          })) as any;
+          if (!res.ok) {
+            toast(res.message ?? "login failed", "err");
+            return;
+          }
+          stopPoll();
+          toast(`profile ${res.profile} saved${res.models ? ` · ${res.models} models discovered` : ""}`, "ok");
+          await this.render();
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      },
+    });
   }
 
   #renderProviderModels(
@@ -1009,6 +1220,9 @@ export class Settings {
         gateway.request("models.list"),
         gateway.request("tools.list"),
         gateway.request("skills.list"),
+        // Their Settings → Models → Connect provider picker sources from
+        // plugins; best-effort so an older gateway can't break settings.
+        gateway.request("models.plugins").catch(() => ({ plugins: [] }) as any),
       ]);
     try {
       return await call();
