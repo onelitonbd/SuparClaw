@@ -334,7 +334,64 @@ export const CONFIG_SCHEMA: SchemaNode = {
       fields: {
         fs: { t: "bool", default: true },
         memory: { t: "bool", default: true },
-        web: { t: "object", default: {}, fields: { fetch: { t: "bool", default: true }, search: { t: "bool", default: true } } },
+        web: {
+          t: "object",
+          default: {},
+          fields: {
+            fetch: { t: "bool", default: true },
+            // web_search provider-managed backends (partial #9). Legacy bool:
+            // search:false ⇒ enabled:false; search:true ⇒ enabled:true + auto-detect.
+            search: {
+              t: "object",
+              default: {},
+              fields: {
+                enabled: { t: "bool", default: true },
+                // "" = auto-detect (first ready provider by fixed order).
+                provider: { t: "text", default: "" },
+                maxResults: { t: "int", min: 1, max: 10, default: 5 },
+                // 0 = bypass cache reads + writes entirely.
+                cacheTtlMinutes: { t: "int", min: 0, max: 1440, default: 15 },
+                brave: {
+                  t: "object",
+                  default: {},
+                  fields: {
+                    apiKey: { t: "text", default: "" },
+                    baseUrl: { t: "text", default: "https://api.search.brave.com" },
+                  },
+                },
+                perplexity: {
+                  t: "object",
+                  default: {},
+                  fields: {
+                    apiKey: { t: "text", default: "" },
+                    baseUrl: { t: "text", default: "https://api.perplexity.ai" },
+                  },
+                },
+                tavily: {
+                  t: "object",
+                  default: {},
+                  fields: {
+                    apiKey: { t: "text", default: "" },
+                    baseUrl: { t: "text", default: "https://api.tavily.com" },
+                  },
+                },
+                kimi: {
+                  t: "object",
+                  default: {},
+                  fields: {
+                    apiKey: { t: "text", default: "" },
+                    // Empty ⇒ inherit models.providers.moonshot.baseUrl (region stays consistent).
+                    baseUrl: { t: "text", default: "" },
+                  },
+                },
+                // Key-free. Explicit opt-in only: never auto-selected.
+                duckduckgo: { t: "object", default: {}, fields: { baseUrl: { t: "text", default: "https://html.duckduckgo.com" } } },
+                // Key-free but self-hosted: usable only when a baseUrl is configured.
+                searxng: { t: "object", default: {}, fields: { baseUrl: { t: "text", default: "" } } },
+              },
+            },
+          },
+        },
         exec: {
           t: "object",
           default: {},
@@ -443,7 +500,21 @@ export interface SuparClawConfig {
   tools: {
     fs: boolean;
     memory: boolean;
-    web: { fetch: boolean; search: boolean };
+    web: {
+      fetch: boolean;
+      search: {
+        enabled: boolean;
+        provider: string;
+        maxResults: number;
+        cacheTtlMinutes: number;
+        brave: { apiKey: string; baseUrl: string };
+        perplexity: { apiKey: string; baseUrl: string };
+        tavily: { apiKey: string; baseUrl: string };
+        kimi: { apiKey: string; baseUrl: string };
+        duckduckgo: { baseUrl: string };
+        searxng: { baseUrl: string };
+      };
+    };
     exec: {
       enabled: boolean;
       approvals: boolean;
@@ -469,6 +540,13 @@ export interface SuparClawConfig {
 }
 
 export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: string[] } {
+  // Legacy shape: tools.web.search was a bool; partial #9 turned it into the
+  // provider block. Map it before validation (their doctor --fix auto-migration,
+  // at load time so no config write is forced).
+  const r = (raw ?? {}) as { tools?: { web?: { search?: unknown } } };
+  if (typeof r.tools?.web?.search === "boolean") {
+    (r as { tools: { web: { search: unknown } } }).tools.web.search = { enabled: r.tools.web.search };
+  }
   const errors = validate(CONFIG_SCHEMA, raw ?? {});
   if (errors.length > 0) return { config: emptyConfig(), errors };
   return { config: applyDefaults(CONFIG_SCHEMA, raw ?? {}) as SuparClawConfig, errors: [] };

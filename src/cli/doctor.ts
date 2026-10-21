@@ -261,6 +261,30 @@ export async function doctor(): Promise<number> {
     }
   }
 
+  // web search (Partial #9): enabled/provider readiness, no liveness probing.
+  {
+    const { WEB_SEARCH_BACKENDS, resolveProvider } = await import("../agent/web-search.js");
+    const wsCfg = load.config.tools.web.search;
+    if (!wsCfg.enabled) {
+      checks.push({ name: "web search", status: "warn", detail: "disabled — the agent cannot search the web", fix: "tools.web.search.enabled=true (or sc config set tools.web.search.enabled true)" });
+    } else {
+      const explicit = wsCfg.provider.trim();
+      const { provider, candidates } = resolveProvider(load.config);
+      if (explicit && !provider) {
+        checks.push({ name: "web search", status: "warn", detail: `provider "${explicit}" unknown`, fix: `providers: ${WEB_SEARCH_BACKENDS.map((b) => b.id).join(", ")}` });
+      } else if (!provider) {
+        checks.push({
+          name: "web search",
+          status: "warn",
+          detail: "no provider ready — no API keys and no SearXNG baseUrl configured",
+          fix: "export BRAVE_API_KEY=… (or TAVILY/PERPLEXITY/KIMI) or set tools.web.search.searxng.baseUrl",
+        });
+      } else {
+        checks.push({ name: "web search", status: "ok", detail: `provider ${provider.id}${explicit ? " (explicit)" : " (auto)"}${candidates.length > 1 && !explicit ? ` · fallbacks: ${candidates.slice(1).map((b) => b.id).join(", ")}` : ""}` });
+      }
+    }
+  }
+
   // model
   const model = load.config.agents.defaults.model;
   const providers = Object.keys(load.config.providers);

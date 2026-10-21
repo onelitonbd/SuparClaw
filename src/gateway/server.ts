@@ -213,6 +213,8 @@ export class Gateway {
       "approvals.entry.add",
       "approvals.entry.revoke",
       "session.execMode",
+      "web.search.get",
+      "web.search.test",
       "queue.set",
       "queue.status",
       "subagents.list",
@@ -443,6 +445,63 @@ export class Gateway {
         }
         case "approvals.get": {
           send(okFrame(id, service.approvalsState()));
+          return;
+        }
+        case "web.search.get": {
+          const { WEB_SEARCH_BACKENDS } = await import("../agent/web-search.js");
+          const cfgNow = service.config;
+          const wsCfg = cfgNow.tools.web.search;
+          const mask = (v: string) => (v ? `${v.slice(0, 3)}…${v.slice(-2)}` : "");
+          send(okFrame(id, {
+            enabled: wsCfg.enabled,
+            provider: wsCfg.provider || "auto",
+            maxResults: wsCfg.maxResults,
+            cacheTtlMinutes: wsCfg.cacheTtlMinutes,
+            providers: WEB_SEARCH_BACKENDS.map((b) => ({
+              id: b.id,
+              ready: b.ready(cfgNow),
+              keyFree: b.keyFree,
+              hasKey:
+                b.id === "brave" ? Boolean(wsCfg.brave.apiKey || process.env["BRAVE_API_KEY"])
+                : b.id === "perplexity" ? Boolean(wsCfg.perplexity.apiKey || process.env["PERPLEXITY_API_KEY"])
+                : b.id === "tavily" ? Boolean(wsCfg.tavily.apiKey || process.env["TAVILY_API_KEY"])
+                : b.id === "kimi" ? Boolean(wsCfg.kimi.apiKey || process.env["KIMI_API_KEY"] || process.env["MOONSHOT_API_KEY"])
+                : b.keyFree,
+              configBaseUrl: (
+                b.id === "duckduckgo" ? wsCfg.duckduckgo.baseUrl
+                : b.id === "searxng" ? wsCfg.searxng.baseUrl
+                : b.id === "brave" ? wsCfg.brave.baseUrl
+                : b.id === "perplexity" ? wsCfg.perplexity.baseUrl
+                : b.id === "tavily" ? wsCfg.tavily.baseUrl
+                : (wsCfg.kimi.baseUrl || "(moonshot llm host)")
+              ),
+            })),
+            keyMasks: {
+              brave: mask(wsCfg.brave.apiKey),
+              perplexity: mask(wsCfg.perplexity.apiKey),
+              tavily: mask(wsCfg.tavily.apiKey),
+              kimi: mask(wsCfg.kimi.apiKey),
+            },
+          }));
+          return;
+        }
+        case "web.search.test": {
+          const { webSearch } = await import("../agent/web-search.js");
+          const provider = String(params["provider"] ?? "").trim();
+          const query = String(params["query"] ?? "suparclaw test").slice(0, 200);
+          const out = await webSearch(service.config, {
+            query,
+            provider: provider && provider !== "auto" ? provider : undefined,
+            count: 3,
+          });
+          send(okFrame(id, {
+            ok: out.kind === "results",
+            provider: out.provider,
+            tookMs: out.kind === "results" ? out.tookMs ?? 0 : 0,
+            count: out.kind === "results" ? out.results.length : 0,
+            firstTitles: out.kind === "results" ? out.results.slice(0, 3).map((r) => r.title) : [],
+            message: out.kind === "error" ? out.message : undefined,
+          }));
           return;
         }
         case "approvals.setMode": {

@@ -15,6 +15,7 @@ export interface JsonSchema {
 }
 
 import type { ExecVerdict } from "./exec-policy.js";
+import type { WebSearchCache } from "./web-search.js";
 
 export interface ToolContext {
   workspace: string;
@@ -98,6 +99,10 @@ function findShell(): string {
   }
   return "/bin/sh";
 }
+
+// Shared across registry rebuilds (config hot-reload) so the query cache survives.
+let searchCache: WebSearchCache | null = null;
+let searchCacheTtl = -1;
 
 export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   const tools: ToolSpec[] = [];
@@ -316,33 +321,35 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     });
   }
 
-  if (config.tools.web.search) {
+  if (config.tools.web.search.enabled) {
     tools.push({
       name: "web_search",
-      description: "Search the web (DuckDuckGo HTML endpoint) and return result titles, URLs and snippets.",
+      description: "Search the web with the configured provider and return result titles, URLs and snippets.",
       parameters: {
         type: "object",
-        properties: { query: str("Search query"), limit: int("Max results (default 6)") },
+        properties: {
+          query: str("Search query"),
+          count: int("Results to return (1-10, default 5)"),
+          provider: str("Force a provider for this call (auto-detected otherwise)"),
+        },
         required: ["query"],
       },
       async run(args, ctx) {
-        const q = encodeURIComponent(String(args["query"]));
-        const res = await fetch(`https://html.duckduckgo.com/html/?q=${q}`, {
-          signal: ctx.signal,
-          headers: { "user-agent": "Mozilla/5.0 (Linux; Android) SuparClaw/0.1" },
-        });
-        if (!res.ok) return `error: HTTP ${res.status}`;
-        const html = await res.text();
-        const results: string[] = [];
-        const re = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(html)) !== null && results.length < Number(args["limit"] ?? 6)) {
-          const title = (m[2] ?? "").replace(/<[^>]+>/g, "").trim();
-          const snippet = (m[3] ?? "").replace(/<[^>]+>/g, "").trim();
-          const href = decodeURIComponent(/uddg=([^&]+)/.exec(m[1] ?? "")?.[1] ?? m[1] ?? "");
-          results.push(`${title}\n${href}\n${snippet}`);
+        const { webSearch, renderSearchText, WebSearchCache } = await import("./web-search.js");
+        // One cache per config-service lifetime — tool specs rebuild on reload,
+        // so stash it where rebuilds share it.
+        if (!searchCache || searchCacheTtl !== config.tools.web.search.cacheTtlMinutes) {
+          searchCache = new WebSearchCache(config.tools.web.search.cacheTtlMinutes);
+          searchCacheTtl = config.tools.web.search.cacheTtlMinutes;
         }
-        return results.length > 0 ? results.join("\n\n") : "no results";
+        const out = await webSearch(config, {
+          query: String(args["query"]),
+          count: args["count"] != null ? Number(args["count"]) : undefined,
+          provider: typeof args["provider"] === "string" && args["provider"].trim() ? String(args["provider"]).trim() : undefined,
+          cache: searchCache,
+          signal: ctx.signal,
+        });
+        return renderSearchText(out);
       },
     });
   }

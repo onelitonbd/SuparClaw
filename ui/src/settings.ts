@@ -921,6 +921,111 @@ export class Settings {
 
   /* ---------------- tools ---------------- */
 
+  /* ---------------- tools: web search ---------------- */
+
+  async #webSearchCard(): Promise<HTMLElement> {
+    let st: any;
+    try {
+      st = await gateway.request("web.search.get");
+    } catch (err) {
+      return el("div", { class: "card" }, [
+        el("div", { class: "row__label" }, ["Web search"]),
+        el("p", { class: "hint", style: "color:var(--warn)" }, [`search config unread: ${(err as Error).message}`]),
+      ]);
+    }
+    const IDS = st.providers.map((p: any) => p.id as string);
+    const configured = st.provider as string;
+    const enableBox = el("input", { type: "checkbox" }) as HTMLInputElement;
+    enableBox.checked = st.enabled === true;
+    enableBox.onchange = async () => {
+      try {
+        await gateway.request("config.set", { path: "tools.web.search.enabled", value: enableBox.checked });
+        toast(`web search ${enableBox.checked ? "enabled" : "disabled"}`);
+        void this.render();
+      } catch (err) { toast((err as Error).message, "err"); }
+    };
+
+    const active = (on: boolean) => (on ? "border-color:var(--accent);color:var(--accent);" : "");
+    const pills = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:8px 0" },
+      ["auto", ...IDS].map((id) => {
+        const p = st.providers.find((x: any) => x.id === id);
+        const ready = id === "auto" ? st.providers.some((x: any) => x.ready) : p?.ready;
+        const b = el("button", { class: "btn sm", type: "button", style: active(configured === id) + (ready ? "" : "opacity:.5") }, [id]) as HTMLButtonElement;
+        b.title = id === "auto"
+          ? "First ready provider by fixed order"
+          : ready ? `${p.configBaseUrl || ""}` : "not ready — set its credentials below";
+        b.onclick = async () => {
+          try {
+            await gateway.request("config.set", { path: "tools.web.search.provider", value: id === "auto" ? "" : id });
+            toast(`search provider: ${id}`);
+            void this.render();
+          } catch (err) { toast((err as Error).message, "err"); }
+        };
+        return b;
+      }));
+
+    // credential rows for the currently-selected api-backed provider
+    const sel = configured !== "auto" ? st.providers.find((x: any) => x.id === configured) : null;
+    const credRows: HTMLElement[] = [];
+    if (sel && !sel.keyFree) {
+      const inp = el("input", { class: "inp mono", type: "password", placeholder: `${sel.id.toUpperCase()}_API_KEY env, or paste here`, autocomplete: "off" }) as HTMLInputElement;
+      const save = el("button", { class: "btn sm" }, [sel.hasKey ? "Replace key · " + ((st.keyMasks?.[sel.id] as string) || "set") : "Save key"]) as HTMLButtonElement;
+      save.onclick = async () => {
+        if (!inp.value.trim()) { toast("key is empty", "err"); return; }
+        try {
+          await gateway.request("config.set", { path: `tools.web.search.${sel.id}.apiKey`, value: inp.value.trim() });
+          toast(`${sel.id} key saved`);
+          void this.render();
+        } catch (err) { toast((err as Error).message, "err"); }
+      };
+      credRows.push(el("div", { style: "display:flex;gap:8px;align-items:center;margin:6px 0" }, [inp, save]));
+    } else if (sel && sel.keyFree) {
+      const inp = el("input", { class: "inp mono", value: sel.configBaseUrl || "", placeholder: sel.id === "searxng" ? "https://searx.example.com" : "https://html.duckduckgo.com" }) as HTMLInputElement;
+      const save = el("button", { class: "btn sm" }, ["Save URL"]) as HTMLButtonElement;
+      save.onclick = async () => {
+        try {
+          await gateway.request("config.set", { path: `tools.web.search.${sel.id}.baseUrl`, value: inp.value.trim() });
+          toast(`${sel.id} base URL saved`);
+          void this.render();
+        } catch (err) { toast((err as Error).message, "err"); }
+      };
+      credRows.push(el("div", { style: "display:flex;gap:8px;align-items:center;margin:6px 0" }, [inp, save]));
+    }
+
+    const testOut = el("p", { class: "hint", style: "margin:4px 0 0" }, []);
+    const testBtn = el("button", { class: "btn sm" }, ["Test search"]) as HTMLButtonElement;
+    testBtn.onclick = async () => {
+      testBtn.disabled = true;
+      testOut.textContent = "searching…";
+      try {
+        const r = await gateway.request("web.search.test", { provider: configured === "auto" ? undefined : configured }) as any;
+        testOut.textContent = r.ok
+          ? `✓ ${r.provider} · ${r.count} result(s) in ${r.tookMs}ms — ${r.firstTitles.join(" · ") || "(empty)"}`
+          : `✗ ${r.message ?? "failed"}`;
+      } catch (err) {
+        testOut.textContent = `✗ ${(err as Error).message}`;
+      }
+      testBtn.disabled = false;
+    };
+
+    return el("div", { class: "card", style: "padding:12px 16px" }, [
+      el("div", { class: "prov__head" }, [
+        el("span", { class: "row__label" }, ["Web search"]),
+        el("span", { class: "prov__count", style: st.enabled ? "" : "color:var(--err)" }, [
+          st.enabled ? `${configured} · cache ${st.cacheTtlMinutes}m` : "disabled",
+        ]),
+      ]),
+      el("label", { class: "lbl", style: "display:flex;align-items:center;gap:6px;margin:6px 0" }, [
+        enableBox, document.createTextNode("enable web_search tool"),
+      ]),
+      el("p", { class: "hint" }, ["Provider used by the web_search tool. Auto picks the first API-keyed provider found; key-free providers are only used when selected."]),
+      pills,
+      ...credRows,
+      el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:8px" }, [testBtn]),
+      testOut,
+    ]);
+  }
+
   /* ---------------- tools: exec & approvals ---------------- */
 
   async #execApprovalsCard(): Promise<HTMLElement> {
@@ -1085,6 +1190,7 @@ export class Settings {
     const body = el("div", { class: "settings__body" });
 
     body.append(await this.#execApprovalsCard());
+    body.append(await this.#webSearchCard());
 
     body.append(el("div", { class: "card" }, [
       el("div", { class: "row__label" }, ["Tools"]),

@@ -140,3 +140,15 @@ export {
   type ChainOp,
   type SegmentPlan,
 } from "./agent/exec-policy.js";
+export {
+  webSearch,
+  renderSearchText,
+  resolveProvider,
+  backendById,
+  kimiBaseUrl,
+  WebSearchCache,
+  WEB_SEARCH_BACKENDS,
+  type WebSearchArgs,
+  type WebSearchOutput,
+  type WebSearchResultItem,
+} from "./agent/web-search.js";

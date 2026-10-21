@@ -41,6 +41,7 @@ commands:
   pair <list|approve|revoke>  manage Telegram DM access
   cron <list|add|remove>       scheduled prompts
   approvals <get|list|mode|allow|revoke|preset>  exec approval policy + allowlist
+  search <query> [--provider id] [--count n] [--json]  one-shot web search probe
   service <status|install|start|stop|restart|logs|uninstall>  daemon as an OS service
                           (termux-services on Termux, systemd --user, launchd)
   version              print version
@@ -84,6 +85,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./dream-commands.js")).dreamCmd(rest);
     case "approvals":
       return (await import("./approval-commands.js")).approvalsCmd(rest);
+    case "search":
+      return (await import("./search-commands.js")).searchCmd(rest);
     case "doctor":
       return (await import("./doctor.js")).doctor();
     case "security":
