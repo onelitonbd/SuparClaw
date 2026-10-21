@@ -34,6 +34,15 @@ export interface SubagentRow {
   ended_at: number | null;
 }
 
+export interface SessionSummaryRow {
+  session_id: string;
+  upto: number;
+  summary: string;
+  chars: number;
+  count: number;
+  updated: number;
+}
+
 export interface MessageRow {
   id: number;
   session_id: string;
@@ -290,6 +299,20 @@ const MIGRATIONS: string[][] = [
        updated_at INTEGER NOT NULL
      );`,
   ],
+  [
+    // Context compaction (P1 A2): one rolling summary row per session. `upto`
+    // is the highest message id the summary covers; rewrites only ever extend
+    // it forward (incremental — the tail is never resummarized). `count`
+    // feeds /status ("compactions: N") and `chars` the total summarized span.
+    `CREATE TABLE IF NOT EXISTS session_summaries (
+       session_id TEXT PRIMARY KEY,
+       upto INTEGER NOT NULL DEFAULT 0,
+       summary TEXT NOT NULL DEFAULT '',
+       chars INTEGER NOT NULL DEFAULT 0,
+       count INTEGER NOT NULL DEFAULT 0,
+       updated INTEGER NOT NULL DEFAULT 0
+     );`,
+  ],
 ];
 
 export class Store {
@@ -436,6 +459,38 @@ export class Store {
       .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?")
       .all(sessionId, limit)
       .reverse() as unknown as MessageRow[];
+  }
+
+  // ---- context compaction (P1 A2) ------------------------------------------
+
+  /** All rows after `afterId` (oldest-first) — compaction spans, not display. */
+  messagesAfter(sessionId: string, afterId: number, limit = 5000): MessageRow[] {
+    return this.db
+      .prepare("SELECT * FROM messages WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?")
+      .all(sessionId, afterId, limit) as unknown as MessageRow[];
+  }
+
+  getSummary(sessionId: string): SessionSummaryRow | null {
+    const row = this.db
+      .prepare("SELECT * FROM session_summaries WHERE session_id = ?")
+      .get(sessionId) as SessionSummaryRow | undefined;
+    return row ?? null;
+  }
+
+  /** Record a rewrite covering everything up to message `upto`. Counts only advances. */
+  setSummary(sessionId: string, upto: number, summary: string, spanChars: number): void {
+    const prev = this.getSummary(sessionId);
+    const count = (prev?.count ?? 0) + (upto > (prev?.upto ?? 0) ? 1 : 0);
+    this.db
+      .prepare(
+        `INSERT INTO session_summaries(session_id, upto, summary, chars, count, updated)
+         VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET
+           upto = excluded.upto, summary = excluded.summary,
+           chars = session_summaries.chars + CASE WHEN excluded.upto > session_summaries.upto THEN excluded.chars ELSE 0 END,
+           count = excluded.count, updated = excluded.updated`,
+      )
+      .run(sessionId, upto, summary, spanChars, count, Date.now());
   }
 
   // ---- runs -------------------------------------------------------------

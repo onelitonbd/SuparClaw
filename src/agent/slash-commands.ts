@@ -23,6 +23,7 @@ export const SLASH_CATALOG: { cmd: string; summary: string }[] = [
   { cmd: "/tools", summary: "tools the agent can use right now" },
   { cmd: "/skills", summary: "installed skills and readiness" },
   { cmd: "/dream [on|off|status|run|log [full]]", summary: "dreaming: toggle, status, manual sweep, diary" },
+  { cmd: "/compact [instructions]", summary: "summarize older context now (recent turns stay verbatim)" },
   { cmd: "/exec [mode|global <mode>|reset]", summary: "exec approval mode for this session or globally" },
   { cmd: "/title <text>", summary: "rename the current session" },
   { cmd: "/export-session [name]", summary: "export this chat to HTML in the workspace (alias /export)" },
@@ -103,12 +104,20 @@ export async function handleSlashExtension(
       const status = service.status() as Record<string, unknown>;
       const tools = (status.tools as unknown[]).length;
       const skills = status.skills as { name: string; eligible: boolean }[];
+      const comp = service.compactionStats(payload.sessionKey);
       return [
         `model:     ${cfg.agents.defaults.model || "(unset)"}${cfg.agents.defaults.fallbacks.length ? ` · fallbacks: ${cfg.agents.defaults.fallbacks.length}` : ""}`,
         `tools:     ${tools} registered · skills: ${skills.filter((s) => s.eligible).length}/${skills.length} ready`,
         `dreaming:  ${dreaming.enabled ? `on (${dreaming.schedule})` : "off"}`,
+        `compact:   ${comp ? `${comp.count} sweep(s), ${comp.chars} chars folded (upto #${comp.upto})` : "0 (transcript still fits the budget)"}`,
         `providers: ${Object.keys(service.config.providers).join(", ") || "(none)"}`,
       ].join("\n");
+    }
+
+    case "/compact": {
+      // Force a rolling-summarization sweep now; optional focus text keeps
+      // chosen aspects in detail (their /compact [instructions]).
+      return service.compactNow(payload.sessionKey, rest.trim() || undefined);
     }
 
     case "/exec": {

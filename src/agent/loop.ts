@@ -7,6 +7,7 @@ import { loadWorkspaceContext, todayStamp } from "./workspace.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
 import { buildRegistry, toolsToSchema, type SubagentCtl, type ToolContext, type ToolSpec } from "./tools.js";
 import { LlmClient, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
+import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
 import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
 
@@ -531,7 +532,7 @@ export class AgentLoop {
     let finishStatus: "done" | "error" | "aborted" = "done";
     let yieldedWait = false;
     try {
-      const messages = this.#buildMessages(session.id, sessionKey, input, isMain);
+      let messages = await this.#buildMessages(session.id, sessionKey, input, isMain);
       // Sub-agent tool policy: a child at the nesting cap loses the session
       // family of tools (their default of no delegation inside sub-agents).
       const sessionTools = this.#toolsForSession(sessionKey);
@@ -577,6 +578,7 @@ export class AgentLoop {
         onEvent({ type: "tool", callId: call.id, name: call.name, status: "skipped", detail: output });
       };
 
+      let overflowRetried = false;
       for (let turn = 0, lastThoughtRow = ""; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
         // Boundaries before every model call: drained steers append after the
         // previous round's tool results, in arrival order.
@@ -595,37 +597,67 @@ export class AgentLoop {
         const fallbackRefs = (this.deps.config.agents.defaults.fallbacks ?? [])
           .map((f) => modelProfile(this.deps.config, f).ref)
           .filter((r): r is string => Boolean(r) && r !== profile.ref);
-        for await (const event of this.llm.stream({
-          messages,
-          tools: schema.length > 0 ? schema : undefined,
-          signal: controller.signal,
-          model: profile.ref || undefined,
-          fallbacks: fallbackRefs,
-          temperature: profile.temperature,
-          maxTokens: profile.maxTokens,
-          reasoning:
-            input.reasoning ??
-            session.thinking ??
-            (profile.reasoningEffort !== "inherit" ? profile.reasoningEffort : undefined) ??
-            (this.deps.config.agents.defaults.reasoningEffort as string | undefined),
-          onRetry: (info) =>
-            onEvent({ type: "retry", model: info.model, attempt: info.attempt, max: info.max, error: info.error }),
-        })) {
-          if (event.type === "reasoning") {
-            thought += event.text;
-            onEvent({ type: "reasoning", text: event.text });
-          } else if (event.type === "text") {
-            text += event.text;
-            answer += event.text;
-            onEvent({ type: "delta", text: event.text });
-          } else if (event.type === "tool_calls") {
-            toolCalls = event.calls;
-            replayDetails = event.reasoningDetails ?? [];
-            replaySignatures = event.messageSignatures ?? {};
-            replayExtraContent = event.messageExtraContent;
-          } else if (event.type === "usage") {
-            usage = event.usage;
+        try {
+          for await (const event of this.llm.stream({
+            messages,
+            tools: schema.length > 0 ? schema : undefined,
+            signal: controller.signal,
+            model: profile.ref || undefined,
+            fallbacks: fallbackRefs,
+            temperature: profile.temperature,
+            maxTokens: profile.maxTokens,
+            reasoning:
+              input.reasoning ??
+              session.thinking ??
+              (profile.reasoningEffort !== "inherit" ? profile.reasoningEffort : undefined) ??
+              (this.deps.config.agents.defaults.reasoningEffort as string | undefined),
+            onRetry: (info) =>
+              onEvent({ type: "retry", model: info.model, attempt: info.attempt, max: info.max, error: info.error }),
+          })) {
+            if (event.type === "reasoning") {
+              thought += event.text;
+              onEvent({ type: "reasoning", text: event.text });
+            } else if (event.type === "text") {
+              text += event.text;
+              answer += event.text;
+              onEvent({ type: "delta", text: event.text });
+            } else if (event.type === "tool_calls") {
+              toolCalls = event.calls;
+              replayDetails = event.reasoningDetails ?? [];
+              replaySignatures = event.messageSignatures ?? {};
+              replayExtraContent = event.messageExtraContent;
+            } else if (event.type === "usage") {
+              usage = event.usage;
+            }
           }
+        } catch (err) {
+          // Overflow recovery (their compact+retry rule): when the provider
+          // rejects the request for context size AFTER the retry + fallback
+          // chain, compact the transcript now and retry exactly once — only
+          // if nothing has streamed yet (never stitch partial output), and
+          // only before any tool work landed (tool results don't shrink).
+          if (
+            !overflowRetried &&
+            text === "" &&
+            thought === "" &&
+            toolCalls.length === 0 &&
+            isContextOverflowError(err)
+          ) {
+            overflowRetried = true;
+            try {
+              const rep = await this.compactSession(sessionKey, {});
+              if (rep.compacted) {
+                this.deps.log.info(`context overflow — compaction sweep: ${rep.message} (${sessionKey})`);
+                messages = await this.#buildMessages(session.id, sessionKey, input, isMain);
+                turn--;
+                continue;
+              }
+              this.deps.log.warn(`context overflow but nothing to compact (${sessionKey})`);
+            } catch (compactErr) {
+              this.deps.log.warn(`overflow compaction failed: ${(compactErr as Error).message}`);
+            }
+          }
+          throw err;
         }
         // Persist each thinking segment at its boundary (before any tool step,
         // again before the final) so a reload can show the reasoning that
@@ -811,9 +843,46 @@ export class AgentLoop {
     sessionKey: string,
     input: RunInput,
     isMain: boolean,
-  ): ChatMessage[] {
+  ): Promise<ChatMessage[]> {
+    return this.#buildMessagesWithCompaction(sessionId, sessionKey, input, isMain);
+  }
+
+  /** Guard against concurrent sweeps on one session (auto-trigger + /compact + overflow). */
+  #compactBusy = new Map<string, Promise<string>>();
+
+  async #buildMessagesWithCompaction(
+    sessionId: string,
+    sessionKey: string,
+    input: RunInput,
+    isMain: boolean,
+  ): Promise<ChatMessage[]> {
     const budget = this.deps.config.agents.defaults.contextBudgetChars;
-    const rows = this.deps.store.recentMessages(sessionId, 80);
+    // Compaction frontier: anything at or below `upto` exists only as the
+    // summary; rows above it stay verbatim. Auto-sweep when the un-compacted
+    // older share outgrows its slice of the budget (their near-limit trigger
+    // translated to char accounting).
+    const fullTail = this.deps.store.messagesAfter(sessionId, 0, KEEP_TAIL_ROWS * 40);
+    let summary = this.deps.store.getSummary(sessionId);
+    {
+      const upto = summary?.upto ?? 0;
+      const eligible = fullTail.filter((r) => (r.role === "user" || r.role === "assistant") && r.id > upto);
+      if (eligible.length > KEEP_TAIL_ROWS + 10) {
+        const olderChars = eligible.slice(0, eligible.length - KEEP_TAIL_ROWS).reduce((n, r) => n + r.content.length, 0);
+        // Arm point: the older, not-yet-summarized share is big enough to be
+        // worth a summary (their near-limit trigger at our char granularity).
+        if (olderChars > budget * AUTO_TRIGGER * 0.3) {
+          try {
+            // A failed sweep degrades to the old silent truncation — never kills a run.
+            await this.compactSession(sessionKey, {});
+            summary = this.deps.store.getSummary(sessionId);
+          } catch (err) {
+            this.deps.log.warn(`auto-compaction failed for ${sessionKey}: ${(err as Error).message}`);
+          }
+        }
+      }
+    }
+    const upto = summary?.upto ?? 0;
+    const rows = this.deps.store.messagesAfter(sessionId, upto, 80);
     const history: ChatMessage[] = [];
     let used = 0;
     // Walk backwards until the character budget is spent; keep order. Only
@@ -903,6 +972,9 @@ export class AgentLoop {
     const systemParts = [
       basePrompt(this.deps.config.agents.identity ?? {}),
       ...subParts,
+      summary && summary.summary
+        ? `## Earlier conversation (compacted)\n\n${summary.summary}\n\n(Rolling summary covering this chat up to transcript entry ${summary.upto}; everything before it exists only as this summary. The recent messages below are verbatim.)`
+        : "",
       `Current date: ${new Date().toString()}`,
       `Session: ${sessionKey} (${channelLabel(sessionKey)})`,
       `Where this message came from: ${channelLabel(sessionKey)}. A direct message can be answered privately; in a group or topic chat others can read your reply, so keep it on-topic and mention people by name when needed.`,
@@ -913,5 +985,65 @@ export class AgentLoop {
     ].filter(Boolean);
 
     return [{ role: "system", content: systemParts.join("\n\n") }, ...history, { role: "user", content: input.text }];
+  }
+
+  /**
+   * Rolling compaction sweep (P1 A2): summarize the older transcript share
+   * into the session's single summary row; the last ~35 entry pairs always
+   * stay verbatim. Incremental — a rewrite extends `upto`, the already
+   * summarized span is carried by `previous`, never resummarized. One
+   * tool-free completion; concurrent callers share one in-flight sweep.
+   */
+  async compactSession(sessionKey: string, opts: { focus?: string }): Promise<{ compacted: boolean; message: string }> {
+    const busy = this.#compactBusy.get(sessionKey);
+    if (busy) {
+      const r = await busy;
+      return { compacted: r !== null, message: r ?? "nothing to compact — transcript is too short" };
+    }
+    const work = this.#compactSessionInner(sessionKey, opts).finally(() => this.#compactBusy.delete(sessionKey));
+    this.#compactBusy.set(sessionKey, work);
+    const msg = await work;
+    return { compacted: msg !== null, message: msg ?? "nothing to compact — transcript is too short" };
+  }
+
+  /** Returns the report string, or null when there was nothing to sweep. */
+  async #compactSessionInner(sessionKey: string, opts: { focus?: string }): Promise<string | null> {
+    const session = this.deps.store.ensureSession(sessionKey);
+    const summary = this.deps.store.getSummary(session.id);
+    const rows = this.deps.store.messagesAfter(session.id, summary?.upto ?? 0, 5000);
+    const plan = planCompactSpan(rows, KEEP_TAIL_ROWS);
+    if (!plan) return null;
+    const { rows: inputRows, clipped } = clampSpanInput(plan.span);
+    const upto = inputRows[inputRows.length - 1]!.id;
+    const prompt = summarizerPrompt({
+      previous: summary?.summary ?? "",
+      spanText: renderSpan(inputRows),
+      clipped,
+      focus: opts.focus,
+    });
+    let out = "";
+    const profile = modelProfile(this.deps.config, "");
+    for await (const ev of this.llm.stream({
+      messages: [{ role: "user", content: prompt }],
+      model: profile.ref || undefined,
+      maxTokens: Math.min(2000, Math.ceil(SUMMARY_TARGET_CHARS / 3)),
+    })) {
+      if (ev.type === "text") out += ev.text;
+    }
+    out = out.trim().slice(0, SUMMARY_TARGET_CHARS);
+    if (!out) throw new Error("compaction failed — the summarizer returned no text");
+    this.deps.store.setSummary(session.id, upto, out, plan.spanChars);
+    // Transcript-visible marker (their "summary stored in transcript"): a
+    // display-only row; prompt builds never read "system" back as turns.
+    this.deps.store.appendMessage(session.id, "system", `[context compacted: ${inputRows.length} message(s), ${plan.spanChars} chars → ${out.length}; the last ${plan.tailRows} entries stay verbatim]`);
+    return `compacted ${inputRows.length} message(s): ${plan.spanChars} chars → ${out.length} (kept last ${plan.tailRows} entries verbatim; compactions so far: ${(this.deps.store.getSummary(session.id)?.count ?? 0)})`;
+  }
+
+  /** /status line: how much of this session has been folded into summaries. */
+  compactionStats(sessionKey: string): { count: number; chars: number; upto: number } | null {
+    const row = this.deps.store.getSessionByKey(sessionKey);
+    if (!row) return null;
+    const s = this.deps.store.getSummary(row.id);
+    return s && s.count > 0 ? { count: s.count, chars: s.chars, upto: s.upto } : null;
   }
 }

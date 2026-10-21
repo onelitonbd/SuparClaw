@@ -937,6 +937,16 @@ export class Service {
     return `preset ${name}: mode=${p.mode} askFallback=${p.askFallback}`;
   }
 
+  /** /compact — force a rolling-summarization sweep now (P1 A2). */
+  async compactNow(sessionKey: string, focus?: string): Promise<string> {
+    const r = await this.loop.compactSession(sessionKey, { focus });
+    return r.message;
+  }
+
+  compactionStats(sessionKey: string): { count: number; chars: number; upto: number } | null {
+    return this.loop.compactionStats(sessionKey);
+  }
+
   setSessionExecMode(sessionKey: string, mode: string | null): void {
     if (mode === null) this.#sessionExecModes.delete(sessionKey);
     else this.#sessionExecModes.set(sessionKey, mode);

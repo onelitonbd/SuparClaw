@@ -39,6 +39,7 @@ export { ConfigService } from "./config/load.js";
 export { handleSlashExtension, slashHelp, slashCommands, SLASH_CATALOG } from "./agent/slash-commands.js";
 export { handleHooksRequest, hookTokenFingerprint, type HookService } from "./gateway/webhooks.js";
 export { handleOpenAiRequest, type OpenAiService } from "./gateway/openai-http.js";
+export { isContextOverflowError, planCompactSpan, summarizerPrompt, renderSpan, clampSpanInput } from "./agent/compaction.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 
