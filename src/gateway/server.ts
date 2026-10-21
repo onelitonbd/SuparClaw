@@ -18,6 +18,7 @@ import { readSkillBody, skillSlug, writeSkill } from "../agent/skills.js";
 import { workspaceDir } from "../util/paths.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { handleHooksRequest, type HookService } from "./webhooks.js";
+import { handleOpenAiRequest, type OpenAiService } from "./openai-http.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
 
 // The thinking ladder the UI renders. OpenClaw keeps this provider-profile
@@ -999,6 +1000,12 @@ export class Gateway {
     // hook token guards these; static paths are untouched when disabled.
     if (url === (this.service.config.hooks.path || "/hooks") || url.startsWith(`${this.service.config.hooks.path || "/hooks"}/`)) {
       void handleHooksRequest(this.service as unknown as HookService, req, res);
+      return;
+    }
+    // OpenAI-compatible surface (P1 A6) — claimed before the static UI.
+    // Bearer = the gateway token; claimed `/v1/*` paths 404 with guidance when disabled.
+    if (url === "/v1" || url.startsWith("/v1/")) {
+      void handleOpenAiRequest(this.service as unknown as OpenAiService, req, res);
       return;
     }
 

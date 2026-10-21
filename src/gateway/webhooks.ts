@@ -33,21 +33,22 @@ export interface HookService {
 const BODY_CAP = 128 * 1024;
 const MSG_CAP = 32 * 1024;
 const WAKE_CAP = 2000;
-const RESERVED = /^(subagent|cron|acp|system):/;
+/** Shared by webhooks + the OpenAI HTTP surface: callers may never hijack these namespaces. */
+export const RESERVED = /^(subagent|cron|acp|system):/;
 
 const json = (res: ServerResponse, status: number, body: unknown): void => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 };
 
-const tokenMatches = (given: string, want: string): boolean => {
+export const tokenMatches = (given: string, want: string): boolean => {
   const a = Buffer.from(given);
   const b = Buffer.from(want);
   return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
 };
 
 /** POST body capped at 128KB; oversized or non-JSON fails closed. */
-function readBody(req: IncomingMessage): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
+export function readBody(req: IncomingMessage, cap = 128 * 1024): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; error: string }> {
   return new Promise((resolve) => {
     const ct = String(req.headers["content-type"] ?? "");
     if (!ct.includes("application/json")) {
@@ -60,8 +61,8 @@ function readBody(req: IncomingMessage): Promise<{ ok: true; data: Record<string
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > BODY_CAP) {
-        resolve({ ok: false, error: `payload too large (>${BODY_CAP} bytes)` });
+      if (size > cap) {
+        resolve({ ok: false, error: `payload too large (>${cap} bytes)` });
         req.destroy();
         return;
       }

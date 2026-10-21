@@ -41,6 +41,8 @@ export interface ChatPayload {
   /** chat.send parity: force the queue mode just for this message. */
   queueMode?: QueueMode;
   reply: (text: string) => void | Promise<void>;
+  /** Final text plus provider usage when the loop captured it (HTTP surfaces). */
+  onFinal?: (text: string, usage?: Record<string, number>) => void | Promise<void>;
   onDelta?: (delta: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
   onApproval?: (event: Extract<RunEvent, { type: "approval" }>) => void | Promise<void>;
@@ -772,7 +774,10 @@ export class Service {
         if (event.type === "delta") void payload.onDelta?.(event.text);
         else if (event.type === "tool") void payload.onTool?.(event);
         else if (event.type === "approval") void payload.onApproval?.(event);
-        else if (event.type === "final") void payload.reply(event.text);
+        else if (event.type === "final") {
+          void payload.onFinal?.(event.text, event.usage);
+          void payload.reply(event.text);
+        }
         else if (event.type === "error") void payload.reply(`⚠ ${event.message}`);
       },
     });

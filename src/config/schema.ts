@@ -139,6 +139,26 @@ export const CONFIG_SCHEMA: SchemaNode = {
         // may open the WebSocket cross-origin (e.g. a reverse-proxied UI).
         allowedHosts: { t: "array", of: { t: "string" }, default: [] },
         allowedOrigins: { t: "array", of: { t: "string" }, default: [] },
+        // OpenAI-compatible HTTP surface (P1 A6, upstream config path
+        // gateway.http.endpoints.*). Operator-grade: Bearer = the gateway
+        // token. Off by default — it grants full agent access over plain HTTP.
+        http: {
+          t: "object",
+          default: {},
+          fields: {
+            endpoints: {
+              t: "object",
+              default: {},
+              fields: {
+                chatCompletions: {
+                  t: "object",
+                  default: {},
+                  fields: { enabled: { t: "bool", default: false } },
+                },
+              },
+            },
+          },
+        },
       },
     },
     agents: {
@@ -463,6 +483,7 @@ export interface SuparClawConfig {
     controlUi: { enabled: boolean; basePath: string };
     allowedHosts: string[];
     allowedOrigins: string[];
+    http: { endpoints: { chatCompletions: { enabled: boolean } } };
   };
   agents: {
     identity: { name: string; emoji: string; theme: string };
