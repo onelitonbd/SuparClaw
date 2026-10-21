@@ -99,7 +99,7 @@ export class Settings {
     else if (this.#tab === "tools") this.#renderTools(tools);
     else if (this.#tab === "memory") await this.#renderMemory();
     else if (this.#tab === "gateway") this.#renderGateway(gw);
-    else this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
+    else await this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
 
   #renderTabs(): void {
@@ -713,7 +713,15 @@ export class Settings {
 
   /* ---------------- runtime ---------------- */
 
-  #renderRuntime(config: any, counts: { tools: number; skills: number; models: number }): void {
+  /** Runtime tab: the daemon Service card (OpenClaw status --deep + restart). */
+  async #renderRuntime(config: any, counts: { tools: number; skills: number; models: number }): Promise<void> {
+    let svc: any = null;
+    try {
+      svc = await gateway.request("service.status");
+    } catch { /* offline guard already rendered */ }
+
+    if (svc) this.#root.append(this.#serviceCard(svc));
+
     const rows: [string, string, string?][] = [
       ["Status", "Running", "color:var(--ok)"],
       ["Version", "0.1.0"],
@@ -741,6 +749,97 @@ export class Settings {
     ]);
 
     this.#root.append(tiles, list);
+  }
+
+  /** The daemon lifecycle card: manager, boot state, restarts, log tail. */
+  #serviceCard(svc: any): HTMLElement {
+    const fmtUptime = (ms: number | undefined): string => {
+      const sec = Math.max(0, Math.round(Number(ms ?? 0) / 1000));
+      const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+      return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec % 60}s` : `${sec}s`;
+    };
+    const modeLabel: Record<string, string> = {
+      supervised: "supervised by sc gateway (restarts on crash)",
+      service: "OS service",
+      single: "single process — no supervisor",
+      stopped: "stopped",
+    };
+
+    const restart = el("button", { class: "btn", type: "button" }, ["Restart gateway"]) as HTMLButtonElement;
+    const willComeBack = svc.restartSupported === true;
+    if (!willComeBack) restart.disabled = true;
+    restart.onclick = () => {
+      modal({
+        title: "Restart the gateway?",
+        body: willComeBack
+          ? "The daemon stops gracefully and its supervisor starts it right back. Open chats reconnect automatically."
+          : "No supervisor is running — this would STOP the gateway until you start it again.",
+        confirmLabel: "Restart",
+        danger: !willComeBack,
+        onConfirm: async () => {
+          try {
+            const res: any = await gateway.request("service.restart", {});
+            toast(res?.willComeBack ? "restarting — reconnecting…" : "stopping (no supervisor)…", "ok");
+          } catch (err) {
+            toast((err as Error).message, "err");
+          }
+          // The socket drops; the app's reconnect handler re-renders this page.
+        },
+      });
+    };
+
+    const refresh = el("button", { class: "btn sm", type: "button" }, ["↻ Refresh"]);
+    refresh.onclick = () => void this.render();
+
+    const card = el("div", { class: "card" }, [
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Daemon"]),
+        el("span", { class: "row__value", style: `color:${svc.running ? "var(--ok)" : "var(--err)"}` }, [
+          svc.running ? "running" : "not running",
+        ]),
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Mode"]),
+        el("span", { class: "row__value" }, [modeLabel[String(svc.mode)] ?? String(svc.mode ?? "—")]),
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Uptime"]),
+        el("span", { class: "row__value" }, [fmtUptime(svc.uptimeMs)]),
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Process"]),
+        el("span", { class: "row__value" }, [svc.supervisorPid ? `child ${svc.pid} · supervisor ${svc.supervisorPid}` : svc.pid ? `pid ${svc.pid}` : "—"]),
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Service manager"]),
+        el("span", { class: "row__value" }, [svc.installed ? String(svc.manager) : svc.manager ? `${svc.manager} (not installed)` : "none"]),
+      ]),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Starts at boot"]),
+        el("span", { class: "row__value" }, [svc.bootEnabled ? "enabled" : "disabled"]),
+      ]),
+      el("div", { class: "modal__foot" }, [restart, refresh]),
+      el("p", { class: "hint" }, [svc.installed
+        ? `Service file: ${svc.servicePath}. Logs: ${svc.logPath}`
+        : "Agentic boot + crash restarts work via the supervisor. Install as an OS service too: sc service install"]),
+    ]);
+
+    // The log tail — read-only evidence, OpenClaw's `sc logs` in the UI.
+    const logPre = el("pre", { class: "diary__body" }, ["loading…"]);
+    void gateway.request("service.logs", { lines: 30 }).then((res: any) => {
+      const lines = (res?.lines ?? []) as string[];
+      logPre.textContent = lines.length ? lines.join("\n") : "(log is empty)";
+    }).catch(() => { logPre.textContent = "(could not read the log)"; });
+
+    const logsDetails = el("details", { class: "card diary" }, [
+      el("summary", {}, [
+        el("span", { class: "row__label" }, ["Service log (last 30 lines)"]),
+        el("span", { class: "row__value mono" }, [String(svc.logPath ?? "service.log").split("/").pop() ?? "log"]),
+      ]),
+      logPre,
+    ]);
+
+    return el("div", { class: "settings__body" }, [card, logsDetails]);
   }
 
   /* ---------------- memory (OpenClaw's Dreams tab, adapted) ---------------- */

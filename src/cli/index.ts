@@ -1,6 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { configPath, ensureDirs, webUiRoot, dbPath } from "../util/paths.js";
+import { configPath, ensureDirs, readTextSafe, webUiRoot, dbPath } from "../util/paths.js";
 import { brandLine, card, celebrate, checklist, fg, kv, voiceLine } from "./brand.js";
 
 // Service, the store and the agent runtime load per command, so `sc version`
@@ -18,7 +18,8 @@ usage: sc <command> [options]
 
 commands:
   chat, tui            open the terminal UI (default)
-  gateway              run the daemon (channels + gateway + cron)
+  gateway              run the daemon, self-supervised (restarts on crash)
+  gateway --no-supervise  single process (service managers supervise this)
   gateway list         show running gateways with pid, uptime and port
   gateway --restart    stop the running one and take over its port
   setup                guided first-run setup: pick a provider, key and model
@@ -33,7 +34,8 @@ commands:
   token [--rotate]      show (or regenerate) the gateway token
   pair <list|approve|revoke>  manage Telegram DM access
   cron <list|add|remove>       scheduled prompts
-  service <install|status|uninstall>  termux-services integration
+  service <status|install|start|stop|restart|logs|uninstall>  daemon as an OS service
+                          (termux-services on Termux, systemd --user, launchd)
   version              print version
 
 options:
@@ -232,20 +234,28 @@ async function waitForPort(port: number, ms: number): Promise<boolean> {
   return false;
 }
 
-async function gateway(args: string[], GatewayCtor: typeof import("../gateway/server.js").Gateway): Promise<number> {
-  const port = flag(args, "--port");
-  const restart = args.includes("--restart");
-  const targetPort = port ? Number.parseInt(port, 10) : 18790;
-  const existing = await probeHealth(targetPort);
-
-  if (existing && !restart) {
-    console.error(`a SuparClaw gateway is already running on port ${targetPort}`);
-    console.error("  stop it:   sc stop");
-    console.error("  or restart: sc gateway --restart");
-    console.error(`  it has been up ${Math.round(Number(existing["uptimeMs"] ?? 0) / 1000)}s`);
-    return 1;
+/** The port the daemon would bind: CLI flag > config > default. */
+async function effectiveGatewayPort(args: string[]): Promise<number> {
+  const explicit = flag(args, "--port");
+  if (explicit) return Number.parseInt(explicit, 10) || 18790;
+  try {
+    const raw = readTextSafe(configPath());
+    const JSON5 = (await import("json5")).default;
+    const parsed = raw ? (JSON5.parse(raw) as { gateway?: { port?: number } }) : {};
+    return Number(parsed?.gateway?.port) || 18790;
+  } catch {
+    return 18790;
   }
-  if (existing && restart) {
+}
+
+/**
+ * `sc gateway --restart`: first make sure the OLD daemon (child + supervisor
+ * when present) really stopped, then take over the port as the new supervisor.
+ */
+async function runGatewayThenSupervise(args: string[], targetPort: number): Promise<number> {
+  const sup = await import("../gateway/supervise.js");
+  const existing = await probeHealth(targetPort);
+  if (existing) {
     console.log("stopping the running gateway…");
     const result = await (await import("./service.js")).stopService();
     console.log(`  ${result.message}`);
@@ -254,6 +264,53 @@ async function gateway(args: string[], GatewayCtor: typeof import("../gateway/se
       return 1;
     }
   }
+  return sup.superviseGateway(args);
+}
+
+async function gateway(args: string[], GatewayCtor: typeof import("../gateway/server.js").Gateway): Promise<number> {
+  const sup = await import("../gateway/supervise.js");
+  const targetPort = await effectiveGatewayPort(args);
+  // Default mode: this invocation is the SUPERVISOR — it spawns the gateway
+  // as a child and restarts it instantly on crash, forever. --no-supervise
+  // and --child run the server directly (runit/systemd supervise those).
+  if (!sup.isChildRun(args) && !sup.supervisionDisabled(args)) {
+    // Port conflict check must happen in the SUPERVISOR: a busy port reported
+    // only by the child would just be respawned forever.
+    const running = await probeHealth(targetPort);
+    if (running) {
+      console.error(`a SuparClaw gateway is already running on port ${targetPort}`);
+      console.error("  stop it:   sc stop");
+      console.error("  or restart: sc gateway --restart");
+      console.error(`  it has been up ${Math.round(Number(running["uptimeMs"] ?? 0) / 1000)}s`);
+      return 1;
+    }
+    if (args.includes("--restart")) return runGatewayThenSupervise(args, targetPort);
+    return sup.superviseGateway(args);
+  }
+  const port = flag(args, "--port");
+  const restart = args.includes("--restart");
+  if (!sup.isChildRun(args)) {
+    // Direct single process (--no-supervise): keep the friendly conflict UX.
+    // A --child skips this: its supervisor ran the check before spawning it.
+    const existing = await probeHealth(targetPort);
+    if (existing && !restart) {
+      console.error(`a SuparClaw gateway is already running on port ${targetPort}`);
+      console.error("  stop it:   sc stop");
+      console.error("  or restart: sc gateway --restart");
+      console.error(`  it has been up ${Math.round(Number(existing["uptimeMs"] ?? 0) / 1000)}s`);
+      return 1;
+    }
+    if (existing && restart) {
+      console.log("stopping the running gateway…");
+      const result = await (await import("./service.js")).stopService();
+      console.log(`  ${result.message}`);
+      if (!(await waitForPort(targetPort, 6000))) {
+        console.error("the old daemon is still holding the port — try: pkill -f 'sc.js gateway'");
+        return 1;
+      }
+    }
+  }
+
 
   const service = await openService();
   if (port) {
@@ -298,14 +355,20 @@ async function gateway(args: string[], GatewayCtor: typeof import("../gateway/se
   console.log("");
   console.log("press ctrl+c to stop");
 
-  const shutdown = async () => {
-    console.log("\nstopping…");
+  let shuttingDown = false;
+  const shutdown = async (why: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\nstopping (${why})…`);
     await gw.stop();
     await service.stop();
     process.exit(0);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  // Child lifeline: an orphaned gateway (supervisor SIGKILLed) must free the
+  // port — exit as soon as the parent is gone.
+  sup.watchSupervisor(() => shutdown("supervisor gone"));
   await new Promise(() => {}); // run until signalled
   return 0;
 }

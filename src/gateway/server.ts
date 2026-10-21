@@ -322,6 +322,29 @@ export class Gateway {
           send(okFrame(id, { text }));
           return;
         }
+        case "service.status": {
+          // The Service card (Runtime tab) — OpenClaw's `status --deep`, lite:
+          // manager, boot state, pid/supervisor, uptime, restart capability.
+          const rt = (await import("../cli/service.js")).serviceRuntimeInfo();
+          send(okFrame(id, { ...rt, ...service.health() }));
+          return;
+        }
+        case "service.logs": {
+          const tail = (await import("../cli/service.js")).serviceLogTail(Number(params["lines"] ?? 30));
+          send(okFrame(id, tail));
+          return;
+        }
+        case "service.restart": {
+          // Parity with OpenClaw's gateway.restart.request: only survives the
+          // exit when a supervisor (sc gateway / runit / systemd) respawns us.
+          const rt = (await import("../cli/service.js")).serviceRuntimeInfo();
+          const willComeBack = rt["restartSupported"] === true;
+          send(okFrame(id, { restarting: true, willComeBack }));
+          // Graceful SIGTERM to self: runs the normal shutdown path, then the
+          // supervisor (or runit/systemd) brings the gateway right back.
+          setTimeout(() => { try { process.kill(process.pid, "SIGTERM"); } catch { /* gone */ } }, 150).unref();
+          return;
+        }
         case "dream.status":
           // The Memory settings tab (OpenClaw's Dreams tab): dreaming state,
           // schedule, next run, last sweep, and the memory counts.
