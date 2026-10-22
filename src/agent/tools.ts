@@ -32,6 +32,8 @@ export interface ToolContext {
   refreshSkills?: () => void;
   /** Session this tool call belongs to (set by the agent loop). */
   sessionKey?: string;
+  /** One-shot text completion bound to the run's client (P3 #22 pdf analysis). */
+  llmText?: (messages: { role: "system" | "user"; content: string }[], opts?: { model?: string; timeoutMs?: number }) => Promise<string>;
   /** Set by sessions_yield when this turn should end waiting for children. */
   yieldArmed?: boolean;
   /** Sub-agent control surface, wired by the service (spawn/yield/list/send). */
@@ -355,6 +357,35 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           signal: ctx.signal,
         });
         return renderSearchText(out);
+      },
+    });
+  }
+
+  if (config.tools.media.pdf.enabled !== false) {
+    // P3 #22 — their `pdf` tool; extraction lane (our providers are text
+    // endpoints, so we ride their non-native fallback entirely). CLI entries
+    // with capability "pdf" (tools.media.models) take over for encrypted /
+    // font-encoded files — their CLI-entry contract.
+    tools.push({
+      name: "pdf",
+      description:
+        "Analyze one or more PDF documents and return text. Uses built-in text extraction; " +
+        "pass a prompt to steer the analysis. Page filters work only through configured CLI entries.",
+      parameters: {
+        type: "object",
+        properties: {
+          pdf: str("One PDF path or URL"),
+          pdfs: { type: "array", items: { type: "string" }, description: "Multiple PDF paths or URLs, up to 10 total" },
+          prompt: str("Analysis prompt (default: Analyze this PDF document.)"),
+          pages: str("Page filter like 1-5 or 1,3,7-9 (built-in extractor: unsupported)"),
+          model: str("Optional model override in provider/model form"),
+          maxBytesMb: int("Per-PDF size cap in MB"),
+        },
+        required: [],
+      },
+      async run(args, ctx) {
+        const { analyzePdfs } = await import("./pdf-tool.js");
+        return analyzePdfs(args as Record<string, unknown>, ctx);
       },
     });
   }

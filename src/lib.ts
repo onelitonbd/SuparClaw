@@ -183,3 +183,15 @@ export {
   type WebSearchOutput,
   type WebSearchResultItem,
 } from "./agent/web-search.js";
+export {
+  selectAttachments,
+  resolveEntries,
+  cliArgs,
+  runUnderstanding,
+  renderMediaBlocks,
+  toolsMediaConfig,
+  type MediaFact,
+  type MediaOutcome,
+} from "./agent/media-understanding.js";
+export { analyzePdfs } from "./agent/pdf-tool.js";
+export { extractPdfText } from "./util/pdf-text.js";

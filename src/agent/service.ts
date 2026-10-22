@@ -5,6 +5,7 @@ import { ConfigService } from "../config/load.js";
 import type { SuparClawConfig } from "../config/schema.js";
 import { Store } from "../state/db.js";
 import { runSessionMaintenance, settingsFromConfig, defaultDiskBytes } from "../state/maintenance.js";
+import { realRunCli, realTranscribeAudio } from "./media-understanding.js";
 import { createLogger, type Logger } from "../util/log.js";
 import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } from "../util/paths.js";
 import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
@@ -249,6 +250,39 @@ export class Service {
   /** Re-arm cron jobs changed outside the daemon (sc cron add, other tools). */
   async cronReconcile(): Promise<void> {
     if (this.#cron) await this.#cron.reconcile();
+  }
+
+  /**
+   * Media understanding deps (P3 #22): provider auth inventory + the image/
+   * transcription executors + CLI runner. Channels collect media facts; this
+   * is the engine's real world.
+   */
+  mediaUnderstandingDeps(): import("./media-understanding.js").MediaEngineDeps {
+    const providers = this.#authProviders().providers;
+    const providerAuths = Object.entries(providers).map(([id, p]) => {
+      const withAuth = p as { baseUrl?: string; apiKey?: string; model?: string };
+      return { id, baseUrl: String(withAuth.baseUrl ?? ""), apiKey: String(withAuth.apiKey ?? "") };
+    });
+    const replyModel = this.configSvc.current.agents.defaults.model;
+    return {
+      providerAuths,
+      replyProvider: providerAuths.find((p) => p.apiKey)
+        ? { baseUrl: providerAuths.find((p) => p.apiKey)!.baseUrl, apiKey: providerAuths.find((p) => p.apiKey)!.apiKey, model: replyModel }
+        : undefined,
+      transcribeAudio: (opts) => realTranscribeAudio(opts),
+      runCli: (cmd, args, timeoutMs) => realRunCli(cmd, args, timeoutMs),
+      describeImage: async (dataUri, prompt, model, timeoutMs) => {
+        let out = "";
+        for await (const ev of this.loop.llm.stream({
+          messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: dataUri } }] }] as never,
+          model: model || undefined,
+          signal: AbortSignal.timeout(timeoutMs),
+        })) {
+          if (ev.type === "text") out += ev.text;
+        }
+        return out;
+      },
+    };
   }
 
   /**

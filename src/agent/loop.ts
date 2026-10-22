@@ -568,6 +568,19 @@ export class AgentLoop {
         subagents: this.deps.subagents,
         // ask_user (P2 #8): main-session-only, exactly like their gate.
         askUser: isMain && this.deps.askUser ? (qs) => this.deps.askUser!(sessionKey, qs) : undefined,
+        // P3 #22: the pdf tool's analysis hop rides THIS run's llm client
+        // (their model-resolution rule at our single-agent scale).
+        llmText: async (msgs, opts) => {
+          let out = "";
+          for await (const ev of this.llm.stream({
+            messages: msgs,
+            model: opts?.model,
+            signal: AbortSignal.timeout(opts?.timeoutMs ?? 60_000),
+          })) {
+            if (ev.type === "text") out += ev.text;
+          }
+          return out;
+        },
       };
 
       // Mid-run steering (OpenClaw steering queue parity): a steer is injected

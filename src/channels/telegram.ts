@@ -430,13 +430,58 @@ export class TelegramChannel {
       }
       if (pending.media.length > 10) this.log.warn(`telegram: dropped ${pending.media.length - 10} media item(s) over the 10/turn cap`);
     }
-    const placeholders = saved.map((s) => mediaPlaceholder(s)).join("\n");
+    // Media understanding (P3 #22): describe images / transcribe voice and
+    // audio BEFORE the reply pipeline runs, so routing and the agent work
+    // off text (their pipeline). Failures keep the placeholder text AND the
+    // native-vision delivery for images — understanding errors never block.
+    const consumed = new Set<number>();
+    let understandingBody = "";
+    {
+      const tmc = this.service.config.tools.media;
+      const anyEnabled = tmc.image.enabled || tmc.audio.enabled || tmc.pdf.enabled;
+      if (anyEnabled && saved.length > 0) {
+        const { selectAttachments, runUnderstanding, renderMediaBlocks, toolsMediaConfig } = await import("../agent/media-understanding.js");
+        const media = toolsMediaConfig(tmc);
+        const facts = saved.map((s) => {
+          const isPdf = s.media.kind === "document" && /(\.pdf$|^application\/pdf$)/i.test(`${s.media.fileName ?? ""} ${s.media.mime ?? ""}`);
+          const kind = s.media.kind === "photo" ? "image" : s.media.kind === "voice" || s.media.kind === "audio" ? "audio" : isPdf ? "pdf" : s.media.kind === "video" ? "video" : "other";
+          return { fact: { kind, path: s.path, contentType: s.media.mime, name: s.media.fileName }, savedIndex: saved.indexOf(s), kind };
+        });
+        const deps = this.service.mediaUnderstandingDeps();
+        const selected = selectAttachments(facts.map((f) => f.fact), media);
+        const outcomes = [];
+        for (const fact of selected) {
+          const idx = facts.findIndex((f) => f.fact === fact);
+          const outcome = await runUnderstanding(fact, media, deps, idx);
+          outcomes.push(outcome);
+          if (outcome.status === "completed") {
+            consumed.add(facts[idx]!.savedIndex);
+            // Their echo: transcribed audio mirrors back before the agent runs.
+            if (outcome.capability === "audio" && media.audio.echoTranscript) {
+              const fmt = (media.audio.echoFormat || '📝 "{transcript}"').replace("{transcript}", outcome.text ?? "");
+              await bot.api.sendMessage(chatId, fmt).catch((e) => this.log.warn(`telegram: transcript echo failed: ${(e as Error).message}`));
+            }
+          } else if (outcome.status === "failed") {
+            this.log.warn(`telegram: media understanding failed for ${facts[idx]!.fact.name ?? facts[idx]!.fact.kind}: ${outcome.error ?? "unknown"}`);
+          }
+        }
+        if (outcomes.some((o) => o.status === "completed")) {
+          // Blocks land first; captions still ride the normal text lane below
+          // (no duplication — their `User text:` preservation in our shape).
+          understandingBody = renderMediaBlocks(outcomes.filter((o) => o.status === "completed"), "");
+        }
+      }
+    }
+    const placeholders = saved
+      .filter((_, i) => !consumed.has(i))
+      .map((s) => mediaPlaceholder(s))
+      .join("\n");
     const attachments = cfg.vision
       ? saved
-          .filter((s) => s.dataUri !== undefined)
+          .filter((s, i) => s.dataUri !== undefined && !consumed.has(i)) // understood images are text-only now (their rule)
           .map((s) => ({ kind: "image" as const, dataUri: s.dataUri!, name: s.media.fileName ?? "photo.jpg" }))
       : [];
-    const text = [pending.texts.join("\n\n"), placeholders]
+    const text = [understandingBody, pending.texts.join("\n\n"), placeholders]
       .filter((s) => s.trim().length > 0)
       .join("\n")
       .slice(0, 8000);

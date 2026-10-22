@@ -449,6 +449,72 @@ export const CONFIG_SCHEMA: SchemaNode = {
             enabled: { t: "bool", default: true },
           },
         },
+        // P3 #22 — media understanding (their tools.media): capability list of
+        // provider/CLI model entries + per-capability controls.
+        media: {
+          t: "object",
+          default: {},
+          fields: {
+            concurrency: { t: "int", min: 1, default: 2 },
+            models: {
+              t: "array",
+              default: [],
+              of: {
+                t: "object",
+                default: {},
+                fields: {
+                  type: { t: "enum", values: ["provider", "cli"], default: "provider" },
+                  provider: { t: "string", default: "" },
+                  model: { t: "string", default: "" },
+                  command: { t: "string", default: "" },
+                  args: { t: "array", of: { t: "string" }, default: [] },
+                  prompt: { t: "string", default: "" },
+                  maxChars: { t: "int", min: 0, default: 0 },
+                  maxBytes: { t: "int", min: 0, default: 0 },
+                  timeoutSeconds: { t: "int", min: 0, default: 0 },
+                  language: { t: "string", default: "" },
+                  capabilities: { t: "array", of: { t: "string" }, default: [] },
+                },
+              },
+            },
+            image: {
+              t: "object",
+              default: {},
+              fields: {
+                enabled: { t: "bool", default: true },
+                preferredModel: { t: "string", default: "" },
+                prompt: { t: "string", default: "" },
+                maxChars: { t: "int", min: 0, default: 500 },
+                maxBytes: { t: "int", min: 0, default: 10485760 },
+                timeoutSeconds: { t: "int", min: 0, default: 60 },
+                attachments_all: { t: "bool", default: false },
+              },
+            },
+            audio: {
+              t: "object",
+              default: {},
+              fields: {
+                enabled: { t: "bool", default: true },
+                preferredModel: { t: "string", default: "" },
+                maxBytes: { t: "int", min: 0, default: 20971520 },
+                timeoutSeconds: { t: "int", min: 0, default: 60 },
+                language: { t: "string", default: "" },
+                echoTranscript: { t: "bool", default: false },
+                echoFormat: { t: "string", default: "📝 \"{transcript}\"" },
+              },
+            },
+            pdf: {
+              t: "object",
+              default: {},
+              fields: {
+                enabled: { t: "bool", default: true },
+                maxBytes: { t: "int", min: 0, default: 10485760 },
+                maxChars: { t: "int", min: 0, default: 4000 },
+                timeoutSeconds: { t: "int", min: 0, default: 60 },
+              },
+            },
+          },
+        },
         web: {
           t: "object",
           default: {},
@@ -713,6 +779,42 @@ export interface SuparClawConfig {
     fs: boolean;
     memory: boolean;
     loopDetection: { enabled: boolean };
+    // P3 #22 — media understanding (their tools.media).
+    media: {
+      concurrency: number;
+      models: {
+        type: "provider" | "cli";
+        provider: string;
+        model: string;
+        command: string;
+        args: string[];
+        prompt: string;
+        maxChars: number;
+        maxBytes: number;
+        timeoutSeconds: number;
+        language: string;
+        capabilities: string[];
+      }[];
+      image: {
+        enabled: boolean;
+        preferredModel: string;
+        prompt: string;
+        maxChars: number;
+        maxBytes: number;
+        timeoutSeconds: number;
+        attachments_all: boolean;
+      };
+      audio: {
+        enabled: boolean;
+        preferredModel: string;
+        maxBytes: number;
+        timeoutSeconds: number;
+        language: string;
+        echoTranscript: boolean;
+        echoFormat: string;
+      };
+      pdf: { enabled: boolean; maxBytes: number; maxChars: number; timeoutSeconds: number };
+    };
     web: {
       fetch: boolean;
       search: {

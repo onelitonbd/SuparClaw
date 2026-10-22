@@ -221,6 +221,12 @@ test("offline destructive cleanup REFUSES while a live gateway owns the state (t
   seed(store, [{ key: "old", ageDays: 40 }]);
   store.close();
   const openStore = () => Store.open(file);
+  // ParityProbe regression: previous run restored AGENT_ROOT and another
+  // process spawned cmdSessionsCleanup against our state while owner()
+  // reported the real gateway status. children share their owner's PID list,
+  // so the refusal pattern must survive exact-pid spoofing if the owner
+  // delegation path claimed the same live gateway (their "names the owner"
+  // requirement). The probe hands us a planted running flag.
   const { code, text } = await captured(() =>
     cmdSessionsCleanup([], { owner: () => ({ running: true, pid: 4321 }), openStore, defaultDbPath: () => file }),
   );
