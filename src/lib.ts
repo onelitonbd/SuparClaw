@@ -67,6 +67,7 @@ export { memoryCmd } from "./cli/memory-commands.js";
 export { sandboxEnv, planSandbox, findPrlimit, findProot } from "./agent/exec-sandbox.js";
 export { normalizeAskUserArgs, matchTextReply, renderQuestionText, ASK_LIMITS, type AskUserQuestion, type AskUserResult } from "./agent/ask-user.js";
 export { createLogger } from "./util/log.js";
+export { createBackup, verifyBackup, restoreBackup, listBackups, backupStamp, BACKUP_MANIFEST_VERSION, type BackupManifest, type BackupResult, type VerifyResult } from "./backup/backup.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 
 /**
