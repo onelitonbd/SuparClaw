@@ -195,3 +195,11 @@ export {
 } from "./agent/media-understanding.js";
 export { analyzePdfs } from "./agent/pdf-tool.js";
 export { extractPdfText } from "./util/pdf-text.js";
+export {
+  CodeMode,
+  codeModeEngages,
+  codeModeSurface,
+  CODE_MODE_DEFAULTS,
+  type CodeModeConfig,
+  type ExecCellResult,
+} from "./agent/code-mode.js";

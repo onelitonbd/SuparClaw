@@ -6,6 +6,7 @@ import type { Logger } from "../util/log.js";
 import { todayStamp } from "./workspace.js";
 import { searchMemoryFiles, rankTranscriptHits } from "./memory-search.js";
 import { discoverSkills, readSkillBody, skillsCatalog, writeSkill, type SkillMeta } from "./skills.js";
+import { codeModeEngages, CodeMode, codeModeSurface, type CodeModeConfig, type GuestTool } from "./code-mode.js";
 
 export interface JsonSchema {
   type: "object";
@@ -682,6 +683,68 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
     },
   );
+
+  // ── P3 #23 — Code Mode surface swap (their tools.codeMode, mode:"only"):
+  // when engaged, the model sees exec+wait(+direct-only); every other tool is
+  // hidden from the direct list and exposed inside the guest as an async
+  // global bridged through the normal run path (policy/approvals still apply).
+  {
+    const raw = config.tools.codeMode;
+    const cmc: CodeModeConfig = {
+      enabled: raw.enabled === "true" ? true : raw.enabled === "auto" ? "auto" : false,
+      executor: raw.executor,
+      timeoutMs: raw.timeoutMs,
+      maxCodeChars: raw.maxCodeChars,
+      maxOutputBytes: raw.maxOutputBytes,
+      maxPendingToolCalls: raw.maxPendingToolCalls,
+      directOnly: raw.directOnly ?? [],
+    };
+    if (codeModeEngages(cmc, config.agents?.defaults?.model)) {
+      const hidden = tools.filter((t) => t.name !== "exec" && t.name !== "wait");
+      let callCtx: ToolContext | null = null;
+      const engine = new CodeMode(
+        () => {
+          const m = new Map<string, GuestTool>();
+          for (const t of hidden) {
+            const params = (t.parameters ?? { properties: {} }) as {
+              properties?: Record<string, Record<string, unknown>>;
+              required?: string[];
+            };
+            m.set(t.name, {
+              name: t.name,
+              description: t.description,
+              inputs: Object.fromEntries(
+                Object.entries(params.properties ?? {}).map(([k, v]) => [k, String((v as Record<string, unknown>)["type"] ?? "any")]),
+              ),
+              required: params.required ?? [],
+              run: async (args) => {
+                if (!callCtx) throw Object.assign(new Error("guest call outside a live exec cell"), { code: "exec_error" });
+                return t.run(args as Record<string, unknown>, callCtx);
+              },
+            });
+          }
+          return m;
+        },
+        () => cmc,
+      );
+      const surface = codeModeSurface(engine);
+      const execTool = surface.find((t) => t.name === "exec");
+      if (execTool) {
+        const origRun = execTool.run;
+        execTool.run = async (args, ctx) => {
+          callCtx = ctx;
+          try {
+            return await origRun(args, ctx);
+          } finally {
+            callCtx = null;
+          }
+        };
+      }
+      // their session-history transparency: the cell's source lands as
+      // "// Code Mode\n" + code on the tool-call record (their rule)
+      return [...surface, ...hidden.filter((t) => cmc.directOnly.includes(t.name))];
+    }
+  }
 
   return tools;
 }

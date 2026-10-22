@@ -515,6 +515,21 @@ export const CONFIG_SCHEMA: SchemaNode = {
             },
           },
         },
+        // P3 #23 — Code Mode sandboxed execution (their tools.codeMode).
+        // enabled: false/true/"auto"; "auto" engages only for preferred models.
+        codeMode: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "enum", values: ["false", "true", "auto"], default: "auto" },
+            executor: { t: "enum", values: ["node", "quickjs"], default: "node" },
+            timeoutMs: { t: "int", min: 100, max: 60000, default: 10000 },
+            maxCodeChars: { t: "int", min: 1024, default: 32768 },
+            maxOutputBytes: { t: "int", min: 1024, max: 10485760, default: 65536 },
+            maxPendingToolCalls: { t: "int", min: 1, max: 128, default: 16 },
+            directOnly: { t: "array", of: { t: "string" }, default: [] },
+          },
+        },
         web: {
           t: "object",
           default: {},
@@ -814,6 +829,16 @@ export interface SuparClawConfig {
         echoFormat: string;
       };
       pdf: { enabled: boolean; maxBytes: number; maxChars: number; timeoutSeconds: number };
+    };
+    // P3 #23 — Code Mode (their tools.codeMode).
+    codeMode: {
+      enabled: "false" | "true" | "auto";
+      executor: "node" | "quickjs";
+      timeoutMs: number;
+      maxCodeChars: number;
+      maxOutputBytes: number;
+      maxPendingToolCalls: number;
+      directOnly: string[];
     };
     web: {
       fetch: boolean;
