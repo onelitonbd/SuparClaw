@@ -286,8 +286,8 @@ export function uninstallService(): { ok: boolean; message: string } {
   return { ok: removed, message: removed ? "service removed (config, state and workspace kept)" : "no service installed" };
 }
 
-/** sv/systemctl/launchctl verb, or null when unmanaged. */
-function serviceVerb(verb: "start" | "stop" | "restart"): { ok: boolean; message: string } {
+/** sv/systemctl/launchctl verb, or null when unmanaged. Exported for `sc uninstall` (P3). */
+export function serviceVerb(verb: "start" | "stop" | "restart"): { ok: boolean; message: string } {
   const manager = detectManager();
   try {
     if (manager === "termux-services") {

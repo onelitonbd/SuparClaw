@@ -49,6 +49,7 @@ export { jobTimezone } from "./cron/scheduler.js";
 export { resolveDelivery, isEmptySummary, assertWebhookUrl, webhookPayload, errorStreak, shouldAlert } from "./cron/delivery.js";
 export { parseLogLine, filterLogLines, readLogTail, readLogDelta } from "./cli/logs.js";
 export { parseRepoSlug, resolveRef, currentSha, computeUpdatePlan, fetchRemoteHead } from "./cli/update.js";
+export { parseUninstallArgs, planUninstall, deleteStateContents, cliRemovalHint, cmdUninstall } from "./cli/uninstall.js";
 export { sandboxEnv, planSandbox, findPrlimit, findProot } from "./agent/exec-sandbox.js";
 export { normalizeAskUserArgs, matchTextReply, renderQuestionText, ASK_LIMITS, type AskUserQuestion, type AskUserResult } from "./agent/ask-user.js";
 export { createLogger } from "./util/log.js";

@@ -35,8 +35,15 @@ commands:
   security [audit]     review gateway/tool/channel security posture
   stop                    stop a running gateway (pid file)
   config <get|set|path>  read or write config values
-  sessions search <query> [--session key] [--limit n] [--all] [--json]
-                        full-text search past session transcripts
+  sessions <list|rename|delete|show|search> [flags] [--json]
+                        sessions on this device; search = full-text transcripts
+  usage [--session key]... [--json]
+                        token + cost report from the runs audit table
+  logs [-f] [--tail N] [--file service|agent] [--search q] [--json] [--files]
+                        tail the service log (follow with -f)
+  update [--check] [--ref <branch>]   staged self-update from this repo
+  uninstall [--service|--state|--workspace|--all] [--yes] [--non-interactive] [--dry-run]
+                        remove the service and/or local data (service = default)
   token [--rotate]      show (or regenerate) the gateway token
   pair <list|approve|revoke>  manage Telegram DM access
   cron <list|add|remove>       scheduled prompts
@@ -113,6 +120,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./logs.js")).cmdLogs(rest);
     case "update":
       return (await import("./update.js")).cmdUpdate(rest);
+    case "uninstall":
+      return (await import("./uninstall.js")).cmdUninstall(rest);
     case "stop":
       return stopCmd(rest);
     case "version":
