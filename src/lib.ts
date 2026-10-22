@@ -195,6 +195,7 @@ export {
 } from "./agent/media-understanding.js";
 export { analyzePdfs } from "./agent/pdf-tool.js";
 export { extractPdfText } from "./util/pdf-text.js";
+export { createTyping, type TypingHandle } from "./agent/typing.js";
 export {
   CodeMode,
   codeModeEngages,

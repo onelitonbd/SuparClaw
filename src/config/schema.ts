@@ -411,6 +411,19 @@ export const CONFIG_SCHEMA: SchemaNode = {
             },
             streaming: { t: "enum", values: ["off", "partial", "progress"], default: "progress" },
             batchMs: { t: "int", min: 0, max: 5000, default: 300 },
+            // Typing indicator (P3 #24 — their agents.defaults.typingMode /
+            // typingIntervalSeconds life-cycle: DMs+mentions immediate
+            // ("instant"), first reasoning/tool under "thinking", first
+            // user-visible text/tool under "message", "never" off; the
+            // refresh rides a keepalive (their 6s) with a 2-minute TTL).
+            typing: {
+              t: "object",
+              default: {},
+              fields: {
+                mode: { t: "enum", values: ["instant", "thinking", "message", "never"], default: "instant" },
+                intervalSeconds: { t: "int", min: 1, max: 30, default: 6 },
+              },
+            },
           },
         },
         // Shared channel defaults (their channels.defaults.* block); per-channel
@@ -787,6 +800,8 @@ export interface SuparClawConfig {
       botLoopProtection: BotLoopProtectionConfig;
       streaming: "off" | "partial" | "progress";
       batchMs: number;
+      // P3 #24 — typing indicator (their typingMode/typingIntervalSeconds).
+      typing: { mode: "instant" | "thinking" | "message" | "never"; intervalSeconds: number };
     };
     defaults: { botLoopProtection: BotLoopProtectionConfig };
   };

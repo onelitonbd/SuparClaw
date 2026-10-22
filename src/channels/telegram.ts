@@ -5,6 +5,7 @@ import { workspaceDir } from "../util/paths.js";
 import { downloadInboundMedia, mediaPlaceholder, planInboundMedia, type InboundMedia } from "./telegram-media.js";
 import { BotLoopGuard } from "./bot-guard.js";
 import { renderQuestionText } from "../agent/ask-user.js";
+import { createTyping, type TypingHandle } from "../agent/typing.js";
 import {
   addProvider,
   canonicalModelRef,
@@ -49,6 +50,10 @@ interface PendingMessage {
   isMain?: boolean;
   timer: NodeJS.Timeout;
   firstAt: number;
+  /** P3 #24 typing scoping: group vs DM, explicit-mention, forum topic. */
+  isGroup?: boolean;
+  mentioned?: boolean;
+  topicId?: number;
 }
 
 export class TelegramChannel {
@@ -296,6 +301,9 @@ export class TelegramChannel {
       // ask_user (P2 #8): a DM with the owner IS the operator's main surface
       // (their "telegram is a supported main-session surface"); groups are not.
       isMain: !isGroup,
+      isGroup,
+      mentioned,
+      topicId,
       firstAt: Date.now(),
       timer: setTimeout(() => void this.#flush(key), cfg.batchMs),
     };
@@ -486,6 +494,14 @@ export class TelegramChannel {
       .join("\n")
       .slice(0, 8000);
 
+    // Typing indicator lifecycle (P3 #24 — their typingMode semantics):
+    // DMs and explicit mentions start immediately ("instant"); group chats
+    // without a mention start on the first user-visible activity; "thinking"
+    // starts on the first reasoning-ish/tool signal; "message" on the first
+    // non-silent text/tool; "never" disables. Refresh rides a keepalive
+    // interval (their 6s) with a 2-minute TTL safety stop.
+    const typing = this.#typingFor(chatId, pending.topicId, pending.isGroup === true, pending.mentioned === true);
+
     const preview = await bot.api.sendMessage(chatId, "…", { link_preview_options: { is_disabled: true } }).catch(() => null);
 
     let lastEdit = 0;
@@ -512,7 +528,8 @@ export class TelegramChannel {
           await bot.api.sendMessage(chatId, b.text, b.reply_markup ? { reply_markup: b.reply_markup } : {}).catch((err) => this.log.warn(`telegram: question send failed: ${(err as Error).message}`));
         }
       },
-      onDelta: async () => {
+      onDelta: async (delta) => {
+        typing.onText(delta);
         if (!preview || cfg.streaming === "off") return;
         const now = Date.now();
         if (now - lastEdit < 2000) return;
@@ -522,6 +539,7 @@ export class TelegramChannel {
           .catch(() => {});
       },
       onTool: async (event) => {
+        typing.onTool();
         if (!preview || cfg.streaming === "off") return;
         statusLines = [...statusLines.slice(-4), `· ${event.name}`];
         await bot.api
@@ -545,6 +563,7 @@ export class TelegramChannel {
           .catch((err) => this.log.warn(`telegram: approval card failed: ${(err as Error).message}`));
       },
       reply: async (finalText) => {
+        typing.stop();
         const chunks = splitForTelegram(finalText);
         if (!preview) {
           for (const chunk of chunks) await bot.api.sendMessage(chatId, chunk).catch(() => {});
@@ -558,8 +577,30 @@ export class TelegramChannel {
         }
       },
     });
+    typing.stop(); // belt-and-braces: send() settled (turn end, error, abort)
+  }
+
+  /**
+   * P3 #24 — typing lifecycle across modes (see `createTyping` for the pure
+   * contract). Immediate start rules and keepalive cadence live there; here
+   * we only bind the Telegram sendChatAction call (per-chat + topic scoping).
+   */
+  #typingFor(chatId: number, topicId: number | undefined, isGroup: boolean, mentioned: boolean): TypingHandle {
+    const cfg = this.service.config.channels.telegram.typing;
+    const bot = this.#bot;
+    return createTyping(
+      { mode: cfg?.mode ?? "instant", intervalSeconds: cfg?.intervalSeconds ?? 6, isGroup, mentioned },
+      async () => {
+        if (!bot) return;
+        await bot.api
+          .sendChatAction(chatId, "typing", topicId ? { message_thread_id: topicId } : {})
+          .catch((e: unknown) => this.log.warn(`telegram: sendChatAction failed: ${(e as Error).message}`));
+      },
+    );
   }
 }
+
+
 
 /** Telegram rejects messages over 4096 chars — split on paragraph boundaries. */
 export function splitForTelegram(text: string, limit = 4000): string[] {
