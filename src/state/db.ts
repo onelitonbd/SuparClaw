@@ -61,6 +61,13 @@ export interface JobRow {
   enabled: number;
   last_run_at: number | null;
   created_at: number;
+  /** Per-job IANA zone (P2 #14); null = cron.timezone / host. */
+  tz: string | null;
+  /** Result delivery (P2 #14): none|announce|webhook; null = cron.delivery. */
+  delivery_mode: string | null;
+  delivery_to: string | null;
+  /** 1 = empty/whitespace results are not delivered (their suppressEmpty). */
+  delivery_suppress_empty: number;
 }
 
 // ---- session search types & query helpers --------------------------------
@@ -367,6 +374,15 @@ export class Store {
     if (!runCols.has("model")) {
       db.exec("ALTER TABLE runs ADD COLUMN model TEXT");
     }
+    // Cron timezones + delivery (P2 #14): per-job tz / delivery_mode /
+    // delivery_to / suppress-empty columns, same PRAGMA-guarded pattern.
+    const jobCols = new Set(
+      (db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!jobCols.has("tz")) db.exec("ALTER TABLE jobs ADD COLUMN tz TEXT");
+    if (!jobCols.has("delivery_mode")) db.exec("ALTER TABLE jobs ADD COLUMN delivery_mode TEXT");
+    if (!jobCols.has("delivery_to")) db.exec("ALTER TABLE jobs ADD COLUMN delivery_to TEXT");
+    if (!jobCols.has("delivery_suppress_empty")) db.exec("ALTER TABLE jobs ADD COLUMN delivery_suppress_empty INTEGER NOT NULL DEFAULT 1");
     return new Store(db, fts);
   }
 
@@ -714,16 +730,16 @@ export class Store {
     if (existing) {
       this.db
         .prepare(
-          "UPDATE jobs SET name = ?, schedule = ?, prompt = ?, session_key = ?, enabled = ?, last_run_at = ? WHERE id = ?",
+          "UPDATE jobs SET name = ?, schedule = ?, prompt = ?, session_key = ?, enabled = ?, last_run_at = ?, tz = ?, delivery_mode = ?, delivery_to = ?, delivery_suppress_empty = ? WHERE id = ?",
         )
-        .run(job.name, job.schedule, job.prompt, job.session_key, job.enabled ? 1 : 0, job.last_run_at ?? existing.last_run_at, job.id);
+        .run(job.name, job.schedule, job.prompt, job.session_key, job.enabled ? 1 : 0, job.last_run_at ?? existing.last_run_at, job.tz ?? existing.tz, job.delivery_mode ?? existing.delivery_mode, job.delivery_to ?? existing.delivery_to, job.delivery_suppress_empty ?? existing.delivery_suppress_empty, job.id);
       return this.getJob(job.id) as JobRow;
     }
     this.db
       .prepare(
-        "INSERT INTO jobs(id, name, schedule, prompt, session_key, enabled, last_run_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO jobs(id, name, schedule, prompt, session_key, enabled, last_run_at, tz, delivery_mode, delivery_to, delivery_suppress_empty, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .run(job.id, job.name, job.schedule, job.prompt, job.session_key, job.enabled ? 1 : 0, job.last_run_at ?? null, Date.now());
+      .run(job.id, job.name, job.schedule, job.prompt, job.session_key, job.enabled ? 1 : 0, job.last_run_at ?? null, job.tz ?? null, job.delivery_mode ?? null, job.delivery_to ?? null, job.delivery_suppress_empty ?? 1, Date.now());
     return this.getJob(job.id) as JobRow;
   }
 

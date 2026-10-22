@@ -7,6 +7,8 @@ import { Store } from "../state/db.js";
 import { createLogger, type Logger } from "../util/log.js";
 import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } from "../util/paths.js";
 import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
+import { assertWebhookUrl, postWebhook, webhookPayload, resolveDelivery, isEmptySummary, errorStreak, shouldAlert } from "../cron/delivery.js";
+import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
@@ -70,6 +72,8 @@ export class Service {
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
+  /** Per-job last-failure-alert stamp (P2 #14 cooldown bookkeeping). */
+  #cronAlertedAt = new Map<string, number>();
   #dream: DreamHandle | null = null;
   #dreamSig = "";
   #titleBusy = new Set<string>();
@@ -618,17 +622,37 @@ export class Service {
   async startChannels(): Promise<void> {
     const config = this.config;
     if (config.cron.enabled) {
-      this.#cron = new Scheduler(this.store, this.log, (job) =>
-        this.send({
-          sessionKey: job.session_key,
-          text: job.prompt,
-          isMainSession: false,
-          source: "cron",
-          reply: async (text) => {
-            this.store.recordJobRun(job.id, "done", text.slice(0, 2000));
-          },
-        }),
-      );
+      this.#cron = new Scheduler(this.store, this.log, () => this.config.cron, async (job) => {
+        // P2 #14: capture once, record once, deliver once. The reply callback
+        // distinguishes the loop's "⚠ <error>" frame from a real final text.
+        let status: "done" | "error" = "done";
+        let detail = "";
+        let finalText = "";
+        try {
+          await this.send({
+            sessionKey: job.session_key,
+            text: job.prompt,
+            isMainSession: false,
+            source: "cron",
+            reply: async (text) => {
+              if (text.startsWith("⚠ ")) {
+                status = "error";
+                detail = text.slice(2);
+              } else {
+                finalText = text;
+              }
+            },
+          });
+        } catch (err) {
+          status = "error";
+          detail = (err as Error).message;
+        }
+        this.store.recordJobRun(job.id, status, (detail || finalText).slice(0, 2000));
+        if (status === "done") {
+          await this.#deliverCronResult(job, finalText);
+        }
+        await this.#maybeCronFailureAlert(job, detail || finalText);
+      });
       await this.#cron.start();
       this.log.info(`cron scheduler started (${this.#cron.count} jobs)`);
     }
@@ -642,6 +666,84 @@ export class Service {
     // Config edits made outside config.set (sc config set, hand edits) must
     // reach the running daemon too.
     this.watchConfig();
+  }
+
+  /**
+   * P2 #14 — post a finished cron result by its delivery plan (their
+   * announce/webhook/none + empty-suppression). "announce" without a
+   * destination leaves the result where it landed (the cron session's own
+   * transcript — nothing extra to write).
+   */
+  async #deliverCronResult(job: JobRow, text: string): Promise<void> {
+    const delivery = resolveDelivery(job, this.config.cron);
+    if (delivery.mode === "none") return;
+    if (delivery.suppressEmpty && isEmptySummary(text)) {
+      this.log.info(`cron ${job.name}: empty result suppressed (${delivery.mode})`);
+      return;
+    }
+    if (delivery.mode === "webhook") {
+      try {
+        const url = await assertWebhookUrl(delivery.to, this.config.cron.webhookAllowHostnames);
+        const status = await postWebhook(url, webhookPayload(job, text));
+        this.log.info(`cron ${job.name}: webhook delivered to ${url.hostname} (${status})`);
+      } catch (err) {
+        this.log.error(`cron ${job.name}: webhook delivery failed: ${(err as Error).message}`);
+      }
+      return;
+    }
+    // announce
+    if (!delivery.to) return; // result already lives in the cron transcript
+    const tg = /^telegram:(\d+)$/.exec(delivery.to) ?? (/^(\d+)$/.exec(delivery.to));
+    if (tg && this.#telegram?.running) {
+      try {
+        await this.#telegram.sendText(Number(tg[1]), `⏰ ${job.name}\n\n${text}`);
+        this.log.info(`cron ${job.name}: announced to telegram:${tg[1]}`);
+      } catch (err) {
+        this.log.error(`cron ${job.name}: telegram announce failed: ${(err as Error).message}`);
+      }
+      return;
+    }
+    const sessMatch = /^session:(.+)$/.exec(delivery.to);
+    if (sessMatch) {
+      const key = sessMatch[1]!;
+      const sess = this.store.ensureSession(key);
+      const rowId = this.store.appendMessage(sess.id, "assistant", `⏰ ${job.name}\n\n${text}`);
+      this.events.emit("event", { type: "chat", sessionKey: key, event: { type: "final", runId: `cron-${rowId}`, text: `⏰ ${job.name}\n\n${text}` } } satisfies ServiceEvent);
+      return;
+    }
+    if (tg) {
+      this.log.warn(`cron ${job.name}: telegram announce target ${delivery.to} but telegram is not running`);
+    } else {
+      this.log.warn(`cron ${job.name}: unsupported announce destination "${delivery.to}" (want telegram:<chatId> | session:<key>)`);
+    }
+  }
+
+  /** P2 #14 — consecutive-failure operator alert with threshold + cooldown. */
+  async #maybeCronFailureAlert(job: JobRow, lastDetail: string): Promise<void> {
+    const alerts = this.config.cron.failureAlerts;
+    if (!alerts.enabled) return;
+    const streak = errorStreak(this.store.lastJobRuns(50), job.id);
+    if (!shouldAlert(streak, alerts.threshold, this.#cronAlertedAt.get(job.id), alerts.cooldownMinutes)) return;
+    this.#cronAlertedAt.set(job.id, Date.now());
+    const msg =
+      `⚠ Cron job "${job.name}" failed ${streak} time(s) in a row.\n` +
+      `Last error: ${lastDetail.slice(0, 400)}`;
+    const to = alerts.to;
+    const tg = /^telegram:(\d+)$/.exec(to) ?? (/^(\d+)$/.exec(to));
+    if (tg && this.#telegram?.running) {
+      try {
+        await this.#telegram.sendText(Number(tg[1]), msg);
+        this.log.warn(`cron ${job.name}: failure alert sent to telegram:${tg[1]} (streak ${streak})`);
+        return;
+      } catch (err) {
+        this.log.error(`cron ${job.name}: failure alert DM failed: ${(err as Error).message}`);
+      }
+    }
+    // Fallback: the operator's main session transcript (their in-app alert).
+    const sess = this.store.ensureSession(":main");
+    this.store.appendMessage(sess.id, "assistant", msg);
+    this.events.emit("event", { type: "chat", sessionKey: ":main", event: { type: "final", runId: `cronalert-${Date.now().toString(36)}`, text: msg } } satisfies ServiceEvent);
+    this.log.warn(`cron ${job.name}: failure streak ${streak} — alerted main session`);
   }
 
   /**

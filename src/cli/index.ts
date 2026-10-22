@@ -737,23 +737,44 @@ async function cronCmd(args: string[]): Promise<number> {
         return 0;
       }
       for (const job of jobs) {
-        const next = await safeNext(job.schedule);
-        console.log(`${job.id}  ${job.name}  [${job.schedule}]  next ${next}  ${job.enabled ? "" : "(paused)"}`);
+        const next = await safeNext(job.schedule, job.tz ?? undefined);
+        const delivery = job.delivery_mode ? `  deliver:${job.delivery_mode}${job.delivery_to ? `→${job.delivery_to}` : ""}` : "";
+        console.log(`${job.id}  ${job.name}  [${job.schedule}]${job.tz ? `  tz:${job.tz}` : ""}  next ${next}  ${job.enabled ? "" : "(paused)"}${delivery}`);
         console.log(`   → ${job.prompt.slice(0, 90)}`);
       }
       return 0;
     }
     case "add": {
-      const [name, schedule, ...promptParts] = rest;
+      // P2 #14: --tz/--delivery/--to ride job columns (their per-job tz + delivery).
+      let tz: string | null = null;
+      let deliveryMode: string | null = null;
+      let deliveryTo: string | null = null;
+      const positional: string[] = [];
+      for (let i = 0; i < rest.length; i++) {
+        const a = rest[i]!;
+        if (a === "--tz" && rest[i + 1]) tz = rest[++i]!;
+        else if (a === "--delivery" && rest[i + 1]) deliveryMode = rest[++i]!;
+        else if (a === "--to" && rest[i + 1]) deliveryTo = rest[++i]!;
+        else positional.push(a);
+      }
+      const [name, schedule, ...promptParts] = positional;
       if (!name || !schedule || promptParts.length === 0) {
-        console.error("usage: sc cron add <name> <cron-expression> <prompt>");
+        console.error("usage: sc cron add <name> <cron-expression> <prompt> [--tz IANA-zone] [--delivery none|announce|webhook] [--to telegram:<chatId>|session:<key>|https://…]");
+        return 1;
+      }
+      if (deliveryMode && !["none", "announce", "webhook"].includes(deliveryMode)) {
+        console.error("usage: --delivery must be none | announce | webhook");
+        return 1;
+      }
+      if (deliveryMode === "webhook" && !deliveryTo) {
+        console.error("--delivery webhook needs --to <url>");
         return 1;
       }
       try {
         const { Cron } = await import("croner");
-        new Cron(schedule, { paused: true });
+        new Cron(schedule, { paused: true, timezone: tz ?? undefined });
       } catch (err) {
-        console.error(`invalid schedule: ${(err as Error).message}`);
+        console.error(`invalid schedule or timezone: ${(err as Error).message}`);
         return 1;
       }
       const id = name.replace(/\W+/g, "-").toLowerCase();
@@ -764,9 +785,13 @@ async function cronCmd(args: string[]): Promise<number> {
         prompt: promptParts.join(" "),
         session_key: `cron:${id}`,
         enabled: 1,
+        tz,
+        delivery_mode: deliveryMode,
+        delivery_to: deliveryTo,
+        delivery_suppress_empty: 1,
       });
-      console.log(`added ${id} (${schedule})`);
-      console.log(`next ${await safeNext(schedule)}`);
+      console.log(`added ${id} (${schedule}${tz ? `, ${tz}` : ""})`);
+      console.log(`next ${await safeNext(schedule, tz ?? undefined)}`);
       return 0;
     }
     case "remove": {
@@ -786,10 +811,10 @@ async function cronCmd(args: string[]): Promise<number> {
   }
 }
 
-async function safeNext(schedule: string): Promise<string> {
+async function safeNext(schedule: string, timezone?: string): Promise<string> {
   try {
     const { Cron } = await import("croner");
-    return new Cron(schedule, { paused: true }).nextRun()?.toISOString() ?? "?";
+    return new Cron(schedule, { paused: true, timezone }).nextRun()?.toISOString() ?? "?";
   } catch {
     return "?";
   }

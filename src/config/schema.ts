@@ -512,7 +512,38 @@ export const CONFIG_SCHEMA: SchemaNode = {
       default: {},
       fields: {
         enabled: { t: "bool", default: true },
+        // Global schedule zone for jobs without their own --tz (their
+        // automation cron-jobs cron.timezone; "local" = host zone).
         timezone: { t: "string", default: "local" },
+        // Result delivery defaults (their jobs delivery mode/to/suppressEmpty):
+        // per-job columns win; announce posts the final text to `to`,
+        // webhook POSTs a JSON payload there, none keeps it store-only.
+        delivery: {
+          t: "object",
+          default: {},
+          fields: {
+            mode: { t: "enum", values: ["none", "announce", "webhook"], default: "none" },
+            to: { t: "string", default: "" },
+            suppressEmpty: { t: "bool", default: true },
+          },
+        },
+        // Consecutive-failure notifier (their failure-alerts/notify shape):
+        // alert the operator after `threshold` back-to-back job errors, at
+        // most once per `cooldownMinutes` per job.
+        failureAlerts: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: true },
+            threshold: { t: "int", min: 1, max: 50, default: 2 },
+            cooldownMinutes: { t: "int", min: 1, max: 10080, default: 60 },
+            to: { t: "string", default: "" },
+          },
+        },
+        // SSRF allowlist for webhook delivery and hook targets (their
+        // webhookSsrfPolicy.allowedHostnames): entries escape the
+        // https+public-address rule (corporate relays/localhost dev sinks).
+        webhookAllowHostnames: { t: "array", of: { t: "string" }, default: [] },
       },
     },
     // Inbound HTTP webhooks (P1 A4) — a dedicated hook token, not the
@@ -665,7 +696,13 @@ export interface SuparClawConfig {
       timeoutMs: number;
     };
   };
-  cron: { enabled: boolean; timezone: string };
+  cron: {
+    enabled: boolean;
+    timezone: string;
+    delivery: { mode: "none" | "announce" | "webhook"; to: string; suppressEmpty: boolean };
+    failureAlerts: { enabled: boolean; threshold: number; cooldownMinutes: number; to: string };
+    webhookAllowHostnames: string[];
+  };
   hooks: {
     enabled: boolean;
     token: string;

@@ -1,5 +1,6 @@
 import type { Store, JobRow } from "../state/db.js";
 import type { Logger } from "../util/log.js";
+import type { SuparClawConfig } from "../config/schema.js";
 
 export interface SchedulerDeps {
   store: Store;
@@ -13,21 +14,32 @@ interface CronHandle {
   nextRun(): Date | null;
 }
 
-async function createCron(schedule: string, handler: () => void | Promise<void>, protect: boolean): Promise<CronHandle> {
+async function createCron(schedule: string, handler: () => void | Promise<void>, protect: boolean, timezone?: string): Promise<CronHandle> {
   const { Cron } = await import("croner");
-  return new Cron(schedule, { protect }, handler) as unknown as CronHandle;
+  // P2 #14: croner interprets the schedule in `timezone` when given (their
+  // per-job timezone option); undefined keeps the host zone ("local").
+  return new Cron(schedule, { protect, timezone }, handler) as unknown as CronHandle;
+}
+
+/** Effective zone for a job: per-job tz → cron.timezone → host (their layering). */
+export function jobTimezone(job: Pick<JobRow, "tz">, globalTz: string): string | undefined {
+  const tz = job.tz || (globalTz !== "local" ? globalTz : "");
+  return tz || undefined;
 }
 
 export class Scheduler {
-  /** job id -> armed timer + the schedule it was armed with (for cheap diffs). */
-  #jobs = new Map<string, { handle: CronHandle; schedule: string }>();
+  /** job id -> armed timer + the signature it was armed with (cheap diffs). */
+  #jobs = new Map<string, { handle: CronHandle; signature: string }>();
   readonly store: Store;
   readonly log: Logger;
   readonly fire: (job: JobRow) => Promise<void>;
+  /** Live config accessor (watchConfig swaps the object under the service). */
+  readonly #cronCfg: () => SuparClawConfig["cron"];
 
-  constructor(store: Store, log: Logger, fire: (job: JobRow) => Promise<void>) {
+  constructor(store: Store, log: Logger, cronCfg: () => SuparClawConfig["cron"], fire: (job: JobRow) => Promise<void>) {
     this.store = store;
     this.log = log;
+    this.#cronCfg = cronCfg;
     this.fire = fire;
   }
 
@@ -43,8 +55,10 @@ export class Scheduler {
   }
 
   async #schedule(job: JobRow): Promise<void> {
+    const tz = jobTimezone(job, this.#cronCfg().timezone);
+    const signature = `${job.schedule}${tz ? `|tz:${tz}` : ""}`;
     const armed = this.#jobs.get(job.id);
-    if (armed?.schedule === job.schedule) return; // already armed correctly
+    if (armed?.signature === signature) return; // already armed correctly
     armed?.handle.stop();
     try {
       const cron = await createCron(job.schedule, async () => {
@@ -56,11 +70,11 @@ export class Scheduler {
           this.store.recordJobRun(job.id, "error", (err as Error).message);
           this.log.error(`cron ${job.name} failed: ${(err as Error).message}`);
         }
-      }, true);
-      this.#jobs.set(job.id, { handle: cron, schedule: job.schedule });
-      this.log.info(`cron armed: ${job.name} (${job.schedule})`);
+      }, true, tz);
+      this.#jobs.set(job.id, { handle: cron, signature });
+      this.log.info(`cron armed: ${job.name} (${job.schedule}${tz ? `, ${tz}` : ""})`);
     } catch (err) {
-      this.log.error(`cron ${job.name} has an invalid schedule: ${(err as Error).message}`);
+      this.log.error(`cron ${job.name} has an invalid schedule or timezone: ${(err as Error).message}`);
     }
   }
 

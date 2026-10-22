@@ -66,6 +66,17 @@ export class TelegramChannel {
     return this.#username;
   }
 
+  /**
+   * Proactive outbound text (P2 cron delivery/alerts + later approval cards):
+   * chunked by the usual rule; hard errors propagate for the caller to log.
+   */
+  async sendText(chatId: number, text: string): Promise<void> {
+    if (!this.#bot) throw new Error("telegram bot not running");
+    for (const chunk of splitForTelegram(text)) {
+      await this.#bot.api.sendMessage(chatId, chunk);
+    }
+  }
+
   async start(): Promise<void> {
     const cfg = this.service.config.channels.telegram;
     if (!cfg.token) throw new Error("telegram.token is empty");
