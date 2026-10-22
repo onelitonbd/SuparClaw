@@ -57,6 +57,7 @@ commands:
   search <query> [--provider id] [--count n] [--json]  one-shot web search probe
   service <status|install|start|stop|restart|logs|uninstall>  daemon as an OS service
   backup <create|list|verify|restore>  timestamped state+config+workspace archives
+  secrets <audit|refs>     credential refs: \${ENV} substitution + env/file/exec stores
                           (termux-services on Termux, systemd --user, launchd)
   version              print version
 
@@ -127,6 +128,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./logs.js")).cmdLogs(rest);
     case "update":
       return (await import("./update.js")).cmdUpdate(rest);
+    case "secrets":
+      return (await import("./secrets.js")).cmdSecrets(rest);
     case "backup":
       return (await import("./backup.js")).cmdBackup(rest);
     case "uninstall":

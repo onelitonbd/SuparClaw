@@ -3,6 +3,7 @@ import { watch, type FSWatcher } from "node:fs";
 import { dirname, basename } from "node:path";
 import JSON5 from "json5";
 import { configPath } from "../util/paths.js";
+import { resolveSecrets } from "./secrets.js";
 import { emptyConfig, parseConfig, type SuparClawConfig } from "./schema.js";
 import type { Logger } from "../util/log.js";
 
@@ -51,11 +52,13 @@ export interface ConfigLoad {
   errors: string[];
   path: string;
   existed: boolean;
+  /** Env-substitution + SecretRef warnings (P3 #30) — never fatal. */
+  warnings: string[];
 }
 
 export function readConfigFile(path = configPath()): ConfigLoad {
   if (!existsSync(path)) {
-    return { config: emptyConfig(), errors: [], path, existed: false };
+    return { config: emptyConfig(), errors: [], path, existed: false, warnings: [] };
   }
   let parsed: unknown;
   try {
@@ -66,10 +69,15 @@ export function readConfigFile(path = configPath()): ConfigLoad {
       errors: [`${path}: ${(err as Error).message}`],
       path,
       existed: true,
+      warnings: [],
     };
   }
-  const { config, errors } = parseConfig(parsed);
-  return { config, errors, path, existed: true };
+  // P3 #30: resolve ${ENV} refs + SecretRef objects on the RAW document
+  // (a clone — authored refs stay authored on disk) before typed parsing,
+  // so activation reads the in-memory snapshot (their model).
+  const resolved = resolveSecrets(parsed);
+  const { config, errors } = parseConfig(resolved.config);
+  return { config, errors, path, existed: true, warnings: resolved.warnings };
 }
 
 /** Atomic write with a single-level .bak ring. */
@@ -83,6 +91,7 @@ export function writeConfigFile(value: unknown, path = configPath()): void {
 export class ConfigService {
   #config: SuparClawConfig;
   #errors: string[] = [];
+  #warnings: string[] = [];
   #watcher: FSWatcher | null = null;
   #timer: NodeJS.Timeout | null = null;
   readonly path: string;
@@ -95,7 +104,13 @@ export class ConfigService {
     const load = readConfigFile(path);
     this.#config = load.config;
     this.#errors = load.errors;
+    this.#warnings = load.warnings;
     for (const e of load.errors) this.log.error(`config: ${e}`);
+    for (const w of load.warnings) this.log.warn(`config: ${w}`);
+  }
+
+  get warnings(): string[] {
+    return this.#warnings;
   }
 
   get current(): SuparClawConfig {
@@ -157,6 +172,8 @@ export class ConfigService {
           }
           this.#config = load.config;
           this.#errors = [];
+          this.#warnings = load.warnings;
+          for (const w of load.warnings) this.log.warn(`config: ${w}`);
           this.log.info("config reloaded");
           onChange?.(load.config);
         }, 250);

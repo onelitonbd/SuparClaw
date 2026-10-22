@@ -36,7 +36,7 @@ export { Subagents } from "./agent/subagents.js";
 export { Service } from "./agent/service.js";export { renderMarkdown as renderUiMarkdown, escapeHtml } from "../ui/src/markdown.js";
 export { fuzzy } from "../ui/src/dom.js";
 export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, testProvider, maskKey, defaultModelLine, parseProviderAddArgs, canonicalModelRef } from "./config/providers.js";
-export { ConfigService } from "./config/load.js";
+export { ConfigService, readConfigFile, writeConfigFile } from "./config/load.js";
 export { handleSlashExtension, slashHelp, slashCommands, SLASH_CATALOG } from "./agent/slash-commands.js";
 export { handleHooksRequest, hookTokenFingerprint, type HookService } from "./gateway/webhooks.js";
 export { handleOpenAiRequest, type OpenAiService } from "./gateway/openai-http.js";
@@ -68,6 +68,7 @@ export { sandboxEnv, planSandbox, findPrlimit, findProot } from "./agent/exec-sa
 export { normalizeAskUserArgs, matchTextReply, renderQuestionText, ASK_LIMITS, type AskUserQuestion, type AskUserResult } from "./agent/ask-user.js";
 export { createLogger } from "./util/log.js";
 export { createBackup, verifyBackup, restoreBackup, listBackups, backupStamp, BACKUP_MANIFEST_VERSION, type BackupManifest, type BackupResult, type VerifyResult } from "./backup/backup.js";
+export { resolveSecrets, substituteEnvText, isSecretRef, validateSecretRef, ENV_ID_RE, EXEC_ID_RE, PROVIDER_NAME_RE, type SecretRef } from "./config/secrets.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 
 /**
