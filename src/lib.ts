@@ -42,6 +42,7 @@ export { handleOpenAiRequest, type OpenAiService } from "./gateway/openai-http.j
 export { isContextOverflowError, planCompactSpan, summarizerPrompt, renderSpan, clampSpanInput } from "./agent/compaction.js";
 export { planInboundMedia, mediaPlaceholder, mediaFileName, downloadInboundMedia } from "./channels/telegram-media.js";
 export { isVisionUnsupportedError } from "./agent/llm.js";
+export { BotLoopGuard } from "./channels/bot-guard.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 

@@ -347,11 +347,43 @@ export const CONFIG_SCHEMA: SchemaNode = {
           // agent can fs_read on request. Cap = whole MB (their fractional
           // mediaMaxMb, rounded up for our int fields).
           mediaMaxMb: { t: "int", min: 1, max: 100, default: 20 },
-          // false → save photos to media/ like documents, never attach images
-          // to model turns (their text-only surface for vision-blind setups).
-          vision: { t: "bool", default: true },
+            // false → save photos to media/ like documents, never attach images
+            // to model turns (their text-only surface for vision-blind setups).
+            vision: { t: "bool", default: true },
+            // Bot-loop protection (P2 #17): refuse messages AUTHORED by bots
+            // by default (their allowBots:false for Telegram), then bound
+            // allowed bot pairs with the shared sliding-window guard below.
+            allowBots: { t: "bool", default: false },
+            botLoopProtection: {
+              t: "object",
+              default: {},
+              fields: {
+                enabled: { t: "bool", default: true },
+                maxEventsPerWindow: { t: "int", min: 1, max: 1000, default: 20 },
+                windowSeconds: { t: "int", min: 5, max: 3600, default: 60 },
+                cooldownSeconds: { t: "int", min: 5, max: 86400, default: 60 },
+              },
+            },
             streaming: { t: "enum", values: ["off", "partial", "progress"], default: "progress" },
             batchMs: { t: "int", min: 0, max: 5000, default: 300 },
+          },
+        },
+        // Shared channel defaults (their channels.defaults.* block); per-channel
+        // keys override these key-by-key, then built-in defaults.
+        defaults: {
+          t: "object",
+          default: {},
+          fields: {
+            botLoopProtection: {
+              t: "object",
+              default: {},
+              fields: {
+                enabled: { t: "bool", default: true },
+                maxEventsPerWindow: { t: "int", min: 1, max: 1000, default: 20 },
+                windowSeconds: { t: "int", min: 5, max: 3600, default: 60 },
+                cooldownSeconds: { t: "int", min: 5, max: 86400, default: 60 },
+              },
+            },
           },
         },
       },
@@ -483,6 +515,14 @@ export const CONFIG_SCHEMA: SchemaNode = {
   },
 };
 
+/** Bot-pair sliding-window guard config (P2 #17) — same shape at channels.defaults and per-channel overrides. */
+export interface BotLoopProtectionConfig {
+  enabled: boolean;
+  maxEventsPerWindow: number;
+  windowSeconds: number;
+  cooldownSeconds: number;
+}
+
 export interface SuparClawConfig {
   gateway: {
     port: number;
@@ -549,9 +589,12 @@ export interface SuparClawConfig {
       mentionGated: boolean;
       mediaMaxMb: number;
       vision: boolean;
+      allowBots: boolean;
+      botLoopProtection: BotLoopProtectionConfig;
       streaming: "off" | "partial" | "progress";
       batchMs: number;
     };
+    defaults: { botLoopProtection: BotLoopProtectionConfig };
   };
   tools: {
     fs: boolean;

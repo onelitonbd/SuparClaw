@@ -3,6 +3,7 @@ import type { Service } from "../agent/service.js";
 import type { Logger } from "../util/log.js";
 import { workspaceDir } from "../util/paths.js";
 import { downloadInboundMedia, mediaPlaceholder, planInboundMedia, type InboundMedia } from "./telegram-media.js";
+import { BotLoopGuard } from "./bot-guard.js";
 import {
   addProvider,
   canonicalModelRef,
@@ -51,6 +52,9 @@ export class TelegramChannel {
   #bot: GrammyBot | null = null;
   #pending = new Map<string, PendingMessage>();
   #username = "";
+  #botId = 0;
+  /** Bot-to-bot pair guard (P2 #17). */
+  #botGuard = new BotLoopGuard();
   running = false;
 
   constructor(
@@ -75,6 +79,7 @@ export class TelegramChannel {
 
     const me = await bot.api.getMe();
     this.#username = me.username;
+    this.#botId = me.id;
     this.running = true;
     this.log.info(`telegram online as @${me.username}`);
 
@@ -119,6 +124,32 @@ export class TelegramChannel {
     const chatId = ctx.chat?.id;
     const fromId = ctx.from?.id;
     if (chatId === undefined || fromId === undefined) return;
+
+    // Bot-loop protection (P2 #17): messages AUTHORED by other bots are
+    // refused by default (allowBots:false); admitted bot pairs are bounded by
+    // a sliding-window budget with a cooldown once the budget bursts. Our own
+    // messages are already filtered by Telegram (is_bot echo never re-arrives
+    // as a user message); human messages never touch this path.
+    if (ctx.from?.is_bot === true && fromId !== this.#botId) {
+      if (!cfg.allowBots) return;
+      const shared = this.service.config.channels.defaults.botLoopProtection;
+      const local = cfg.botLoopProtection;
+      const merged = {
+        enabled: local.enabled ?? shared.enabled,
+        maxEventsPerWindow: local.maxEventsPerWindow ?? shared.maxEventsPerWindow,
+        windowSeconds: local.windowSeconds ?? shared.windowSeconds,
+        cooldownSeconds: local.cooldownSeconds ?? shared.cooldownSeconds,
+      };
+      if (!this.#botGuard.admit(String(fromId), String(this.#botId), String(chatId), merged)) {
+        const remaining = this.#botGuard.cooldownRemaining(String(fromId), String(this.#botId), String(chatId));
+        this.log.warn(
+          remaining > 0
+            ? `telegram: bot-pair budget exceeded for ${fromId} — suppressing for ${remaining}s`
+            : `telegram: bot-authored message from ${fromId} suppressed (cooldown)`,
+        );
+        return;
+      }
+    }
 
     const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
     const text = msg.text ?? msg.caption ?? "";
