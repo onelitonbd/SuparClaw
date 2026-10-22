@@ -503,6 +503,15 @@ export const CONFIG_SCHEMA: SchemaNode = {
             // No time limits on the agent's work — this is only a safety cap
             // so a hung command cannot block a session forever (10 minutes).
             timeoutMs: { t: "int", min: 1000, max: 600000, default: 600000 },
+            // Execution sandbox (P2 #9; their tools exec sandbox at our
+            // scale): "off" runs plain (legacy), "strict" confines the child
+            // to a scrubbed env (PATH of trusted dirs, HOME=workspace),
+            // prlimit resource caps when the binary exists (2G address
+            // space, 256 procs, 1024 fds), and — when sandboxProot is on and
+            // a proot binary is found (Termux) — a real filesystem jail
+            // (workspace bound rw, / and system dirs read-only).
+            sandbox: { t: "enum", values: ["off", "strict"], default: "off" },
+            sandboxProot: { t: "bool", default: false },
           },
         },
       },
@@ -694,6 +703,8 @@ export interface SuparClawConfig {
       safeBins: string[];
       safeBinTrustedDirs: string[];
       timeoutMs: number;
+      sandbox: "off" | "strict";
+      sandboxProot: boolean;
     };
   };
   cron: {

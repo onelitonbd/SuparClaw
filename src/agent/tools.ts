@@ -435,6 +435,12 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           }
           const { execFile } = await import("node:child_process");
           const timeoutMs = Math.min(Number(args["timeoutMs"] ?? config.tools.exec.timeoutMs), 600_000);
+          // Sandbox plan (P2 #9): off = legacy argv env; strict = env scrub +
+          // prlimit caps (+ proot jail on Termux when enabled). The note is
+          // prepended to output so audits see what actually ran.
+          const { planSandbox } = await import("./exec-sandbox.js");
+          const plan = planSandbox([findShell(), "-lc", String(args["command"])], ctx.workspace, config.tools.exec);
+          const note = config.tools.exec.sandbox === "strict" ? `[${plan.note}]\n` : "";
           // Allowlist/safe-bin verdicts run argv-direct — the policy matched
           // literal tokens, so no shell may re-interpret them (globs, $PATH
           // lookups, re-quoting all stay off). Full/shell verdicts keep the
@@ -445,19 +451,22 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
               cwd: ctx.workspace,
               timeoutMs,
             });
-            return result.output.slice(0, 60_000) || "(no output)";
+            const body = result.output.slice(0, 60_000);
+            return note + (body || "(no output)");
           }
           return await new Promise<string>((resolvePromise) => {
+            const [bin, ...rest] = plan.argv;
             execFile(
-              findShell(),
-              ["-lc", String(args["command"])],
-            { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 1_000_000 },
+              bin!,
+              rest,
+            { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 1_000_000, env: plan.env },
             (err, stdout, stderr) => {
               const parts: string[] = [];
               if (stdout) parts.push(stdout);
               if (stderr) parts.push(`[stderr] ${stderr}`);
               if (err) parts.push(`[exit ${typeof err.code === "number" ? err.code : 1}] ${err.message}`);
-              resolvePromise(parts.join("\n").slice(0, 60_000) || "(no output)");
+              const body = parts.join("\n").slice(0, 60_000);
+              resolvePromise(note + (body || "(no output)"));
             },
           );
         });
