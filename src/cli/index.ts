@@ -248,6 +248,144 @@ async function usageCmd(args: string[]): Promise<number> {
   }
 }
 
+/** Parse `sc sessions` flags: positional args + --json/--limit/--yes/--term. */
+function parseSessionsArgs(rest: string[]): { positional: string[]; json: boolean; limit: number; yes: boolean; term: string } {
+  const positional: string[] = [];
+  let json = false;
+  let limit = 20;
+  let yes = false;
+  let term = "";
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    if (a === "--json") json = true;
+    else if (a === "--yes" || a === "-y") yes = true;
+    else if (a === "--limit" && rest[i + 1]) limit = Math.max(1, Number(rest[++i]) || 20);
+    else if (a === "--term" && rest[i + 1]) term = rest[++i]!; // rule 8 live-search over key/title
+    else if (!a.startsWith("--")) positional.push(a);
+  }
+  return { positional, json, limit, yes, term };
+}
+
+async function askYes(question: string): Promise<boolean> {
+  // Confirmations read from the TERMINAL, not piped stdin — a scripted pipe
+  // must never count as confirmation input (it also clashes with the agent's
+  // own stdin). No tty attached ⇒ treat as "no" (—yes exists for scripts).
+  try {
+    const { createInterface } = await import("node:readline");
+    const { createReadStream, createWriteStream } = await import("node:fs");
+    const input = createReadStream("/dev/tty");
+    const output = createWriteStream("/dev/tty");
+    const rl = createInterface({ input, output });
+    try {
+      const answer = await new Promise<string>((resolve) => rl.question(`${question} [y/N] `, resolve));
+      return answer.trim().toLowerCase() === "y";
+    } finally {
+      rl.close();
+      input.destroy();
+      output.destroy();
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `sc sessions` full surface (P2 #11; their cli/sessions.md) — list / rename /
+ * delete / show read the local store directly (sessions are local state);
+ * `search` keeps its live-gateway-then-offline behavior below.
+ */
+async function sessionsOverviewCmd(sub: string, rest: string[]): Promise<number> {
+  const { positional, json, limit, yes, term } = parseSessionsArgs(rest);
+  const { Store } = await import("../state/db.js");
+  if (!existsSync(dbPath())) {
+    console.error("no workspace here — start the gateway (sc gateway) or point SUPARCLAW_HOME at one");
+    return 2;
+  }
+  const store = Store.open(dbPath());
+  try {
+    if (sub === "list") {
+      const needle = (term || positional.join(" ")).trim().toLowerCase();
+      let rows = store.listSessions(needle ? 500 : limit);
+      if (needle) rows = rows.filter((r) => r.key.toLowerCase().includes(needle) || (r.name ?? "").toLowerCase().includes(needle)).slice(0, limit);
+      if (json) {
+        console.log(JSON.stringify(rows, null, 2));
+        return 0;
+      }
+      for (const r of rows) {
+        const title = r.name ? `  “${r.name}”` : "";
+        const age = r.last_msg_at > 0 ? `  ${new Date(r.last_msg_at).toISOString().slice(0, 16).replace("T", " ")}` : "";
+        console.log(`${r.key}${title}${age}${r.thinking ? `  [${r.thinking}]` : ""}`);
+      }
+      if (rows.length === 0) console.log(needle ? `(no sessions match "${needle}")` : "(no sessions yet)");
+      return 0;
+    }
+    if (sub === "rename") {
+      const [key, ...titleParts] = positional;
+      if (!key) {
+        console.error("usage: sc sessions rename <key> [new title]   (no title clears it)");
+        return 2;
+      }
+      const sess = store.getSessionByKey(key);
+      if (!sess) {
+        console.error(`no such session: ${key}`);
+        return 1;
+      }
+      const title = titleParts.join(" ").trim();
+      store.renameSession(sess.id, title || null);
+      console.log(title ? `${key} → “${title}”` : `${key} title cleared`);
+      return 0;
+    }
+    if (sub === "delete" || sub === "rm" || sub === "remove") {
+      const key = positional[0];
+      if (!key) {
+        console.error("usage: sc sessions delete <key> [--yes]");
+        return 2;
+      }
+      const sess = store.getSessionByKey(key);
+      if (!sess) {
+        console.error(`no such session: ${key}`);
+        return 1;
+      }
+      const ok = yes || (await askYes(`Delete session ${key}${sess.name ? ` “${sess.name}”` : ""} and its transcript?`));
+      if (!ok) {
+        console.error("aborted (pass --yes to skip the prompt)");
+        return 1;
+      }
+      const res = store.deleteSession(key);
+      console.log(`${key} deleted (${res.messages} message(s) removed)`);
+      return 0;
+    }
+    if (sub === "show") {
+      const key = positional[0];
+      if (!key) {
+        console.error("usage: sc sessions show <key> [--limit n] [--json]");
+        return 2;
+      }
+      const sess = store.getSessionByKey(key);
+      if (!sess) {
+        console.error(`no such session: ${key}`);
+        return 1;
+      }
+      const msgs = store.recentMessages(sess.id, limit);
+      if (json) {
+        console.log(JSON.stringify({ session: sess, messages: msgs }, null, 2));
+        return 0;
+      }
+      console.log(`session ${sess.key}${sess.name ? ` “${sess.name}”` : ""} — ${msgs.length} message(s) shown`);
+      for (const m of msgs) {
+        const when = new Date(m.created_at).toISOString().slice(11, 19);
+        const body = m.content.length > 160 ? `${m.content.slice(0, 160)}…` : m.content;
+        console.log(`  ${when} [${m.role}] ${body.replace(/\n/g, " ⏎ ")}`);
+      }
+      return 0;
+    }
+    console.error(`unknown sessions subcommand: ${sub}`);
+    return 2;
+  } finally {
+    store.close();
+  }
+}
+
 /**
  * `sc sessions search <query> [--session key] [--limit n] [--all] [--json]`
  * OpenClaw parity (their `openclaw sessions search`): ranked transcript hits
@@ -257,10 +395,9 @@ async function usageCmd(args: string[]): Promise<number> {
  * Exit non-zero only when BOTH paths fail.
  */
 async function sessionsCmd(args: string[]): Promise<number> {
-  const sub = args[0];
+  const sub = args[0] ?? "list";
   if (sub !== "search") {
-    console.error("usage: sc sessions search <query> [--session key] [--limit n] [--all] [--json]");
-    return sub ? 2 : 0;
+    return sessionsOverviewCmd(sub, sub === args[0] ? args.slice(1) : args);
   }
   const sessionKeys: string[] = [];
   let limit = 25;

@@ -434,7 +434,8 @@ export class Store {
       .all(limit) as unknown as SessionRow[];
   }
 
-  renameSession(id: string, name: string): void {
+  /** Set (or clear with null) the display title — sc sessions rename (P2 #11). */
+  renameSession(id: string, name: string | null): void {
     this.db.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(name, id);
   }
 
@@ -757,6 +758,25 @@ export class Store {
     return this.db
       .prepare("SELECT job_id, started_at, status, result FROM job_runs ORDER BY id DESC LIMIT ?")
       .all(limit) as unknown as { job_id: string; started_at: number; status: string; result: string }[];
+  }
+
+  /**
+   * `sc sessions delete` (P2 #11): remove the session and everything that
+   * belongs to it — messages + FTS rows, runs, tool_log, the compaction
+   * summary, and subagent links pointing at it (their delete semantics).
+   */
+  deleteSession(key: string): { deleted: boolean; messages: number } {
+    const s = this.getSessionByKey(key);
+    if (!s) return { deleted: false, messages: 0 };
+    const messages = (this.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE session_id = ?").get(s.id) as { n: number }).n;
+    if (this.fts) this.db.prepare("DELETE FROM fts_messages WHERE session_id = ?").run(s.id);
+    this.db.prepare("DELETE FROM tool_log WHERE run_id IN (SELECT id FROM runs WHERE session_id = ?)").run(s.id);
+    this.db.prepare("DELETE FROM runs WHERE session_id = ?").run(s.id);
+    this.db.prepare("DELETE FROM messages WHERE session_id = ?").run(s.id);
+    this.db.prepare("DELETE FROM session_summaries WHERE session_id = ?").run(s.id);
+    this.db.prepare("DELETE FROM subagents WHERE child_session_key = ? OR parent_session_key = ?").run(s.key, s.key);
+    this.db.prepare("DELETE FROM sessions WHERE id = ?").run(s.id);
+    return { deleted: true, messages };
   }
 
   /** Per-session /queue override (mode + optional drop/debounce/cap options). */
