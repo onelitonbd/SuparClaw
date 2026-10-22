@@ -10,6 +10,7 @@ import { LlmClient, isVisionUnsupportedError, parseToolArgs, type ChatMessage, t
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
 import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
+import { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
 
 export type QueueMode = "steer" | "followup" | "collect" | "interrupt";
 
@@ -537,7 +538,7 @@ export class AgentLoop {
       let messages = await this.#buildMessages(session.id, sessionKey, input, isMain);
       // Sub-agent tool policy: a child at the nesting cap loses the session
       // family of tools (their default of no delegation inside sub-agents).
-      const sessionTools = this.#toolsForSession(sessionKey);
+      let sessionTools = this.#toolsForSession(sessionKey);
       const schema = toolsToSchema(sessionTools);
       const ctx: ToolContext = {
         workspace: this.workspace,
@@ -582,7 +583,31 @@ export class AgentLoop {
 
       let overflowRetried = false;
       let visionFallbackDone = false;
+      // Tool-use loop detection (P2 #16): per-INTENT detector — identical
+      // error streaks always break at 3; the rolling any-repeat detector
+      // (+ identical-result evasion layer) follows tools.loopDetection; a
+      // post-compaction budget tightens the streak to 2.
+      const loopDet = new ToolLoopDetector(this.deps.config.tools.loopDetection.enabled);
+      let loopBreak: ToolLoopBreak | null = null;
+      let guardNotified = false;
+      let activeSchema = schema;
       for (let turn = 0, lastThoughtRow = ""; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
+        // Loop-guard final pass (P2 #16): once the detector breaks, the next
+        // model call gets the guard note and NO tools — the reply explains
+        // what looped instead of burning the session on the same call again.
+        if (loopBreak && !guardNotified) {
+          guardNotified = true;
+          messages.push({ role: "user", content: loopGuardPrompt(loopBreak) });
+          onEvent({
+            type: "tool",
+            callId: "loop-guard",
+            name: "tool-loop guard",
+            status: "error",
+            detail: loopBreak.reason,
+          });
+          activeSchema = [];
+          sessionTools = [];
+        }
         // Boundaries before every model call: drained steers append after the
         // previous round's tool results, in arrival order.
         drainSteers();
@@ -603,7 +628,7 @@ export class AgentLoop {
         try {
           for await (const event of this.llm.stream({
             messages,
-            tools: schema.length > 0 ? schema : undefined,
+            tools: activeSchema.length > 0 ? activeSchema : undefined,
             signal: controller.signal,
             model: profile.ref || undefined,
             fallbacks: fallbackRefs,
@@ -671,6 +696,9 @@ export class AgentLoop {
               const rep = await this.compactSession(sessionKey, {});
               if (rep.compacted) {
                 this.deps.log.info(`context overflow — compaction sweep: ${rep.message} (${sessionKey})`);
+                // Post-compaction loop guard: the model just lost its look-back;
+                // an identical failing call breaks at 2 until any call succeeds.
+                loopDet.armPostCompaction();
                 messages = await this.#buildMessages(session.id, sessionKey, input, isMain);
                 turn--;
                 continue;
@@ -722,13 +750,33 @@ export class AgentLoop {
             for (; ci < toolCalls.length; ci++) skipCall(toolCalls[ci]!);
             break;
           }
-          const spec = sessionTools.find((t) => t.name === call.name);
+          let spec = sessionTools.find((t) => t.name === call.name);
           const started = Date.now();
+          // Loop-guard break path: park unfinished calls with paired synthetic
+          // results; the caller breaks out of the batch afterwards.
+          const parkRest = (from: number): void => {
+            for (let p = from; p < toolCalls.length; p++) {
+              const skipped = toolCalls[p]!;
+              const out = `[skipped: tool-loop guard stopped the turn before this call ran]\n`;
+              messages.push({ role: "tool", tool_call_id: skipped.id, name: skipped.name, content: out });
+              this.deps.store.appendMessage(session.id, "tool", `→ ${skipped.name} · skipped\n${out.trim()}`, runId);
+              onEvent({ type: "tool", callId: skipped.id, name: skipped.name, status: "skipped", detail: "tool-loop guard" });
+            }
+          };
           if (!spec) {
             const output = `error: unknown tool ${call.name}`;
             messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: output });
             this.deps.store.appendMessage(session.id, "tool", `→ ${call.name}\n${output}`, runId);
             onEvent({ type: "tool", callId: call.id, name: call.name, status: "error", detail: "unknown tool" });
+            // Validation failures never reached the executor — they still loop
+            // (their nuance), so the unknown-tool error feeds the detector too.
+            const verdict = loopDet.record(call.name, call.args, output);
+            if (verdict && !loopBreak) {
+              loopBreak = verdict;
+              this.deps.log.warn(`tool-loop guard: ${verdict.reason} (${sessionKey})`);
+              parkRest(ci + 1);
+              break;
+            }
             continue;
           }
           const args = parseToolArgs(call.args);
@@ -776,6 +824,15 @@ export class AgentLoop {
             ms,
           });
           messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: output });
+          // Loop detection (P2 #16): every outcome feeds the detector —
+          // errors AND successes (their polling-loop case).
+          const verdict = loopDet.record(call.name, call.args, output);
+          if (verdict && !loopBreak) {
+            loopBreak = verdict;
+            this.deps.log.warn(`tool-loop guard: ${verdict.reason} (${sessionKey})`);
+            parkRest(ci + 1);
+            break;
+          }
         }
 
         // sessions_yield deferred to batch end (their rule: earlier calls in the

@@ -394,6 +394,16 @@ export const CONFIG_SCHEMA: SchemaNode = {
       fields: {
         fs: { t: "bool", default: true },
         memory: { t: "bool", default: true },
+        // Tool-use loop detection (P2 #16). enabled:false switches off the
+        // rolling detectors; the 3-identical-errors safety breaker is always
+        // on (their rule).
+        loopDetection: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: true },
+          },
+        },
         web: {
           t: "object",
           default: {},
@@ -599,6 +609,7 @@ export interface SuparClawConfig {
   tools: {
     fs: boolean;
     memory: boolean;
+    loopDetection: { enabled: boolean };
     web: {
       fetch: boolean;
       search: {
