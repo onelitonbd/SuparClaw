@@ -1,6 +1,10 @@
 {
   "name": "suparclaw",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/onelitonbd/SuparClaw.git"
+  },
   "description": "Termux-first personal AI gateway: one daemon, channels, tools, skills, sessions",
   "type": "module",
   "license": "MIT",

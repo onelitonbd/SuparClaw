@@ -111,6 +111,8 @@ export async function main(argv: string[]): Promise<number> {
       return usageCmd(rest);
     case "logs":
       return (await import("./logs.js")).cmdLogs(rest);
+    case "update":
+      return (await import("./update.js")).cmdUpdate(rest);
     case "stop":
       return stopCmd(rest);
     case "version":
