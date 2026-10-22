@@ -222,6 +222,12 @@ export const CONFIG_SCHEMA: SchemaNode = {
             // Whether thinking blocks are visible in the UI. The blocks are
             // always persisted either way — "off" only hides them from view.
             reasoningView: { t: "enum", values: ["on", "off"], default: "on" },
+            // Default reply-usage mode when a session has no /usage override
+            // (their usage-tracking default): off hides the footer entirely,
+            // tokens appends in/out, full adds model + context + cache,
+            // cost adds $ via the per-model pricing card (falls back to
+            // tokens when the model has no pricing configured).
+            usage: { t: "enum", values: ["off", "tokens", "full", "cost"], default: "tokens" },
           },
         },
       },
@@ -323,6 +329,18 @@ export const CONFIG_SCHEMA: SchemaNode = {
             t: "enum",
             values: ["inherit", "off", "low", "medium", "high", "xhigh", "max"],
             default: "inherit",
+          },
+          // Per-model price card in USD per 1M tokens (their providers/models
+          // price fields). Empty/zeros → cost footer reports "no pricing" and
+          // falls back to pure token counts (their /usage tokens behavior).
+          pricing: {
+            t: "object",
+            default: {},
+            fields: {
+              input: { t: "number", default: 0 },
+              cachedIn: { t: "number", default: 0 },
+              output: { t: "number", default: 0 },
+            },
           },
         },
       },
@@ -525,6 +543,15 @@ export const CONFIG_SCHEMA: SchemaNode = {
   },
 };
 
+/** USD per 1M tokens (their providers/models price card). Zeros ⇒ unknown. */
+export interface ModelPricing {
+  input: number;
+  cachedIn: number;
+  output: number;
+}
+
+export type UsageMode = "off" | "tokens" | "full" | "cost";
+
 /** Bot-pair sliding-window guard config (P2 #17) — same shape at channels.defaults and per-channel overrides. */
 export interface BotLoopProtectionConfig {
   enabled: boolean;
@@ -562,6 +589,7 @@ export interface SuparClawConfig {
       };
       reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
       reasoningView: "on" | "off";
+      usage: UsageMode;
     };
   };
   providers: Record<
@@ -586,6 +614,7 @@ export interface SuparClawConfig {
       maxTokens: number;
       temperature?: number;
       reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
+      pricing: ModelPricing;
     }
   >;
   channels: {
@@ -701,6 +730,7 @@ export interface ModelProfile {
   /** Sampling temperature (undefined = provider default). */
   temperature?: number;
   reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
+  pricing?: ModelPricing;
 }
 
 /** Configured profiles as a list; the record key is the profile id. */
@@ -714,6 +744,7 @@ export function modelProfiles(config: SuparClawConfig): ModelProfile[] {
     maxTokens: m.maxTokens ? m.maxTokens : undefined,
     temperature: typeof m.temperature === "number" ? m.temperature : undefined,
     reasoningEffort: m.reasoningEffort ?? "inherit",
+    pricing: m.pricing,
   }));
 }
 

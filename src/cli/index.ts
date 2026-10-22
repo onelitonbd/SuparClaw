@@ -107,6 +107,8 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./service.js")).serviceCmd(rest);
     case "sessions":
       return sessionsCmd(rest);
+    case "usage":
+      return usageCmd(rest);
     case "stop":
       return stopCmd(rest);
     case "version":
@@ -158,6 +160,92 @@ async function init(): Promise<number> {
   console.log(`    ${fg.accent("5")}  sc gateway           run the daemon\n`);
   void service.stop();
   return 0;
+}
+
+/**
+ * `sc usage [--session key]... [--json]` (P2 #15)
+ * Usage/cost report aggregated from the runs table (their /usage + sessions
+ * log aggregation): totals, a per-model breakdown, and $ when the model's
+ * pricing card is configured — partial coverage is flagged, never guessed.
+ * Store-only (offline parity): exits 2 when there is no workspace here.
+ */
+async function usageCmd(args: string[]): Promise<number> {
+  const sessionKeys: string[] = [];
+  let json = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "--session" && args[i + 1]) sessionKeys.push(args[++i]!);
+    else if (a === "--json") json = true;
+    else {
+      console.error("usage: sc usage [--session key]... [--json]");
+      return 2;
+    }
+  }
+  if (!existsSync(dbPath())) {
+    console.error("no workspace here — start the gateway (sc gateway) or point SUPARCLAW_HOME at one");
+    return 2;
+  }
+  const { Store } = await import("../state/db.js");
+  const { summarizeUsage, usageNumbers, runCost, fmtTokens, fmtCost } = await import("../util/usage.js");
+  const { modelProfiles } = await import("../config/schema.js");
+  const { readConfigFile } = await import("../config/load.js");
+  const pricingByRef = new Map(modelProfiles(readConfigFile().config).map((p) => [p.ref, p.pricing]));
+  const store = Store.open(dbPath());
+  try {
+    const sessions = store.listSessions(10_000);
+    const keyOfId = new Map(sessions.map((s) => [s.id, s.key]));
+    const idOfKey = new Map(sessions.map((s) => [s.key, s.id]));
+    const filter = new Set(sessionKeys.map((k) => idOfKey.get(k) ?? k));
+    const runs = store
+      .listRunsWithUsage()
+      .filter((r) => filter.size === 0 || filter.has(r.session_id))
+      .map((r) => ({
+        session: keyOfId.get(r.session_id) ?? r.session_id,
+        model: r.model ?? "unknown",
+        started_at: r.started_at,
+        usage: JSON.parse(r.usage) as Record<string, number>,
+        pricing: pricingByRef.get(r.model ?? ""),
+      }));
+
+    const perModel = new Map<string, ReturnType<typeof summarizeUsage>>();
+    for (const r of runs) {
+      const s = perModel.get(r.model) ?? { runs: 0, inputTokens: 0, outputTokens: 0, cachedInput: 0, costUsd: 0, unknownPriceRuns: 0 };
+      const u = usageNumbers(r.usage);
+      if (u) {
+        s.runs += 1;
+        s.inputTokens += u.inputTokens;
+        s.outputTokens += u.outputTokens;
+        s.cachedInput += u.cachedInput;
+        const c = runCost(u, r.pricing);
+        if (c === null) { s.unknownPriceRuns += 1; s.costUsd = null; }
+        else if (s.costUsd !== null) s.costUsd += c;
+      }
+      perModel.set(r.model, s);
+    }
+    const total = summarizeUsage(runs);
+
+    if (json) {
+      console.log(JSON.stringify({ filter: sessionKeys, total, perModel: Object.fromEntries(perModel) }, null, 2));
+      return 0;
+    }
+    const scope = sessionKeys.length > 0 ? ` for ${sessionKeys.join(", ")}` : "";
+    console.log(`Usage${scope} — ${total.runs} run(s) with tokens:`);
+    console.log(`  ${fmtTokens(total.inputTokens)} in · ${fmtTokens(total.outputTokens)} out${total.cachedInput > 0 ? ` · ${fmtTokens(total.cachedInput)} cached` : ""}`);
+    if (total.costUsd !== null) console.log(`  cost ≈ ${fmtCost(total.costUsd)}`);
+    else if (total.unknownPriceRuns > 0) console.log(`  cost: partial — ${total.unknownPriceRuns}/${total.runs} run(s) used a model with no pricing card`);
+    if (perModel.size > 1) {
+      console.log("  per model:");
+      for (const [model, s] of [...perModel.entries()].sort((a, b) => b[1].runs - a[1].runs)) {
+        console.log(
+          `    ${model}: ${s.runs} run(s), ${fmtTokens(s.inputTokens)} in · ${fmtTokens(s.outputTokens)} out` +
+          (s.costUsd !== null ? `, ≈ ${fmtCost(s.costUsd)}` : s.unknownPriceRuns > 0 ? ", cost n/a" : ""),
+        );
+      }
+    }
+    return 0;
+  } finally {
+    store.close();
+  }
 }
 
 /**

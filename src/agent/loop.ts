@@ -532,6 +532,8 @@ export class AgentLoop {
 
     let answer = "";
     let usage: Record<string, number> | undefined;
+    /** Last wire model this run streamed with — stamped on the runs row (P2 #15). */
+    let lastModelRef = "";
     let finishStatus: "done" | "error" | "aborted" = "done";
     let yieldedWait = false;
     try {
@@ -620,6 +622,7 @@ export class AgentLoop {
         // A request may name a curated profile id or a bare provider ref; the
         // profile contributes its wire ref plus per-model tuning.
         const profile = modelProfile(this.deps.config, input.model ?? "");
+        lastModelRef = profile.ref || lastModelRef;
         // Fallbacks may also name profile ids — resolve each to its wire ref
         // (10+ entries supported, tried in order).
         const fallbackRefs = (this.deps.config.agents.defaults.fallbacks ?? [])
@@ -849,13 +852,13 @@ export class AgentLoop {
         this.markYieldWait(sessionKey);
       }
       this.deps.store.appendMessage(session.id, "assistant", finalText, runId);
-      this.deps.store.finishRun(runId, "done", usage);
+      this.deps.store.finishRun(runId, "done", usage, undefined, lastModelRef || undefined);
       onEvent({ type: "final", runId, text: finalText, usage });
     } catch (err) {
       const message = (err as Error).message;
       const aborted = (err as Error).name === "AbortError";
       finishStatus = aborted ? "aborted" : "error";
-      this.deps.store.finishRun(runId, aborted ? "aborted" : "error", usage, message);
+      this.deps.store.finishRun(runId, aborted ? "aborted" : "error", usage, message, lastModelRef || undefined);
       if (!aborted) {
         this.deps.log.error(`run ${runId} failed: ${message}`);
         // Persist the failure as its own transcript row — error bubbles were

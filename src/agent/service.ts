@@ -9,7 +9,8 @@ import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } fro
 import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
 import { Subagents } from "../agent/subagents.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
-import { modelProfile, execModeOf } from "../config/schema.js";
+import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
+import { usageFooter } from "../util/usage.js";
 import {
   evaluateExec,
   loadApprovalsDoc,
@@ -696,6 +697,23 @@ export class Service {
           ". (/queue default resets to config.)",
       };
     }
+    // /usage off|tokens|full|cost — per-session reply-usage footer (P2 #15;
+    // their usage-tracking shapes, persisted per session like their /usage).
+    if (cmd === "/usage") {
+      const USAGE_MODES = ["off", "tokens", "full", "cost"] as const;
+      const metaKey = `usage:${payload.sessionKey}`;
+      if (!rest) {
+        const override = this.store.getMeta(metaKey);
+        const cur = override ?? this.config.agents.defaults.usage;
+        return { reply: `Reply usage for this session: ${cur}${override ? " (session override)" : " (default)"}. Use /usage ${USAGE_MODES.join("|")} to change.` };
+      }
+      const mode = rest.toLowerCase() as (typeof USAGE_MODES)[number];
+      if (!USAGE_MODES.includes(mode)) {
+        return { reply: `unknown usage mode "${rest}" — use ${USAGE_MODES.join(" | ")}` };
+      }
+      this.store.setMeta(metaKey, mode);
+      return { reply: `Reply usage for this session: ${mode}.` };
+    }
     // /followup <msg> — one specific message as its own turn, mode untouched.
     if (cmd === "/followup") {
       if (!rest) return { reply: "usage: /followup <message>" };
@@ -771,17 +789,27 @@ export class Service {
       // Channel (durable-ingress style) inputs never coalesce in collect mode.
       exclusive: payload.source === "telegram",
       onEvent: (event) => {
-        this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event } satisfies ServiceEvent);
-        // Auto-title fires once the reply settles: non-blocking, best-effort.
-        if (event.type === "final") void this.#maybeAutoTitle(payload.sessionKey);
-        if (event.type === "delta") void payload.onDelta?.(event.text);
-        else if (event.type === "tool") void payload.onTool?.(event);
-        else if (event.type === "approval") void payload.onApproval?.(event);
-        else if (event.type === "final") {
-          void payload.onFinal?.(event.text, event.usage);
-          void payload.reply(event.text);
+        // Reply-usage footer (P2 #15): SURFACE-ONLY decoration on the final
+        // text — the transcript row stays clean, and the same footed text
+        // reaches the WS broadcast, onFinal and the channel reply alike.
+        let out = event;
+        if (event.type === "final") {
+          const mode = (this.store.getMeta(`usage:${payload.sessionKey}`) as UsageMode | undefined) ?? this.config.agents.defaults.usage;
+          const prof = modelProfile(this.config, payload.model ?? "");
+          const foot = usageFooter(mode, event.usage, prof.label, prof.pricing);
+          if (foot) out = { ...event, text: `${event.text}\n\n${foot}` };
         }
-        else if (event.type === "error") void payload.reply(`⚠ ${event.message}`);
+        this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event: out } satisfies ServiceEvent);
+        // Auto-title fires once the reply settles: non-blocking, best-effort.
+        if (out.type === "final") void this.#maybeAutoTitle(payload.sessionKey);
+        if (out.type === "delta") void payload.onDelta?.(out.text);
+        else if (out.type === "tool") void payload.onTool?.(out);
+        else if (out.type === "approval") void payload.onApproval?.(out);
+        else if (out.type === "final") {
+          void payload.onFinal?.(out.text, out.usage);
+          void payload.reply(out.text);
+        }
+        else if (out.type === "error") void payload.reply(`⚠ ${out.message}`);
       },
     });
   }

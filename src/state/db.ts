@@ -357,6 +357,16 @@ export class Store {
     if (!sessionCols.has("queue_opts")) {
       db.exec("ALTER TABLE sessions ADD COLUMN queue_opts TEXT");
     }
+    // Usage/cost tracking (P2 #15): stamp each run with its wire model so
+    // footers and `sc usage` can attribute tokens and price from the runs
+    // table alone. PRAGMA-guarded like the session backfills — ALTERs must
+    // survive re-opens on an already-migrated DB.
+    const runCols = new Set(
+      (db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!runCols.has("model")) {
+      db.exec("ALTER TABLE runs ADD COLUMN model TEXT");
+    }
     return new Store(db, fts);
   }
 
@@ -500,10 +510,17 @@ export class Store {
       .run(runId, sessionId, "running", Date.now());
   }
 
-  finishRun(runId: string, status: "done" | "error" | "aborted", usage?: unknown, error?: string): void {
+  finishRun(runId: string, status: "done" | "error" | "aborted", usage?: unknown, error?: string, model?: string): void {
     this.db
-      .prepare("UPDATE runs SET status = ?, ended_at = ?, usage = ?, error = ? WHERE id = ?")
-      .run(status, Date.now(), usage ? JSON.stringify(usage) : null, error ?? null, runId);
+      .prepare("UPDATE runs SET status = ?, ended_at = ?, usage = ?, error = ?, model = ? WHERE id = ?")
+      .run(status, Date.now(), usage ? JSON.stringify(usage) : null, error ?? null, model ?? null, runId);
+  }
+
+  /** Runs that carried usage accounting, newest first (sc usage aggregation). */
+  listRunsWithUsage(limit = 10_000): { id: string; session_id: string; model: string | null; usage: string; started_at: number; ended_at: number | null; status: string }[] {
+    return this.db
+      .prepare("SELECT id, session_id, model, usage, started_at, ended_at, status FROM runs WHERE usage IS NOT NULL ORDER BY started_at DESC LIMIT ?")
+      .all(limit) as { id: string; session_id: string; model: string | null; usage: string; started_at: number; ended_at: number | null; status: string }[];
   }
 
   // ---- tools ------------------------------------------------------------

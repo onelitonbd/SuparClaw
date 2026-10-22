@@ -44,6 +44,7 @@ export { planInboundMedia, mediaPlaceholder, mediaFileName, downloadInboundMedia
 export { isVisionUnsupportedError } from "./agent/llm.js";
 export { BotLoopGuard } from "./channels/bot-guard.js";
 export { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./agent/loop-detector.js";
+export { usageNumbers, runCost, fmtTokens, fmtCost, usageFooter, summarizeUsage } from "./util/usage.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 
