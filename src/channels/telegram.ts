@@ -6,6 +6,7 @@ import { downloadInboundMedia, mediaPlaceholder, planInboundMedia, type InboundM
 import { BotLoopGuard } from "./bot-guard.js";
 import { renderQuestionText } from "../agent/ask-user.js";
 import { createTyping, type TypingHandle } from "../agent/typing.js";
+import { stripStrayHeartbeatOk } from "../automation/heartbeat.js";
 import {
   addProvider,
   canonicalModelRef,
@@ -564,7 +565,13 @@ export class TelegramChannel {
       },
       reply: async (finalText) => {
         typing.stop();
-        const chunks = splitForTelegram(finalText);
+        // P3 #26: heartbeat target:"last" follows this conversation.
+        this.service.heartbeat?.rememberOutbound(chatId);
+        // P3 #26: outside heartbeats, stray HEARTBEAT_OK at start/end is
+        // stripped (their response contract); a pure-OK message is dropped.
+        const cleaned = stripStrayHeartbeatOk(finalText);
+        if (cleaned.trim() === "") return;
+        const chunks = splitForTelegram(cleaned);
         if (!preview) {
           for (const chunk of chunks) await bot.api.sendMessage(chatId, chunk).catch(() => {});
           return;

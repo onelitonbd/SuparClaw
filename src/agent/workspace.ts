@@ -63,13 +63,15 @@ function dailyNotes(workspace: string, today = new Date()): string[] {
  */
 export function loadWorkspaceContext(
   workspace: string,
-  opts: { isMainSession: boolean; today?: Date } = { isMainSession: true },
+  opts: { isMainSession: boolean; today?: Date; lightContext?: boolean } = { isMainSession: true },
 ): WorkspaceContext {
   const included: string[] = [];
   const truncated: string[] = [];
   const blocks: string[] = [];
 
-  for (const spec of WORKSPACE_FILES) {
+  // P3 #26 heartbeat/lightContext: skip workspace bootstrap files entirely
+  // (their agents.defaults.heartbeat.lightContext).
+  for (const spec of opts.lightContext ? [] : WORKSPACE_FILES) {
     if (spec.mainSessionOnly && !opts.isMainSession) continue;
     const entry = readCapped(join(workspace, spec.name), spec.budget);
     if (!entry) continue;
@@ -78,7 +80,7 @@ export function loadWorkspaceContext(
     blocks.push(`## ${spec.name}\n\n${entry.body}`);
   }
 
-  const bootstrap = readCapped(join(workspace, "BOOTSTRAP.md"), 4000);
+  const bootstrap = opts.lightContext ? null : readCapped(join(workspace, "BOOTSTRAP.md"), 4000);
   if (bootstrap) {
     included.push("BOOTSTRAP.md");
     blocks.unshift(
@@ -86,7 +88,7 @@ export function loadWorkspaceContext(
     );
   }
 
-  const notes = dailyNotes(workspace, opts.today);
+  const notes = opts.lightContext ? [] : dailyNotes(workspace, opts.today);
   if (notes.length > 0) {
     included.push("memory/*.md");
     blocks.push(`## Recent daily notes\n\n${notes.join("\n\n")}`);

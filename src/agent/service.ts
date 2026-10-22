@@ -41,7 +41,7 @@ export interface ChatPayload {
   sessionKey: string;
   text: string;
   isMainSession?: boolean;
-  source: "tui" | "gateway" | "telegram" | "cron" | "cli" | "webhook" | "imap";
+  source: "tui" | "gateway" | "telegram" | "cron" | "cli" | "webhook" | "imap" | "heartbeat";
   /** Per-run model override (surface-level choice); unset means the default. */
   model?: string;
   /** Per-run thinking effort override; unset means session/default policy. */
@@ -53,6 +53,8 @@ export interface ChatPayload {
   reply: (text: string) => void | Promise<void>;
   /** Final text plus provider usage when the loop captured it (HTTP surfaces). */
   onFinal?: (text: string, usage?: Record<string, number>) => void | Promise<void>;
+  /** P3 #26 heartbeat: skip workspace bootstrap files on this turn (lightContext). */
+  lightContext?: boolean;
   onDelta?: (delta: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
   onApproval?: (event: Extract<RunEvent, { type: "approval" }>) => void | Promise<void>;
@@ -91,6 +93,12 @@ export class Service {
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
   #imap: import("../automation/imap.js").ImapWatcher | null = null;
+  /** P3 #26 — system-owned heartbeat cadence (their gateway/heartbeat automation). */
+  #heartbeat: import("../automation/heartbeat.js").Heartbeat | null = null;
+  /** Surfaces read the live heartbeat (target:last bookkeeping, status). */
+  get heartbeat(): import("../automation/heartbeat.js").Heartbeat | null {
+    return this.#heartbeat;
+  }
   /** Per-job last-failure-alert stamp (P2 #14 cooldown bookkeeping). */
   #cronAlertedAt = new Map<string, number>();
   /** Pending ask_user sets (P2 #8): id → live closure + per-question state. */
@@ -779,13 +787,47 @@ export class Service {
     // reach the running daemon too.
     this.watchConfig();
 
+    // System-owned heartbeat automation (P3 #26 — their gateway/heartbeat):
+    // periodic turns in the main session by default, quiet by default
+    // (NO_REPLY contract; only meaningful alerts are delivered).
+    {
+      const { Heartbeat, DEFAULT_HEARTBEAT_PROMPT } = await import("../automation/heartbeat.js");
+      void DEFAULT_HEARTBEAT_PROMPT; // referenced by the schema default
+      this.#heartbeat = new Heartbeat({
+        config: () => this.config,
+        busy: () => this.loop.isBusy("main:main"),
+        sendTurn: async ({ sessionKey, prompt, lightContext, isolatedSession, timeoutSeconds }) => {
+          void timeoutSeconds; // run-timeout enforcement lives in the loop budget
+          let finalText = "";
+          await this.send({
+            sessionKey,
+            text: prompt,
+            isMainSession: !isolatedSession,
+            source: "heartbeat",
+            lightContext,
+            reply: async (text) => {
+              finalText = text;
+            },
+          });
+          return finalText;
+        },
+        deliver: async (chatId, text) => {
+          if (!this.#telegram?.running) throw new Error("telegram is not running");
+          await this.#telegram.sendText(chatId, `💓 ${text}`);
+        },
+        log: (s) => this.log.info(s),
+        hostTimezone: "local",
+      });
+      this.#heartbeat.start();
+    }
+
     // IMAP email trigger (P3 #25 — their automation/imap plugin): per-account
     // watchers dispatch admitted mail to isolated hook:imap:... reader runs.
     if (this.config.imap?.enabled) {
       const { ImapWatcher, imapStatePath } = await import("../automation/imap.js");
       this.#imap = new ImapWatcher(() => this.config.imap, {
         log: this.log,
-        statePath: imapStatePath(this.store.stateDir),
+        statePath: imapStatePath(stateDir()),
         dispatch: async ({ sessionKey, prompt, deliver, to, account }) => {
           let finalText = "";
           await this.send({
@@ -1172,6 +1214,7 @@ export class Service {
       source: payload.source,
       queueMode,
       attachments: payload.attachments,
+      lightContext: payload.lightContext === true,
       // Channel (durable-ingress style) inputs never coalesce in collect mode.
       exclusive: payload.source === "telegram",
       onEvent: (event) => {
@@ -1535,6 +1578,7 @@ export class Service {
     this.configSvc.stop();
     if (this.#maintenanceTimer) clearInterval(this.#maintenanceTimer);
     this.#cron?.stop();
+    this.#heartbeat?.stop();
     this.#dream?.stop();
     await this.#telegram?.stop();
     this.store.close();

@@ -1,5 +1,9 @@
 // Hand-rolled strict config schema: no zod, no silent drift, precise error paths.
 
+// --- heartbeat (their gateway/heartbeat verbatim prompt) ---
+const DEFAULT_HEARTBEAT_PROMPT =
+  "Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.";
+
 type SchemaKind =
   | { t: "string"; min?: number }
   | { t: "text" }
@@ -228,6 +232,31 @@ export const CONFIG_SCHEMA: SchemaNode = {
             // cost adds $ via the per-model pricing card (falls back to
             // tokens when the model has no pricing configured).
             usage: { t: "enum", values: ["off", "tokens", "full", "cost"], default: "tokens" },
+        // System-owned heartbeat cadence (P3 #26 — their gateway/heartbeat
+        // contract): periodic turns in the main session by default.
+        heartbeat: {
+          t: "object",
+          default: {},
+          fields: {
+            every: { t: "string", default: "30m" },
+            model: { t: "string", default: "" },
+            lightContext: { t: "bool", default: false },
+            isolatedSession: { t: "bool", default: false },
+            target: { t: "enum", values: ["owner", "last", "none"], default: "owner" },
+            to: { t: "string", default: "" },
+            prompt: { t: "string", default: DEFAULT_HEARTBEAT_PROMPT },
+            timeoutSeconds: { t: "int", min: 0, max: 86400, default: 0 },
+            activeHours: {
+              t: "object",
+              default: {},
+              fields: {
+                start: { t: "string", default: "" },
+                end: { t: "string", default: "" },
+                timezone: { t: "string", default: "" },
+              },
+            },
+          },
+        },
           },
         },
       },
@@ -823,6 +852,18 @@ export interface SuparClawConfig {
       reasoningEffort: "inherit" | "off" | "low" | "medium" | "high" | "xhigh" | "max";
       reasoningView: "on" | "off";
       usage: UsageMode;
+      // P3 #26 — system-owned heartbeat cadence (their agents.defaults.heartbeat).
+      heartbeat: {
+        every: string;
+        model: string;
+        lightContext: boolean;
+        isolatedSession: boolean;
+        target: "owner" | "last" | "none";
+        to: string;
+        prompt: string;
+        timeoutSeconds: number;
+        activeHours: { start: string; end: string; timezone: string };
+      };
     };
   };
   providers: Record<

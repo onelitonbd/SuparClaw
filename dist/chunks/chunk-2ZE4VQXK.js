@@ -11,11 +11,11 @@ ${o}`:o;return s&&n.push({text:s,importance:O(s)}),n}function O(t){let e=null;fo
 
 [truncated]`,truncated:!0}}function Ne(t,e=new Date){let r=R(t,"memory"),n=[];for(let s=0;s<Fe;s++){let i=`memory/${new Date(e.getTime()-s*864e5).toISOString().slice(0,10)}.md`,a=U(R(t,i),Le);a&&n.push(`## ${i}
 
-${a.body}`)}return n}function wt(t,e={isMainSession:!0}){let r=[],n=[],s=[];for(let a of Ae){if(a.mainSessionOnly&&!e.isMainSession)continue;let c=U(R(t,a.name),a.budget);c&&(r.push(a.name),c.truncated&&n.push(a.name),s.push(`## ${a.name}
+${a.body}`)}return n}function wt(t,e={isMainSession:!0}){let r=[],n=[],s=[];for(let a of e.lightContext?[]:Ae){if(a.mainSessionOnly&&!e.isMainSession)continue;let c=U(R(t,a.name),a.budget);c&&(r.push(a.name),c.truncated&&n.push(a.name),s.push(`## ${a.name}
 
-${c.body}`))}let o=U(R(t,"BOOTSTRAP.md"),4e3);o&&(r.push("BOOTSTRAP.md"),s.unshift(`## BOOTSTRAP.md (first-run setup \u2014 follow it, then delete the file)
+${c.body}`))}let o=e.lightContext?null:U(R(t,"BOOTSTRAP.md"),4e3);o&&(r.push("BOOTSTRAP.md"),s.unshift(`## BOOTSTRAP.md (first-run setup \u2014 follow it, then delete the file)
 
-`+o.body));let i=Ne(t,e.today);return i.length>0&&(r.push("memory/*.md"),s.push(`## Recent daily notes
+`+o.body));let i=e.lightContext?[]:Ne(t,e.today);return i.length>0&&(r.push("memory/*.md"),s.push(`## Recent daily notes
 
 ${i.join(`
 

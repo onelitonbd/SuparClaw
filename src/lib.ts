@@ -208,6 +208,16 @@ export {
   type ImapConfig,
 } from "./automation/imap.js";
 export {
+  Heartbeat,
+  filterHeartbeatReply,
+  stripStrayHeartbeatOk,
+  parseHeartbeatEvery,
+  heartbeatDecision,
+  inActiveHours,
+  DEFAULT_HEARTBEAT_PROMPT,
+  HEARTBEAT_OK_BUDGET,
+} from "./automation/heartbeat.js";
+export {
   CodeMode,
   codeModeEngages,
   codeModeSurface,

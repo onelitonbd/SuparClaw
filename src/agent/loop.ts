@@ -45,7 +45,7 @@ export interface RunInput {
   /** Per-run thinking effort override ("low"…/"max", "off", "inherit"). */
   reasoning?: string;
   /** Message surface — drives lane choice, byChannel queue mode, anonymity. */
-  source?: "tui" | "gateway" | "telegram" | "cron" | "cli" | "dream" | "subagent" | "webhook";
+  source?: "tui" | "gateway" | "telegram" | "cron" | "cli" | "dream" | "subagent" | "webhook" | "heartbeat" | "imap";
   /** Per-call queue-mode override (`/followup`, chat.send queueMode, session_send). */
   queueMode?: QueueMode;
   /** Durable-ingress style inputs (channels) never coalesce in collect mode. */
@@ -56,6 +56,8 @@ export interface RunInput {
   subagent?: { parentKey: string; label: string; taskName: string; depth: number };
   /** Inline media for the injected user turn (P1 A5 photos → vision parts). */
   attachments?: { kind: "image"; dataUri: string; name: string }[];
+  /** P3 #26 heartbeat lightContext: skip workspace bootstrap files entirely. */
+  lightContext?: boolean;
   onEvent: (event: RunEvent) => void;
 }
 
@@ -1010,7 +1012,7 @@ export class AgentLoop {
     // The newest user message is already persisted above; drop it from history to avoid duplication.
     if (history.length > 0 && history[history.length - 1]?.role === "user") history.pop();
 
-    const ctx = loadWorkspaceContext(this.workspace, { isMainSession: isMain });
+    const ctx = loadWorkspaceContext(this.workspace, { isMainSession: isMain, lightContext: input.lightContext === true });
     const matched = matchSkills(this.skills, input.text).filter((s) => s.eligible);
     const skillBlocks = matched.map((s) => `# Skill: ${s.name}\n\n${readSkillBody(s)}`);
 
