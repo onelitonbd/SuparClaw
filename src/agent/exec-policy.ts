@@ -555,6 +555,38 @@ export interface EvalInput {
   pathEnv?: string;
 }
 
+// ---- Unattended sources (P2 #10) -------------------------------------------
+
+export type UnattendedMode = "deny" | "allowlist" | "all";
+
+export interface UnattendedDecision {
+  allowed: boolean;
+  audit: string;
+}
+
+/**
+ * Resolve an ASK verdict for a run with no human in the loop (cron/webhook).
+ * deny → always decline; all → always allow; allowlist → allow only when the
+ * plan's every segment matched a safe bin through trusted dirs (and rides
+ * the direct runner verbatim). The audit line names the decision + reason —
+ * their "auto-decisions are always recorded" rule.
+ */
+export function unattendedDecision(mode: UnattendedMode, verdict: ExecVerdict): UnattendedDecision {
+  if (mode === "all") {
+    return { allowed: true, audit: `unattended-policy=all → auto-allowed (was ask: ${verdict.reason})` };
+  }
+  if (mode === "allowlist") {
+    const everySafe =
+      verdict.segments.length > 0 &&
+      verdict.segments.every((s) => s.matched === "safe-bin" && s.resolvedPath) &&
+      verdict.route === "direct";
+    return everySafe
+      ? { allowed: true, audit: `unattended-policy=allowlist → auto-allowed (${verdict.segments.length} safe-bin segment(s))` }
+      : { allowed: false, audit: `unattended-policy=allowlist → auto-declined (not all segments are safe bins: ${verdict.reason})` };
+  }
+  return { allowed: false, audit: `unattended-policy=deny → auto-declined (was ask: ${verdict.reason})` };
+}
+
 export function evaluateExec(input: EvalInput): ExecVerdict {
   const { config, command, cwd } = input;
   const exec = config.tools.exec;

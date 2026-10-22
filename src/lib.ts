@@ -148,11 +148,13 @@ export {
   revokeEntry,
   resolveBinary,
   newEntryId,
+  unattendedDecision,
   type AllowlistEntry,
   type ApprovalsDoc,
   type ExecVerdict,
   type ChainOp,
   type SegmentPlan,
+  type UnattendedMode,
 } from "./agent/exec-policy.js";
 export {
   webSearch,

@@ -15,7 +15,9 @@ import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
 import {
   evaluateExec,
+  unattendedDecision,
   loadApprovalsDoc,
+  type UnattendedMode,
   saveApprovalsDoc,
   mintAlwaysEntry,
   ledgerEntries,
@@ -92,6 +94,8 @@ export class Service {
   #approvalSurface: () => boolean = () => false;
   /** Per-session exec mode overrides (/exec slash; null = follow global). */
   #sessionExecModes = new Map<string, string>();
+  /** Latest payload source per session (P2 #10) — cron/webhook = unattended. */
+  #sessionSources = new Map<string, string>();
   #closing = false;
   /** Sub-agent lifecycle owner (spawn/yield/announce/cancel). */
   #subagents: Subagents | null = null;
@@ -876,6 +880,8 @@ export class Service {
     if (payload.source === "telegram") {
       this.#channelSinks.set(payload.sessionKey, payload.reply);
     }
+    // Unattended exec policy (P2 #10): the approval path consults the source.
+    this.#sessionSources.set(payload.sessionKey, payload.source);
 
     // Lifecycle events (start/delta/tool/approval/final/idle) all come from the loop with
     // the real runId — no synthetic start here, so surfaces never see two runs.
@@ -959,6 +965,19 @@ export class Service {
 
     if (verdict.decision === "allow") return Promise.resolve({ approved: true, execVerdict: verdict });
     if (verdict.decision === "deny") return Promise.resolve({ approved: false, execVerdict: verdict });
+
+    // Unattended sources (P2 #10): cron/webhook runs never get a surface —
+    // the tools.exec.unattended policy decides INSTEAD of askFallback, and
+    // every auto-decision lands in the log AND the session transcript.
+    const src = this.#sessionSources.get(sessionKey) ?? "";
+    if (src === "cron" || src === "webhook") {
+      const mode = (exec.unattended ?? "deny") as UnattendedMode;
+      const decision = unattendedDecision(mode, verdict);
+      this.log.info(`unattended exec (${src}, ${sessionKey}): ${decision.audit} ⇒ ${command.slice(0, 120)}`);
+      const sess = this.store.getSessionByKey(sessionKey);
+      if (sess) this.store.appendMessage(sess.id, "tool", `[${decision.audit}]\n$ ${command.slice(0, 500)}`);
+      return Promise.resolve({ approved: decision.allowed, execVerdict: verdict });
+    }
 
     // ask: nobody watching → askFallback verdict (deny keeps silent for cron).
     if (!this.#approvalSurface()) {

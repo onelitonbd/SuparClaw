@@ -512,6 +512,13 @@ export const CONFIG_SCHEMA: SchemaNode = {
             // (workspace bound rw, / and system dirs read-only).
             sandbox: { t: "enum", values: ["off", "strict"], default: "off" },
             sandboxProot: { t: "bool", default: false },
+            // Unattended sources (cron jobs, inbound webhooks) have nobody to
+            // ask: how an "ask" exec verdict resolves there (P2 #10; their
+            // unattended exec policy at our scale). deny = decline loudly
+            // (default), allowlist = auto-allow ONLY when every segment is a
+            // safe bin (else the same loud decline), all = auto-allow.
+            // Every auto-decision is audited to the log and the transcript.
+            unattended: { t: "enum", values: ["deny", "allowlist", "all"], default: "deny" },
           },
         },
       },
@@ -705,6 +712,7 @@ export interface SuparClawConfig {
       timeoutMs: number;
       sandbox: "off" | "strict";
       sandboxProot: boolean;
+      unattended: "deny" | "allowlist" | "all";
     };
   };
   cron: {
