@@ -40,6 +40,9 @@ commands:
                         cleanup = pruning/archive maintenance (dry-run first!);
                         export = materialize transcript artifacts under
                         ~/.suparclaw/transcripts/YYYY-MM-DD/<session>/
+  memory <status|search|promote|promote-explain|rem-backfill|session-backfill>
+                        memory management; session-backfill previews by
+                        default, --rem / --apply / --rollback are reversible
   usage [--session key]... [--json]
                         token + cost report from the runs audit table
   logs [-f] [--tail N] [--file service|agent] [--search q] [--json] [--files]
@@ -125,6 +128,35 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./update.js")).cmdUpdate(rest);
     case "uninstall":
       return (await import("./uninstall.js")).cmdUninstall(rest);
+    case "memory": {
+      // P3 #21: memory management CLI (their openclaw memory namespace).
+      const { memoryCmd } = await import("./memory-commands.js");
+      const { Store } = await import("../state/db.js");
+      const { dbPath, workspaceDir } = await import("../util/paths.js");
+      const { serviceStatus } = await import("./service.js");
+      const { readConfigFile } = await import("../config/load.js");
+      if (!existsSync(dbPath())) {
+        console.error("no workspace here — start the gateway (sc gateway) or point SUPARCLAW_HOME at one");
+        return 2;
+      }
+      const store = Store.open(dbPath());
+      try {
+        return await memoryCmd(rest, {
+          store,
+          workspace: workspaceDir(),
+          owner: () => {
+            const s = serviceStatus();
+            return { running: s.running, pid: s.pid };
+          },
+          dreaming: () => {
+            const cfg = (readConfigFile().config ?? {}) as { memory?: { dreaming?: { enabled?: boolean; schedule?: string } } };
+            return { enabled: cfg.memory?.dreaming?.enabled !== false, schedule: cfg.memory?.dreaming?.schedule ?? "0 3 * * *" };
+          },
+        });
+      } finally {
+        store.close();
+      }
+    }
     case "stop":
       return stopCmd(rest);
     case "version":

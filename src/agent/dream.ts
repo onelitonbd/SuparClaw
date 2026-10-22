@@ -35,7 +35,9 @@ export interface RawLine {
 }
 
 /** Lines that look like secrets stay out of the durable path (their taint gate). */
-const SECRET_SHAPE = /(api[-_ ]?key|password|passwd|secret|bearer\s+\S|-----BEGIN|[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{8,})/i;
+// Secret-shaped lines are masked and COUNTED, never staged (their rule) —
+// exported for the backfill lanes (P3 #21).
+export const SECRET_SHAPE = /(api[-_ ]?key|password|passwd|secret|bearer\s+\S|-----BEGIN|[A-Za-z0-9_-]{32,}\.[A-Za-z0-9_-]{8,})/i;
 
 /** Candidate lines from workspace memory notes (skip today's — still being written). */
 export function lightFromFiles(workspace: string, today: string, maxAgeDays = MAX_AGE_DAYS, cap = 200): RawLine[] {

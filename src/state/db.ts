@@ -285,6 +285,15 @@ const MIGRATIONS: string[][] = [
        verdict TEXT NOT NULL,
        created_at INTEGER NOT NULL
      );`,
+    // Memory session-backfill (P3 #21): tracked ingest hashes — repeated
+    // --apply skips already-ingested lines (their skip rule); rollback clears
+    // them so material can be previewed/applied again.
+    `CREATE TABLE IF NOT EXISTS dream_ingest (
+       hash TEXT PRIMARY KEY,
+       day TEXT NOT NULL,
+       source TEXT NOT NULL,
+       staged_at INTEGER NOT NULL
+     );`,
   ],
   // Auth profiles (Partial #6): the credential store — OpenClaw's
   // auth_profile_store/state at our single-agent scale. Material stays in
@@ -1054,8 +1063,57 @@ export class Store {
 
   /** Backfill rollback: remove only artifacts staged via backfill lanes. */
   rollbackDreamBackfill(): number {
-    const res = this.db.prepare("DELETE FROM dream_candidates WHERE staged_via = 'backfill'").run();
-    return Number(res.changes);
+    return this.rollbackDreamBackfillFull().candidates;
+  }
+
+  /** P3 #21: shared grounded rollback — candidates AND tracked ingest hashes
+   *  (their "rollback removes the tracked hashes … so eligible candidates can
+   *  be previewed and applied again"). */
+  rollbackDreamBackfillFull(): { candidates: number; hashes: number } {
+    const candidates = this.db.prepare("DELETE FROM dream_candidates WHERE staged_via = 'backfill'").run();
+    let hashes = 0;
+    try {
+      hashes = Number(this.db.prepare("DELETE FROM dream_ingest").run().changes);
+    } catch {
+      /* dream_ingest absent on very old DBs */
+    }
+    return { candidates: Number(candidates.changes), hashes };
+  }
+
+  // ══ memory session-backfill (P3 #21) — tracked ingest hashes ══════════
+
+  /** Same admission as dreamTranscriptLines, over an explicit window. */
+  transcriptLinesBetween(fromMs: number, toMs: number, limit = 100_000): (MessageRow & { session_key: string })[] {
+    return this.db
+      .prepare(
+        `SELECT m.*, s.key AS session_key FROM messages m
+         JOIN sessions s ON s.id = m.session_id
+         WHERE m.created_at >= ? AND m.created_at < ? AND m.role IN ('user','assistant')
+           AND s.key NOT LIKE 'subagent:%' AND s.key NOT LIKE 'system:%' AND s.key NOT LIKE 'cron:%'
+         ORDER BY m.created_at ASC LIMIT ?`,
+      )
+      .all(fromMs, toMs, limit) as unknown as (MessageRow & { session_key: string })[];
+  }
+
+  hasIngestHash(hash: string): boolean {
+    try {
+      return !!this.db.prepare("SELECT 1 FROM dream_ingest WHERE hash = ? LIMIT 1").get(hash);
+    } catch {
+      return false;
+    }
+  }
+
+  addIngestHash(hash: string, day: string, source: string): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO dream_ingest(hash, day, source, staged_at) VALUES(?, ?, ?, ?)")
+      .run(hash, day, source, Date.now());
+  }
+
+  /** Non-mutating duplicate probe mirroring stageDreamCandidate's guard. */
+  dreamCandidateExists(text: string, source: string): boolean {
+    return !!this.db
+      .prepare("SELECT 1 FROM dream_candidates WHERE text = ? AND source = ? AND promoted_at IS NULL LIMIT 1")
+      .get(text, source);
   }
 
   /** memory_search recall logging — drives the relevance/diversity signals. */
