@@ -94,6 +94,8 @@ export class Service {
   #questions = new Map<string, PendingQuestionSet>();
   /** sessionKey → last payload's onQuestion hook (for telegram surfacing). */
   #questionHooks = new Map<string, ChatPayload["onQuestion"]>();
+  /** sessionKey → last payload's onApproval hook (telegram IS a surface). */
+  #approvalHooks = new Map<string, NonNullable<ChatPayload["onApproval"]>>();
   #dream: DreamHandle | null = null;
   #dreamSig = "";
   #titleBusy = new Set<string>();
@@ -1035,6 +1037,7 @@ export class Service {
     this.#sessionSources.set(payload.sessionKey, payload.source);
     // ask_user surfacing (P2 #8): remember how THIS surface wants questions.
     if (payload.onQuestion) this.#questionHooks.set(payload.sessionKey, payload.onQuestion);
+    if (payload.onApproval) this.#approvalHooks.set(payload.sessionKey, payload.onApproval);
 
     // Lifecycle events (start/delta/tool/approval/final/idle) all come from the loop with
     // the real runId — no synthetic start here, so surfaces never see two runs.
@@ -1092,7 +1095,8 @@ export class Service {
     if (tool !== "exec") {
       // Non-exec approvals stay boolean prompts (rare; configured tools).
       this.log.info(`approval requested: ${tool} ${JSON.stringify(args).slice(0, 200)}`);
-      if (!this.#approvalSurface()) return Promise.resolve(false);
+      // Telegram cards (P2 #17) count as a surface for their own sessions.
+      if (!this.#approvalSurface() && !this.#approvalHooks.has(sessionKey)) return Promise.resolve(false);
       ctx?.onPrompt?.({});
       return new Promise<{ approved: boolean }>((resolve) => {
         this.#approvals.set(callId, {
@@ -1133,7 +1137,8 @@ export class Service {
     }
 
     // ask: nobody watching → askFallback verdict (deny keeps silent for cron).
-    if (!this.#approvalSurface()) {
+    // A telegram card sitting in the chat IS someone watching (P2 #17).
+    if (!this.#approvalSurface() && !this.#approvalHooks.has(sessionKey)) {
       const fb = exec.askFallback ?? "deny";
       if (fb === "deny") {
         this.log.info(`exec ask with no surface: askFallback=deny (${verdict.reason})`);

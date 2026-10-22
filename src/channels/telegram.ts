@@ -147,6 +147,24 @@ export class TelegramChannel {
     const parts = data.split(":");
     const kind = parts[0];
 
+    if (kind === "appr") {
+      // Exec approval cards (P2 #17): resolveApproval is a no-op the second
+      // time (their "later taps are stale") and the card replaces itself with
+      // the outcome so nobody double-approves by accident.
+      const [, callId, decision] = parts;
+      if (!callId || (decision !== "once" && decision !== "always" && decision !== "deny")) return;
+      const resolved = this.service.resolveApproval(callId, decision);
+      if (!resolved) {
+        await ctx.answerCallbackQuery({ text: "Already resolved" }).catch(() => {});
+        return;
+      }
+      const marks: Record<string, string> = { once: "✔ approved once", always: "⚡ always allowed (this directory)", deny: "✖ denied" };
+      await ctx.answerCallbackQuery({ text: marks[decision]! }).catch(() => {});
+      const original = (ctx.callbackQuery?.message?.text ?? "").split("\n\n✦")[0] ?? "approval";
+      await ctx.editMessageText(`${original}\n\n✦ ${marks[decision]}`).catch(() => {});
+      return;
+    }
+
     if (kind === "qu") {
       // ask_user answer buttons.
       const [, setId, qid, choice] = parts;
@@ -464,6 +482,22 @@ export class TelegramChannel {
         await bot.api
           .editMessageText(chatId, preview.message_id, `▌ working…\n${statusLines.join("\n")}`)
           .catch(() => {});
+      },
+      onApproval: async (event) => {
+        // Approval card with buttons (P2 #17): one tap resolves; the card
+        // rewrites itself to ✔/⚡/✖; stale taps get "Already resolved".
+        const cmd = event.tool === "exec" ? String((event.args as Record<string, unknown>)?.command ?? "") : JSON.stringify(event.args ?? {});
+        const body =
+          `🛡 ${event.tool} wants approval\n\n${cmd.slice(0, 500)}` +
+          (event.exec ? `\n\n${event.exec.reason} · mode ${event.exec.mode}` : "");
+        const row: { text: string; callback_data: string }[] = [
+          { text: "✔ Approve once", callback_data: `appr:${event.callId}:once` },
+          { text: "✖ Deny", callback_data: `appr:${event.callId}:deny` },
+        ];
+        if (event.exec?.mintable) row.splice(1, 0, { text: "⚡ Always (this dir)", callback_data: `appr:${event.callId}:always` });
+        await bot.api
+          .sendMessage(chatId, body, { reply_markup: { inline_keyboard: [row] } })
+          .catch((err) => this.log.warn(`telegram: approval card failed: ${(err as Error).message}`));
       },
       reply: async (finalText) => {
         const chunks = splitForTelegram(finalText);
