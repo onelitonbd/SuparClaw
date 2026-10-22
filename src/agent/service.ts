@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { extname, join } from "node:path";
+import { isImageMime, sanitizeAttachName, type ParsedAttachment } from "../gateway/web-attachments.js";
 import { ConfigService } from "../config/load.js";
 import type { SuparClawConfig } from "../config/schema.js";
 import { Store } from "../state/db.js";
@@ -98,6 +99,35 @@ export class Service {
   /** Surfaces read the live heartbeat (target:last bookkeeping, status). */
   get heartbeat(): import("../automation/heartbeat.js").Heartbeat | null {
     return this.#heartbeat;
+  }
+
+  /** P3 #28 — WebChat attachment persistence (their telegram-media parity):
+   *  every accepted upload lands under workspace/media with a unique,
+   *  sanitized name so the agent can fs_read / pdf-tool it later; images
+   *  additionally keep a data URI for the vision content-part path. */
+  async saveWebAttachments(files: ParsedAttachment[]): Promise<{
+    saved: { name: string; mime: string; size: number; path: string; dataUri?: string }[];
+  }> {
+    const dir = join(workspaceDir(), "media");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const stamp = `${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`;
+    const saved: { name: string; mime: string; size: number; path: string; dataUri?: string }[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i]!;
+      const safe = sanitizeAttachName(f.name);
+      const ext = extname(safe) || (isImageMime(f.mime) ? `.${f.mime.split("/")[1]!.replace("jpeg", "jpg")}` : "");
+      const base = safe.slice(0, Math.max(1, safe.length - ext.length));
+      const file = `${stamp}-${i + 1}-${base}${ext}`;
+      writeFileSync(join(dir, file), f.buf);
+      saved.push({
+        name: f.name,
+        mime: f.mime,
+        size: f.buf.length,
+        path: `media/${file}`,
+        dataUri: isImageMime(f.mime) ? `data:${f.mime};base64,${f.buf.toString("base64")}` : undefined,
+      });
+    }
+    return { saved };
   }
 
   /** P3 #27 (row Missing!#28) — automations dashboard payload (their

@@ -60,8 +60,9 @@ export class Gateway {
   async #ensureWss(): Promise<WsServer> {
     if (this.#wss) return this.#wss;
     const { WebSocketServer } = await import("ws");
-    // 1 MB is generous for chat frames; the default (100 MB) is a DoS surface.
-    this.#wss = new WebSocketServer({ noServer: true, maxPayload: 1_000_000 });
+    // 25 MB headroom so WebChat uploads (P3 #28) ride chat.send; the real
+    // per-file/total caps are enforced app-side in web-attachments.ts.
+    this.#wss = new WebSocketServer({ noServer: true, maxPayload: 25_000_000 });
     return this.#wss;
   }
 
@@ -278,8 +279,27 @@ export class Gateway {
         }
         case "chat.send": {
           const sessionKey = String(params["sessionKey"] ?? "main:main");
-          const text = String(params["text"] ?? "");
+          let text = String(params["text"] ?? "");
           const dedupeKey = typeof params["key"] === "string" ? (params["key"] as string) : null;
+          // WebChat attachments (P3 #28): validate + persist under
+          // workspace/media; images ride the vision content-part path, and
+          // every saved file gets a path placeholder in the prompt so the
+          // agent can fs_read it later. Rejected files surface as warnings
+          // in the ack (their "failures stay visible" rule).
+          const { parseWebAttachments } = await import("./web-attachments.js");
+          const parsed = parseWebAttachments(params["attachments"]);
+          let imageParts: { kind: "image"; dataUri: string; name: string }[] = [];
+          if (parsed.ok.length > 0) {
+            const { saved } = await service.saveWebAttachments(parsed.ok);
+            imageParts = saved
+              .filter((sv) => sv.dataUri !== undefined)
+              .map((sv) => ({ kind: "image" as const, dataUri: sv.dataUri!, name: sv.name }));
+            const lines = saved
+              .map((sv) => `<media:attachment path="${sv.path}" name="${sv.name.replace(/"/g, "")}" mime="${sv.mime}" size="${sv.size}">`)
+              .join("\n");
+            text = [text.trim(), lines].filter((part) => part.length > 0).join("\n");
+          }
+          const warnings = parsed.rejected.map((r) => `${r.name}: ${r.reason}`);
           if (dedupeKey) {
             if (this.#dedupe.has(dedupeKey)) {
               send(okFrame(id, { deduped: true }));
@@ -287,11 +307,11 @@ export class Gateway {
             }
             this.#dedupe.set(dedupeKey, Date.now());
           }
-          if (!text.trim()) {
-            send(errFrame(id, "bad_request", "text is required"));
+          if (!text.trim() && imageParts.length === 0) {
+            send(errFrame(id, "bad_request", warnings.length > 0 ? `no usable attachment — ${warnings.join("; ")}` : "text is required"));
             return;
           }
-          send(okFrame(id, { accepted: true, sessionKey }));
+          send(okFrame(id, { accepted: true, sessionKey, warnings }));
           // Single event stream: service.subscribe already fans every run event
           // (start/delta/tool/approval/final/error/idle) out to ALL sockets as
           // "chat" envelopes. Broadcasting again from these callbacks produced
@@ -309,6 +329,7 @@ export class Gateway {
             model: typeof params["model"] === "string" && params["model"] ? params["model"] : undefined,
             reasoning:
               typeof params["reasoning"] === "string" && params["reasoning"] ? params["reasoning"] : undefined,
+            attachments: imageParts.length > 0 ? imageParts : undefined,
             reply: async () => {
               /* final text rides the "chat" envelope (event.type === "final") */
             },

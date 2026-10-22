@@ -49,8 +49,17 @@ export function prettyError(message: string): string {
   return text;
 }
 
+export interface StagedAttachment {
+  name: string;
+  mime: string;
+  size: number;
+  dataUrl: string;
+  /** Browser-side rejection kept visible beside the composer (their rule). */
+  error?: string;
+}
+
 export interface ChatHandlers {
-  send(text: string): void;
+  send(text: string, attachments?: StagedAttachment[]): void;
   abort(): void;
   approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
@@ -58,6 +67,15 @@ export interface ChatHandlers {
 }
 
 type ToolStatus = "running" | "done" | "error" | "pending" | "skipped";
+
+// WebChat uploads (P3 #28) — mirror the gateway's web-attachments.ts caps so
+// rejections happen client-side with the file still staged.
+const ATTACH_MAX_FILES = 4;
+const ATTACH_MAX_FILE = 8 * 1048576;
+const ATTACH_MAX_TOTAL = 12 * 1048576;
+const IMAGE_RE = /^image\/(png|jpe?g|webp|gif)$/i;
+const FILE_ICON =
+  '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
 
 const SPARKLE =
   '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>';
@@ -107,6 +125,10 @@ export class Chat {
   #sendBtn: HTMLButtonElement;
   #stopBtn: HTMLButtonElement;
   #composer: HTMLElement;
+  #attachStrip: HTMLElement;
+  #attachBtn: HTMLButtonElement;
+  #attachInput: HTMLInputElement;
+  #staged: StagedAttachment[] = [];
   #approval: HTMLElement;
   #qrow: HTMLElement;
   /** Waiting queue items by runId (rendered above the composer). */
@@ -142,7 +164,7 @@ export class Chat {
 
     this.#input.addEventListener("input", () => {
       this.#autosize();
-      this.#sendBtn.disabled = this.#input.value.trim().length === 0;
+      this.#sendBtn.disabled = this.#input.value.trim().length === 0 && this.#staged.every((a) => a.error !== undefined);
     });
     this.#input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -152,6 +174,38 @@ export class Chat {
     });
     this.#sendBtn.onclick = () => this.submit();
     this.#stopBtn.onclick = () => this.#handlers.abort();
+
+    // Attachments (P3 #28): picker + drag-drop + paste into the composer.
+    this.#attachStrip = root.querySelector("#attach-strip") as HTMLElement;
+    this.#attachBtn = root.querySelector("#attach-btn") as HTMLButtonElement;
+    this.#attachInput = root.querySelector("#attach-input") as HTMLInputElement;
+    this.#attachBtn.onclick = () => this.#attachInput.click();
+    this.#attachInput.onchange = () => {
+      this.#stageFiles(Array.from(this.#attachInput.files ?? []));
+      this.#attachInput.value = "";
+    };
+    this.#composer.addEventListener("dragover", (e) => {
+      if (e.dataTransfer?.types.includes("Files")) {
+        e.preventDefault();
+        this.#composer.classList.add("composer--drop");
+      }
+    });
+    this.#composer.addEventListener("dragleave", () => this.#composer.classList.remove("composer--drop"));
+    this.#composer.addEventListener("drop", (e) => {
+      this.#composer.classList.remove("composer--drop");
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length > 0) {
+        e.preventDefault();
+        this.#stageFiles(files);
+      }
+    });
+    this.#input.addEventListener("paste", (e) => {
+      const files = Array.from(e.clipboardData?.files ?? []);
+      if (files.length > 0) {
+        e.preventDefault();
+        this.#stageFiles(files);
+      }
+    });
 
     this.#thread.addEventListener("scroll", () => {
       const nearBottom = this.#thread.scrollHeight - this.#thread.scrollTop - this.#thread.clientHeight < 80;
@@ -180,19 +234,92 @@ export class Chat {
 
   submit(): void {
     const text = this.#input.value.trim();
-    if (!text) return;
+    const ready = this.#staged.filter((a) => a.error === undefined);
+    if (!text && ready.length === 0) return;
     this.#input.value = "";
     this.#autosize();
     this.#sendBtn.disabled = true;
-    this.#handlers.send(text);
+    this.#clearStaged();
+    this.#handlers.send(text, ready);
     // Their first-chat-send permission prompt — once per browser and origin.
     try { askOnceOnFirstSend(); } catch { /* non-fatal */ }
+  }
+
+  /** ---- attachment staging (P3 #28) ---- */
+
+  #stageFiles(files: File[]): void {
+    let total = this.#staged.filter((a) => a.error === undefined).reduce((acc, a) => acc + a.size, 0);
+    for (const file of files) {
+      if (this.#staged.filter((a) => a.error === undefined).length >= ATTACH_MAX_FILES) {
+        this.#staged.push({ name: file.name || "file", mime: file.type, size: file.size, dataUrl: "", error: `too many files (max ${ATTACH_MAX_FILES})` });
+        continue;
+      }
+      if (file.size > ATTACH_MAX_FILE) {
+        this.#staged.push({ name: file.name, mime: file.type, size: file.size, dataUrl: "", error: `larger than ${Math.floor(ATTACH_MAX_FILE / 1048576)} MB` });
+        continue;
+      }
+      if (total + file.size > ATTACH_MAX_TOTAL) {
+        this.#staged.push({ name: file.name, mime: file.type, size: file.size, dataUrl: "", error: `over ${Math.floor(ATTACH_MAX_TOTAL / 1048576)} MB total` });
+        continue;
+      }
+      const entry: StagedAttachment = {
+        name: file.name || "pasted-image.png",
+        mime: file.type || "application/octet-stream",
+        size: file.size,
+        dataUrl: "",
+      };
+      this.#staged.push(entry);
+      total += file.size;
+      const reader = new FileReader();
+      reader.onload = () => {
+        entry.dataUrl = typeof reader.result === "string" ? reader.result : "";
+        if (!entry.dataUrl) entry.error = "read failed";
+        this.#renderStaged();
+        this.#sendBtn.disabled = this.#input.value.trim().length === 0 && this.#staged.every((a) => a.error !== undefined);
+      };
+      reader.onerror = () => {
+        entry.error = "read failed";
+        this.#renderStaged();
+      };
+      reader.readAsDataURL(file);
+    }
+    this.#renderStaged();
+    this.#sendBtn.disabled = false;
+  }
+
+  #clearStaged(): void {
+    this.#staged = [];
+    this.#renderStaged();
+  }
+
+  #renderStaged(): void {
+    this.#attachStrip.innerHTML = "";
+    this.#attachStrip.hidden = this.#staged.length === 0;
+    for (const a of this.#staged) {
+      const isImg = IMAGE_RE.test(a.mime);
+      const thumb = isImg && a.dataUrl
+        ? el("img", { class: "attach-chip__thumb", src: a.dataUrl, alt: a.name })
+        : el("span", { class: "attach-chip__icon" }, [icon(FILE_ICON)]);
+      const label = el("span", { class: "attach-chip__name" });
+      label.textContent = a.name;
+      const meta = el("span", { class: "attach-chip__meta mono" });
+      meta.textContent = a.error ?? `${(a.size / 1024).toFixed(0)} KB`;
+      const rm = el("button", { class: "attach-chip__rm", type: "button", "aria-label": `Remove ${a.name}` });
+      rm.textContent = "×";
+      rm.onclick = () => {
+        this.#staged = this.#staged.filter((x) => x !== a);
+        this.#renderStaged();
+        this.#sendBtn.disabled = this.#input.value.trim().length === 0 && this.#staged.every((x) => x.error !== undefined);
+      };
+      const chip = el("div", { class: `attach-chip${a.error ? " attach-chip--err" : ""}`, title: a.error ?? a.name }, [thumb, label, meta, rm]);
+      this.#attachStrip.append(chip);
+    }
   }
 
   setBusy(busy: boolean): void {
     this.#stopBtn.hidden = !busy;
     this.#sendBtn.hidden = busy;
-    this.#sendBtn.disabled = busy || this.#input.value.trim().length === 0;
+    this.#sendBtn.disabled = busy || (this.#input.value.trim().length === 0 && this.#staged.every((a) => a.error !== undefined));
     if (busy) this.#input.focus();
   }
 
@@ -331,11 +458,29 @@ export class Chat {
 
   /** ---- transcript writers ---- */
 
-  user(text: string): void {
+  user(text: string, attachments?: StagedAttachment[]): void {
     this.#clearEmpty();
-    const bubble = el("div", { class: "bubble" });
-    bubble.textContent = text;
-    this.stack.append(el("div", { class: "msg msg--user" }, [bubble]));
+    const parts: HTMLElement[] = [];
+    if (attachments && attachments.length > 0) {
+      const strip = el("div", { class: "msg__atts" });
+      for (const a of attachments) {
+        if (IMAGE_RE.test(a.mime) && a.dataUrl) {
+          strip.append(el("img", { class: "msg__att-img", src: a.dataUrl, alt: a.name }));
+        } else {
+          const chip = el("span", { class: "msg__att-file mono" });
+          chip.textContent = `📎 ${a.name}`;
+          strip.append(chip);
+        }
+      }
+      parts.push(strip);
+    }
+    if (text) {
+      const bubble = el("div", { class: "bubble" });
+      bubble.textContent = text;
+      parts.push(bubble);
+    }
+    if (parts.length === 0) parts.push(el("div", { class: "bubble" }));
+    this.stack.append(el("div", { class: "msg msg--user" }, parts));
     this.#scrollToBottom();
   }
 

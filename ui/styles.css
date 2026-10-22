@@ -753,6 +753,58 @@ textarea:focus-visible {
 
 .composer--attached { border-radius: 0 0 var(--r-lg) var(--r-lg); }
 
+.composer--drop { border-color: var(--accent, #6c8cff); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #6c8cff) 35%, transparent); }
+
+.attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md, 10px);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink2, var(--ink3));
+  cursor: pointer;
+  flex: none;
+}
+.attach-btn:hover { color: var(--ink); border-color: var(--ink3); }
+
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 10px);
+  background: var(--surface2, var(--surface));
+  max-width: 220px;
+}
+.attach-chip--err { border-color: var(--err, #e5534b); }
+.attach-chip__thumb { width: 26px; height: 26px; object-fit: cover; border-radius: 6px; flex: none; }
+.attach-chip__icon { display: inline-flex; color: var(--ink2, var(--ink3)); flex: none; }
+.attach-chip__name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
+.attach-chip__meta { font-size: 10px; color: var(--ink3); flex: none; }
+.attach-chip--err .attach-chip__meta { color: var(--err, #e5534b); }
+.attach-chip__rm {
+  border: 0; background: transparent; color: var(--ink3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 2px; flex: none;
+}
+.attach-chip__rm:hover { color: var(--ink); }
+
+.msg__atts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.msg__att-img { max-width: 220px; max-height: 180px; border-radius: var(--r-md, 10px); display: block; }
+.msg__att-file {
+  font-size: 11px; padding: 4px 8px; border: 1px solid var(--line);
+  border-radius: var(--r-md, 10px); color: var(--ink2, var(--ink));
+}
+
 .composer textarea {
   display: block;
   width: 100%;

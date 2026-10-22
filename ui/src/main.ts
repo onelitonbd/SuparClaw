@@ -19,16 +19,27 @@ let settings: Settings | null = null;
 /* ---------------- chat ---------------- */
 
 const chat = new Chat(document.body, {
-  send: (text) => {
-    chat.user(text);
+  send: (text, attachments) => {
+    chat.user(text, attachments);
     busy = true;
     chat.setBusy(true);
-    gateway.request("chat.send", { sessionKey, text, isMainSession: true }).catch((err) => {
-      busy = false;
-      chat.setBusy(false);
-      chat.notice(`not sent: ${err.message}`);
-      toast((err as Error).message, "err");
-    });
+    const payload: Record<string, unknown> = { sessionKey, text, isMainSession: true };
+    if (attachments && attachments.length > 0) {
+      payload["attachments"] = attachments.map((a) => ({ name: a.name, mime: a.mime, data: a.dataUrl }));
+    }
+    gateway.request("chat.send", payload)
+      .then((ack) => {
+        // Partial attachment rejections ride the ack as warnings (their
+        // "failures stay visible" rule) — toast them, the rest was sent.
+        const warnings = (ack as { warnings?: string[] }).warnings ?? [];
+        for (const w of warnings) toast(`skipped: ${w}`, "err");
+      })
+      .catch((err) => {
+        busy = false;
+        chat.setBusy(false);
+        chat.notice(`not sent: ${err.message}`);
+        toast((err as Error).message, "err");
+      });
   },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
   approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
