@@ -6,6 +6,7 @@
 //                       > .msg__tools (.tool > .tool__row + .tool__body)
 //                       > .msg__body
 
+import { askOnceOnFirstSend } from "./notifications.js";
 import { el, fmtDuration, icon, toast } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
 
@@ -184,6 +185,8 @@ export class Chat {
     this.#autosize();
     this.#sendBtn.disabled = true;
     this.#handlers.send(text);
+    // Their first-chat-send permission prompt — once per browser and origin.
+    try { askOnceOnFirstSend(); } catch { /* non-fatal */ }
   }
 
   setBusy(busy: boolean): void {

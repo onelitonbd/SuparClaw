@@ -242,6 +242,7 @@ export class Gateway {
       "tools.list",
       "skills.list",
       "cron.list",
+      "automations.state",
       "config.get",
       "config.path",
       "config.set",
@@ -919,6 +920,10 @@ export class Gateway {
           }
           service.loop.refreshSkills();
           send(okFrame(id, { ok: true, name: result.name, path: result.path }));
+          return;
+        }
+        case "automations.state": {
+          send(okFrame(id, await service.automationsState()));
           return;
         }
         case "cron.list":

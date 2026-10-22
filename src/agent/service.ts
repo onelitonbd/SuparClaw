@@ -99,6 +99,78 @@ export class Service {
   get heartbeat(): import("../automation/heartbeat.js").Heartbeat | null {
     return this.#heartbeat;
   }
+
+  /** P3 #27 (row Missing!#28) — automations dashboard payload (their
+   *  Control-UI Automations page): cron jobs + runs, heartbeat cadence
+   *  state, IMAP watcher states. Pure reads — no secrets, no mail
+   *  subjects/bodies (their reject-log privacy rule). */
+  async automationsState(): Promise<{
+    cron: { enabled: boolean; jobs: unknown[]; runs: unknown[] };
+    heartbeat: {
+      armed: boolean;
+      every: string;
+      target: string;
+      lightContext: boolean;
+      isolatedSession: boolean;
+      timeoutSeconds: number;
+      activeHours: { start: string; end: string; timezone: string };
+      lastTargetChat: number | null;
+    };
+    imap: {
+      enabled: boolean;
+      accounts: {
+        name: string;
+        mailbox: string;
+        dispatchTo: string;
+        unhealthy: boolean;
+        cursor: number;
+        lastError: string;
+        skips: number;
+      }[];
+    };
+  }> {
+    const cfg = this.config;
+    const heart = cfg.agents.defaults.heartbeat;
+    let imapState: import("../automation/imap.js").ImapStateFile | null = null;
+    if (cfg.imap?.enabled) {
+      const { readImapState, imapStatePath } = await import("../automation/imap.js");
+      imapState = readImapState(imapStatePath(stateDir()));
+    }
+    // Last cron runs — store keeps run history; store API reads through here
+    // so the UI never opens the db directly.
+    return {
+      cron: {
+        enabled: Boolean(cfg.cron.enabled),
+        jobs: this.store.listJobs(),
+        runs: this.store.lastJobRuns(10),
+      },
+      heartbeat: {
+        armed: this.#heartbeat ? this.#heartbeat.stats().armed : false,
+        every: heart.every,
+        target: heart.target,
+        lightContext: heart.lightContext,
+        isolatedSession: heart.isolatedSession,
+        timeoutSeconds: heart.timeoutSeconds,
+        activeHours: heart.activeHours,
+        lastTargetChat: this.#heartbeat ? this.#heartbeat.stats().lastTargetChat : null,
+      },
+      imap: {
+        enabled: Boolean(cfg.imap?.enabled),
+        accounts: Object.entries(cfg.imap?.accounts ?? {}).map(([name, a]) => {
+          const st = imapState?.accounts?.[name];
+          return {
+            name,
+            mailbox: a.mailbox,
+            dispatchTo: a.watch.mode === "idle" ? "imap-idle" : `poll:${a.watch.pollSeconds}s`,
+            unhealthy: st?.unhealthy ?? false,
+            cursor: st?.cursor ?? 0,
+            lastError: st?.lastError ?? "",
+            skips: st ? Object.keys(st.skips).length : 0,
+          };
+        }),
+      },
+    };
+  }
   /** Per-job last-failure-alert stamp (P2 #14 cooldown bookkeeping). */
   #cronAlertedAt = new Map<string, number>();
   /** Pending ask_user sets (P2 #8): id → live closure + per-question state. */

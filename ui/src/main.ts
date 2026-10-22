@@ -5,6 +5,7 @@ import { el, esc, fmtTime, modal, toast } from "./dom.js";
 import { pickModel } from "./picker.js";
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
+import { onGatewayEvent } from "./notifications.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -41,6 +42,9 @@ const chat = new Chat(document.body, {
 
 gateway.on((event, payload) => {
   if (event === "tick") return;
+  // Settings → Alerts (their Settings → Notifications): approvals default-on,
+  // replies opt-in, quiet-hours filtered, generic lock-screen text only.
+  try { onGatewayEvent(event, payload); } catch { /* notification quirks are non-fatal */ }
   if (event === "session.updated") {
     // Auto-title landed on a session row — re-render the list so the name
     // shows up (in any open UI) without a reload.

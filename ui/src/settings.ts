@@ -3,10 +3,11 @@
 
 import { el, modal, toast } from "./dom.js";
 import { gateway } from "./rpc.js";
+import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./notifications.js";
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "models" | "providers" | "skills" | "tools" | "memory" | "gateway" | "runtime";
+type TabId = "model" | "models" | "providers" | "skills" | "tools" | "memory" | "automations" | "alerts" | "gateway" | "runtime";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "model", label: "Defaults" },
@@ -15,6 +16,8 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "skills", label: "Skills" },
   { id: "tools", label: "Tools" },
   { id: "memory", label: "Memory" },
+  { id: "automations", label: "Automations" },
+  { id: "alerts", label: "Alerts" },
   { id: "gateway", label: "Gateway" },
   { id: "runtime", label: "Runtime" },
 ];
@@ -104,6 +107,8 @@ export class Settings {
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") await this.#renderTools(tools);
     else if (this.#tab === "memory") await this.#renderMemory();
+    else if (this.#tab === "automations") await this.#renderAutomations(config);
+    else if (this.#tab === "alerts") this.#renderAlerts();
     else if (this.#tab === "gateway") this.#renderGateway(gw);
     else await this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
@@ -1254,6 +1259,155 @@ export class Settings {
       ]),
       save,
     );
+  }
+
+
+  /* ---------------- automations (P3 #27 — their Automation settings page) ---------------- */
+
+  async #renderAutomations(config: any): Promise<void> {
+    let state: any = null;
+    try {
+      state = await gateway.request("automations.state");
+    } catch (err) {
+      toast((err as Error).message, "err");
+    }
+
+    const row = (label: string, value: string, style = ""): HTMLElement =>
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, [label]),
+        el("span", { class: "row__value", style }, [value]),
+      ]);
+    const card = (title: string, rows: HTMLElement[], extra: Node[] = []): HTMLElement =>
+      el("div", { class: "card" }, [el("h3", { style: "margin:0 0 8px" }, [title]), ...rows, ...extra]);
+
+    // ----- cron -----
+    const cronRows: HTMLElement[] = [];
+    const cronCardExtra: Node[] = [];
+    if (state?.cron?.enabled === false) {
+      cronRows.push(row("Scheduler", "disabled"));
+    } else {
+      cronRows.push(row("Scheduler", `on · ${(state?.cron?.jobs ?? []).length} jobs`));
+    }
+    for (const j of state?.cron?.jobs ?? []) {
+      cronRows.push(row(String(j.name ?? j.id ?? "job"), `${j.expr ?? j.cron ?? ""} ${j.tz ? "[" + j.tz + "]" : ""}`.trim()));
+    }
+    if ((state?.cron?.jobs ?? []).length === 0 && state?.cron?.enabled !== false) {
+      cronCardExtra.push(el("p", { class: "hint" }, ["No jobs yet — `sc cron add` gives the agent time-based work."]));
+    }
+    this.#root.append(card("Cron jobs", cronRows, cronCardExtra));
+
+    // ----- heartbeat -----
+    const hb = state?.heartbeat ?? {};
+    const everyIn = el("input", { class: "inp mono", id: "hb-every", value: String(hb.every ?? "30m") });
+    const lightCb = el("input", { type: "checkbox" });
+    (lightCb as HTMLInputElement).checked = Boolean(hb.lightContext);
+    const isoCb = el("input", { type: "checkbox" });
+    (isoCb as HTMLInputElement).checked = Boolean(hb.isolatedSession);
+    const saveHb = el("button", { class: "btn", type: "button" }, ["Save"]);
+    saveHb.onclick = async () => {
+      await this.#setMany(
+        [
+          ["agents.defaults.heartbeat.every", everyIn.value.trim() || "30m"],
+          ["agents.defaults.heartbeat.lightContext", (lightCb as HTMLInputElement).checked],
+          ["agents.defaults.heartbeat.isolatedSession", (isoCb as HTMLInputElement).checked],
+        ],
+        "heartbeat saved — rebuilds on next tick",
+      );
+    };
+    this.#root.append(card("Heartbeat", [
+      row("Cadence", hb.armed ? `${hb.every ?? "30m"} · armed` : `${hb.every ?? "30m"} · not running`, hb.armed ? "color:var(--ok)" : "color:var(--warn)"),
+      row("Target", String(hb.target ?? "owner")),
+      row("Last DM", hb.lastTargetChat ? String(hb.lastTargetChat) : "—"),
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "hb-every" }, ["every (e.g. 30m, 1h, 0m to disable)"]),
+        everyIn,
+      ]),
+      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["lightContext"]), lightCb]),
+      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["isolatedSession"]), isoCb]),
+    ], [
+      el("p", { class: "hint" }, [
+        "Standing orders (their automation/standing-orders) live in AGENTS.md and are injected every session; heartbeat only pokes the agent to act on them. Quiet by default via the NO_REPLY contract.",
+      ]),
+      saveHb,
+    ]));
+
+    // ----- imap -----
+    const imapRows: HTMLElement[] = [];
+    const imap = state?.imap ?? {};
+    if (!imap.enabled) {
+      imapRows.push(row("Watcher", "disabled"))
+    } else {
+      for (const a of imap.accounts ?? []) {
+        imapRows.push(row(
+          `${a.name} · ${a.mailbox}`,
+          `${a.unhealthy ? "unhealthy" : `cursor ${a.cursor}`}${a.skips ? ` · ${a.skips} skip(s)` : ""}${a.lastError ? " · " + a.lastError.slice(0, 60) : ""}`,
+          a.unhealthy ? "color:var(--err)" : "color:var(--ok)",
+        ));
+      }
+      if ((imap.accounts ?? []).length === 0) imapRows.push(row("Watcher", "enabled — 0 accounts"));
+    }
+    this.#root.append(card("IMAP mail watcher", imapRows, [
+      el("p", { class: "hint" }, [
+        "Per-account configurations sit under imap.accounts in the config (their automation/imap: baseline on start, UIDVALIDITY dedupe, sender allowlist, no-replay restarts).",
+      ]),
+    ]));
+  }
+
+  /* ---------------- alerts (their Settings → Notifications page) ---------------- */
+
+  #renderAlerts(): void {
+    const prefs = loadPrefs();
+    const state = permissionState();
+
+    const stateRow = el("div", { class: "row" }, [
+      el("span", { class: "row__label" }, ["Browser permission"]),
+      el("span", { class: "row__value", style: state === "granted" ? "color:var(--ok)" : state === "denied" ? "color:var(--err)" : "" }, [state]),
+    ]);
+
+    if (!supported()) {
+      this.#root.append(el("div", { class: "card" }, [
+        stateRow,
+        el("p", { class: "hint" }, ["This browser has no Notification support — only the status surface is available (their unsupported-browser row)."]),
+      ]));
+      return;
+    }
+
+    const toggle = (key: "enabled" | "reply" | "approvals", label: string, hintText: string): HTMLElement => {
+      const cb = el("input", { type: "checkbox" }) as HTMLInputElement;
+      cb.checked = prefs[key];
+      cb.onchange = () => {
+        prefs[key] = cb.checked;
+        savePrefs(prefs);
+      };
+      return el("div", {}, [
+        el("div", { class: "row" }, [el("span", { class: "row__label" }, [label]), cb]),
+        el("p", { class: "hint" }, [hintText]),
+      ]);
+    };
+
+    const fromIn = el("input", { class: "inp mono", placeholder: "22:00", value: prefs.quietFrom });
+    const toIn = el("input", { class: "inp mono", placeholder: "08:00", value: prefs.quietTo });
+    fromIn.onchange = () => { prefs.quietFrom = (fromIn as HTMLInputElement).value.trim(); savePrefs(prefs); };
+    toIn.onchange = () => { prefs.quietTo = (toIn as HTMLInputElement).value.trim(); savePrefs(prefs); };
+
+    const testBtn = el("button", { class: "btn", type: "button" }, ["Send test"]);
+    testBtn.onclick = async () => {
+      const ok = await sendTest();
+      toast(ok ? "test sent" : "Notification API unavailable", ok ? "ok" : "err");
+    };
+
+    this.#root.append(el("div", { class: "card" }, [
+      stateRow,
+      toggle("enabled", "Enable notifications", "Alerts appear when the page is hidden — generic lock-screen text only (their privacy rule: no prompts, commands, or excerpts)."),
+      toggle("approvals", "Approval requests", "On by default (their default category)."),
+      toggle("reply", "Final replies", "Opt-in (their every-other-category-off rule)."),
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, ["Quiet hours"]),
+        el("div", { class: "row__value" }, [fromIn, " – ", toIn]),
+      ]),
+      el("p", { class: "hint" }, ["Alerts inside quiet hours are skipped, not queued (their quiet-hours rule)."]),
+      testBtn,
+    ]));
   }
 
   /* ---------------- runtime ---------------- */
