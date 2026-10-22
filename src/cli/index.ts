@@ -35,8 +35,11 @@ commands:
   security [audit]     review gateway/tool/channel security posture
   stop                    stop a running gateway (pid file)
   config <get|set|path>  read or write config values
-  sessions <list|rename|delete|show|search> [flags] [--json]
-                        sessions on this device; search = full-text transcripts
+  sessions <list|rename|delete|show|search|cleanup|export> [flags] [--json]
+                        sessions on this device; search = full-text transcripts;
+                        cleanup = pruning/archive maintenance (dry-run first!);
+                        export = materialize transcript artifacts under
+                        ~/.suparclaw/transcripts/YYYY-MM-DD/<session>/
   usage [--session key]... [--json]
                         token + cost report from the runs audit table
   logs [-f] [--tail N] [--file service|agent] [--search q] [--json] [--files]
@@ -410,6 +413,25 @@ async function sessionsOverviewCmd(sub: string, rest: string[]): Promise<number>
 async function sessionsCmd(args: string[]): Promise<number> {
   const sub = args[0] ?? "list";
   if (sub === "cleanup") return sessionsCleanupBridge(args.slice(1));
+  if (sub === "export") {
+    // P3 #20: materialize transcript artifacts under state/transcripts/
+    // (their openclaw transcripts: exports, never a second runtime store).
+    const { cmdSessionsExport } = await import("./session-export.js");
+    const { Store } = await import("../state/db.js");
+    const { dbPath, stateDir } = await import("../util/paths.js");
+    const { existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    if (!existsSync(dbPath())) {
+      console.error("no workspace here — start the gateway (sc gateway) or point SUPARCLAW_HOME at one");
+      return 2;
+    }
+    const store = Store.open(dbPath());
+    try {
+      return cmdSessionsExport(args.slice(1), { store, transcriptsRoot: join(stateDir(), "transcripts") });
+    } finally {
+      store.close();
+    }
+  }
   if (sub !== "search") {
     return sessionsOverviewCmd(sub, sub === args[0] ? args.slice(1) : args);
   }

@@ -581,6 +581,13 @@ export class Store {
       .run(status, Date.now(), usage ? JSON.stringify(usage) : null, error ?? null, model ?? null, runId);
   }
 
+  /** All runs of one session oldest-first (transcript export, P3 #20). */
+  runsForSession(sessionId: string): { id: string; status: string; model: string | null; started_at: number; ended_at: number | null }[] {
+    return this.db
+      .prepare("SELECT id, status, model, started_at, ended_at FROM runs WHERE session_id = ? ORDER BY started_at ASC")
+      .all(sessionId) as { id: string; status: string; model: string | null; started_at: number; ended_at: number | null }[];
+  }
+
   /** Runs that carried usage accounting, newest first (sc usage aggregation). */
   listRunsWithUsage(limit = 10_000): { id: string; session_id: string; model: string | null; usage: string; started_at: number; ended_at: number | null; status: string }[] {
     return this.db

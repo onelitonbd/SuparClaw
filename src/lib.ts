@@ -60,6 +60,7 @@ export {
   type SessionMaintenanceConfig,
 } from "./state/maintenance.js";
 export { parseCleanupArgs, formatCleanupReport, cmdSessionsCleanup, type CleanupDeps } from "./cli/session-cleanup.js";
+export { exportSlug, sessionStartDate, resolveSessionSelector, exportSessionTranscript, parseExportArgs, cmdSessionsExport } from "./cli/session-export.js";
 export { sandboxEnv, planSandbox, findPrlimit, findProot } from "./agent/exec-sandbox.js";
 export { normalizeAskUserArgs, matchTextReply, renderQuestionText, ASK_LIMITS, type AskUserQuestion, type AskUserResult } from "./agent/ask-user.js";
 export { createLogger } from "./util/log.js";
