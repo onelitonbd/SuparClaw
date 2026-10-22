@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ConfigService } from "../config/load.js";
 import type { SuparClawConfig } from "../config/schema.js";
 import { Store } from "../state/db.js";
+import { runSessionMaintenance, settingsFromConfig, defaultDiskBytes } from "../state/maintenance.js";
 import { createLogger, type Logger } from "../util/log.js";
 import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } from "../util/paths.js";
 import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
@@ -121,6 +122,8 @@ export class Service {
   #subagents: Subagents | null = null;
   /** Channel sinks for internal announcements (telegram replies need a send). */
   #channelSinks = new Map<string, (text: string) => void | Promise<void>>();
+  /** Hourly session-maintenance timer (P3 #19). */
+  #maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(configPathOverride?: string) {
     ensureDirs();
@@ -247,6 +250,46 @@ export class Service {
   async cronReconcile(): Promise<void> {
     if (this.#cron) await this.#cron.reconcile();
   }
+
+  /**
+   * Session maintenance (P3 #19): CLI/RPC surface for `sc sessions cleanup`
+   * (their `openclaw sessions cleanup` when delegated through the gateway).
+   * Busy sessions are protected; dryRun/enforce come from the caller.
+   */
+  sessionCleanup(opts: { dryRun?: boolean; enforce?: boolean } = {}) {
+    const cfg = this.configSvc.current.session.maintenance;
+    return runSessionMaintenance(this.store, settingsFromConfig(cfg), {
+      dryRun: opts.dryRun === true,
+      enforce: opts.enforce === true,
+      activeKeys: this.loop.busySessions(),
+      diskBytes: defaultDiskBytes(dbPath()),
+    });
+  }
+
+  /** Hourly runtime application (their batched-on-writes cleanup). */
+  #sessionMaintenanceTick(why: "startup" | "interval"): void {
+    try {
+      const report = this.sessionCleanup({});
+      const total = report.archivedAge + report.archivedCap + report.deletedCapArchives;
+      if (report.mode === "warn" && report.actions.length > 0) {
+        this.log.warn(
+          `session maintenance (${why}, warn mode): would archive ${report.archivedAge + report.archivedCap}` +
+          `${report.overBudget ? ", disk over budget" : ""} — set session.maintenance.mode=enforce to apply`,
+        );
+      } else if (total > 0 || report.overBudget) {
+        this.log.info(
+          `session maintenance (${why}): archived ${report.archivedAge + report.archivedCap}` +
+          ` (${report.archivedAge} age, ${report.archivedCap} cap)` +
+          `${report.deletedCapArchives ? `, evicted ${report.deletedCapArchives} cap archives (${report.freedBytes} bytes)` : ""}` +
+          `${report.kept ? `, ${report.kept} protected` : ""}` +
+          `${report.overBudget ? ", disk still over budget" : ""}`,
+        );
+      }
+    } catch (err) {
+      this.log.warn(`session maintenance (${why}) failed: ${(err as Error).message}`);
+    }
+  }
+
 
   /** Arm (or re-arm) the dreaming sweep from config.memory.dreaming. */
   async armDreaming(): Promise<void> {
@@ -688,6 +731,15 @@ export class Service {
     // The dreaming sweep has its own timer (config.memory.dreaming), separate
     // from the user's cron jobs — it must not show up in `sc cron list`.
     void this.armDreaming();
+    // Session-store maintenance (P3 #19; their session.maintenance batched on
+    // writes — hourly + once shortly after boot here, config read live each
+    // tick so edits apply without a restart).
+    this.#maintenanceTimer = setInterval(() => this.#sessionMaintenanceTick("interval"), 60 * 60 * 1000);
+    this.#maintenanceTimer.unref?.();
+    {
+      const boot = setTimeout(() => this.#sessionMaintenanceTick("startup"), 15_000);
+      boot.unref?.();
+    }
     // Config edits made outside config.set (sc config set, hand edits) must
     // reach the running daemon too.
     this.watchConfig();
@@ -1411,6 +1463,7 @@ export class Service {
     if (this.#closing) return;
     this.#closing = true;
     this.configSvc.stop();
+    if (this.#maintenanceTimer) clearInterval(this.#maintenanceTimer);
     this.#cron?.stop();
     this.#dream?.stop();
     await this.#telegram?.stop();

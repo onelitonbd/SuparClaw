@@ -50,6 +50,16 @@ export { resolveDelivery, isEmptySummary, assertWebhookUrl, webhookPayload, erro
 export { parseLogLine, filterLogLines, readLogTail, readLogDelta } from "./cli/logs.js";
 export { parseRepoSlug, resolveRef, currentSha, computeUpdatePlan, fetchRemoteHead } from "./cli/update.js";
 export { parseUninstallArgs, planUninstall, deleteStateContents, cliRemovalHint, cmdUninstall } from "./cli/uninstall.js";
+export { parseDurationMs, parseByteSize } from "./util/units.js";
+export {
+  settingsFromConfig,
+  runSessionMaintenance,
+  defaultDiskBytes,
+  type MaintenanceReport,
+  type MaintenanceOptions,
+  type SessionMaintenanceConfig,
+} from "./state/maintenance.js";
+export { parseCleanupArgs, formatCleanupReport, cmdSessionsCleanup, type CleanupDeps } from "./cli/session-cleanup.js";
 export { sandboxEnv, planSandbox, findPrlimit, findProot } from "./agent/exec-sandbox.js";
 export { normalizeAskUserArgs, matchTextReply, renderQuestionText, ASK_LIMITS, type AskUserQuestion, type AskUserResult } from "./agent/ask-user.js";
 export { createLogger } from "./util/log.js";

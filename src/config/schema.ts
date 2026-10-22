@@ -271,6 +271,33 @@ export const CONFIG_SCHEMA: SchemaNode = {
         },
       },
     },
+    // P3 #19 — their session.maintenance retention controls: age archiving,
+    // unarchived-row cap, and a physical disk budget.
+    session: {
+      t: "object",
+      default: {},
+      fields: {
+        maintenance: {
+          t: "object",
+          default: {},
+          fields: {
+            // enforce (default) applies cleanup; warn only reports it.
+            mode: { t: "enum", values: ["enforce", "warn"], default: "enforce" },
+            // Age cutoff ("30d" default): eligible durable sessions archive
+            // in place with identity + history intact. "0"/false disables.
+            pruneAfter: { t: "string", default: "30d" },
+            // Cap on UNARCHIVED rows (their 5000); archived rows don't count.
+            maxEntries: { t: "int", min: 0, default: 5000 },
+            // Optional recency shield (e.g. "7d"); "" disables (their unset).
+            preserveRecent: { t: "string", default: "" },
+            // Physical db (+wal) budget, their 10gb; "0"/"" disables.
+            maxDiskBytes: { t: "string", default: "10gb" },
+            // Post-budget-cleanup target; "" = 80% of maxDiskBytes.
+            highWaterBytes: { t: "string", default: "" },
+          },
+        },
+      },
+    },
     providers: {
       t: "record",
       default: {},
@@ -739,6 +766,17 @@ export interface SuparClawConfig {
     };
   };
   memory: { dreaming: { enabled: boolean; schedule: string } };
+  // P3 #19: retention controls (their session.maintenance).
+  session: {
+    maintenance: {
+      mode: "enforce" | "warn";
+      pruneAfter: string;
+      maxEntries: number;
+      preserveRecent: string;
+      maxDiskBytes: string;
+      highWaterBytes: string;
+    };
+  };
 }
 
 export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: string[] } {

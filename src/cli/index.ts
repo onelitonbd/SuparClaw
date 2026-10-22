@@ -409,6 +409,7 @@ async function sessionsOverviewCmd(sub: string, rest: string[]): Promise<number>
  */
 async function sessionsCmd(args: string[]): Promise<number> {
   const sub = args[0] ?? "list";
+  if (sub === "cleanup") return sessionsCleanupBridge(args.slice(1));
   if (sub !== "search") {
     return sessionsOverviewCmd(sub, sub === args[0] ? args.slice(1) : args);
   }
@@ -498,6 +499,76 @@ async function sessionsCmd(args: string[]): Promise<number> {
     console.error("start the gateway (sc gateway) or point SUPARCLAW_HOME at a workspace");
     return 2;
   }
+}
+
+/**
+ * `sc sessions cleanup` (P3 #19) — real deps for cmdSessionsCleanup: gateway
+ * delegation over WS (same port-scan as search), pid-file ownership refusal
+ * for destructive local runs, config-driven policy.
+ */
+async function sessionsCleanupBridge(args: string[]): Promise<number> {
+  const { cmdSessionsCleanup } = await import("./session-cleanup.js");
+  const { dbPath } = await import("../util/paths.js");
+  const { serviceStatus } = await import("./service.js");
+  const delegate = async (opts: { dryRun: boolean; enforce: boolean; token: string | null }) => {
+    if (process.env.SUPARCLAW_OFFLINE === "1") return null;
+    try {
+      const { readConfigFile } = await import("../config/load.js");
+      const { listGateways } = await import("./service.js");
+      const { GatewayClient } = await import("../gateway/ws-client.js");
+      const live = readConfigFile();
+      const cfg = (live.config ?? {}) as unknown as Record<string, unknown>;
+      const gw = (cfg["gateway"] ?? {}) as Record<string, unknown>;
+      const auth = (gw["auth"] ?? {}) as Record<string, unknown>;
+      const token = opts.token ?? process.env["SUPARCLAW_TOKEN"] ?? String(auth["token"] ?? "");
+      const ports: number[] = [];
+      const cfgPort = Number(gw["port"]);
+      if (Number.isFinite(cfgPort) && cfgPort > 0) ports.push(cfgPort);
+      const envPort = Number.parseInt(process.env["SUPARCLAW_GATEWAY_PORT"] ?? "", 10);
+      if (Number.isFinite(envPort) && envPort > 0) ports.push(envPort);
+      for (const p of await listGateways()) if (p.port) ports.push(p.port);
+      ports.push(18790);
+      for (const port of new Set(ports)) {
+        try {
+          const client = await GatewayClient.connect(`ws://127.0.0.1:${port}/ws`, token);
+          const report = (await client.request("sessions.cleanup", {
+            dryRun: opts.dryRun,
+            enforce: opts.enforce,
+          })) as import("../state/maintenance.js").MaintenanceReport;
+          client.close();
+          setImmediate(() => process.exit(0)); // one-shot: skip close-frame ACK hangs
+          return report;
+        } catch {
+          continue;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+  const { readConfigFile } = await import("../config/load.js");
+  const loadMaintenanceConfig = () => {
+    const cfg = (readConfigFile().config ?? {}) as { session?: { maintenance?: Record<string, unknown> } };
+    const m = cfg.session?.maintenance ?? {};
+    return {
+      mode: String(m["mode"] ?? "enforce"),
+      pruneAfter: String(m["pruneAfter"] ?? "30d"),
+      maxEntries: Number(m["maxEntries"] ?? 5000),
+      preserveRecent: String(m["preserveRecent"] ?? ""),
+      maxDiskBytes: String(m["maxDiskBytes"] ?? "10gb"),
+      highWaterBytes: String(m["highWaterBytes"] ?? ""),
+    };
+  };
+  return cmdSessionsCleanup(args, {
+    delegate,
+    owner: () => {
+      const s = serviceStatus();
+      return { running: s.running, pid: s.pid };
+    },
+    defaultDbPath: dbPath,
+    loadMaintenanceConfig,
+  });
 }
 
 function printSessionSearch(

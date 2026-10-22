@@ -16,6 +16,11 @@ export interface SessionRow {
   queue_mode?: string | null;
   /** JSON {debounceMs?, cap?, drop?} /queue options; null = none. */
   queue_opts?: string | null;
+  /** P3 #19: archived in place by maintenance; keeps id + full history readable. */
+  archived?: number;
+  archived_at?: number | null;
+  /** archive-age | archive-cap (their archiveReason age-retention/capacity). */
+  archive_reason?: string | null;
 }
 
 export interface SubagentRow {
@@ -383,6 +388,12 @@ export class Store {
     if (!jobCols.has("delivery_mode")) db.exec("ALTER TABLE jobs ADD COLUMN delivery_mode TEXT");
     if (!jobCols.has("delivery_to")) db.exec("ALTER TABLE jobs ADD COLUMN delivery_to TEXT");
     if (!jobCols.has("delivery_suppress_empty")) db.exec("ALTER TABLE jobs ADD COLUMN delivery_suppress_empty INTEGER NOT NULL DEFAULT 1");
+    // Session maintenance (P3 #19): archive-in-place rows keep their ids and
+    // all history (their pruneAfter/maxEntries semantics) — the columns are
+    // PRAGMA-guarded so pre-maintenance DBs upgrade in place.
+    if (!sessionCols.has("archived")) db.exec("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+    if (!sessionCols.has("archived_at")) db.exec("ALTER TABLE sessions ADD COLUMN archived_at INTEGER");
+    if (!sessionCols.has("archive_reason")) db.exec("ALTER TABLE sessions ADD COLUMN archive_reason TEXT");
     return new Store(db, fts);
   }
 
@@ -428,10 +439,47 @@ export class Store {
     return { id, key, agent_id: agentId, name: null, created_at: now, last_msg_at: now, meta: null };
   }
 
-  listSessions(limit = 50): SessionRow[] {
+  listSessions(limit = 50, opts?: { includeArchived?: boolean }): SessionRow[] {
+    // Dashboard parity (their maxEntries note): archived rows keep their ids
+    // and history but leave the default list — they no longer "consume" the
+    // visible store. Direct key/id lookups still resolve them.
+    const where = opts?.includeArchived ? "" : "WHERE COALESCE(archived, 0) = 0";
     return this.db
-      .prepare("SELECT * FROM sessions ORDER BY last_msg_at DESC LIMIT ?")
+      .prepare(`SELECT * FROM sessions ${where} ORDER BY last_msg_at DESC LIMIT ?`)
       .all(limit) as unknown as SessionRow[];
+  }
+
+  /** Maintenance enumeration (P3 #19): every row, oldest activity first. */
+  listAllSessionsForMaintenance(): SessionRow[] {
+    return this.db
+      .prepare("SELECT * FROM sessions ORDER BY last_msg_at ASC")
+      .all() as unknown as SessionRow[];
+  }
+
+  countUnarchivedSessions(): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM sessions WHERE COALESCE(archived, 0) = 0")
+      .get() as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Archive in place (their archiveReason): the id, key, and every message
+   * generation survive; only visibility + cap accounting change. passed
+   * reason: "archive-age" (their age-retention) | "archive-cap" (capacity).
+   */
+  archiveSession(id: string, reason: string, at: number): void {
+    this.db
+      .prepare("UPDATE sessions SET archived = 1, archived_at = ?, archive_reason = ? WHERE id = ?")
+      .run(at, reason, id);
+  }
+
+  /** Per-session stored-text bytes — the disk-budget walk's evict estimate. */
+  sessionContentBytes(sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(SUM(LENGTH(content)), 0) AS n FROM messages WHERE session_id = ?")
+      .get(sessionId) as { n: number };
+    return row.n + 512; // row + index overhead
   }
 
   /** Set (or clear with null) the display title — sc sessions rename (P2 #11). */

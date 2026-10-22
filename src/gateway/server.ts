@@ -658,6 +658,17 @@ export class Gateway {
           send(okFrame(id, { renamed: true }));
           return;
         }
+        case "sessions.cleanup": {
+          // P3 #19: `sc sessions cleanup` delegates here when a gateway is
+          // reachable (their "run cleanup through the Gateway" rule), so the
+          // teardown shares the same store writer as runtime traffic.
+          const report = service.sessionCleanup({
+            dryRun: params["dryRun"] === true,
+            enforce: params["enforce"] === true,
+          });
+          send(okFrame(id, report));
+          return;
+        }
         case "models.list": {
           // Live inventory: saved rows served immediately, TTL-stale providers
           // refresh in the background; {refresh:true} fetches now (OpenClaw's
