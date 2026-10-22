@@ -197,6 +197,17 @@ export { analyzePdfs } from "./agent/pdf-tool.js";
 export { extractPdfText } from "./util/pdf-text.js";
 export { createTyping, type TypingHandle } from "./agent/typing.js";
 export {
+  ImapWatcher,
+  gateMessage,
+  readerPrompt,
+  parseInternalDate,
+  readImapState,
+  writeImapState,
+  IMAP_ACCOUNT_DEFAULTS,
+  type ImapAccountState,
+  type ImapConfig,
+} from "./automation/imap.js";
+export {
   CodeMode,
   codeModeEngages,
   codeModeSurface,

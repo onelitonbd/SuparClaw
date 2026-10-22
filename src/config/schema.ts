@@ -683,6 +683,71 @@ export const CONFIG_SCHEMA: SchemaNode = {
         webhookAllowHostnames: { t: "array", of: { t: "string" }, default: [] },
       },
     },
+    // IMAP email trigger (P3 #25 — their automation/imap plugin, polling
+    // lane): per-account INBOX watchers dispatching admitted mail to
+    // hook:imap:<account>:<uidvalidity>:<uid> isolated reader runs.
+    imap: {
+      t: "object",
+      default: {},
+      fields: {
+        enabled: { t: "bool", default: false },
+        accounts: {
+          t: "record",
+          default: {},
+          of: {
+            t: "object",
+            default: {},
+            fields: {
+              enabled: { t: "bool", default: true },
+              host: { t: "string", default: "" },
+              port: { t: "int", min: 1, max: 65535, default: 993 },
+              secure: { t: "bool", default: true },
+              user: { t: "string", default: "" },
+              password: { t: "string", default: "" },
+              passwordEnv: { t: "string", default: "" },
+              mailbox: { t: "string", default: "INBOX" },
+              watch: {
+                t: "object",
+                default: {},
+                fields: {
+                  mode: { t: "enum", values: ["auto", "interval", "idle"], default: "auto" },
+                  pollSeconds: { t: "int", min: 15, max: 86400, default: 60 },
+                },
+              },
+              allowedSenders: { t: "array", of: { t: "string" }, default: [] },
+              addressTokens: {
+                t: "array",
+                default: [],
+                of: {
+                  t: "object",
+                  default: {},
+                  fields: {
+                    token: { t: "string", default: "" },
+                    senders: { t: "array", of: { t: "string" }, default: [] },
+                  },
+                },
+              },
+              senderAuth: {
+                t: "object",
+                default: {},
+                fields: {
+                  // DEVIATION (their floor defaults to "verified" via bundled
+                  // mailauth): without a DMARC verifier, "unverified" is the
+                  // only functioning floor — see src/automation/imap.ts.
+                  min: { t: "enum", values: ["verified", "asserted", "unverified", "mutable"], default: "unverified" },
+                  trustedAuthservIds: { t: "array", of: { t: "string" }, default: [] },
+                  acceptTrustedAuthservId: { t: "bool", default: false },
+                },
+              },
+              deliver: { t: "bool", default: false },
+              to: { t: "string", default: "" },
+              includeBody: { t: "bool", default: true },
+              maxBytes: { t: "int", min: 1000, max: 1048576, default: 20000 },
+            },
+          },
+        },
+      },
+    },
     // Inbound HTTP webhooks (P1 A4) — a dedicated hook token, not the
     // gateway token; POST-only; disabled until enabled+token are both set.
     hooks: {
@@ -890,6 +955,31 @@ export interface SuparClawConfig {
     delivery: { mode: "none" | "announce" | "webhook"; to: string; suppressEmpty: boolean };
     failureAlerts: { enabled: boolean; threshold: number; cooldownMinutes: number; to: string };
     webhookAllowHostnames: string[];
+  };
+  // P3 #25 — IMAP email trigger (their automation/imap).
+  imap: {
+    enabled: boolean;
+    accounts: Record<
+      string,
+      {
+        enabled: boolean;
+        host: string;
+        port: number;
+        secure: boolean;
+        user: string;
+        password: string;
+        passwordEnv: string;
+        mailbox: string;
+        watch: { mode: "auto" | "interval" | "idle"; pollSeconds: number };
+        allowedSenders: string[];
+        addressTokens: { token: string; senders: string[] }[];
+        senderAuth: { min: "verified" | "asserted" | "unverified" | "mutable"; trustedAuthservIds: string[]; acceptTrustedAuthservId: boolean };
+        deliver: boolean;
+        to: string;
+        includeBody: boolean;
+        maxBytes: number;
+      }
+    >;
   };
   hooks: {
     enabled: boolean;

@@ -41,7 +41,7 @@ export interface ChatPayload {
   sessionKey: string;
   text: string;
   isMainSession?: boolean;
-  source: "tui" | "gateway" | "telegram" | "cron" | "cli" | "webhook";
+  source: "tui" | "gateway" | "telegram" | "cron" | "cli" | "webhook" | "imap";
   /** Per-run model override (surface-level choice); unset means the default. */
   model?: string;
   /** Per-run thinking effort override; unset means session/default policy. */
@@ -90,6 +90,7 @@ export class Service {
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
+  #imap: import("../automation/imap.js").ImapWatcher | null = null;
   /** Per-job last-failure-alert stamp (P2 #14 cooldown bookkeeping). */
   #cronAlertedAt = new Map<string, number>();
   /** Pending ask_user sets (P2 #8): id → live closure + per-question state. */
@@ -777,6 +778,41 @@ export class Service {
     // Config edits made outside config.set (sc config set, hand edits) must
     // reach the running daemon too.
     this.watchConfig();
+
+    // IMAP email trigger (P3 #25 — their automation/imap plugin): per-account
+    // watchers dispatch admitted mail to isolated hook:imap:... reader runs.
+    if (this.config.imap?.enabled) {
+      const { ImapWatcher, imapStatePath } = await import("../automation/imap.js");
+      this.#imap = new ImapWatcher(() => this.config.imap, {
+        log: this.log,
+        statePath: imapStatePath(this.store.stateDir),
+        dispatch: async ({ sessionKey, prompt, deliver, to, account }) => {
+          let finalText = "";
+          await this.send({
+            sessionKey,
+            text: prompt,
+            isMainSession: false,
+            source: "imap",
+            reply: async (text) => {
+              finalText = text;
+            },
+          });
+          if (deliver) await this.#deliverImap(account, finalText, to);
+        },
+      });
+      this.#imap.start();
+      this.log.info("imap watcher started (their automation/imap lane)");
+    }
+  }
+
+  async #deliverImap(account: string, text: string, to: string): Promise<void> {
+    if (!to) return; // store-only (their deliver:false default surface)
+    const tg = /^telegram:(\d+)$/.exec(to) ?? /^(\d+)$/.exec(to);
+    if (tg && this.#telegram?.running) {
+      await this.#telegram.sendText(Number(tg[1]), `📧 imap/${account}\n\n${text}`).catch((e) => this.log.warn(`imap deliver failed: ${(e as Error).message}`));
+    } else if (tg) {
+      this.log.warn(`imap deliver target ${to} but telegram is not running`);
+    }
   }
 
   /**
