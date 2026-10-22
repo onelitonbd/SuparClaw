@@ -11,12 +11,14 @@ import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, p
 import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
 import { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
+import type { AskUserQuestion, AskUserResult } from "./ask-user.js";
 
 export type QueueMode = "steer" | "followup" | "collect" | "interrupt";
 
 export type RunEvent =
   | { type: "start"; runId: string; sessionKey: string }
   | { type: "delta"; text: string }
+  | { type: "question"; id: string; sessionKey: string; questions: { id: string; question: string; options: string[]; multi: boolean }[] }
   | { type: "reasoning"; text: string }
   | { type: "tool"; callId: string; name: string; status: "running" | "done" | "error" | "skipped"; detail?: string; ms?: number }
   | { type: "retry"; model: string; attempt: number; max: number; error: string }
@@ -97,6 +99,13 @@ export interface LoopDeps {
     args: Record<string, unknown>,
     ctx?: ApprovalRequestCtx,
   ) => Promise<boolean | ApprovalOutcome>;
+  /**
+   * ask_user (P2 #8): pose questions to the operator and await the answer.
+   * MAIN sessions only — the loop passes undefined elsewhere so the tool
+   * reports its availability honestly. May wait indefinitely (house rule:
+   * no time limits on humans).
+   */
+  askUser?: (sessionKey: string, questions: AskUserQuestion[]) => Promise<AskUserResult>;
   /** Fires once when a subagent child turn settles (registry + announce). */
   onRunFinished?: (
     sessionKey: string,
@@ -557,6 +566,8 @@ export class AgentLoop {
         },
         sessionKey,
         subagents: this.deps.subagents,
+        // ask_user (P2 #8): main-session-only, exactly like their gate.
+        askUser: isMain && this.deps.askUser ? (qs) => this.deps.askUser!(sessionKey, qs) : undefined,
       };
 
       // Mid-run steering (OpenClaw steering queue parity): a steer is injected

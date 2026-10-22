@@ -50,6 +50,7 @@ export { resolveDelivery, isEmptySummary, assertWebhookUrl, webhookPayload, erro
 export { parseLogLine, filterLogLines, readLogTail, readLogDelta } from "./cli/logs.js";
 export { parseRepoSlug, resolveRef, currentSha, computeUpdatePlan, fetchRemoteHead } from "./cli/update.js";
 export { sandboxEnv, planSandbox, findPrlimit, findProot } from "./agent/exec-sandbox.js";
+export { normalizeAskUserArgs, matchTextReply, renderQuestionText, ASK_LIMITS, type AskUserQuestion, type AskUserResult } from "./agent/ask-user.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 

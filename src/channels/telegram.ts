@@ -4,6 +4,7 @@ import type { Logger } from "../util/log.js";
 import { workspaceDir } from "../util/paths.js";
 import { downloadInboundMedia, mediaPlaceholder, planInboundMedia, type InboundMedia } from "./telegram-media.js";
 import { BotLoopGuard } from "./bot-guard.js";
+import { renderQuestionText } from "../agent/ask-user.js";
 import {
   addProvider,
   canonicalModelRef,
@@ -44,6 +45,8 @@ interface PendingMessage {
   texts: string[];
   /** Inbound media queued with these texts (P1 A5); placeholders fill on flush. */
   media: InboundMedia[];
+  /** Public API for tests: DM chats ride the main-session ask_user surface. */
+  isMain?: boolean;
   timer: NodeJS.Timeout;
   firstAt: number;
 }
@@ -87,6 +90,10 @@ export class TelegramChannel {
     bot.on("message", (ctx) => {
       void this.#onMessage(ctx).catch((err) => this.log.error(`telegram message failed: ${(err as Error).message}`));
     });
+    // ask_user + approval buttons (P2 #8/#17): shared callback-query router.
+    bot.on("callback_query:data", (ctx) => {
+      void this.#onCallbackQuery(ctx).catch((err) => this.log.error(`telegram callback failed: ${(err as Error).message}`));
+    });
 
     const me = await bot.api.getMe();
     this.#username = me.username;
@@ -120,6 +127,57 @@ export class TelegramChannel {
   #paired(userId: number): boolean {
     const cfg = this.service.config.channels.telegram;
     return cfg.allowFrom.includes(String(userId));
+  }
+
+  /**
+   * Button taps: `qu:<setId>:<qid>:<n|other|skip>` (ask_user, P2 #8) and
+   * later approval cards share one router — only PAIRED users resolve
+   * (their approval-surface rule), the card gets edited to the outcome.
+   */
+  async #onCallbackQuery(ctx: Context): Promise<void> {
+    const data = ctx.callbackQuery?.data ?? "";
+    const fromId = ctx.from?.id;
+    if (fromId === undefined || !data) return;
+    const cfg = this.service.config.channels.telegram;
+    if (!this.#paired(fromId)) {
+      await ctx.answerCallbackQuery({ text: "Only paired users can decide this", show_alert: true }).catch(() => {});
+      return;
+    }
+    void cfg;
+    const parts = data.split(":");
+    const kind = parts[0];
+
+    if (kind === "qu") {
+      // ask_user answer buttons.
+      const [, setId, qid, choice] = parts;
+      if (!setId || !qid || !choice) return;
+      const set = this.service.pendingQuestionForId(setId);
+      if (!set) {
+        await ctx.answerCallbackQuery({ text: "Already resolved" }).catch(() => {});
+        return;
+      }
+      const q = set.questions.find((qq) => qq.id === qid);
+      if (!q) return;
+      if (choice === "other") {
+        this.service.questionNeedsOther(setId, qid);
+        await ctx.answerCallbackQuery({ text: "Reply with your own words" }).catch(() => {});
+        await ctx.editMessageText(`❓ ${q.question}\n\n✏️ Reply with your own words (next message is the answer for this question).`).catch(() => {});
+        return;
+      }
+      if (choice === "skip") {
+        this.service.answerQuestionPart(setId, qid, [], { skip: true });
+        await ctx.answerCallbackQuery({ text: "Skipped" }).catch(() => {});
+        await ctx.editMessageText(`❓ ${q.question}\n\n⏭ skipped`).catch(() => {});
+        return;
+      }
+      const idx = Number(choice);
+      const value = q.options[idx];
+      if (value === undefined) return;
+      this.service.answerQuestionPart(setId, qid, [value]);
+      await ctx.answerCallbackQuery({ text: value.slice(0, 180) }).catch(() => {});
+      await ctx.editMessageText(`❓ ${q.question}\n\n✔ ${value}`).catch(() => {});
+      return;
+    }
   }
 
   #groupAllowed(chatId: number): boolean {
@@ -217,6 +275,9 @@ export class TelegramChannel {
     const entry: PendingMessage = {
       texts: text.trim() ? [text] : [],
       media: [...media],
+      // ask_user (P2 #8): a DM with the owner IS the operator's main surface
+      // (their "telegram is a supported main-session surface"); groups are not.
+      isMain: !isGroup,
       firstAt: Date.now(),
       timer: setTimeout(() => void this.#flush(key), cfg.batchMs),
     };
@@ -370,9 +431,24 @@ export class TelegramChannel {
     await this.service.send({
       sessionKey: key.startsWith("telegram:") ? key : `telegram:${key}`,
       text,
-      isMainSession: false,
+      isMainSession: pending.isMain === true,
       source: "telegram",
       attachments,
+      onQuestion: async (event) => {
+        // ask_user cards (P2 #8): single-select rides an inline keyboard
+        // (option buttons + Other + Skip); multi-select falls back to the
+        // numbered text renderer (their docs' surface distinction).
+        const buildKeyboard = (q: { id: string; question: string; options: string[]; multi: boolean }): { text: string; reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] } } => {
+          if (q.multi) return { text: renderQuestionText(q, event.questions.indexOf(q) + 1, event.questions.length) };
+          const rows = q.options.map((opt, i) => [{ text: opt, callback_data: `qu:${event.id}:${q.id}:${i}` }]);
+          rows.push([{ text: "✏️ Other…", callback_data: `qu:${event.id}:${q.id}:other` }, { text: "⏭ Skip", callback_data: `qu:${event.id}:${q.id}:skip` }]);
+          return { text: `❓ ${q.question}`, reply_markup: { inline_keyboard: rows } };
+        };
+        for (const q of event.questions) {
+          const b = buildKeyboard(q);
+          await bot.api.sendMessage(chatId, b.text, b.reply_markup ? { reply_markup: b.reply_markup } : {}).catch((err) => this.log.warn(`telegram: question send failed: ${(err as Error).message}`));
+        }
+      },
       onDelta: async () => {
         if (!preview || cfg.streaming === "off") return;
         const now = Date.now();

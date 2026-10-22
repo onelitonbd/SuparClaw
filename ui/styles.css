@@ -330,6 +330,14 @@ textarea:focus-visible {
 
 .chip:hover { background: var(--hover); }
 
+/* ask_user picked option (P2 #8) */
+.chip--on {
+  background: var(--accent-bg, var(--hover));
+  border-color: var(--accent, currentColor);
+  color: var(--accent-strong, inherit);
+  font-weight: 600;
+}
+
 /* ------------------------------------------------------------ notice ---- */
 
 .notice {

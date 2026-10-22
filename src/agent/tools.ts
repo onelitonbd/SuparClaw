@@ -36,6 +36,11 @@ export interface ToolContext {
   yieldArmed?: boolean;
   /** Sub-agent control surface, wired by the service (spawn/yield/list/send). */
   subagents?: SubagentCtl;
+  /**
+   * ask_user surface (P2 #8): present on MAIN sessions only (their rule);
+   * asking elsewhere must fail honestly, so the tool checks for undefined.
+   */
+  askUser?: (questions: import("./ask-user.js").AskUserQuestion[]) => Promise<import("./ask-user.js").AskUserResult>;
 }
 
 /** The sub-agent operations the session family of tools can invoke. */
@@ -473,6 +478,47 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
     });
   }
+
+  // ----- ask_user (P2 #8; their tools/ask-user.md) -----
+  tools.push({
+    name: "ask_user",
+    description:
+      "Ask the operator up to 3 questions (2–4 options each) and wait for their answer. " +
+      "Use ONLY when a decision genuinely blocks progress and cannot be inferred from the transcript, " +
+      "files, or sensible defaults — every ask interrupts the operator's flow. " +
+      "Never ask for secrets or credentials. Other (free text) and Skip are always offered implicitly — " +
+      "do not add them as options. Main session only.",
+    parameters: {
+      type: "object",
+      properties: {
+        questions: {
+          type: "array",
+          description: "1–3 questions, each with 2–4 options",
+          items: {
+            type: "object",
+            properties: {
+              id: str("Stable id (optional, q1/q2/q3 otherwise)"),
+              question: str("The question text"),
+              options: { type: "array", items: str("One option label"), description: "2–4 options" },
+              multi: { type: "boolean", description: "Allow multiple selections" },
+            },
+            required: ["question", "options"],
+          },
+        },
+      },
+      required: ["questions"],
+    },
+    async run(args, ctx) {
+      const { normalizeAskUserArgs } = await import("./ask-user.js");
+      const { questions, error } = normalizeAskUserArgs(args);
+      if (error) return `error: ${error}`;
+      if (!ctx.askUser) {
+        return "error: ask_user is only available in the main session — make a reasonable decision on your own instead";
+      }
+      const result = await ctx.askUser(questions);
+      return JSON.stringify(result);
+    },
+  });
 
   // ----- session family (OpenClaw sessions_spawn / sessions_yield / subagents) -----
   tools.push(

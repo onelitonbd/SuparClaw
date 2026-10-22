@@ -53,6 +53,7 @@ export interface ChatHandlers {
   abort(): void;
   approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
+  questionAnswer(id: string, answers: Record<string, string[]>): void;
 }
 
 type ToolStatus = "running" | "done" | "error" | "pending" | "skipped";
@@ -120,6 +121,8 @@ export class Chat {
   #autoScroll = true;
   #toolStart = new Map<string, number>();
   #pendingApprovals = new Map<string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }>();
+  /** ask_user card state (P2 #8): picked[qid] = chosen options/custom text. */
+  #pendingQuestion: { id: string; questions: { id: string; question: string; options: string[]; multi: boolean }[]; picked: Record<string, string[]> } | null = null;
 
   constructor(root: HTMLElement, handlers: ChatHandlers) {
     this.#handlers = handlers;
@@ -647,6 +650,69 @@ export class Chat {
     this.#renderApprovals();
     this.#handlers.approve(callId, decision);
     this.notice(decision === "deny" ? "denied" : decision === "always" ? "always allowed (this directory)" : "approved once");
+  }
+
+  /** ---- ask_user (P2 #8): option card over the composer ---- */
+
+  question(id: string, questions: { id: string; question: string; options: string[]; multi: boolean }[]): void {
+    this.#pendingQuestion = { id, questions, picked: {} };
+    this.#renderQuestion();
+  }
+
+  #renderQuestion(): void {
+    const box = document.getElementById("question") as HTMLElement;
+    if (!this.#pendingQuestion) {
+      box.hidden = true;
+      this.#composer.classList.remove("composer--attached");
+      return;
+    }
+    box.hidden = false;
+    this.#composer.classList.add("composer--attached");
+    const body = document.getElementById("question-body") as HTMLElement;
+    body.innerHTML = "";
+    const st = this.#pendingQuestion;
+    for (const q of st.questions) {
+      body.append(el("div", { class: "approval__why" }, [q.question]));
+      const row = el("div", { class: "chips" });
+      for (const opt of q.options) {
+        const on = (st.picked[q.id] ?? []).includes(opt);
+        const chip = el("button", { class: `chip${on ? " chip--on" : ""}`, type: "button" }, [opt]);
+        chip.onclick = () => {
+          const cur = st.picked[q.id] ?? [];
+          if (q.multi) {
+            st.picked[q.id] = on ? cur.filter((o) => o !== opt) : [...cur, opt];
+          } else {
+            st.picked[q.id] = [opt];
+          }
+          this.#renderQuestion();
+        };
+        row.append(chip);
+      }
+      // Other — free-text capture (always present; their doc's rule).
+      const other = el("button", { class: "chip", type: "button" }, ["Other…"]);
+      other.onclick = () => {
+        const text = window.prompt(`${q.question} — your own answer:`);
+        if (text && text.trim()) {
+          st.picked[q.id] = [text.trim()];
+          this.#renderQuestion();
+        }
+      };
+      row.append(other);
+      body.append(row);
+    }
+    (document.getElementById("question-answer") as HTMLElement).onclick = () => this.#resolveQuestion(false);
+    (document.getElementById("question-skip") as HTMLElement).onclick = () => this.#resolveQuestion(true);
+  }
+
+  #resolveQuestion(skip: boolean): void {
+    const st = this.#pendingQuestion;
+    if (!st) return;
+    const answers: Record<string, string[]> = {};
+    for (const q of st.questions) answers[q.id] = skip ? [] : (st.picked[q.id] ?? []);
+    this.#pendingQuestion = null;
+    this.#renderQuestion();
+    this.#handlers.questionAnswer(st.id, answers);
+    this.notice(skip ? "question skipped" : "answers sent");
   }
 
   /** ---- internals ---- */

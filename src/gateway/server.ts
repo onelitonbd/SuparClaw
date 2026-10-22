@@ -430,6 +430,27 @@ export class Gateway {
           send(okFrame(id, { resolved: service.resolveApproval(String(params["callId"] ?? ""), decision) }));
           return;
         }
+        case "chat.questionAnswer": {
+          // answer an ask_user card (P2 #8) — WS path resolves the whole set
+          const idq = service.pendingQuestion(String(params["sessionKey"] ?? ""));
+          if (!idq) {
+            send(errFrame(id, "not_found", "no pending question for that session"));
+            return;
+          }
+          const answersRaw = (params["answers"] ?? {}) as Record<string, unknown>;
+          const all = idq.questions.every((q) => answersRaw[q.id] !== undefined);
+          if (!all) {
+            send(errFrame(id, "bad_params", "answers must cover every question id"));
+            return;
+          }
+          for (const q of idq.questions) {
+            const raw = answersRaw[q.id];
+            const values = Array.isArray(raw) ? raw.map(String) : raw === null ? [] : [String(raw)];
+            service.answerQuestionPart(idq.id, q.id, values, { skip: values.length === 0 });
+          }
+          send(okFrame(id, { id: idq.id, resolved: true }));
+          return;
+        }
         case "session.execMode": {
           // Per-session /exec override (TUI). null clears it.
           const key = String(params["sessionKey"] ?? "main:main");

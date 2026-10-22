@@ -7,6 +7,7 @@ import { Store } from "../state/db.js";
 import { createLogger, type Logger } from "../util/log.js";
 import { dbPath, ensureDirs, logsDir, readTextSafe, stateDir, workspaceDir } from "../util/paths.js";
 import { AgentLoop, type QueueMode, type RunEvent } from "../agent/loop.js";
+import { matchTextReply, type AskUserQuestion, type AskUserResult } from "./ask-user.js";
 import { assertWebhookUrl, postWebhook, webhookPayload, resolveDelivery, isEmptySummary, errorStreak, shouldAlert } from "../cron/delivery.js";
 import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
@@ -53,6 +54,8 @@ export interface ChatPayload {
   onDelta?: (delta: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
   onApproval?: (event: Extract<RunEvent, { type: "approval" }>) => void | Promise<void>;
+  /** ask_user (P2 #8): the surface renders the question set inline. */
+  onQuestion?: (event: Extract<RunEvent, { type: "question" }>) => void | Promise<void>;
 }
 
 export type ServiceEvent =
@@ -63,6 +66,17 @@ export type ServiceEvent =
   | { type: "session.updated"; sessionKey: string; name: string };
 
 export type ApprovalDecision = "once" | "always" | "deny";
+
+/** Live ask_user set (P2 #8): closure + per-question answers. */
+interface PendingQuestionSet {
+  id: string;
+  sessionKey: string;
+  questions: AskUserQuestion[];
+  partial: Record<string, string[]>;
+  explicitSkip: Set<string>;
+  awaitingOther: string | null;
+  resolve: (r: AskUserResult) => void;
+}
 
 export class Service {
   readonly log: Logger;
@@ -76,6 +90,10 @@ export class Service {
   #cron: Scheduler | null = null;
   /** Per-job last-failure-alert stamp (P2 #14 cooldown bookkeeping). */
   #cronAlertedAt = new Map<string, number>();
+  /** Pending ask_user sets (P2 #8): id → live closure + per-question state. */
+  #questions = new Map<string, PendingQuestionSet>();
+  /** sessionKey → last payload's onQuestion hook (for telegram surfacing). */
+  #questionHooks = new Map<string, ChatPayload["onQuestion"]>();
   #dream: DreamHandle | null = null;
   #dreamSig = "";
   #titleBusy = new Set<string>();
@@ -124,6 +142,7 @@ export class Service {
       log: this.log,
       llm,
       requestApproval: (callId, tool, args, ctx) => this.requestApproval(callId, tool, args, ctx),
+      askUser: (sessionKey, questions) => this.#askUser(sessionKey, questions),
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are
@@ -750,6 +769,121 @@ export class Service {
     this.log.warn(`cron ${job.name}: failure streak ${streak} — alerted main session`);
   }
 
+  // ---- ask_user (P2 #8) ----------------------------------------------------
+
+  /**
+   * Pose a validated question set and await the operator's input (their
+   * contract: broadcast to every surface, resolve wherever the answer came
+   * from first; house rule: NO timeout — humans answer when they answer).
+   */
+  #askUser(sessionKey: string, questions: AskUserQuestion[]): Promise<AskUserResult> {
+    const id = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+    const qEvent: Extract<RunEvent, { type: "question" }> = { type: "question", id, sessionKey, questions };
+    return new Promise<AskUserResult>((resolve) => {
+      this.#questions.set(id, { id, sessionKey, questions, partial: {}, explicitSkip: new Set(), awaitingOther: null, resolve });
+      this.events.emit("event", { type: "chat", sessionKey, event: qEvent } satisfies ServiceEvent);
+      void this.#questionHooks.get(sessionKey)?.(qEvent);
+      this.log.info(`ask_user ${id}: ${questions.length} question(s) for ${sessionKey}`);
+    });
+  }
+
+  /** Full-set resolution: every qid must have a value (empty = skipped that one). */
+  #questionMaybeResolve(q: PendingQuestionSet): boolean {
+    if (!q.questions.every((qq) => q.partial[qq.id] !== undefined)) return false;
+    this.#questions.delete(q.id);
+    const skipped = q.questions.every((qq) => (q.partial[qq.id] ?? []).length === 0) && q.explicitSkip.size > 0;
+    const answers: Record<string, string[]> = {};
+    for (const qq of q.questions) answers[qq.id] = q.partial[qq.id] ?? [];
+    // Transcript audit: the question set + everything the operator answered.
+    const sess = this.store.getSessionByKey(q.sessionKey);
+    if (sess) {
+      const lines = q.questions.map((qq) => {
+        const a = q.partial[qq.id] ?? [];
+        return `  ${qq.id}: ${qq.question} → ${a.length > 0 ? a.join(", ") : "(skipped)"}`;
+      });
+      this.store.appendMessage(sess.id, "tool", `[ask_user ${q.id}${skipped ? " · skipped" : ""}]\n${lines.join("\n")}`);
+    }
+    this.log.info(`ask_user ${q.id}: resolved${skipped ? " (skipped)" : ""}`);
+    q.resolve({ answers, skipped });
+    return true;
+  }
+
+  /**
+   * Surface-agnostic single-question answer (telegram buttons / future cards):
+   * returns a short acknowledgment or null when the id/question is wrong.
+   */
+  answerQuestionPart(id: string, qid: string, values: string[], opts: { skip?: boolean; custom?: boolean } = {}): string | null {
+    const q = this.#questions.get(id);
+    if (!q) return null;
+    if (!q.questions.some((qq) => qq.id === qid)) return null;
+    q.awaitingOther = null;
+    q.partial[qid] = values;
+    if (opts.skip) q.explicitSkip.add(qid);
+    this.#questionMaybeResolve(q);
+    return opts.skip ? "skipped" : values.length > 0 ? values.join(", ") : (opts.custom ? "" : "ok");
+  }
+
+  /** Arm free-text capture after a surface chose "Other" (next text = answer). */
+  questionNeedsOther(id: string, qid: string): boolean {
+    const q = this.#questions.get(id);
+    if (!q || !q.questions.some((qq) => qq.id === qid)) return false;
+    q.awaitingOther = qid;
+    return true;
+  }
+
+  /** Live pending set for a session (the /question re-render hook). */
+  pendingQuestion(sessionKey: string): { id: string; questions: AskUserQuestion[] } | null {
+    for (const q of this.#questions.values()) if (q.sessionKey === sessionKey) return { id: q.id, questions: q.questions };
+    return null;
+  }
+
+  /** Lookup by set id (telegram callback router). */
+  pendingQuestionForId(id: string): { id: string; sessionKey: string; questions: AskUserQuestion[] } | null {
+    const q = this.#questions.get(id);
+    return q ? { id: q.id, sessionKey: q.sessionKey, questions: q.questions } : null;
+  }
+
+  /** Re-emit a pending question set (the /question command). */
+  reopenQuestion(sessionKey: string): boolean {
+    const pending = this.pendingQuestion(sessionKey);
+    if (!pending) return false;
+    const qEvent: Extract<RunEvent, { type: "question" }> = { type: "question", id: pending.id, sessionKey, questions: pending.questions };
+    this.events.emit("event", { type: "chat", sessionKey, event: qEvent } satisfies ServiceEvent);
+    void this.#questionHooks.get(sessionKey)?.(qEvent);
+    return true;
+  }
+
+  /**
+   * Text-reply interception (their "text replies answer by number/label,
+   * running BEFORE queueing"): the strict forms only — numbers, exact/
+   * prefixed labels, "other …", "skip"; anything else falls through to the
+   * normal pipeline so users can still talk while a card waits. Returns a
+   * confirmation line when it consumed the text, else null.
+   */
+  #tryQuestionReply(sessionKey: string, text: string): string | null {
+    const pending = this.pendingQuestion(sessionKey);
+    if (!pending) return null;
+    const q = this.#questions.get(pending.id)!;
+    // Free-text "Other" capture beats everything.
+    if (q.awaitingOther) {
+      const qid = q.awaitingOther;
+      this.answerQuestionPart(pending.id, qid, [text], { custom: true });
+      return `noted — "${text.length > 60 ? `${text.slice(0, 60)}…` : text}"`;
+    }
+    // One unanswered question at a time gets text answers (their rule: answer
+    // the FIRST unknown question; buttons/explicit ids handle the rest).
+    const target = q.questions.find((qq) => q.partial[qq.id] === undefined);
+    if (!target) return null;
+    const verdict = matchTextReply(target, text);
+    if (!verdict) return null;
+    if (verdict.kind === "skip") {
+      this.answerQuestionPart(pending.id, target.id, [], { skip: true });
+      return `question ${target.id} skipped`;
+    }
+    this.answerQuestionPart(pending.id, target.id, verdict.value, { custom: verdict.custom });
+    return verdict.custom && verdict.value.length === 0 ? null : `answer recorded: ${verdict.value.join(", ")}`;
+  }
+
   /**
    * Chat commands shared by every surface (their /queue, /followup, /steer,
    * /subagents, /stop). Returns null for ordinary messages, or a payload
@@ -820,6 +954,13 @@ export class Service {
       this.store.setMeta(metaKey, mode);
       return { reply: `Reply usage for this session: ${mode}.` };
     }
+    // /question (P2 #8) — re-show the pending ask_user set (their reopen).
+    if (cmd === "/question") {
+      if (this.reopenQuestion(payload.sessionKey)) {
+        return { reply: "re-showing the pending question…" };
+      }
+      return { reply: "no pending question for this session" };
+    }
     // /followup <msg> — one specific message as its own turn, mode untouched.
     if (cmd === "/followup") {
       if (!rest) return { reply: "usage: /followup <message>" };
@@ -857,6 +998,16 @@ export class Service {
 
   /** One entry point for every surface: TUI, WS clients, Telegram, cron. */
   async send(payload: ChatPayload): Promise<void> {
+    // ask_user text-reply interception (P2 #8; their "before queueing" rule):
+    // strict answer forms get consumed with a confirmation, everything else
+    // falls through untouched.
+    if (!payload.text.trim().startsWith("/")) {
+      const consumed = this.#tryQuestionReply(payload.sessionKey, payload.text);
+      if (consumed !== null) {
+        await payload.reply(consumed);
+        return;
+      }
+    }
     // Command surface first (never reaches the model).
     const cmd = await this.#commands(payload.text, payload);
     if (cmd?.reply !== undefined) {
@@ -882,6 +1033,8 @@ export class Service {
     }
     // Unattended exec policy (P2 #10): the approval path consults the source.
     this.#sessionSources.set(payload.sessionKey, payload.source);
+    // ask_user surfacing (P2 #8): remember how THIS surface wants questions.
+    if (payload.onQuestion) this.#questionHooks.set(payload.sessionKey, payload.onQuestion);
 
     // Lifecycle events (start/delta/tool/approval/final/idle) all come from the loop with
     // the real runId — no synthetic start here, so surfaces never see two runs.

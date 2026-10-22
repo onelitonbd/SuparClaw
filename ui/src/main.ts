@@ -33,6 +33,8 @@ const chat = new Chat(document.body, {
   approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
   // Remove just that queued message (their chat.abort runId parity).
   cancelQueued: (runId) => { void gateway.request("chat.abort", { sessionKey, runId }); },
+  // ask_user card answers (P2 #8) ride their own RPC (session-scoped).
+  questionAnswer: (_id, answers) => { void gateway.request("chat.questionAnswer", { sessionKey, answers }); },
 });
 
 /* ---------------- events ---------------- */
@@ -115,6 +117,10 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
         ? (e.exec as { mode: string; mintable: boolean; reason: string })
         : undefined;
       chat.approval(String(e.callId), String(e.tool), e.args, exec);
+      break;
+    }
+    case "question": {
+      chat.question(String(e.id), (e.questions as { id: string; question: string; options: string[]; multi: boolean }[]) ?? []);
       break;
     }
       break;
