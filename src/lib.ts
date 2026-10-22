@@ -47,6 +47,7 @@ export { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./agent/l
 export { usageNumbers, runCost, fmtTokens, fmtCost, usageFooter, summarizeUsage } from "./util/usage.js";
 export { jobTimezone } from "./cron/scheduler.js";
 export { resolveDelivery, isEmptySummary, assertWebhookUrl, webhookPayload, errorStreak, shouldAlert } from "./cron/delivery.js";
+export { parseLogLine, filterLogLines, readLogTail, readLogDelta } from "./cli/logs.js";
 export { createLogger } from "./util/log.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 
