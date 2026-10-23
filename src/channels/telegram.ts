@@ -35,10 +35,95 @@ async function createBot(token: string, proxy = "") {
   // HTTP(S)/SOCKS proxy (undici ProxyAgent as the fetch dispatcher).
   const url = proxy.trim();
   if (!url) return new Bot(token);
-  const { ProxyAgent } = await import("undici");
+  const { dispatcher, fetch } = await proxyBits(url);
   type BotConfig = ConstructorParameters<typeof import("grammy").Bot>[1];
-  const client = { baseFetchConfig: { dispatcher: new ProxyAgent(url) } } as NonNullable<BotConfig>["client"];
+  const client = { fetch: fetch as unknown as typeof fetch, baseFetchConfig: { dispatcher } } as unknown as NonNullable<BotConfig>["client"];
   return new Bot(token, { client });
+}
+
+/** undici pieces the proxy path needs, resolved from the named export OR the
+ *  module default: esbuild's code splitting compiles undici's CJS entry to a
+ *  chunk whose only export is the default namespace object, so
+ *  `const { ProxyAgent } = await import("undici")` is undefined in the
+ *  production bundle ("<mangled> is not a constructor") even though tsx/dev
+ *  resolves it named. Same trap as grammy's `Bot` above. */
+async function undiciParts(): Promise<{
+  ProxyAgent?: new (url: string) => unknown;
+  Socks5ProxyAgent?: new (url: string) => unknown;
+  fetch?: (input: unknown, init?: Record<string, unknown>) => Promise<unknown>;
+}> {
+  const mod = (await import("undici")) as unknown as {
+    ProxyAgent?: new (url: string) => unknown;
+    Socks5ProxyAgent?: new (url: string) => unknown;
+    fetch?: (input: unknown, init?: Record<string, unknown>) => Promise<unknown>;
+    default?: {
+      ProxyAgent?: new (url: string) => unknown;
+      Socks5ProxyAgent?: new (url: string) => unknown;
+      fetch?: (input: unknown, init?: Record<string, unknown>) => Promise<unknown>;
+    };
+  };
+  return {
+    ProxyAgent: mod.ProxyAgent ?? mod.default?.ProxyAgent,
+    Socks5ProxyAgent: mod.Socks5ProxyAgent ?? mod.default?.Socks5ProxyAgent,
+    fetch: mod.fetch ?? mod.default?.fetch,
+  };
+}
+
+/**
+ * Hand undici's fetch an init object whose `signal` is a NATIVE AbortSignal.
+ *
+ * grammY creates its AbortController from the `abort-controller` polyfill
+ * (`out/shim.node.js`), whose AbortSignal is not node's own. node-fetch v2
+ * accepts it (it duck-checks `constructor.name`, which `keepNames` preserves),
+ * but undici's fetch does a strict `instanceof` check and throws
+ * `RequestInit: Expected signal ... to be an instance of AbortSignal`.
+ * Bridging preserves grammY's timeout/abort semantics for the proxied path.
+ */
+function withNativeSignal(init: Record<string, unknown> | undefined, dispatcher: unknown): Record<string, unknown> {
+  const base: Record<string, unknown> = { ...(init ?? {}), dispatcher };
+  const src = init?.["signal"] as { aborted?: boolean; addEventListener?: (t: string, fn: () => void, o?: { once?: boolean }) => void } | undefined;
+  if (!src || typeof src !== "object") return base;
+  if (src instanceof AbortSignal) return base; // already native
+  const ctl = new AbortController();
+  if (src.aborted) ctl.abort();
+  else if (typeof src.addEventListener === "function") src.addEventListener("abort", () => ctl.abort(), { once: true });
+  base["signal"] = ctl.signal;
+  return base;
+}
+
+/**
+ * Validate a proxy URL and build its undici dispatcher, plus a fetch bound to
+ * it. Grammy must call THAT fetch, not its default node-fetch: node-fetch v2
+ * silently ignores `dispatcher`, which would make the whole proxy setting a
+ * no-op (the bot then fails exactly as it did without one).
+ *
+ * Throws a message naming the config key instead of a minified constructor
+ * crash — a placeholder like "http://127.0.0.1:PORT" must say what's wrong.
+ */
+async function proxyBits(proxy: string): Promise<{ dispatcher: unknown; fetch: (input: unknown, init?: Record<string, unknown>) => Promise<unknown> }> {
+  let parsed: URL;
+  try {
+    parsed = new URL(proxy);
+  } catch {
+    throw new Error(`channels.telegram.proxy is not a valid proxy URL: "${proxy}" — use e.g. http://127.0.0.1:8080, or clear it for a direct connection`);
+  }
+  if (!/^(https?|socks)/.test(parsed.protocol)) {
+    throw new Error(`channels.telegram.proxy: unsupported scheme "${parsed.protocol}" (use http://, https:// or socks5://): "${proxy}"`);
+  }
+  const undici = await undiciParts();
+  const socks = /^socks/i.test(parsed.protocol);
+  const Dispatcher = socks ? undici.Socks5ProxyAgent : undici.ProxyAgent;
+  if (typeof Dispatcher !== "function") throw new Error("undici ProxyAgent export unavailable (bundle shape mismatch)");
+  if (typeof undici.fetch !== "function") throw new Error("undici fetch export unavailable (bundle shape mismatch)");
+  const fetchImpl = undici.fetch;
+  // socks:// and socks5h:// mean socks5:// to undici's agent.
+  const dispatcher = socks
+    ? new Dispatcher(proxy.replace(/^socks(5h)?:/i, "socks5:"))
+    : new Dispatcher(proxy);
+  return {
+    dispatcher,
+    fetch: (input, init) => fetchImpl(input, withNativeSignal(init, dispatcher)),
+  };
 }
 
 /** The proxy a channel uses: explicit config first, then the standard env. */
@@ -57,12 +142,23 @@ export function telegramProxy(cfgProxy: string | undefined): string {
  * "your carrier blocks Telegram — set channels.telegram.proxy" apart from
  * "network is fine, so the credential is wrong" (their connected-flavored
  * diagnosis instead of grammy's bare "Network request failed").
+ *
+ * When a proxy is configured the probe goes THROUGH it: a proxy that is dead
+ * must be reported as a proxy problem, not blamed on the carrier or the token.
+ * The default budget is generous (6s) — api.telegram.org is regularly >2.5s
+ * from slow mobile links, and a probe that times out reads as "blocked".
  */
-export async function probeTelegramApi(timeoutMs = 2500): Promise<{ ok: boolean; why: string }> {
+export async function probeTelegramApi(timeoutMs = 6000, proxy = ""): Promise<{ ok: boolean; why: string }> {
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), Math.max(500, timeoutMs));
     try {
+      const via = String(proxy ?? "").trim();
+      if (via) {
+        const { fetch: viaFetch } = await proxyBits(via);
+        await viaFetch("https://api.telegram.org/", { signal: ctl.signal });
+        return { ok: true, why: "reachable via proxy" };
+      }
       await fetch("https://api.telegram.org/", { signal: ctl.signal });
       return { ok: true, why: "reachable" };
     } finally {
@@ -73,14 +169,18 @@ export async function probeTelegramApi(timeoutMs = 2500): Promise<{ ok: boolean;
   }
 }
 
-/** Flatten an error + its .cause chain — grammy's wrapper hides the real one. */
+/** Flatten an error + its .cause chain — grammy's wrapper hides the real one.
+ *  Grammy's `HttpError` stores the reason in `.error` (NOT `.cause`), and
+ *  node-fetch/undici put theirs in `.cause`; `.code` carries ECONNRESET-style
+ *  codes. Walk all three or the user only ever sees "Network request failed!". */
 export function describeError(err: unknown): string {
   const seen: string[] = [];
   let cur: unknown = err;
-  for (let i = 0; i < 4 && cur !== undefined && cur !== null; i++) {
+  for (let i = 0; i < 6 && cur !== undefined && cur !== null; i++) {
     const msg = cur instanceof Error ? String(cur.message || cur.name) : String(cur);
     if (!seen.includes(msg)) seen.push(msg);
-    cur = (cur as { cause?: unknown; code?: unknown }).cause ?? (cur as { code?: unknown }).code;
+    const box = cur as { cause?: unknown; code?: unknown; error?: unknown };
+    cur = box.cause ?? box.error ?? box.code;
   }
   return seen.join(" | ") || String(err);
 }

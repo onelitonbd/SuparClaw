@@ -35,7 +35,7 @@ import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileChec
 import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
 import { fetchModels } from "../config/providers.js";
-import { TelegramChannel, describeError, probeTelegramApi } from "../channels/telegram.js";
+import { TelegramChannel, describeError, probeTelegramApi, telegramProxy } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
 
 export interface ChatPayload {
@@ -410,12 +410,16 @@ export class Service {
     let error = this.#telegramError || "start failed";
     // Diagnose like their connect flow does: the Bot API itself may be
     // unreachable from this device entirely (carrier blocks) — then the
-    // remedy is a proxy, not a new token.
-    const probe = await probeTelegramApi(2500);
+    // remedy is a proxy, not a new token. Probe through the configured proxy
+    // so a dead proxy is reported as a proxy problem, not a token problem.
+    const via = telegramProxy((tg as { proxy?: string }).proxy);
+    const probe = await probeTelegramApi(6000, via);
     if (!probe.ok) {
-      error += ` — api.telegram.org is unreachable from this device (${probe.why}); the network likely blocks Telegram. Set channels.telegram.proxy (sc config set channels.telegram.proxy http://127.0.0.1:PORT, or the TELEGRAM_PROXY env) and retry: sc channels connect`;
+      error += via
+        ? ` — the proxy "${via}" did not carry api.telegram.org (${probe.why}); point channels.telegram.proxy at a proxy that is actually running, or clear it if this network reaches Telegram directly, then retry: sc channels connect`
+        : ` — api.telegram.org is unreachable from this device (${probe.why}); the network likely blocks Telegram. Set channels.telegram.proxy to a real http/socks proxy (sc config set channels.telegram.proxy http://127.0.0.1:8080, or the TELEGRAM_PROXY env) and retry: sc channels connect`;
     } else if (/network|fetch/i.test(error)) {
-      error += " — api.telegram.org is reachable, so the credential itself is the problem; paste a fresh @BotFather token (or /revoke + re-issue) and retry";
+      error += ` — api.telegram.org is reachable${via ? ` through "${via}"` : ""}, so the credential itself is the problem; paste a fresh @BotFather token (or /revoke + re-issue) and retry`;
     }
     return { ok: false, error };
   }

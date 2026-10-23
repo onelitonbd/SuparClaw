@@ -1,2 +1,0 @@
-import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
-function n(t){try{let e=JSON.parse(t);if(e&&typeof e=="object"&&typeof e.type=="string")return e}catch{}return null}function o(t,e){return{type:"res",id:t,ok:!0,payload:e}}function p(t,e,r){return{type:"res",id:t,ok:!1,error:{code:e,message:r}}}function s(t,e){return{type:"event",event:t,payload:e,at:Date.now()}}export{n as a,o as b,p as c,s as d};

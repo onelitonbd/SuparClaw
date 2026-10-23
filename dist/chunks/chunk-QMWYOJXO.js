@@ -1,0 +1,2 @@
+import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
+import{a as r}from"./chunk-YLPL3IHV.js";function o(t){try{let e=JSON.parse(t);if(e&&typeof e=="object"&&typeof e.type=="string")return e}catch{}return null}r(o,"parseFrame");function p(t,e){return{type:"res",id:t,ok:!0,payload:e}}r(p,"okFrame");function s(t,e,n){return{type:"res",id:t,ok:!1,error:{code:e,message:n}}}r(s,"errFrame");function a(t,e){return{type:"event",event:t,payload:e,at:Date.now()}}r(a,"eventFrame");export{o as a,p as b,s as c,a as d};

@@ -21,6 +21,12 @@ const common = {
   target: "node24",
   sourcemap: dev ? "inline" : false,
   minify: !dev,
+  // Preserve function/class .name under minification. node-fetch v2 (grammY's
+  // default fetch) validates the abort signal with
+  // `Object.getPrototypeOf(signal).constructor.name === "AbortSignal"`; without
+  // this, esbuild renames AbortSignal and every getMe() dies with
+  // "Expected signal to be an instanceof AbortSignal" in the production bundle.
+  keepNames: true,
   legalComments: "none",
   logLevel: "info",
   outdir: join(root, "dist"),
