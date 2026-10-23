@@ -41,12 +41,16 @@ test("probeTelegramApi: reports shape + cause, never throws", async () => {
   assert.ok(r.why.length > 0);
 });
 
-test("createBot wires the proxy into the Bot's fetch dispatcher", () => {
+test("createBot wires the proxy as grammy\'s fetch via raw CONNECT+TLS sockets", () => {
   const src = readFileSync(new URL("../src/channels/telegram.ts", import.meta.url), "utf8");
   assert.match(src, /async function createBot\(token: string, proxy = ""\)/);
   assert.match(src, /createBot\(cfg\.token, telegramProxy\(/);
-  assert.match(src, /new ProxyAgent\(url\)/);
-  assert.match(src, /baseFetchConfig: \{ dispatcher/);
+  // raw node-core proxied fetch, not undici (built-in fetch rejects foreign
+  // dispatchers with UND_ERR_INVALID_ARG — dead route).
+  assert.match(src, /makeProxiedFetch\(url\)/);
+  assert.match(src, /\{ fetch: makeProxiedFetch\(url\) \}/);
+  assert.doesNotMatch(src, /import\("undici"\)/);
+  assert.doesNotMatch(src, /new ProxyAgent/);
 });
 
 test("config schema: channels.telegram.proxy is a settable string", () => {

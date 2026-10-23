@@ -30,7 +30,6 @@
     "croner": "^10.0.1",
     "grammy": "^1.46.0",
     "json5": "^2.2.3",
-    "undici": "^8.12.3",
     "ws": "^8.22.0"
   },
   "devDependencies": {

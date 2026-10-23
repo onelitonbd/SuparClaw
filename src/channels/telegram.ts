@@ -35,9 +35,13 @@ async function createBot(token: string, proxy = "") {
   // HTTP(S)/SOCKS proxy (undici ProxyAgent as the fetch dispatcher).
   const url = proxy.trim();
   if (!url) return new Bot(token);
-  const { ProxyAgent } = await import("undici");
+  // undici's ProxyAgent can never work here: Node's built-in fetch rejects
+  // dispatchers from a different undici instance (UND_ERR_INVALID_ARG).
+  // grammY takes a fetch replacement — route its socket-level traffic
+  // through the proxy via node:core sockets instead.
+  const { makeProxiedFetch } = await import("./telegram-proxy.js");
   type BotConfig = ConstructorParameters<typeof import("grammy").Bot>[1];
-  const client = { baseFetchConfig: { dispatcher: new ProxyAgent(url) } } as NonNullable<BotConfig>["client"];
+  const client = { fetch: makeProxiedFetch(url) } as NonNullable<BotConfig>["client"];
   return new Bot(token, { client });
 }
 
