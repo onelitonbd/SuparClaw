@@ -76,7 +76,13 @@ test("service: failures carry the cause chain + unreachable-vs-bad-token diagnos
   assert.match(src, /const probe = await probeTelegramApi\(2500\)/);
   assert.match(src, /unreachable from this device/);
   assert.ok(src.includes('Check the proxy ('), "proxy-configured failure points at the proxy's own port");
-  assert.match(src, /reachable, so the credential itself is the problem/);
+  // reachability is classified properly: reject-token vs broken-proxy vs blip
+  assert.match(src, /answers plainly that it rejects this TOKEN/);
+  assert.match(src, /proxyProbe\(px, 3000\)/);
+  assert.ok(src.includes("your proxy is the broken link"));
+  assert.match(src, /Transient carrier blip/);
+  assert.match(src, /triedTransientRetry = false/);
+  assert.match(src, /automatic retry connected/);
 });
 
 test("full path: connect with a proxy set fails with a real network error, never a crash", async () => {

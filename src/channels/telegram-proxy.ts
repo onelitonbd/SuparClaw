@@ -254,6 +254,21 @@ export async function detectWorkingProxy(timeoutMs = 8000): Promise<string | nul
   });
 }
 
+/** Reach api.telegram.org THROUGH a specific proxy — when the direct probe
+ * works but the bot's request died, this separates "your proxy is broken"
+ * from "the carrier is flaky". */
+export async function proxyProbe(proxy: string, timeoutMs = 3000): Promise<{ ok: boolean; why: string }> {
+  try {
+    const f = makeProxiedFetch(proxy);
+    const res = await f("https://api.telegram.org/", { signal: AbortSignal.timeout(timeoutMs) });
+    if (Number(res.status) > 0) return { ok: true, why: "reachable through the proxy" };
+    return { ok: false, why: `no response through the proxy` };
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return { ok: false, why };
+  }
+}
+
 /**
  * A fetch(1)-compatible implementation whose sockets all pass through a
  * HTTP(S) CONNECT proxy or SOCKS5 — Node-core only.

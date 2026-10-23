@@ -36,7 +36,7 @@ import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
 import { fetchModels } from "../config/providers.js";
 import { TelegramChannel, describeError, probeTelegramApi } from "../channels/telegram.js";
-import { detectWorkingProxy } from "../channels/telegram-proxy.js";
+import { detectWorkingProxy, proxyProbe } from "../channels/telegram-proxy.js";
 import { Scheduler } from "../cron/scheduler.js";
 
 export interface ChatPayload {
@@ -438,7 +438,7 @@ export class Service {
    *  the real outcome so the UI can say "@bot online" or WHY it failed —
    *  unlike the fs-watcher path which is silent (and may not fire at all on
    *  some filesystems). */
-  async telegramReconnect(triedAutoProxy = false): Promise<{ ok: boolean; username?: string; error?: string; note?: string }> {
+  async telegramReconnect(triedAutoProxy = false, triedTransientRetry = false): Promise<{ ok: boolean; username?: string; error?: string; note?: string }> {
     const tg = this.config.channels.telegram;
     if (!tg.enabled) return { ok: false, error: "channels.telegram.enabled is off" };
     if (!tg.token) return { ok: false, error: "channels.telegram.token is empty — paste a @BotFather token first" };
@@ -458,6 +458,18 @@ export class Service {
     await this.#startTelegram();
     if (this.#telegram?.running) return { ok: true, username: this.#telegram.username };
     let error = this.#telegramError || "start failed";
+    // One automatic retry hides carrier/packet-loss blips on mobile instead
+    // of making the user re-type the command (their tolerant connect UX).
+    const netish = /network|fetch|ECONN|ETIMEDOUT|ENOTFOUND|ENETUNREACH|TLS|timeout|socket/i.test(error);
+    if (netish && !triedTransientRetry) {
+      await new Promise((r) => setTimeout(r, 350));
+      const again = await this.telegramReconnect(triedAutoProxy, true);
+      if (again.ok) {
+        again.note = [again.note, "first attempt hit a transient network blip; the automatic retry connected"].filter(Boolean).join(" · ");
+        return again;
+      }
+      if (String(again.error ?? "").length > error.length) return again;
+    }
     // Diagnose like their connect flow does: the Bot API itself may be
     // unreachable from this device entirely (carrier blocks) — then the
     // remedy is a proxy, not a new token.
@@ -479,8 +491,25 @@ export class Service {
       } else {
         error += ` — api.telegram.org is unreachable from this device (${probe.why}); the network likely blocks Telegram. Check the proxy (${String(tg.proxy).trim() || "env/none"}) is actually listening, then retry: sc channels connect`;
       }
-    } else if (/network|fetch/i.test(error)) {
-      error += " — api.telegram.org is reachable, so the credential itself is the problem; paste a fresh @BotFather token (or /revoke + re-issue) and retry";
+    } else if (/unauthorized|invalid token|was deleted|not found/i.test(error)) {
+      error += " — api.telegram.org is reachable and answers plainly that it rejects this TOKEN; paste a fresh @BotFather token (or /revoke + re-issue) and retry";
+    } else if (netish) {
+      // getMe died on the network while the DIRECT probe works. If the bot
+      // used a proxy, the proxy is the broken link — verify by probing
+      // THROUGH it before blaming the carrier.
+      const px = String(tg.proxy).trim();
+      if (px) {
+        const via = await proxyProbe(px, 3000).catch(() => ({ ok: false, why: "probe failed" }));
+        if (!via.ok) {
+          error += ` — but api.telegram.org is reachable DIRECTLY, so your proxy is the broken link (${via.why}). Fix its port, or clear it: sc config set channels.telegram.proxy "" — then sc channels connect`;
+        } else {
+          error += " — while both direct and proxied probes answer. Transient blip: retry sc channels connect";
+        }
+      } else {
+        error += " — while api.telegram.org answered this device's probe. Transient carrier blip (or Wi-Fi vs mobile data flapping): retry sc channels connect";
+      }
+    } else if (/credentials|token/i.test(error)) {
+        error += " — token-related failure; paste a fresh @BotFather token and retry";
     }
     return { ok: false, error };
   }
