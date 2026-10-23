@@ -110,6 +110,20 @@ test("proxied fetch: chunked transfer-encoding decodes (raw TCP framing)", async
   origin.close(); srv.close();
 });
 
+test("normalizeProxyUrl: bare host:port is accepted; garbage errs with guidance", async () => {
+  const { normalizeProxyUrl } = await import("../dist/lib.js");
+  assert.equal(normalizeProxyUrl("127.0.0.1:9050"), "http://127.0.0.1:9050");
+  assert.equal(normalizeProxyUrl("user:pw@10.0.0.2:8080"), "http://user:pw@10.0.0.2:8080");
+  assert.equal(normalizeProxyUrl("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+  assert.equal(normalizeProxyUrl("socks5://127.0.0.1:1080"), "socks5://127.0.0.1:1080");
+  assert.equal(normalizeProxyUrl("socks://127.0.0.1:1080"), "socks5://127.0.0.1:1080");
+  assert.equal(normalizeProxyUrl(""), "");
+  assert.equal(normalizeProxyUrl("  "), "");
+  const err = await Promise.resolve().then(() => normalizeProxyUrl("http://[bad")).then(() => "").catch((e) => String(e.message ?? e));
+  assert.match(err, /not a usable proxy address/);
+  assert.match(err, /http:\/\/HOST:PORT/);
+});
+
 test("wiring: createBot supplies the proxied fetch; no undici runtime dep", () => {
   const tg = readFileSync(new URL("../src/channels/telegram.ts", import.meta.url), "utf8");
   assert.match(tg, /makeProxiedFetch\(url\)/);

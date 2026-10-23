@@ -14,6 +14,29 @@ import * as net from "node:net";
 import * as tls from "node:tls";
 import { Buffer } from "node:buffer";
 
+/**
+ * People paste proxies as bare host:port — that is not a valid URL ("Invalid
+ * URL / ERR_INVALID_URL" otherwise surfaces confusingly). Normalize:
+ *   "127.0.0.1:9050"        → http://127.0.0.1:9050
+ *   "user:pass@1.2.3.4:80"  → http://user:pass@1.2.3.4:80
+ *   "socks://…"             → socks5://…
+ * Full URLs pass through untouched; anything utterly unparsable throws with
+ * the usable-form guidance inside the message.
+ */
+export function normalizeProxyUrl(raw: string): string {
+  const v = String(raw ?? "").trim();
+  if (!v) return "";
+  let candidate = v;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) candidate = `http://${candidate}`;
+  candidate = candidate.replace(/^socks:\/\//i, "socks5://");
+  try {
+    new URL(candidate); // validity only — parsed again by callers
+    return candidate;
+  } catch {
+    throw new Error(`channels.telegram.proxy "${v}" is not a usable proxy address — use http://HOST:PORT (bare HOST:PORT works too) or socks5://HOST:PORT`);
+  }
+}
+
 function httpRequestHead(method: string, path: string, headers: Record<string, string>, bodyLen: number): string {
   const lines = [`${method} ${path} HTTP/1.1`];
   for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
@@ -194,10 +217,10 @@ async function bodyBuffer(body: unknown): Promise<Buffer> {
  * HTTP(S) CONNECT proxy or SOCKS5 — Node-core only.
  */
 export function makeProxiedFetch(proxyUrl: string): typeof fetch {
-  const px = new URL(proxyUrl);
+  const px = new URL(normalizeProxyUrl(proxyUrl));
   const kind = px.protocol.replace(":", "").toLowerCase();
   if (!["http", "https", "socks5", "socks5h"].includes(kind)) {
-    throw new Error(`unsupported proxy scheme ${px.protocol} — use http:// or socks5://`);
+    throw new Error(`unsupported proxy scheme ${px.protocol} — use http:// (or socks5://)`);
   }
   return (async (input: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? new URL(input)

@@ -2093,7 +2093,7 @@ export class Settings {
           ]),
         ]),
         (() => {
-          const inp = el("input", { class: "inp mono", id: "ch-proxy", value: String(tg.proxy ?? ""), placeholder: "http://127.0.0.1:8080  (empty = direct)" });
+          const inp = el("input", { class: "inp mono", id: "ch-proxy", value: String(tg.proxy ?? ""), placeholder: "http://127.0.0.1:8080  (host:port alone works too)" });
           return el("div", { class: "modal__field", "data-ch-key": "channels.telegram.proxy", "data-ch-kind": "str" }, [
             el("label", { class: "lbl", for: "ch-proxy" }, ["API proxy (optional)"]),
             inp,
