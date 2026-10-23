@@ -280,7 +280,12 @@ voices, device nicknames, app shortcuts.
 export function writeWorkspaceTemplates(workspace: string): string[] {
   mkdirSync(join(workspace, "memory"), { recursive: true });
   const written: string[] = [];
+  // A workspace is "brand new" only when no identity files exist yet. BOOTSTRAP.md
+  // is the first-run ritual and must only seed into a truly new workspace —
+  // otherwise every restart would re-create it and re-trigger the birth sequence.
+  const isNewWorkspace = !existsSync(join(workspace, "SOUL.md")) && !existsSync(join(workspace, "IDENTITY.md")) && !existsSync(join(workspace, "USER.md"));
   for (const [name, body] of Object.entries(TEMPLATES)) {
+    if (name === "BOOTSTRAP.md" && !isNewWorkspace) continue;
     const path = join(workspace, name);
     if (existsSync(path)) continue;
     writeFileSync(path, body, "utf8");
