@@ -7,13 +7,14 @@ import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./no
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "models" | "providers" | "channels" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime";
+type TabId = "model" | "models" | "providers" | "channels" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "model", label: "Defaults" },
   { id: "models", label: "Models" },
   { id: "providers", label: "Providers" },
   { id: "channels", label: "Channels" },
+  { id: "usage", label: "Usage" },
   { id: "skills", label: "Skills" },
   { id: "tools", label: "Tools" },
   { id: "memory", label: "Memory" },
@@ -107,6 +108,7 @@ export class Settings {
       }
     } else if (this.#tab === "providers") this.#renderProviders(providers);
     else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
+    else if (this.#tab === "usage") void this.#renderUsage();
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") await this.#renderTools(tools);
     else if (this.#tab === "memory") await this.#renderMemory();
@@ -1227,6 +1229,148 @@ export class Settings {
 
 
 
+  /** Usage dashboard (P4 #34 — their Usage page): totals cards, daily
+   *  rollups, session + model aggregates from `usage.report`. Cost only shows
+   *  when a pricing card covered every contributing run — n/a otherwise
+   *  (their never-guess-a-price rule). */
+  #usageDays = 30;
+  #usageSession = "";
+  #usageReport: any = null;
+
+  async #renderUsage(): Promise<void> {
+    const body = el("div", { class: "settings__body" });
+    this.#root.innerHTML = "";
+    this.#root.append(body);
+    body.append(el("div", { class: "hint" }, ["Loading usage report…"]));
+    let res: any;
+    try {
+      res = await gateway.request("usage.report", {
+        days: this.#usageDays,
+        ...(this.#usageSession ? { sessionKey: this.#usageSession } : {}),
+      });
+    } catch (err) {
+      body.innerHTML = "";
+      body.append(el("div", { class: "hint" }, [`usage report failed: ${(err as Error).message}`]));
+      return;
+    }
+    this.#usageReport = res.report;
+    const report = res.report;
+    body.innerHTML = "";
+
+    const fmtTok = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+    const fmtUsd = (c: number | null, unknown: number) =>
+      c !== null ? `$${c >= 0.01 ? c.toFixed(2) : c.toFixed(4)}` : unknown > 0 ? "n/a" : "$0.00";
+
+    const selectField = (label: string, options: { value: string; label: string }[], value: string, onchange: (v: string) => void) => {
+      const sel = el("select", { class: "in" }, options.map((o) => el("option", { value: o.value, ...(o.value === value ? { selected: "" } : {}) }, [o.label])) as Node[]);
+      (sel as HTMLSelectElement).onchange = () => onchange((sel as HTMLSelectElement).value);
+      return el("label", { class: "field", style: "gap:2px;min-width:150px" }, [el("span", { class: "cap" }, [label]), sel]);
+    };
+
+    const toolbar = el("div", { class: "usage-toolbar" }, [
+      selectField(
+        "Period",
+        [
+          { value: "7", label: "Last 7 days" },
+          { value: "30", label: "Last 30 days" },
+          { value: "90", label: "Last 90 days" },
+          { value: "0", label: "All time" },
+        ],
+        String(this.#usageDays),
+        (v) => { this.#usageDays = Number(v); void this.#renderUsage(); },
+      ),
+      selectField(
+        "Session",
+        [
+          { value: "", label: "All sessions" },
+          ...((res.sessions ?? []) as string[]).map((k) => ({ value: k, label: k })),
+        ],
+        this.#usageSession,
+        (v) => { this.#usageSession = v; void this.#renderUsage(); },
+      ),
+    ]);
+    const exJson = el("button", { class: "btn", type: "button", id: "usage-export-json" }, ["Export JSON"]) as HTMLButtonElement;
+    exJson.onclick = () => this.#usageExport("json");
+    const exCsv = el("button", { class: "btn", type: "button", id: "usage-export-csv" }, ["Export CSV (daily)"]) as HTMLButtonElement;
+    exCsv.onclick = () => this.#usageExport("csv");
+    toolbar.append(el("span", { style: "flex:1" }), exJson, exCsv);
+    body.append(toolbar);
+
+    const t = report.total;
+    body.append(el("div", { class: "usage-cards" }, [
+      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [fmtTok(t.inputTokens)]), el("span", { class: "cap" }, ["input tokens"])]),
+      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [fmtTok(t.outputTokens)]), el("span", { class: "cap" }, ["output tokens"])]),
+      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [String(t.runs)]), el("span", { class: "cap" }, ["runs"])]),
+      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [fmtUsd(t.costUsd, t.unknownPriceRuns)]), el("span", { class: "cap" }, ["cost"])]),
+    ]));
+    if (t.costUsd === null && t.unknownPriceRuns > 0) {
+      body.append(el("div", { class: "hint" }, [`${t.unknownPriceRuns}/${t.runs} run(s) used a model with no pricing card — cost is partial (their never-guess-a-price rule).`]));
+    }
+
+    const addTable = (title: string, rows: { key: string; runs: number; in: number; out: number; cost: number | null; unknown: number }[], empty: string, cls: string) => {
+      body.append(el("div", { class: "usage-h" }, [title]));
+      if (rows.length === 0) {
+        body.append(el("div", { class: "hint" }, [empty]));
+        return;
+      }
+      const thead = el("tr", {}, ["Day / key", "Runs", "In", "Out", "Cost"].map((h) => el("th", {}, [h])) as Node[]);
+      const tbody = el("tbody", {}, rows.map((r) => el("tr", {}, [
+        el("td", { class: "usage-key" }, [r.key]),
+        el("td", { class: "usage-num", "data-v": String(r.runs) }, [String(r.runs)]),
+        el("td", { class: "usage-num" }, [fmtTok(r.in)]),
+        el("td", { class: "usage-num" }, [fmtTok(r.out)]),
+        el("td", { class: "usage-num" }, [fmtUsd(r.cost, r.unknown)]),
+      ] as Node[])) as Node[]);
+      body.append(el("table", { class: `usage-table ${cls}` }, [el("thead", {}, [thead]), tbody]));
+    };
+
+    addTable(
+      "Daily rollup",
+      report.perDay.map((d: any) => ({ key: d.day, runs: d.runs, in: d.inputTokens, out: d.outputTokens, cost: d.costUsd, unknown: d.unknownPriceRuns })),
+      "No runs recorded in this period.",
+      "usage-table--daily",
+    );
+    addTable(
+      "Per session",
+      report.perSession.map((x: any) => ({ key: x.session, runs: x.runs, in: x.inputTokens, out: x.outputTokens, cost: x.costUsd, unknown: x.unknownPriceRuns })),
+      "No sessions with usage yet.",
+      "usage-table--sessions",
+    );
+    addTable(
+      "Per model",
+      report.perModel.map((m: any) => ({ key: m.model, runs: m.runs, in: m.inputTokens, out: m.outputTokens, cost: m.costUsd, unknown: m.unknownPriceRuns })),
+      "No models with usage yet.",
+      "usage-table--models",
+    );
+  }
+
+  #usageExport(kind: "json" | "csv"): void {
+    const report = this.#usageReport;
+    if (!report) return;
+    let content: string, mime: string, name: string;
+    if (kind === "json") {
+      content = JSON.stringify(report, null, 2);
+      mime = "application/json";
+      name = `usage-${this.#usageDays || "all"}d.json`;
+    } else {
+      const lines = ["day,runs,input_tokens,output_tokens,cost_usd"];
+      for (const d of report.perDay) {
+        lines.push(`${d.day},${d.runs},${d.inputTokens},${d.outputTokens},${d.costUsd === null ? "" : d.costUsd.toFixed(6)}`);
+      }
+      content = lines.join("\n");
+      mime = "text/csv";
+      name = `usage-daily-${this.#usageDays || "all"}d.csv`;
+    }
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = el("a", { href: url, download: name }) as HTMLAnchorElement;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast(`usage exported (${name})`, "ok");
+  }
+
   /** All-settings tab (P4 #32 — their schema-driven Settings): every config
    *  key renders from the config.schema descriptors (form mode), plus a raw
    *  JSON5 editor with validation (raw mode). Failed saves show the gateway's
@@ -1576,6 +1720,12 @@ export class Settings {
     } catch (err) {
       toast((err as Error).message, "err");
     }
+    // Cron editor (P4 #35) — richer data (jobs + last runs) than
+    // automations.state; reconcile happens server-side on every list.
+    let cronData: any = null;
+    try {
+      cronData = await gateway.request("cron.list");
+    } catch { /* covered by state fallback */ }
 
     const row = (label: string, value: string, style = ""): HTMLElement =>
       el("div", { class: "row" }, [
@@ -1585,20 +1735,74 @@ export class Settings {
     const card = (title: string, rows: HTMLElement[], extra: Node[] = []): HTMLElement =>
       el("div", { class: "card" }, [el("h3", { style: "margin:0 0 8px" }, [title]), ...rows, ...extra]);
 
-    // ----- cron -----
+    // ----- cron (P4 #35: full editor — their Cron page) -----
     const cronRows: HTMLElement[] = [];
     const cronCardExtra: Node[] = [];
+    const jobs: any[] = cronData?.jobs ?? state?.cron?.jobs ?? [];
+    const lastRunByJob = new Map<string, any>();
+    for (const r of cronData?.runs ?? []) {
+      if (!lastRunByJob.has(r.job_id)) lastRunByJob.set(r.job_id, r);
+    }
     if (state?.cron?.enabled === false) {
       cronRows.push(row("Scheduler", "disabled"));
     } else {
-      cronRows.push(row("Scheduler", `on · ${(state?.cron?.jobs ?? []).length} jobs`));
+      cronRows.push(row("Scheduler", `on · ${jobs.length} jobs`));
     }
-    for (const j of state?.cron?.jobs ?? []) {
-      cronRows.push(row(String(j.name ?? j.id ?? "job"), `${j.expr ?? j.cron ?? ""} ${j.tz ? "[" + j.tz + "]" : ""}`.trim()));
+    for (const j of jobs) {
+      const enabled = Number(j.enabled ?? 1) === 1;
+      const last = lastRunByJob.get(String(j.id));
+      const meta = [
+        `${j.schedule ?? j.expr ?? j.cron ?? ""}${j.tz ? ` [${j.tz}]` : ""}`,
+        last ? `· last ${last.status ?? "run"} ${new Date(Number(last.started_at)).toLocaleString()}` : "",
+        j.delivery_mode ? `· ${j.delivery_mode}${j.delivery_to ? ` → ${j.delivery_to}` : ""}` : "",
+      ].filter(Boolean).join(" ");
+      cronRows.push(
+        el("div", { class: "row cron-job", "data-job": String(j.id) }, [
+          el("div", { class: "cron-job__body" }, [
+            el("span", { class: "row__label" }, [String(j.name ?? j.id ?? "job")]),
+            el("span", { class: "hint cron-job__meta" }, [meta]),
+          ]),
+          (() => {
+            const toggle = el("button", {
+              class: `btn cron-job__toggle${enabled ? " is-on" : ""}`,
+              type: "button",
+              id: `cron-toggle-${j.id}`,
+              "aria-pressed": enabled ? "true" : "false",
+            }, [enabled ? "On" : "Off"]) as HTMLButtonElement;
+            toggle.onclick = async () => {
+              try {
+                await gateway.request("cron.upsert", { id: String(j.id), name: String(j.name ?? j.id), schedule: String(j.schedule ?? j.expr ?? ""), prompt: String(j.prompt ?? ""), enabled: !enabled });
+                await this.#renderAutomations(config);
+              } catch (err) { toast((err as Error).message, "err"); }
+            };
+            return toggle;
+          })(),
+          (() => {
+            const edit = el("button", { class: "btn", type: "button", id: `cron-edit-${j.id}` }, ["Edit…"]) as HTMLButtonElement;
+            edit.onclick = () => this.#cronJobDialog(j, config);
+            return edit;
+          })(),
+          (() => {
+            const del = el("button", { class: "btn danger", type: "button", id: `cron-del-${j.id}` }, ["Delete"]) as HTMLButtonElement;
+            del.onclick = async () => {
+              if (!window.confirm(`Delete cron job "${j.name ?? j.id}"?`)) return;
+              try {
+                await gateway.request("cron.remove", { id: String(j.id) });
+                toast(`removed ${j.id}`, "ok");
+                await this.#renderAutomations(config);
+              } catch (err) { toast((err as Error).message, "err"); }
+            };
+            return del;
+          })(),
+        ]),
+      );
     }
-    if ((state?.cron?.jobs ?? []).length === 0 && state?.cron?.enabled !== false) {
-      cronCardExtra.push(el("p", { class: "hint" }, ["No jobs yet — `sc cron add` gives the agent time-based work."]));
+    if (jobs.length === 0 && state?.cron?.enabled !== false) {
+      cronCardExtra.push(el("p", { class: "hint" }, ["No jobs yet — give the agent time-based work."]));
     }
+    const newJob = el("button", { class: "btn", type: "button", id: "cron-new" }, ["+ New job"]) as HTMLButtonElement;
+    newJob.onclick = () => this.#cronJobDialog(null, config);
+    cronCardExtra.push(newJob);
     this.#root.append(card("Cron jobs", cronRows, cronCardExtra));
 
     // ----- heartbeat -----
@@ -1656,6 +1860,82 @@ export class Settings {
         "Per-account configurations sit under imap.accounts in the config (their automation/imap: baseline on start, UIDVALIDITY dedupe, sender allowlist, no-replay restarts).",
       ]),
     ]));
+  }
+
+  /** Cron job editor dialog (P4 #35 — their Add/Edit job flow): the same
+   *  validated contract as `sc cron add` — schedule + IANA zone checked by
+   *  croner server-side (`bad_schedule`), webhook delivery needs a target
+   *  (`bad_request`). Edits keep the job id + session key. */
+  #cronJobDialog(job: any | null, config: any): void {
+    const tf = (idSuffix: string, label: string, value: string, placeholder: string, mono = true) => {
+      const input = el("input", {
+        id: `cron-f-${idSuffix}`,
+        class: mono ? "inp mono" : "inp",
+        type: "text",
+        value,
+        placeholder,
+        autocomplete: "off",
+        spellcheck: "false",
+      }) as HTMLInputElement;
+      return {
+        input,
+        node: el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: `cron-f-${idSuffix}` }, [label]),
+          input,
+        ]),
+      };
+    };
+    const nameF = tf("name", "Name", String(job?.name ?? ""), "e.g. morning-brief", false);
+    const schedF = tf("schedule", "Schedule (cron)", String(job?.schedule ?? job?.expr ?? ""), "e.g. 0 9 * * 1-5");
+    const promptF = tf("prompt", "Prompt", String(job?.prompt ?? ""), "What the agent should do when it fires", false);
+    const tzF = tf("tz", "Timezone (IANA, optional)", String(job?.tz ?? ""), "e.g. Asia/Dhaka — default: cron.timezone/host");
+    const deliverySel = el("select", { class: "in", id: "cron-f-delivery" }) as HTMLSelectElement;
+    for (const v of ["", "none", "announce", "webhook"]) {
+      const opt = el("option", { value: v, ...(String(job?.delivery_mode ?? "") === v || (!job?.delivery_mode && v === "") ? { selected: "" } : {}) }, [v === "" ? "default (cron.delivery)" : v]);
+      deliverySel.append(opt);
+    }
+    const toF = tf("to", "Delivery target (optional)", String(job?.delivery_to ?? ""), "telegram:<chatId> · session:<key> · https://…");
+    const suppressCb = el("input", { type: "checkbox", id: "cron-f-suppress" }) as HTMLInputElement;
+    suppressCb.checked = Number(job?.delivery_suppress_empty ?? 1) === 1;
+    const enabledCb = el("input", { type: "checkbox", id: "cron-f-enabled" }) as HTMLInputElement;
+    enabledCb.checked = Number(job?.enabled ?? 1) === 1;
+
+    const body = el("div", {}, [
+      nameF.node, schedF.node, promptF.node, tzF.node,
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "cron-f-delivery" }, ["Delivery"]),
+        deliverySel,
+        el("span", { class: "hint" }, ["none = keep it in the session only · announce = push to chat · webhook = POST to URL"]),
+      ]),
+      toF.node,
+      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Suppress empty results"]), suppressCb]),
+      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), enabledCb]),
+    ]);
+
+    modal({
+      title: job ? `Edit job: ${job.name ?? job.id}` : "New cron job",
+      render: (box) => { box.append(body); },
+      confirmLabel: job ? "Save job" : "Create job",
+      onConfirm: async () => {
+        try {
+          const res = (await gateway.request("cron.upsert", {
+            ...(job?.id ? { id: String(job.id) } : {}),
+            name: nameF.input.value.trim(),
+            schedule: schedF.input.value.trim(),
+            prompt: promptF.input.value.trim(),
+            tz: tzF.input.value.trim() || undefined,
+            deliveryMode: deliverySel.value || undefined,
+            deliveryTo: toF.input.value.trim() || undefined,
+            suppressEmpty: suppressCb.checked,
+            enabled: enabledCb.checked,
+          })) as any;
+          toast(`${job ? "saved" : "created"} ${res.job?.name ?? nameF.input.value} · next ${res.next ?? "?"}`, "ok");
+          await this.#renderAutomations(config);
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      },
+    });
   }
 
   /* ---------------- alerts (their Settings → Notifications page) ---------------- */

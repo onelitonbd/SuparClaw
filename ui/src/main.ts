@@ -215,7 +215,7 @@ async function refresh(): Promise<void> {
     const [statusRes, modelRes, sessionRes] = await Promise.all([
       gateway.request("status"),
       gateway.request("models.list"),
-      gateway.request("sessions.list", { limit: 30 }),
+      gateway.request("sessions.list", { limit: 30, includeArchived: true }),
     ]);
     const status = statusRes as any;
     toolCount = (status.tools ?? []).length;
@@ -231,8 +231,31 @@ async function refresh(): Promise<void> {
     $("model-name").textContent = models.find((m) => m.value === currentModel)?.label || currentModel || "no model";
     renderSessions((sessionRes as any).sessions ?? []);
     syncThinking(status, (sessionRes as any).sessions ?? []);
+    // Archived current session: read-only transcript + Unarchive banner
+    // (their composer-disabled contract).
+    const curRow = ((sessionRes as any).sessions ?? []).find((r: SessionListRow) => r.key === sessionKey);
+    chat.setArchived(Number(curRow?.archived ?? 0) === 1, () => void setSessionArchived(sessionKey, false));
   } catch { /* gateway reconnecting */ }
 }
+
+// Drawer prune action (P4 #33): dry-run first, confirm with the real counts,
+// then enforce — their two-step destructive-action pattern.
+$("sessions-prune").addEventListener("click", async () => {
+  try {
+    const report = (await gateway.request("sessions.cleanup", { dryRun: true })) as any;
+    const total = Number(report.archivedAge ?? 0) + Number(report.archivedCap ?? 0) + Number(report.deletedCapArchives ?? 0);
+    if (total === 0) { toast("nothing to prune", "info"); return; }
+    const ok = window.confirm(
+      `Retention policy would archive ${report.archivedAge + report.archivedCap} session(s) and delete ${report.deletedCapArchives} archived session(s). Apply now?`,
+    );
+    if (!ok) return;
+    const done = (await gateway.request("sessions.cleanup", { enforce: true })) as any;
+    toast(`pruned: ${done.archivedAge + done.archivedCap} archived, ${done.deletedCapArchives} deleted`, "ok");
+    await refresh();
+  } catch (err) {
+    toast(`prune failed: ${(err as Error).message}`, "err");
+  }
+});
 
 /* ---------------- thinking level + preview ---------------- */
 
@@ -283,31 +306,129 @@ $("think").addEventListener("change", async () => {
 
 // Cache of the plain drawer list so session search can restore it (Esc /
 // clear) without another round trip.
-let lastSessionList: { key: string; last_msg_at?: number; title?: string; name?: string | null }[] = [];
+interface SessionListRow { key: string; last_msg_at?: number; title?: string; name?: string | null; archived?: number; }
+let lastSessionList: SessionListRow[] = [];
 
-function renderSessions(list: { key: string; last_msg_at?: number; title?: string; name?: string | null }[]): void {
+/** Session row menu (P4 #33 — their session menu): rename, export, archive,
+ *  delete. One floating menu, closed by Esc / outside click / action. */
+let sessionMenu: HTMLElement | null = null;
+function closeSessionMenu(): void {
+  sessionMenu?.remove();
+  sessionMenu = null;
+  document.removeEventListener("click", closeSessionMenuOnOutside, true);
+}
+function closeSessionMenuOnOutside(e: Event): void {
+  if (sessionMenu && !sessionMenu.contains(e.target as Node)) closeSessionMenu();
+}
+
+function openSessionMenu(row: SessionListRow, x: number, y: number): void {
+  closeSessionMenu();
+  const archived = Number(row.archived ?? 0) === 1;
+  const item = (label: string, fn: () => void | Promise<void>, danger = false) => {
+    const b = el("button", { class: `menu__item${danger ? " menu__item--danger" : ""}`, type: "button" }, [label]);
+    b.onclick = async () => { closeSessionMenu(); await fn(); };
+    return b;
+  };
+  const menu = el("div", { class: "menu", id: "session-menu", role: "menu" });
+  menu.style.left = `${Math.min(x, window.innerWidth - 190)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 190)}px`;
+  menu.append(
+    item("Rename…", () => renameSession(row.key)),
+    item("Export transcript (.md)", () => exportSession(row.key)),
+    item(archived ? "Unarchive" : "Archive", () => setSessionArchived(row.key, !archived)),
+    item("Delete…", () => deleteSession(row.key), true),
+  );
+  document.body.append(menu);
+  sessionMenu = menu;
+  setTimeout(() => document.addEventListener("click", closeSessionMenuOnOutside, true), 0);
+  document.addEventListener("keydown", function esc(e) {
+    if (e.key === "Escape") { closeSessionMenu(); document.removeEventListener("keydown", esc); }
+  });
+}
+
+async function exportSession(key: string): Promise<void> {
+  try {
+    const res = (await gateway.request("sessions.export", { sessionKey: key })) as {
+      filename: string; content: string; dir: string; messageCount: number;
+    };
+    const blob = new Blob([res.content], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = el("a", { href: url, download: res.filename }) as HTMLAnchorElement;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast(`exported ${res.messageCount} message(s) — also saved under ${res.dir}`, "ok");
+  } catch (err) {
+    toast(`export failed: ${(err as Error).message}`, "err");
+  }
+}
+
+async function setSessionArchived(key: string, archived: boolean): Promise<void> {
+  try {
+    await gateway.request("sessions.patch", { sessionKey: key, archived });
+    toast(archived ? "session archived" : "session unarchived", "ok");
+    await refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+}
+
+async function deleteSession(key: string): Promise<void> {
+  if (!window.confirm(`Delete session "${key}" and all its messages? This cannot be undone.`)) return;
+  try {
+    const res = (await gateway.request("sessions.delete", { sessionKey: key })) as { deleted: boolean; messages: number };
+    toast(res.deleted ? `deleted session + ${res.messages} message(s)` : "session not found", res.deleted ? "ok" : "err");
+    if (key === sessionKey) {
+      sessionKey = "main:main";
+      localStorage.setItem("sc.session", sessionKey);
+      $("session-title").textContent = sessionKey;
+      await loadHistory();
+    }
+    await refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+}
+
+function renderSessions(list: SessionListRow[]): void {
   lastSessionList = list;
+  closeSessionMenu();
   const host = $("sessions");
   host.innerHTML = "";
   if (list.length === 0) list = [{ key: sessionKey }];
   const seen = new Set<string>();
-  for (const s of list) {
+  // Archived rows sink to a dimmed group (their archived-group parity).
+  const ordered = [
+    ...list.filter((s) => Number(s.archived ?? 0) !== 1),
+    ...list.filter((s) => Number(s.archived ?? 0) === 1),
+  ];
+  let archivedHeaderShown = false;
+  for (const s of ordered) {
     if (seen.has(s.key)) continue;
     seen.add(s.key);
+    const archived = Number(s.archived ?? 0) === 1;
+    if (archived && !archivedHeaderShown) {
+      archivedHeaderShown = true;
+      host.append(el("div", { class: "sessions__group" }, ["Archived"]));
+    }
+    const kebab = el("button", { class: "session__kebab", type: "button", "aria-label": `Menu for ${s.key}` }, ["⋯"]);
+    kebab.onclick = (e) => { e.stopPropagation(); openSessionMenu(s, (e as MouseEvent).clientX, (e as MouseEvent).clientY); };
     const btn = el("button", {
-      class: `session${s.key === sessionKey ? " is-active" : ""}`,
+      class: `session${s.key === sessionKey ? " is-active" : ""}${archived ? " session--archived" : ""}`,
       type: "button",
     }, [
       el("span", { class: "session__text" }, [
         el("span", { class: "session__title" }, [s.name || s.title || s.key]),
         el("span", { class: "session__meta" }, [
-          s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
+          archived ? "archived" : s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
         ]),
       ]),
       busy && s.key === sessionKey ? el("span", { class: "dot dot--live" }) : null,
+      kebab,
     ].filter(Boolean) as Node[]);
     btn.onclick = () => void switchSession(s.key);
-    btn.oncontextmenu = (e) => { e.preventDefault(); renameSession(s.key); };
+    btn.oncontextmenu = (e) => { e.preventDefault(); openSessionMenu(s, e.clientX, e.clientY); };
     host.append(btn);
   }
 }

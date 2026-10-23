@@ -226,6 +226,9 @@ export class Gateway {
       "sessions.search",
       "sessions.patch",
       "sessions.rename",
+      "sessions.delete",
+      "sessions.export",
+      "usage.report",
       "models.list",
       "models.plugins",
       "models.local.scan",
@@ -243,6 +246,8 @@ export class Gateway {
       "tools.list",
       "skills.list",
       "cron.list",
+      "cron.upsert",
+      "cron.remove",
       "automations.state",
       "config.get",
       "config.schema",
@@ -641,7 +646,13 @@ export class Gateway {
           send(okFrame(id, service.dreamDiary()));
           return;
         case "sessions.list":
-          send(okFrame(id, { sessions: service.store.listSessions(Number(params["limit"] ?? 50)) }));
+          send(
+            okFrame(id, {
+              sessions: service.store.listSessions(Number(params["limit"] ?? 50), {
+                includeArchived: params["includeArchived"] === true,
+              }),
+            }),
+          );
           return;
         case "sessions.patch": {
           // Thinking-level picker writes here immediately (OpenClaw's model):
@@ -649,20 +660,78 @@ export class Gateway {
           // saved choice survives reloads and applies to later turns.
           const key = String(params["sessionKey"] ?? params["key"] ?? "");
           const thinking = params["thinking"] === null ? null : String(params["thinkingLevel"] ?? params["thinking"] ?? "");
-          service.store.setSessionThinking(key, thinking === "" ? null : thinking);
+          if (params["thinking"] !== undefined || params["thinkingLevel"] !== undefined) {
+            service.store.setSessionThinking(key, thinking === "" ? null : thinking);
+          }
+          // Session menu (P4 #33): archive/unarchive with identity + history
+          // intact; the chat pane shows their archived banner + Unarchive.
+          if (typeof params["archived"] === "boolean") {
+            service.store.setSessionArchived(key, params["archived"]);
+          }
           const row = service.store.getSessionByKey(key);
           send(
             okFrame(id, {
               patched: true,
               sessionKey: key,
               thinking: row?.thinking ?? null,
+              archived: Number(row?.archived ?? 0) === 1,
               thinkingLevels: THINKING_LEVELS,
               thinkingDefault: String(service.config.agents.defaults.reasoningEffort ?? "inherit"),
             }),
           );
           return;
         }
-        case "sessions.rename": {
+                case "sessions.delete": {
+          // Session menu (P4 #33): hard delete with message count in the ack,
+          // so the client can confirm what was removed (their destructive
+          // actions carry confirmations).
+          const key = String(params["sessionKey"] ?? params["key"] ?? "");
+          if (!key) {
+            send(errFrame(id, "bad_request", "sessionKey is required"));
+            return;
+          }
+          const res = service.store.deleteSession(key);
+          send(okFrame(id, { deleted: res.deleted, messages: res.messages, sessionKey: key }));
+          return;
+        }
+        case "sessions.export": {
+          // Session menu (P4 #33): the CLI's export artifacts (#20) plus the
+          // rendered summary inline, so the browser can download it directly.
+          const key = String(params["sessionKey"] ?? params["key"] ?? "");
+          if (!key) {
+            send(errFrame(id, "bad_request", "sessionKey is required"));
+            return;
+          }
+          const { resolveSessionSelector, exportSessionTranscript } = await import("../cli/session-export.js");
+          const { join: joinPath } = await import("node:path");
+          const { stateDir } = await import("../util/paths.js");
+          const { row, error } = resolveSessionSelector(service.store, key);
+          if (!row) {
+            send(errFrame(id, "not_found", error ?? "session not found"));
+            return;
+          }
+          const result = exportSessionTranscript(service.store, row, joinPath(stateDir(), "transcripts"));
+          if (!result.ok) {
+            send(errFrame(id, "export_failed", result.error ?? "export failed"));
+            return;
+          }
+          const { readFileSync } = await import("node:fs");
+          let summary = "";
+          try {
+            summary = readFileSync(result.artifacts!.summary, "utf8");
+          } catch { /* artifact list still valid */ }
+          send(
+            okFrame(id, {
+              exported: true,
+              dir: result.artifacts!.dir,
+              messageCount: result.messageCount,
+              filename: `${key.replace(/[^A-Za-z0-9._-]+/g, "-")}.md`,
+              content: summary,
+            }),
+          );
+          return;
+        }
+case "sessions.rename": {
           // The web UI renames a session KEY ({sessionKey, newKey}) — the
           // messages follow the row. The old handler read {id, name} which the
           // UI never sent, so every rename was a silent no-op and the UI's
@@ -691,6 +760,47 @@ export class Gateway {
             enforce: params["enforce"] === true,
           });
           send(okFrame(id, report));
+          return;
+        }
+        case "usage.report": {
+          // Usage dashboard (P4 #34): same runs-table audit source as
+          // `sc usage` (#15), aggregated by util/usage so token math and the
+          // null-cost-when-unpriced contract never drift between CLI and UI.
+          const { buildUsageReport } = await import("../util/usage.js");
+          const { modelProfiles } = await import("../config/schema.js");
+          const pricingByRef = new Map(modelProfiles(service.config).map((p) => [p.ref, p.pricing]));
+          const sessions = service.store.listSessions(10_000, { includeArchived: true });
+          const keyOfId = new Map(sessions.map((ss) => [ss.id, ss.key]));
+          const days = Number(params["days"] ?? 0);
+          const since = days > 0 ? Date.now() - days * 86_400_000 : 0;
+          const sessionKeyFilter = String(params["sessionKey"] ?? "");
+          let sessionIdFilter: string | null = null;
+          if (sessionKeyFilter) {
+            const row = service.store.getSessionByKey(sessionKeyFilter);
+            if (!row) {
+              send(okFrame(id, { report: buildUsageReport([]), days, sessionKey: sessionKeyFilter }));
+              return;
+            }
+            sessionIdFilter = row.id;
+          }
+          const runs = service.store
+            .listRunsWithUsage()
+            .filter((r) => r.started_at >= since && (sessionIdFilter === null || r.session_id === sessionIdFilter))
+            .map((r) => ({
+              session: keyOfId.get(r.session_id) ?? r.session_id,
+              model: r.model ?? "unknown",
+              started_at: r.started_at,
+              usage: JSON.parse(r.usage) as Record<string, number>,
+              pricing: pricingByRef.get(r.model ?? ""),
+            }));
+          send(
+            okFrame(id, {
+              report: buildUsageReport(runs),
+              days,
+              sessionKey: sessionKeyFilter || null,
+              sessions: sessions.filter((ss) => Number(ss.archived ?? 0) !== 1).map((ss) => ss.key),
+            }),
+          );
           return;
         }
         case "models.list": {
@@ -955,6 +1065,67 @@ export class Gateway {
           await service.cronReconcile();
           send(okFrame(id, { jobs: service.store.listJobs(), runs: service.store.lastJobRuns(10) }));
           return;
+        case "cron.upsert": {
+          // Cron editor (P4 #35) — same contract as `sc cron add` (#14):
+          // schedule + timezone validated by croner BEFORE persist, then the
+          // running scheduler reconciles so the change arms without restart.
+          const name = String(params["name"] ?? "").trim();
+          const schedule = String(params["schedule"] ?? "").trim();
+          const prompt = String(params["prompt"] ?? "").trim();
+          if (!name || !schedule || !prompt) {
+            send(errFrame(id, "bad_request", "name, schedule and prompt are required"));
+            return;
+          }
+          const tz = params["tz"] ? String(params["tz"]).trim() : null;
+          const deliveryMode = params["deliveryMode"] ? String(params["deliveryMode"]) : null;
+          if (deliveryMode && !["none", "announce", "webhook"].includes(deliveryMode)) {
+            send(errFrame(id, "bad_request", "deliveryMode must be none | announce | webhook"));
+            return;
+          }
+          const deliveryTo = params["deliveryTo"] ? String(params["deliveryTo"]).trim() : null;
+          if (deliveryMode === "webhook" && !deliveryTo) {
+            send(errFrame(id, "bad_request", "deliveryMode webhook needs deliveryTo <url>"));
+            return;
+          }
+          let next: string | null = null;
+          try {
+            const { Cron } = await import("croner");
+            next = new Cron(schedule, { paused: true, timezone: tz ?? undefined }).nextRun()?.toISOString() ?? null;
+          } catch (err) {
+            send(errFrame(id, "bad_schedule", `invalid schedule or timezone: ${(err as Error).message}`));
+            return;
+          }
+          const jobId = params["id"] ? String(params["id"]) : name.replace(/\W+/g, "-").toLowerCase();
+          const existing = service.store.getJob(jobId);
+          const enabled = typeof params["enabled"] === "boolean" ? (params["enabled"] ? 1 : 0) : Number(existing?.enabled ?? 1);
+          const row = service.store.upsertJob({
+            id: jobId,
+            name,
+            schedule,
+            prompt,
+            session_key: existing?.session_key ?? `cron:${jobId}`,
+            enabled,
+            tz,
+            delivery_mode: deliveryMode,
+            delivery_to: deliveryTo,
+            delivery_suppress_empty: params["suppressEmpty"] === false ? 0 : Number(existing?.delivery_suppress_empty ?? 1),
+          });
+          await service.cronReconcile();
+          send(okFrame(id, { job: row, next }));
+          return;
+        }
+        case "cron.remove": {
+          const jobId = String(params["id"] ?? "");
+          if (!jobId) {
+            send(errFrame(id, "bad_request", "id is required"));
+            return;
+          }
+          const existed = service.store.getJob(jobId) !== undefined;
+          service.store.deleteJob(jobId);
+          await service.cronReconcile();
+          send(okFrame(id, { removed: existed, id: jobId }));
+          return;
+        }
         case "config.get":
           // Never serialize raw secrets on the wire — the UI edits through
           // sentinels (see config/redact.ts).

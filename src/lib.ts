@@ -45,7 +45,8 @@ export { planInboundMedia, mediaPlaceholder, mediaFileName, downloadInboundMedia
 export { isVisionUnsupportedError } from "./agent/llm.js";
 export { BotLoopGuard } from "./channels/bot-guard.js";
 export { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./agent/loop-detector.js";
-export { usageNumbers, runCost, fmtTokens, fmtCost, usageFooter, summarizeUsage } from "./util/usage.js";
+export { usageNumbers, runCost, fmtTokens, fmtCost, usageFooter, summarizeUsage, buildUsageReport } from "./util/usage.js";
+export type { UsageRunInput, UsageReport } from "./util/usage.js";
 export { jobTimezone } from "./cron/scheduler.js";
 export { resolveDelivery, isEmptySummary, assertWebhookUrl, webhookPayload, errorStreak, shouldAlert } from "./cron/delivery.js";
 export { parseLogLine, filterLogLines, readLogTail, readLogDelta } from "./cli/logs.js";

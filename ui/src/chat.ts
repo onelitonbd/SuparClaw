@@ -316,6 +316,26 @@ export class Chat {
     }
   }
 
+  /** Archived sessions (P4 #33 — their composer-disabled + Unarchive banner):
+   *  the transcript stays readable; writing needs an explicit Unarchive. */
+  setArchived(archived: boolean, onUnarchive: () => void): void {
+    let banner = this.#composer.querySelector<HTMLElement>("#archived-banner");
+    if (archived && !banner) {
+      banner = el("div", { class: "archived-banner", id: "archived-banner" }, [
+        el("span", {}, ["This session is archived — read-only."]),
+        el("button", { class: "btn", type: "button", id: "unarchive-btn" }, ["Unarchive"]),
+      ]);
+      const un = banner.querySelector<HTMLButtonElement>("#unarchive-btn")!;
+      un.onclick = onUnarchive;
+      this.#composer.parentElement!.insertBefore(banner, this.#composer);
+    } else if (!archived && banner) {
+      banner.remove();
+    }
+    this.#input.disabled = archived;
+    this.#attachBtn.disabled = archived;
+    this.#sendBtn.disabled = archived || this.#input.value.trim().length === 0;
+  }
+
   setBusy(busy: boolean): void {
     this.#stopBtn.hidden = !busy;
     this.#sendBtn.hidden = busy;

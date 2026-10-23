@@ -70,6 +70,69 @@ export function usageFooter(mode: UsageMode, usage: Record<string, number> | und
   return `↳ ${fmtTokens(u.inputTokens)} in · ${fmtTokens(u.outputTokens)} out`;
 }
 
+/**
+ * P4 (Missing!#34) — usage dashboard report. One pure aggregator feeding the
+ * Gateway `usage.report` RPC (UI) — the CLI keeps its own text render but the
+ * token math + null-cost contract is shared through this same module (never a
+ * guessed price: costUsd goes null when any contributing run lacks a card).
+ */
+export interface UsageRunInput {
+  session: string;
+  model: string;
+  started_at: number;
+  usage: Record<string, number>;
+  pricing: ModelPricing | undefined;
+}
+
+export interface UsageReport {
+  total: RangeUsageSummary;
+  perDay: { day: string; runs: number; inputTokens: number; outputTokens: number; costUsd: number | null; unknownPriceRuns: number }[];
+  perSession: { session: string; runs: number; inputTokens: number; outputTokens: number; costUsd: number | null; unknownPriceRuns: number }[];
+  perModel: { model: string; runs: number; inputTokens: number; outputTokens: number; costUsd: number | null; unknownPriceRuns: number }[];
+}
+
+interface UsageBucket {
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number | null;
+  unknownPriceRuns: number;
+}
+
+export function buildUsageReport(runs: UsageRunInput[]): UsageReport {
+  const total = { runs: 0, inputTokens: 0, outputTokens: 0, cachedInput: 0, costUsd: 0 as number | null, unknownPriceRuns: 0 };
+  const perDay = new Map<string, UsageBucket>();
+  const perSession = new Map<string, UsageBucket>();
+  const perModel = new Map<string, UsageBucket>();
+  const blankBucket = (): UsageBucket => ({ runs: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, unknownPriceRuns: 0 });
+
+  for (const r of runs) {
+    const u = usageNumbers(r.usage);
+    if (!u) continue;
+    const c = runCost(u, r.pricing);
+    const addTo = (b: UsageBucket) => {
+      b.runs += 1;
+      b.inputTokens += u.inputTokens;
+      b.outputTokens += u.outputTokens;
+      if (c === null) { b.unknownPriceRuns += 1; b.costUsd = null; }
+      else if (b.costUsd !== null) b.costUsd += c;
+    };
+    addTo(total);
+    total.cachedInput += u.cachedInput;
+    const day = new Date(r.started_at).toISOString().slice(0, 10);
+    addTo(perDay.get(day) ?? (perDay.set(day, blankBucket()), perDay.get(day)!));
+    addTo(perSession.get(r.session) ?? (perSession.set(r.session, blankBucket()), perSession.get(r.session)!));
+    addTo(perModel.get(r.model) ?? (perModel.set(r.model, blankBucket()), perModel.get(r.model)!));
+  }
+
+  return {
+    total: total as RangeUsageSummary,
+    perDay: [...perDay.entries()].map(([day, b]) => ({ day, ...b })).sort((a, b) => b.day.localeCompare(a.day)),
+    perSession: [...perSession.entries()].map(([session, b]) => ({ session, ...b })).sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens)),
+    perModel: [...perModel.entries()].map(([model, b]) => ({ model, ...b })).sort((a, b) => b.runs - a.runs),
+  };
+}
+
 export interface RangeUsageSummary {
   runs: number;
   inputTokens: number;

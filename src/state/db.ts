@@ -829,6 +829,16 @@ export class Store {
    * belongs to it — messages + FTS rows, runs, tool_log, the compaction
    * summary, and subagent links pointing at it (their delete semantics).
    */
+  /** Manual archive/unarchive (P4 #33, session menu): archived rows keep id
+   *  + history (their rule) but leave the default sidebar list; unarchive
+   *  clears the flag and reason. */
+  setSessionArchived(key: string, archived: boolean): { ok: boolean } {
+    const res = this.db
+      .prepare(`UPDATE sessions SET archived = ?, archived_at = ?, archive_reason = CASE WHEN ? = 0 THEN NULL ELSE archive_reason END WHERE key = ?`)
+      .run(archived ? 1 : 0, archived ? Date.now() : null, archived ? 1 : 0, key);
+    return { ok: res.changes > 0 };
+  }
+
   deleteSession(key: string): { deleted: boolean; messages: number } {
     const s = this.getSessionByKey(key);
     if (!s) return { deleted: false, messages: 0 };
