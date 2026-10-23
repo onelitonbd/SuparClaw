@@ -120,6 +120,15 @@ export class ConfigService {
     return this.#errors;
   }
 
+  /** Whole-document replace (Settings → Config raw editor, P4 #32): the
+   *  value must already be a typed SuparClawConfig (validate at the RPC
+   *  boundary). Atomic write + live swap, like set(). */
+  replaceAll(value: SuparClawConfig): { ok: boolean; errors: string[] } {
+    this.#config = value;
+    writeConfigFile(value, this.path);
+    return { ok: true, errors: [] };
+  }
+
   set<K extends keyof SuparClawConfig>(key: K, value: SuparClawConfig[K]): { ok: boolean; errors: string[] } {
     const next = { ...this.#config, [key]: value } as SuparClawConfig;
     const { config, errors } = parseConfig(next);

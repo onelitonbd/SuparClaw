@@ -7,17 +7,19 @@ import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./no
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "models" | "providers" | "skills" | "tools" | "memory" | "automations" | "alerts" | "gateway" | "runtime";
+type TabId = "model" | "models" | "providers" | "channels" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "model", label: "Defaults" },
   { id: "models", label: "Models" },
   { id: "providers", label: "Providers" },
+  { id: "channels", label: "Channels" },
   { id: "skills", label: "Skills" },
   { id: "tools", label: "Tools" },
   { id: "memory", label: "Memory" },
   { id: "automations", label: "Automations" },
   { id: "alerts", label: "Alerts" },
+  { id: "config", label: "All settings" },
   { id: "gateway", label: "Gateway" },
   { id: "runtime", label: "Runtime" },
 ];
@@ -104,11 +106,13 @@ export class Settings {
         this.#renderModels(providers, configured, models, authProfiles, plugins);
       }
     } else if (this.#tab === "providers") this.#renderProviders(providers);
+    else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") await this.#renderTools(tools);
     else if (this.#tab === "memory") await this.#renderMemory();
     else if (this.#tab === "automations") await this.#renderAutomations(config);
     else if (this.#tab === "alerts") this.#renderAlerts();
+    else if (this.#tab === "config") await this.#renderConfigEditor(config);
     else if (this.#tab === "gateway") this.#renderGateway(gw);
     else await this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
@@ -1220,6 +1224,307 @@ export class Settings {
   }
 
   /* ---------------- gateway ---------------- */
+
+
+
+  /** All-settings tab (P4 #32 — their schema-driven Settings): every config
+   *  key renders from the config.schema descriptors (form mode), plus a raw
+   *  JSON5 editor with validation (raw mode). Failed saves show the gateway's
+   *  reason and keep the draft — their "Settings not applied" flow. */
+  async #renderConfigEditor(config: any): Promise<void> {
+    let schema: any = null;
+    try {
+      schema = (await gateway.request("config.schema", {}) as any).schema ?? null;
+    } catch (err) {
+      toast(`config.schema unavailable: ${(err as Error).message}`, "err");
+    }
+    const REDACTED_PREFIX = "__redacted__:";
+    const isRedacted = (v: unknown): v is string => typeof v === "string" && v.startsWith(REDACTED_PREFIX);
+
+    const toolbar = el("div", { class: "cfg-toolbar" });
+    const search = el("input", { class: "inp", id: "cfg-filter", type: "search", placeholder: "Filter settings…", "aria-label": "Filter settings" }) as HTMLInputElement;
+    const formBtn = el("button", { class: "btn cfg-mode is-active", type: "button" }, ["Form"]);
+    const rawBtn = el("button", { class: "btn cfg-mode", type: "button" }, ["Raw"]);
+    toolbar.append(search, formBtn, rawBtn);
+
+    const formHost = el("div", { id: "cfg-form" });
+    const rawHost = el("div", { id: "cfg-raw", hidden: "" });
+    const rawBanner = el("div", { class: "cfg-banner", hidden: "" });
+    const rawArea = el("textarea", { class: "inp mono", id: "cfg-raw-text", rows: "22", spellcheck: "false" }) as HTMLTextAreaElement;
+    rawArea.value = JSON.stringify(config, null, 2);
+    const rawSave = el("button", { class: "btn pri", type: "button" }, ["Apply raw config"]);
+    rawSave.onclick = async () => {
+      rawBanner.hidden = true;
+      try {
+        await gateway.request("config.replace", { text: rawArea.value });
+        toast("config applied", "ok");
+        this.#onChanged();
+        void this.render();
+      } catch (err) {
+        rawBanner.textContent = `Settings not applied: ${(err as Error).message}`;
+        rawBanner.hidden = false;
+      }
+    };
+    rawHost.append(
+      el("p", { class: "hint" }, ["JSON5 document. Redacted secrets shown as __redacted__:… keep the stored value; \${ENV_VAR} refs stay as authored. Validation errors never clobber the running config."]),
+      rawBanner, rawArea, rawSave);
+
+    const saveBar = el("div", { class: "cfg-savebar" });
+    formBtn.onclick = () => { formHost.hidden = false; saveBar.hidden = false; rawHost.hidden = true; formBtn.classList.add("is-active"); rawBtn.classList.remove("is-active"); };
+    rawBtn.onclick = () => { formHost.hidden = true; saveBar.hidden = true; rawHost.hidden = false; rawBtn.classList.add("is-active"); formBtn.classList.remove("is-active"); };
+
+    if (!schema?.fields) {
+      formHost.append(el("div", { class: "card" }, [el("p", { class: "hint" }, ["Schema unavailable — use Raw mode."])]));
+      this.#root.append(toolbar, formHost, rawHost);
+      return;
+    }
+
+    type Kind = "bool" | "num" | "str" | "text" | "enum" | "list" | "json";
+    const fieldRow = (labelText: string, path: string, kind: Kind, cur: unknown, extra?: { values?: string[] }): HTMLElement => {
+      let input: HTMLElement;
+      if (kind === "bool") {
+        input = el("input", { type: "checkbox", id: `cfg-${path}` }) as HTMLInputElement;
+        (input as HTMLInputElement).checked = Boolean(cur);
+      } else if (kind === "enum") {
+        const sel = el("select", { class: "inp", id: `cfg-${path}` }) as HTMLSelectElement;
+        for (const opt of extra?.values ?? []) sel.append(el("option", { value: opt, ...(opt === cur ? { selected: "" } : {}) }, [opt]));
+        input = sel;
+      } else if (kind === "text") {
+        input = el("textarea", { class: "inp mono", id: `cfg-${path}`, rows: "3" }) as HTMLTextAreaElement;
+        (input as HTMLTextAreaElement).value = typeof cur === "string" && !isRedacted(cur) ? cur : "";
+      } else if (kind === "list" || kind === "json") {
+        input = el("textarea", { class: "inp mono", id: `cfg-${path}`, rows: "3", spellcheck: "false" }) as HTMLTextAreaElement;
+        (input as HTMLTextAreaElement).value = kind === "list"
+          ? (Array.isArray(cur) ? cur : []).join("\n")
+          : JSON.stringify(cur ?? (kind === "json" ? {} : []), null, 2);
+      } else {
+        const attrs: Record<string, string> = { class: "inp mono", id: `cfg-${path}` };
+        if (kind === "num") attrs["inputmode"] = "decimal";
+        input = el("input", attrs) as HTMLInputElement;
+        if (!(typeof cur === "string" && isRedacted(cur))) (input as HTMLInputElement).value = cur === undefined || cur === null ? "" : String(cur);
+      }
+      const redacted = isRedacted(cur);
+      if (redacted && (kind === "str" || kind === "text")) {
+        (input as HTMLInputElement).setAttribute("placeholder", `${cur.slice(REDACTED_PREFIX.length)} — leave blank to keep`);
+      }
+      const row = el("div", { class: "modal__field", "data-cfg-path": path, "data-cfg-kind": kind, ...(redacted ? { "data-cfg-redacted": "1" } : {}) }, [
+        el("label", { class: "lbl", for: `cfg-${path}` }, [labelText]),
+        input,
+      ]);
+      (row as any).__initial = kind === "bool" ? Boolean(cur) : (input as HTMLInputElement).value ?? "";
+      return row;
+    };
+
+    const renderNode = (node: any, path: string, cur: unknown, into: HTMLElement): void => {
+      if (!node || typeof node !== "object") return;
+      switch (node.t) {
+        case "bool": into.append(fieldRow(path.split(".").pop() ?? path, path, "bool", cur)); return;
+        case "int": case "float": into.append(fieldRow(path.split(".").pop() ?? path, path, "num", cur)); return;
+        case "string": into.append(fieldRow(path.split(".").pop() ?? path, path, "str", cur)); return;
+        case "text": into.append(fieldRow(path.split(".").pop() ?? path, path, "text", cur)); return;
+        case "enum": into.append(fieldRow(path.split(".").pop() ?? path, path, "enum", cur, { values: node.values })); return;
+        case "array":
+          if (node.of?.t === "string") into.append(fieldRow(path.split(".").pop() ?? path, path, "list", cur));
+          else into.append(fieldRow(path.split(".").pop() ?? path, path, "json", cur ?? []));
+          return;
+        case "record": case "any":
+          into.append(fieldRow(path.split(".").pop() ?? path, path, "json", cur ?? {}));
+          return;
+        case "object": {
+          const box = el("div", { class: "cfg-group", "data-cfg-group": path });
+          box.append(el("h4", { class: "cfg-group__title" }, [path.split(".").pop() ?? path]));
+          const obj = (cur && typeof cur === "object" ? cur : {}) as Record<string, unknown>;
+          for (const [key, child] of Object.entries(node.fields ?? {})) {
+            renderNode(child, path ? `${path}.${key}` : key, obj[key] ?? (child as any).default, box);
+          }
+          into.append(box);
+          return;
+        }
+        default: return;
+      }
+    };
+
+    const sections: [string, any][] = Object.entries(schema.fields);
+    for (const [name, node] of sections) {
+      const card = el("div", { class: "card cfg-section", "data-cfg-section": name });
+      card.append(el("h3", {}, [name]));
+      const cur = (config as Record<string, unknown>)[name];
+      if ((node as any).t === "object") {
+        for (const [key, child] of Object.entries((node as any).fields ?? {})) {
+          renderNode(child, `${name}.${key}`, (cur as any)?.[key] ?? (child as any).default, card);
+        }
+      } else {
+        renderNode(node, name, cur, card);
+      }
+      formHost.append(card);
+    }
+
+    search.addEventListener("input", () => {
+      const q = search.value.trim().toLowerCase();
+      for (const card of Array.from(formHost.querySelectorAll<HTMLElement>(".cfg-section"))) {
+        let anyVisible = false;
+        for (const row of Array.from(card.querySelectorAll<HTMLElement>("[data-cfg-path]"))) {
+          const match = !q || (row.dataset["cfgPath"] ?? "").toLowerCase().includes(q);
+          row.hidden = !match;
+          if (match) anyVisible = true;
+        }
+        card.hidden = !anyVisible;
+      }
+    });
+
+    const saveBtn = el("button", { class: "btn pri", type: "button" }, ["Save changes"]);
+    saveBtn.onclick = async () => {
+      const pairs: [string, unknown][] = [];
+      const errors: string[] = [];
+      for (const row of Array.from(formHost.querySelectorAll<HTMLElement>("[data-cfg-path]"))) {
+        if (row.hidden) continue;
+        const path = row.dataset["cfgPath"]!;
+        const kind = row.dataset["cfgKind"] as Kind;
+        const inputEl = row.querySelector("input, textarea, select") as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+        const initial = (row as any).__initial;
+        let value: unknown;
+        try {
+          if (kind === "bool") value = (inputEl as HTMLInputElement).checked;
+          else if (kind === "num") value = inputEl.value === "" ? initial : Number(inputEl.value);
+          else if (kind === "list") value = (inputEl as HTMLTextAreaElement).value.split("\n").map((v) => v.trim()).filter(Boolean);
+          else if (kind === "json") value = JSON.parse((inputEl as HTMLTextAreaElement).value);
+          else value = inputEl.value;
+        } catch {
+          errors.push(`${path}: invalid JSON`);
+          continue;
+        }
+        if (row.dataset["cfgRedacted"] === "1" && (value === "" || value === undefined)) continue;
+        if (kind === "bool" ? value !== initial : String(value) !== String(initial) && !(kind === "list" && JSON.stringify(value) === JSON.stringify(initial?.split?.("\n") ?? initial))) {
+          // list inputs compare on text anyway; bool on checked state.
+          if (kind === "list" && (inputEl as HTMLTextAreaElement).value === initial) continue;
+          pairs.push([path, value]);
+        }
+      }
+      if (errors.length > 0) { toast(errors.join("; "), "err"); return; }
+      if (pairs.length === 0) { toast("no changes", "info"); return; }
+      await this.#setMany(pairs, `${pairs.length} setting(s) saved`);
+      void this.render();
+    };
+    saveBar.append(saveBtn);
+
+    this.#root.append(toolbar, formHost, saveBar, rawHost);
+  }
+
+  /** Channels tab (P4 #31 — their Channels pages, scoped to our one channel):
+   *  every channels.telegram.* key editable; the token edits through the
+   *  redaction sentinel so it never crosses the socket, and the hint points
+   *  at \${ENV}/SecretRef storage (P3 #30) instead of plaintext. */
+  #renderChannels(channels: any): void {
+    const tg = channels.telegram ?? {};
+    const typing = tg.typing ?? {};
+    const blp = tg.botLoopProtection ?? {};
+
+    const check = (labelText: string, key: string, cur: boolean, hint?: string) => {
+      const box = el("input", { type: "checkbox", id: `ch-${key}` }) as HTMLInputElement;
+      box.checked = cur;
+      return el("div", { class: "row", "data-ch-key": key, "data-ch-kind": "bool" }, [
+        el("span", { class: "row__label" }, [labelText]),
+        el("span", { class: "row__value" }, [box]),
+        ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
+      ]);
+    };
+    const num = (labelText: string, key: string, cur: number, hint?: string) => {
+      const inp = el("input", { class: "inp mono", id: `ch-${key}`, value: String(cur ?? 0), inputmode: "numeric" });
+      return el("div", { class: "modal__field", "data-ch-key": key, "data-ch-kind": "num" }, [
+        el("label", { class: "lbl", for: `ch-${key}` }, [labelText]),
+        inp,
+        ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
+      ]);
+    };
+    const pick = (labelText: string, key: string, cur: string, options: string[], hint?: string) => {
+      const sel = el("select", { class: "inp", id: `ch-${key}` }) as HTMLSelectElement;
+      for (const opt of options) sel.append(el("option", { value: opt, ...(opt === cur ? { selected: "" } : {}) }, [opt]));
+      return el("div", { class: "modal__field", "data-ch-key": key, "data-ch-kind": "str" }, [
+        el("label", { class: "lbl", for: `ch-${key}` }, [labelText]),
+        sel,
+        ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
+      ]);
+    };
+    const list = (labelText: string, key: string, cur: string[], hint?: string) => {
+      const ta = el("textarea", { class: "inp mono", id: `ch-${key}`, rows: "3" }) as HTMLTextAreaElement;
+      ta.value = (cur ?? []).join("\n");
+      return el("div", { class: "modal__field", "data-ch-key": key, "data-ch-kind": "list" }, [
+        el("label", { class: "lbl", for: `ch-${key}` }, [labelText]),
+        ta,
+        ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
+      ]);
+    };
+
+    const tokenInp = el("input", {
+      class: "inp mono", id: "ch-token", type: "password",
+      placeholder: tg.token ? "leave blank to keep current token" : "123456:ABC…",
+    }) as HTMLInputElement;
+
+    const save = el("button", { class: "btn pri", type: "button" }, ["Save channel settings"]);
+    save.onclick = async () => {
+      const pairs: [string, unknown][] = [];
+      for (const node of Array.from(this.#root.querySelectorAll<HTMLElement>("[data-ch-key]"))) {
+        const key = node.dataset["chKey"]!;
+        const kind = node.dataset["chKind"]!;
+        if (kind === "bool") {
+          pairs.push([key, (node.querySelector("input") as HTMLInputElement).checked]);
+        } else if (kind === "num") {
+          pairs.push([key, Number((node.querySelector("input, textarea") as HTMLInputElement).value) || 0]);
+        } else if (kind === "list") {
+          pairs.push([key, (node.querySelector("textarea") as HTMLTextAreaElement).value.split("\n").map((v) => v.trim()).filter(Boolean)]);
+        } else {
+          pairs.push([key, (node.querySelector("select, input") as HTMLInputElement).value.trim()]);
+        }
+      }
+      if (tokenInp.value.trim()) pairs.push(["channels.telegram.token", tokenInp.value.trim()]);
+      await this.#setMany(pairs, "channel settings saved — telegram re-reads config live");
+    };
+
+    this.#root.append(
+      el("div", { class: "card" }, [
+        el("h3", {}, ["Telegram"]),
+        check("Enable the channel", "channels.telegram.enabled", Boolean(tg.enabled)),
+        el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: "ch-token" }, ["Bot token"]),
+          tokenInp,
+          el("p", { class: "hint" }, [
+            tg.token
+              ? `Saved token ends …${String(tg.token).slice(-4)}. Paste a new one, or put \${TELEGRAM_TOKEN} / a SecretRef in config.json5 (see: sc secrets refs).`
+              : "From @BotFather. To keep it out of config.json5 put \${TELEGRAM_TOKEN} or a SecretRef there instead (see: sc secrets refs).",
+          ]),
+        ]),
+        pick("DM policy", "channels.telegram.dmPolicy", tg.dmPolicy ?? "pairing", ["pairing", "open", "allowlist"],
+          "pairing asks new senders to pair; open replies to everyone; allowlist replies only to the list below."),
+        list("DM allowlist (user ids or @names, one per line)", "channels.telegram.allowFrom", tg.allowFrom ?? []),
+        pick("Group policy", "channels.telegram.groupPolicy", tg.groupPolicy ?? "allowlist", ["allowlist", "open", "off"]),
+        list("Group allowlist (chat ids, one per line)", "channels.telegram.groupAllowFrom", tg.groupAllowFrom ?? []),
+        check("Only respond when mentioned in groups", "channels.telegram.mentionGated", Boolean(tg.mentionGated ?? true)),
+        check("Allow bot senders", "channels.telegram.allowBots", Boolean(tg.allowBots),
+          "Off ignores messages from other bots."),
+      ]),
+      el("div", { class: "card" }, [
+        el("h3", {}, ["Messages"]),
+        pick("Draft streaming to Telegram", "channels.telegram.streaming", tg.streaming ?? "off", ["off", "partial", "progress"]),
+        num("Batch window (ms)", "channels.telegram.batchMs", tg.batchMs ?? 0,
+          "Rapid-fire messages are merged before one reply. 0 disables batching."),
+        pick("Typing indicator", "channels.telegram.typing.mode", typing.mode ?? "instant", ["instant", "thinking", "message", "never"],
+          "instant on receive; thinking on first model output; message only beside replies; never."),
+        num("Typing refresh (seconds)", "channels.telegram.typing.intervalSeconds", typing.intervalSeconds ?? 5),
+        num("Media size cap (MB)", "channels.telegram.mediaMaxMb", tg.mediaMaxMb ?? 10),
+        check("Send photos to the vision model", "channels.telegram.vision", Boolean(tg.vision ?? true),
+          "When off, photos are described by media understanding only."),
+      ]),
+      el("div", { class: "card" }, [
+        el("h3", {}, ["Bot-loop protection"]),
+        check("Enable", "channels.telegram.botLoopProtection.enabled", Boolean(blp.enabled ?? true),
+          "Drops feedback loops when a partner bot answers every message."),
+        num("Max events per window", "channels.telegram.botLoopProtection.maxEventsPerWindow", blp.maxEventsPerWindow ?? 10),
+        num("Window (seconds)", "channels.telegram.botLoopProtection.windowSeconds", blp.windowSeconds ?? 60),
+        num("Cooldown (seconds)", "channels.telegram.botLoopProtection.cooldownSeconds", blp.cooldownSeconds ?? 300),
+      ]),
+      save,
+    );
+  }
 
   #renderGateway(gw: any): void {
     const port = el("input", {

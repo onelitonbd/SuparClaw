@@ -12,8 +12,8 @@ import {
   testProvider,
   validateModelRef,
 } from "../config/providers.js";
-import { redactSecrets, resolveRedacted } from "../config/redact.js";
-import { modelProfiles } from "../config/schema.js";
+import { redactSecrets, resolveRedacted, resolveRedactedDeep } from "../config/redact.js";
+import { CONFIG_SCHEMA, modelProfiles, parseConfig } from "../config/schema.js";
 import { readSkillBody, skillSlug, writeSkill } from "../agent/skills.js";
 import { workspaceDir } from "../util/paths.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
@@ -245,6 +245,8 @@ export class Gateway {
       "cron.list",
       "automations.state",
       "config.get",
+      "config.schema",
+      "config.replace",
       "config.path",
       "config.set",
     ];
@@ -958,6 +960,42 @@ export class Gateway {
           // sentinels (see config/redact.ts).
           send(okFrame(id, { config: redactSecrets(service.config), path: service.configSvc.path }));
           return;
+        case "config.schema":
+          // P4 #32 (their config.schema): the generic Settings editor renders
+          // any key straight from these descriptors.
+          send(okFrame(id, { schema: CONFIG_SCHEMA }));
+          return;
+        case "config.replace": {
+          // P4 #32 (their raw JSON editor): whole-document replace with
+          // validation, redacted-sentinel resolution and live apply. A bad
+          // document is rejected BEFORE writing; the draft stays editable.
+          const text = typeof params["text"] === "string" ? (params["text"] as string) : null;
+          if (text === null) {
+            send(errFrame(id, "bad_request", "text is required"));
+            return;
+          }
+          let authored: unknown;
+          try {
+            const { default: JSON5 } = await import("json5");
+            authored = JSON5.parse(text);
+          } catch (err) {
+            send(errFrame(id, "bad_json", (err as Error).message));
+            return;
+          }
+          // Redaction sentinels anywhere in the document mean "keep the
+          // stored value" — resolve them against the live config first.
+          const resolved = resolveRedactedDeep(authored, service.config);
+          const { config, errors } = parseConfig(resolved);
+          if (errors.length > 0) {
+            send(errFrame(id, "bad_config", errors.join("\n")));
+            return;
+          }
+          service.configSvc.replaceAll(config);
+          service.applyConfig();
+          send(okFrame(id, { ok: true, config: redactSecrets(service.config) }));
+          return;
+        }
+
         case "config.path":
           send(okFrame(id, { path: service.configSvc.path }));
           return;

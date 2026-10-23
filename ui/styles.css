@@ -753,6 +753,20 @@ textarea:focus-visible {
 
 .composer--attached { border-radius: 0 0 var(--r-lg) var(--r-lg); }
 
+/* All-settings editor (P4 #32) */
+.cfg-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.cfg-toolbar .inp { flex: 1; }
+.cfg-mode.is-active { border-color: var(--accent, #6c8cff); color: var(--ink); }
+.cfg-group { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 6px; }
+.cfg-group__title { font-size: 12px; color: var(--ink3); text-transform: uppercase; letter-spacing: .04em; margin: 4px 0 2px; }
+.cfg-banner {
+  border: 1px solid var(--err, #e5534b); color: var(--err, #e5534b);
+  border-radius: var(--r-md, 10px); padding: 8px 10px; margin: 8px 0;
+  font-size: 12px; white-space: pre-wrap;
+}
+.cfg-savebar { position: sticky; bottom: 8px; display: flex; justify-content: flex-end; padding-top: 8px; }
+#cfg-raw-text { width: 100%; min-height: 320px; font-size: 12px; }
+
 .composer--drop { border-color: var(--accent, #6c8cff); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #6c8cff) 35%, transparent); }
 
 .attach-btn {

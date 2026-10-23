@@ -27,7 +27,7 @@ export { buildRegistry, toolsToSchema, safePath } from "./agent/tools.js";
 export { LlmClient, resolveModel, parseToolArgs, parseRetryAfter, parseRetryHint, LlmError, providerErrorText, googleThoughtSignature, reasoningTokens, SKIP_THOUGHT_SIGNATURE } from "./agent/llm.js";
 export { hostAllowed, originAllowed, hostnameOf, type TrustPolicy } from "./gateway/trust.js";
 export { parseWebAttachments, isImageMime, sanitizeAttachName, WEB_ATTACH_LIMITS } from "./gateway/web-attachments.js";
-export { redactSecrets, resolveRedacted, isRedacted, maskSecret, REDACTED_PREFIX } from "./config/redact.js";
+export { redactSecrets, resolveRedacted, resolveRedactedDeep, isRedacted, maskSecret, REDACTED_PREFIX } from "./config/redact.js";
 export { auditConfig, type Finding } from "./cli/audit.js";
 export { splitForTelegram } from "./channels/telegram.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";

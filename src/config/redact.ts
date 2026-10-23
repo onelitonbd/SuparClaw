@@ -30,6 +30,21 @@ export function isRedacted(value: unknown): boolean {
 const looksLikeBinding = (value: string): boolean =>
   /^[a-z0-9][a-z0-9-]*:[^/].+$/i.test(value) && value.length < 128;
 
+/** Whole-document sentinel resolution (P4 #32, raw JSON editor): any string
+ *  carrying the mask prefix keeps the stored value at that path; everything
+ *  else passes through as authored. */
+export function resolveRedactedDeep(authored: unknown, stored: unknown): unknown {
+  if (typeof authored === "string") return resolveRedacted(stored as string, authored);
+  if (Array.isArray(authored)) return authored.map((item, i) => resolveRedactedDeep(item, Array.isArray(stored) ? stored[i] : undefined));
+  if (authored && typeof authored === "object") {
+    const out: Record<string, unknown> = {};
+    const cur = (stored && typeof stored === "object" ? stored : {}) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(authored as Record<string, unknown>)) out[k] = resolveRedactedDeep(v, cur[k]);
+    return out;
+  }
+  return authored;
+}
+
 /** Deep-clone a config with every secret field masked. */
 export function redactSecrets(config: SuparClawConfig): SuparClawConfig {
   const out = structuredClone(config) as SuparClawConfig & {
