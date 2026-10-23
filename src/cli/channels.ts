@@ -63,10 +63,11 @@ export async function cmdChannels(rest: string[]): Promise<number> {
       console.log(fg.red("gateway offline") + fg.dim("  — start it first: sc gateway (or sc service install + start)"));
       return 1;
     }
-    const tg = (res as { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string } }).telegram;
+    const tg = (res as { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string; proxy: string; proxySource: "config" | "env" | "none" } }).telegram;
     console.log();
     console.log(`  ${fg.bold("telegram")}  ${tg.enabled ? (tg.running ? fg.green("online") : fg.red("offline")) : fg.dim("disabled")}`);
     console.log(`           enabled: ${tg.enabled} · token: ${tg.hasToken ? fg.dim("set") : fg.red("missing")}`);
+    console.log(`           proxy: ${tg.proxy ? `${fg.dim(tg.proxy)} ${fg.dim(`(from ${tg.proxySource})`)}` : fg.dim(tg.proxySource === "env" ? "env set but bypassed (direct)" : "direct — no proxy")}`);
     if (tg.running && tg.username) console.log(`           bot: @${tg.username}`);
     if (tg.error) console.log(`           ${fg.red(`error: ${tg.error}`)}`);
     console.log();

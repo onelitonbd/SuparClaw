@@ -8,16 +8,23 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("telegramProxy: config beats env; env is honored when config is empty", async () => {
-  const { telegramProxy } = await import("../dist/lib.js");
+test("telegramProxy: config beats env; direct-bypass beats env; source tracked", async () => {
+  const { telegramProxy, telegramProxySource } = await import("../dist/lib.js");
   const saved = process.env["TELEGRAM_PROXY"];
   delete process.env["TELEGRAM_PROXY"];
   try {
     assert.equal(telegramProxy(""), "");
+    assert.equal(telegramProxySource(""), "none");
     assert.equal(telegramProxy("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+    assert.equal(telegramProxySource("http://127.0.0.1:8080"), "config");
     process.env["TELEGRAM_PROXY"] = "http://127.0.0.1:9999";
     assert.equal(telegramProxy(""), "http://127.0.0.1:9999");
+    assert.equal(telegramProxySource(""), "env");
     assert.equal(telegramProxy("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+    // The env-bypass: "direct"/"none" forces a clean route.
+    assert.equal(telegramProxy("direct"), "");
+    assert.equal(telegramProxy("none"), "");
+    assert.equal(telegramProxySource("direct"), "none");
   } finally {
     if (saved === undefined) delete process.env["TELEGRAM_PROXY"]; else process.env["TELEGRAM_PROXY"] = saved;
   }
@@ -79,7 +86,9 @@ test("service: failures carry the cause chain + unreachable-vs-bad-token diagnos
   // reachability is classified properly: reject-token vs broken-proxy vs blip
   assert.match(src, /answers plainly that it rejects this TOKEN/);
   assert.match(src, /proxyProbe\(px, 3000\)/);
-  assert.ok(src.includes("your proxy is the broken link"));
+  assert.ok(src.includes("is the broken link"), "direct-OK + proxied-FAIL calls out the proxy");
+  assert.ok(src.includes("telegramProxySource"), "verdicts name config vs env origin");
+  assert.ok(src.includes("to force the bot direct"), "env-proxy source offers the bypass");
   assert.match(src, /Transient carrier blip/);
   assert.match(src, /triedTransientRetry = false/);
   assert.match(src, /automatic retry connected/);

@@ -45,6 +45,9 @@ test("telegramReconnect: disabled and empty-token guards", async () => {
   const status = service.channelsStatus();
   assert.equal(status.telegram.enabled, true);
   assert.equal(status.telegram.running, false);
+  // Status reveals what the bot actually routes through (env-proxy trap)
+  assert.equal(typeof status.telegram.proxy, "string");
+  assert.ok(["config", "env", "none"].includes(status.telegram.proxySource));
   service.store.close();
 });
 

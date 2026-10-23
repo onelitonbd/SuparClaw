@@ -45,15 +45,32 @@ async function createBot(token: string, proxy = "") {
   return new Bot(token, { client });
 }
 
-/** The proxy a channel uses: explicit config first, then the standard env. */
+/** The proxy a channel uses: explicit config first, then the standard env.
+ *  A config value of "direct"/"none"/"-" is the explicit bypass — the only
+ *  way to ignore a stray HTTPS_PROXY/ALL_PROXY the shell exports (VPN apps
+ *  love those; the bot then sails a dead proxy while everything else looks
+ *  direct — the silent-mismatch failure). */
 export function telegramProxy(cfgProxy: string | undefined): string {
   const explicit = String(cfgProxy ?? "").trim();
+  if (/^(direct|none|-)$/i.test(explicit)) return "";
   if (explicit) return explicit;
   for (const key of ["TELEGRAM_PROXY", "telegram_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) {
     const v = process.env[key]?.trim();
     if (v) return v;
   }
   return "";
+}
+
+/** Which of those the value came from: the status surface must reveal what
+ *  the bot actually used (they surface the env proxy the same way). */
+export function telegramProxySource(cfgProxy: string | undefined): "config" | "env" | "none" {
+  const explicit = String(cfgProxy ?? "").trim();
+  if (/^(direct|none|-)$/i.test(explicit)) return "none";
+  if (explicit) return "config";
+  for (const key of ["TELEGRAM_PROXY", "telegram_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) {
+    if (process.env[key]?.trim()) return "env";
+  }
+  return "none";
 }
 
 /**

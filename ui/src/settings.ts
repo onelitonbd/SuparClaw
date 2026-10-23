@@ -2037,7 +2037,7 @@ export class Settings {
     ]);
     const refreshStatus = async (): Promise<void> => {
       try {
-        const res = (await gateway.request("channels.status")) as { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string } };
+        const res = (await gateway.request("channels.status")) as { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string; proxy: string; proxySource: "config" | "env" | "none" } };
         const st = res.telegram;
         statusRow.innerHTML = "";
         statusRow.append(
@@ -2047,7 +2047,7 @@ export class Settings {
               ? "Telegram channel is disabled — tick Enable and save below."
               : st.running
                 ? `Connected${st.username ? ` as @${st.username}` : ""}`
-                : `Offline${st.error ? ` — ${st.error}` : " (not connected)"}`,
+                : `Offline${st.error ? ` — ${st.error}` : " (not connected)"}${st.proxy ? ` (via proxy ${st.proxy} · ${st.proxySource})` : ""}`,
           ]),
         );
       } catch {

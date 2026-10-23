@@ -35,7 +35,7 @@ import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileChec
 import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
 import { fetchModels } from "../config/providers.js";
-import { TelegramChannel, describeError, probeTelegramApi } from "../channels/telegram.js";
+import { TelegramChannel, describeError, probeTelegramApi, telegramProxy, telegramProxySource } from "../channels/telegram.js";
 import { detectWorkingProxy, proxyProbe } from "../channels/telegram-proxy.js";
 import { Scheduler } from "../cron/scheduler.js";
 
@@ -379,7 +379,7 @@ export class Service {
   }
 
   /** Live channel health for Settings → Channels (their channels status). */
-  channelsStatus(): { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string } } {
+  channelsStatus(): { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string; proxy: string; proxySource: "config" | "env" | "none" } } {
     const tg = this.config.channels.telegram;
     const running = Boolean(this.#telegram?.running);
     return {
@@ -388,6 +388,10 @@ export class Service {
         hasToken: /^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(String(tg.token ?? "")) || Boolean(tg.token),
         running,
         username: running ? this.#telegram?.username ?? "" : "",
+        // Which proxy the bot actually routes through — the silent-env-proxy
+        // mismatch (bot dies, probes pass) is invisible without this.
+        proxy: telegramProxy(String(tg.proxy ?? "")),
+        proxySource: telegramProxySource(String(tg.proxy ?? "")),
         // Show the start failure plainly so a wrong token or blocked network
         // is visible instead of a silent "offline" (they report the same way).
         error: tg.enabled && !running ? this.#telegramError : "",
@@ -497,11 +501,15 @@ export class Service {
       // getMe died on the network while the DIRECT probe works. If the bot
       // used a proxy, the proxy is the broken link — verify by probing
       // THROUGH it before blaming the carrier.
-      const px = String(tg.proxy).trim();
+      const px = telegramProxy(String(tg.proxy ?? ""));
+      const src = telegramProxySource(String(tg.proxy ?? ""));
       if (px) {
         const via = await proxyProbe(px, 3000).catch(() => ({ ok: false, why: "probe failed" }));
         if (!via.ok) {
-          error += ` — but api.telegram.org is reachable DIRECTLY, so your proxy is the broken link (${via.why}). Fix its port, or clear it: sc config set channels.telegram.proxy "" — then sc channels connect`;
+          const origin = src === "env"
+            ? `your shell exports it (HTTPS_PROXY/TELEGRAM_PROXY/ALL_PROXY) — to force the bot direct: sc config set channels.telegram.proxy direct`
+            : `fix its port, or clear it: sc config set channels.telegram.proxy ""`;
+          error += ` — but api.telegram.org is reachable DIRECTLY, so the proxy in effect (${px}, from ${src}) is the broken link (${via.why}). ${origin} — then sc channels connect`;
         } else {
           error += " — while both direct and proxied probes answer. Transient blip: retry sc channels connect";
         }
