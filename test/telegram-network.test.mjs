@@ -59,12 +59,23 @@ test("config schema: channels.telegram.proxy is a settable string", () => {
   assert.match(src, /token: string;\n      proxy: string;/);
 });
 
+test("service: placeholder traps (copied-from-docs PORT/token examples) refuse politely; blocked-no-proxy verdict names options", () => {
+  const src = readFileSync(new URL("../src/agent/service.ts", import.meta.url), "utf8");
+  assert.match(src, /:\(PORT\|HOST\|EXAMPLE\)\\\/\?\$\/\.test/);
+  assert.match(src, /PORT placeholder from the hint/);
+  assert.match(src, /looks like a doc example, not your real @BotFather token/);
+  assert.match(src, /detectWorkingProxy\(8000\)/);
+  assert.match(src, /auto-detected one on this device/);
+  assert.match(src, /no local proxy was detected on the usual ports/);
+  assert.match(src, /triedAutoProxy = false/);
+});
+
 test("service: failures carry the cause chain + unreachable-vs-bad-token diagnosis", () => {
   const src = readFileSync(new URL("../src/agent/service.ts", import.meta.url), "utf8");
   assert.match(src, /this\.#telegramError = describeError\(err\)/);
   assert.match(src, /const probe = await probeTelegramApi\(2500\)/);
   assert.match(src, /unreachable from this device/);
-  assert.match(src, /Set channels\.telegram\.proxy/);
+  assert.ok(src.includes('Check the proxy ('), "proxy-configured failure points at the proxy's own port");
   assert.match(src, /reachable, so the credential itself is the problem/);
 });
 
@@ -92,5 +103,5 @@ test("ui + cli: proxy field and guidance are visible where the user looks", () =
   assert.match(ui, /blocked by the carrier/);
   assert.match(ui, /TELEGRAM_PROXY/);
   const cli = readFileSync(new URL("../src/cli/channels.ts", import.meta.url), "utf8");
-  assert.match(cli, /sc config set channels\.telegram\.proxy http:\/\/127\.0\.0\.1:PORT/);
+  assert.ok(cli.includes("sc config set channels.telegram.proxy http://127.0.0.1:8080"), "cli hint uses a concrete port + replacement note");
 });

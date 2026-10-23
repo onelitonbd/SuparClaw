@@ -212,6 +212,48 @@ async function bodyBuffer(body: unknown): Promise<Buffer> {
   return Buffer.from(String(body), "utf8");
 }
 
+/** Common local proxy ports (their VPN-app conventions: Clash/sing-box 7890,
+ * c6, v2ray http 10809 / socks 10808, naive 1080, Privoxy 8118, Squid 3128). */
+const LOCAL_PROXY_CANDIDATES: string[] = [
+  "http://127.0.0.1:7890",
+  "http://127.0.0.1:10809",
+  "http://127.0.0.1:8080",
+  "http://127.0.0.1:8888",
+  "http://127.0.0.1:8118",
+  "http://127.0.0.1:3128",
+  "socks5://127.0.0.1:1080",
+  "socks5://127.0.0.1:10808",
+];
+
+/**
+ * Is something on this device already proxying to api.telegram.org? Probes
+ * the well-known local-proxy ports in parallel: a candidate wins when a full
+ * CONNECT→TLS→HTTP exchange through it returns ANY HTTP response. Seconds,
+ * not minutes (aggregate cap).
+ */
+export async function detectWorkingProxy(timeoutMs = 8000): Promise<string | null> {
+  const tryOne = async (candidate: string): Promise<string | null> => {
+    try {
+      const f = makeProxiedFetch(candidate);
+      const res = await f("https://api.telegram.org/", { signal: AbortSignal.timeout(Math.ceil(timeoutMs / 2)) });
+      if (Number(res.status) > 0) return candidate;
+      return null;
+    } catch {
+      return null;
+    }
+  };
+  return new Promise((resolve) => {
+    let done = 0;
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    for (const c of LOCAL_PROXY_CANDIDATES) {
+      void tryOne(c).then((hit) => {
+        if (hit) { clearTimeout(timer); resolve(hit); return; }
+        if (++done === LOCAL_PROXY_CANDIDATES.length) { clearTimeout(timer); resolve(null); }
+      });
+    }
+  });
+}
+
 /**
  * A fetch(1)-compatible implementation whose sockets all pass through a
  * HTTP(S) CONNECT proxy or SOCKS5 — Node-core only.

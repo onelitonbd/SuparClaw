@@ -36,6 +36,7 @@ import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
 import { fetchModels } from "../config/providers.js";
 import { TelegramChannel, describeError, probeTelegramApi } from "../channels/telegram.js";
+import { detectWorkingProxy } from "../channels/telegram-proxy.js";
 import { Scheduler } from "../cron/scheduler.js";
 
 export interface ChatPayload {
@@ -437,10 +438,20 @@ export class Service {
    *  the real outcome so the UI can say "@bot online" or WHY it failed —
    *  unlike the fs-watcher path which is silent (and may not fire at all on
    *  some filesystems). */
-  async telegramReconnect(): Promise<{ ok: boolean; username?: string; error?: string }> {
+  async telegramReconnect(triedAutoProxy = false): Promise<{ ok: boolean; username?: string; error?: string; note?: string }> {
     const tg = this.config.channels.telegram;
     if (!tg.enabled) return { ok: false, error: "channels.telegram.enabled is off" };
     if (!tg.token) return { ok: false, error: "channels.telegram.token is empty — paste a @BotFather token first" };
+    // Placeholder traps: sample strings copied verbatim from docs/hints work
+    // at exactly zero endpoints — call them out before any attempt.
+    if (!/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(String(tg.token).trim())) {
+      if (/ABC|TOKEN|BOT|\.\.\.|…/.test(String(tg.token))) {
+        return { ok: false, error: `channels.telegram.token looks like a doc example, not your real @BotFather token — set the real one: sc config set channels.telegram.token 1234567890:AAxx...` };
+      }
+    }
+    if (/:(PORT|HOST|EXAMPLE)\/?$/.test(String(tg.proxy).trim())) {
+      return { ok: false, error: `channels.telegram.proxy "${String(tg.proxy).trim()}" still has the PORT placeholder from the hint — replace PORT with the number your proxy/VPN app actually listens on (typically 7890, 8080, 10808). No proxy app installed? Telegram can't be reached while your carrier blocks it — and sc channels connect will auto-detect a local proxy if one is running.` };
+    }
     try {
       if (this.#telegram?.running) await this.#telegram.stop();
     } catch { /* stopping is best-effort */ }
@@ -452,7 +463,22 @@ export class Service {
     // remedy is a proxy, not a new token.
     const probe = await probeTelegramApi(2500);
     if (!probe.ok) {
-      error += ` — api.telegram.org is unreachable from this device (${probe.why}); the network likely blocks Telegram. Set channels.telegram.proxy (sc config set channels.telegram.proxy http://127.0.0.1:PORT, or the TELEGRAM_PROXY env) and retry: sc channels connect`;
+      // If no proxy is configured, try the well-known local proxy ports
+      // (Clash/sing-box/v2ray shapes) once — a running VPN app means the
+      // channel connects with zero config.
+      if (!String(tg.proxy).trim() && !triedAutoProxy) {
+        const found = await detectWorkingProxy(8000).catch(() => null);
+        if (found) {
+          this.configSvc.setPath("channels.telegram.proxy", found);
+          this.applyConfig();
+          const retry = await this.telegramReconnect(true);
+          retry.note = `no proxy was configured; auto-detected one on this device (${found}) — saved to channels.telegram.proxy and retried. Clear with: sc config set channels.telegram.proxy ""`;
+          return retry;
+        }
+        error += ` — api.telegram.org is unreachable from this device (${probe.why}); the network likely blocks Telegram, and no local proxy was detected on the usual ports (7890/8080/10808/10809/1080). If you have a VPN/proxy app, turn on its local port and retry; otherwise Telegram can't connect on this network — you can still use SuparClaw from the Web UI at this device`;
+      } else {
+        error += ` — api.telegram.org is unreachable from this device (${probe.why}); the network likely blocks Telegram. Check the proxy (${String(tg.proxy).trim() || "env/none"}) is actually listening, then retry: sc channels connect`;
+      }
     } else if (/network|fetch/i.test(error)) {
       error += " — api.telegram.org is reachable, so the credential itself is the problem; paste a fresh @BotFather token (or /revoke + re-issue) and retry";
     }

@@ -34,7 +34,7 @@ export { runDoctorChecks, type DoctorCheck } from "./cli/doctor.js";
 export { auditSecretsFile, type SecretsAuditResult } from "./cli/secrets.js";
 export { systemUpdateCheck, systemUpdateApply, type UpdateStatus, type UpdateApplyResult } from "./cli/update.js";
 export { splitForTelegram, telegramProxy, probeTelegramApi, describeError } from "./channels/telegram.js";
-export { makeProxiedFetch, normalizeProxyUrl } from "./channels/telegram-proxy.js";
+export { makeProxiedFetch, normalizeProxyUrl, detectWorkingProxy } from "./channels/telegram-proxy.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
 export { Subagents } from "./agent/subagents.js";

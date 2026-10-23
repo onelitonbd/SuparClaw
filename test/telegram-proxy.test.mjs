@@ -110,6 +110,30 @@ test("proxied fetch: chunked transfer-encoding decodes (raw TCP framing)", async
   origin.close(); srv.close();
 });
 
+test("detectWorkingProxy: probes candidate ports, wire-visible, null when nothing responds", async () => {
+  const { detectWorkingProxy } = await import("../dist/lib.js");
+  // Occupy a candidate port with a CONNECT logger that refuses: detection
+  // must reach it (proves the probe path) and stay null (not crash).
+  const hits = [];
+  const srv = netServer((c) => {
+    let b = "";
+    c.on("data", (d) => {
+      b += d.toString("latin1");
+      if (b.includes("\r\n\r\n")) { hits.push(b.split("\r\n")[0]); c.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"); }
+    });
+    c.on("error", () => {});
+  }).listen(10809, "127.0.0.1");
+  await once(srv, "listening");
+  try {
+    const found = await detectWorkingProxy(4000);
+    assert.equal(found, null);
+    assert.ok(hits.some((h) => h.startsWith("CONNECT api.telegram.org:443")), "no CONNECT probes landed on the candidate port");
+  } finally {
+    srv.closeAllConnections?.();
+    srv.close();
+  }
+});
+
 test("normalizeProxyUrl: bare host:port is accepted; garbage errs with guidance", async () => {
   const { normalizeProxyUrl } = await import("../dist/lib.js");
   assert.equal(normalizeProxyUrl("127.0.0.1:9050"), "http://127.0.0.1:9050");

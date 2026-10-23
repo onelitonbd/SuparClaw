@@ -112,14 +112,15 @@ export async function cmdChannels(rest: string[]): Promise<number> {
       console.log(fg.red("gateway offline") + fg.dim("  — start it first: sc gateway (or sc service install + start)"));
       return 1;
     }
-    const r = res as { ok: boolean; username?: string; error?: string };
+    const r = res as { ok: boolean; username?: string; error?: string; note?: string };
+    if (r.note) console.log(fg.dim(`note: ${r.note}`));
     if (r.ok) {
       console.log(fg.green(`telegram connected as @${r.username ?? "?"}`));
       return 0;
     }
     console.log(fg.red(`telegram connect failed: ${r.error ?? "unknown"}`));
     console.log(fg.dim("if api.telegram.org is blocked on your network, set a proxy first:"));
-    console.log(fg.dim("  sc config set channels.telegram.proxy http://127.0.0.1:PORT   (bare HOST:PORT works too), then sc channels connect"));
+    console.log(fg.dim("  sc config set channels.telegram.proxy http://127.0.0.1:8080   ← replace 8080 with your proxy app's port (bare HOST:PORT works too)"));
     console.log(fg.dim("otherwise paste a fresh @BotFather token — Settings → Channels → Bot token, or"));
     console.log(fg.dim(`  sc config set channels.telegram.token "123456:ABC…"   then  sc channels connect`));
     process.exitCode = 1;
