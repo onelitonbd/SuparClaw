@@ -315,6 +315,28 @@ export class Service {
     this.loop.setConfig(config);
     this.loop.llm.setConfig(this.#authProviders().providers, config.agents.defaults, this.#authHooks());
     this.log.info(`config applied — model ${config.agents.defaults.model || "(unset)"}`);
+    this.#reconcileTelegram(config);
+  }
+
+  /** Bring the live channel in line with saved config after ANY write path
+   *  (config.set RPC, hot reload): enabled+token → running; disabled → down.
+   *  When the connect materially changes while it is running, bounce it. */
+  #appliedTgKey = "";
+  #reconcileTelegram(config: SuparClawConfig): void {
+    const tg = config.channels.telegram;
+    const key = `${tg.enabled ? "1" : "0"}|${tg.token ?? ""}`;
+    if (key === this.#appliedTgKey) return;
+    const running = Boolean(this.#telegram?.running);
+    const wantRunning = Boolean(tg.enabled && tg.token);
+    if (wantRunning === running && running) {
+      // same intent but the token changed → restart cleanly
+      void this.#telegram!.stop().then(() => void this.#startTelegram());
+    } else if (wantRunning && !running) {
+      void this.#startTelegram();
+    } else if (!wantRunning && running) {
+      void this.#telegram!.stop();
+    }
+    this.#appliedTgKey = key;
   }
 
   /** Effective providers with stored-profile bindings resolved to material. */
@@ -328,34 +350,64 @@ export class Service {
     return { profileOf, onOutcome: (id, ok) => markAuthOutcome(store, id, ok) };
   }
 
-  /** Hot reload for edits made outside config.set (sc config set, hand edits). */
+  /** Hot reload for edits made outside config.set (sc config set, hand edits).
+   *  The telegram lifecycle lives solely in applyConfig/#reconcileTelegram so
+   *  this watcher and the config.set RPC can never double-start the bot. */
   watchConfig(): void {
-    let prev = this.config.channels.telegram;
     this.configSvc.watchForChanges((config) => {
       this.applyConfig(config);
-      const tg = config.channels.telegram;
-      const changed = tg.enabled !== prev.enabled || tg.token !== prev.token;
-      prev = tg;
-      if (changed && this.#telegram?.running) {
-        void this.#telegram.stop().then(() => {
-          if (tg.enabled && tg.token) void this.#startTelegram();
-        });
-      } else if (changed && tg.enabled && tg.token && !this.#telegram?.running) {
-        void this.#startTelegram();
-      }
       if (this.#cron) void this.#cron.reconcile();
       void this.armDreaming();
       this.log.info("config hot-reloaded");
     });
   }
 
+  #telegramError = "";
+
   async #startTelegram(): Promise<void> {
+    const tg = this.config.channels.telegram;
+    this.#appliedTgKey = `${tg.enabled ? "1" : "0"}|${tg.token ?? ""}`;
     this.#telegram = new TelegramChannel(this, this.log);
     try {
       await this.#telegram.start();
+      this.#telegramError = "";
     } catch (err) {
-      this.log.error(`telegram failed to start: ${(err as Error).message}`);
+      this.#telegramError = (err as Error).message;
+      this.log.error(`telegram failed to start: ${this.#telegramError}`);
     }
+  }
+
+  /** Live channel health for Settings → Channels (their channels status). */
+  channelsStatus(): { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string } } {
+    const tg = this.config.channels.telegram;
+    const running = Boolean(this.#telegram?.running);
+    return {
+      telegram: {
+        enabled: Boolean(tg.enabled),
+        hasToken: /^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(String(tg.token ?? "")) || Boolean(tg.token),
+        running,
+        username: running ? this.#telegram?.username ?? "" : "",
+        // Show the start failure plainly so a wrong token or blocked network
+        // is visible instead of a silent "offline" (they report the same way).
+        error: tg.enabled && !running ? this.#telegramError : "",
+      },
+    };
+  }
+
+  /** Their one-tap Connect: stops any old instance, starts fresh, and returns
+   *  the real outcome so the UI can say "@bot online" or WHY it failed —
+   *  unlike the fs-watcher path which is silent (and may not fire at all on
+   *  some filesystems). */
+  async telegramReconnect(): Promise<{ ok: boolean; username?: string; error?: string }> {
+    const tg = this.config.channels.telegram;
+    if (!tg.enabled) return { ok: false, error: "channels.telegram.enabled is off" };
+    if (!tg.token) return { ok: false, error: "channels.telegram.token is empty — paste a @BotFather token first" };
+    try {
+      if (this.#telegram?.running) await this.#telegram.stop();
+    } catch { /* stopping is best-effort */ }
+    await this.#startTelegram();
+    if (this.#telegram?.running) return { ok: true, username: this.#telegram.username };
+    return { ok: false, error: this.#telegramError || "start failed" };
   }
 
   /** Re-arm cron jobs changed outside the daemon (sc cron add, other tools). */

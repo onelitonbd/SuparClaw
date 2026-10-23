@@ -263,6 +263,8 @@ export class Gateway {
       "backup.verify",
       "backup.restore",
       "config.set",
+      "channels.status",
+      "channels.telegram.connect",
       "config.unset",
     ];
   }
@@ -1326,6 +1328,17 @@ case "sessions.rename": {
             send(errFrame(id, "restore_failed", (err as Error).message));
             return;
           }
+          return;
+        }
+        case "channels.status": {
+          send(okFrame(id, service.channelsStatus()));
+          return;
+        }
+        case "channels.telegram.connect": {
+          // Their one-tap Connect: authoritative apply-now with the real
+          // outcome (their channels add/connect parity) — no silent watcher.
+          const result = await service.telegramReconnect();
+          send(okFrame(id, result));
           return;
         }
         case "config.set": {

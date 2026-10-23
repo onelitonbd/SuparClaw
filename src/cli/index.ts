@@ -118,6 +118,8 @@ export async function main(argv: string[]): Promise<number> {
       return cronCmd(rest);
     case "token":
       return tokenCmd(rest);
+    case "channels":
+      return (await import("./channels.js")).cmdChannels(rest);
     case "service":
       return (await import("./service.js")).serviceCmd(rest);
     case "sessions":

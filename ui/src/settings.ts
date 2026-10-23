@@ -2019,10 +2019,67 @@ export class Settings {
         }
       }
       if (tokenInp.value.trim()) pairs.push(["channels.telegram.token", tokenInp.value.trim()]);
-      await this.#setMany(pairs, "channel settings saved — telegram re-reads config live");
+      await this.#setMany(pairs, "channel settings saved — telegram reconnects now");
+      tokenInp.value = "";
+      // Authoritative reconnect: config.set now hot-applies the channel, and
+      // the visible outcome tells the user whether it actually connected.
+      const enabledNow = pairs.find(([k]) => k === "channels.telegram.enabled");
+      const wantOn = enabledNow ? Boolean(enabledNow[1]) : Boolean(channels.telegram?.enabled);
+      if (wantOn) connectBtn.click();
+      else void refreshStatus();
     };
 
+    // Live channel status + one-tap connect (their Settings → Channels card
+    // shows connected/offline with the real reason, and a Connect action).
+    const statusRow = el("div", { class: "row diag-row", id: "tg-status" }, [
+      el("span", { class: "diag-mark diag-mark--warn" }, ["…"]),
+      el("span", { class: "row__label" }, ["Checking channel status…"]),
+    ]);
+    const refreshStatus = async (): Promise<void> => {
+      try {
+        const res = (await gateway.request("channels.status")) as { telegram: { enabled: boolean; hasToken: boolean; running: boolean; username: string; error: string } };
+        const st = res.telegram;
+        statusRow.innerHTML = "";
+        statusRow.append(
+          el("span", { class: `diag-mark diag-mark--${!st.enabled ? "warn" : st.running ? "ok" : "fail"}` }, [!st.enabled ? "▲" : st.running ? "✔" : "✖"]),
+          el("span", { class: "row__label" }, [
+            !st.enabled
+              ? "Telegram channel is disabled — tick Enable and save below."
+              : st.running
+                ? `Connected${st.username ? ` as @${st.username}` : ""}`
+                : `Offline${st.error ? ` — ${st.error}` : " (not connected)"}`,
+          ]),
+        );
+      } catch {
+        statusRow.innerHTML = "";
+        statusRow.append(el("span", { class: "hint" }, ["gateway offline — status unavailable"]));
+      }
+    };
+    const connectBtn = el("button", { class: "btn pri", type: "button", id: "tg-connect" }, ["Connect now"]) as HTMLButtonElement;
+    connectBtn.onclick = async () => {
+      connectBtn.disabled = true;
+      try {
+        const res = (await gateway.request("channels.telegram.connect")) as { ok: boolean; username?: string; error?: string };
+        if (res.ok) toast(`telegram connected as @${res.username ?? "?"}`, "ok");
+        else toast(`telegram connect failed: ${res.error ?? "unknown"}`, "err");
+      } catch (err) {
+        toast((err as Error).message, "err");
+      } finally {
+        connectBtn.disabled = false;
+        void refreshStatus();
+      }
+    };
+    void refreshStatus();
+
     this.#root.append(
+      el("div", { class: "card" }, [
+        el("h3", {}, ["Connection"]),
+        statusRow,
+        el("div", { class: "row", style: "gap:8px" }, [
+          connectBtn,
+          el("p", { class: "hint" }, ["Applies the saved config right away — no gateway restart needed. `sc channels status` prints the same state."]),
+        ]),
+      ]),
       el("div", { class: "card" }, [
         el("h3", {}, ["Telegram"]),
         check("Enable the channel", "channels.telegram.enabled", Boolean(tg.enabled)),
