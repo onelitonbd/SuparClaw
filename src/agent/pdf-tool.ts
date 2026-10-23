@@ -8,7 +8,7 @@ import { existsSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { ToolContext } from "./tools.js";
 import { extractPdfFile } from "../util/pdf-text.js";
-import { cliArgs, realRunCli, type MediaModelEntry } from "./media-understanding.js";
+import { cliArgs, realRunCli, type MediaCapability, type MediaModelEntry } from "./media-understanding.js";
 import type { Logger } from "../util/log.js";
 
 export interface PdfToolArgs {
@@ -67,9 +67,14 @@ export async function analyzePdfs(
   if (deduped.length > 10) return `Too many PDFs (${deduped.length}) — cap is 10.`;
 
   const maxBytes = maxBytesOf(ctx, typeof a.maxBytesMb === "number" ? a.maxBytesMb : null);
-  const entries = (ctx.config.tools.media.models ?? []).filter(
-    (m): m is MediaModelEntry => Array.isArray(m.capabilities) && m.capabilities.includes("pdf"),
-  );
+  // Config entries carry string[]; the engine's MediaModelEntry wants real
+  // capabilities — filter down to known values before constructing them.
+  const entries: MediaModelEntry[] = (ctx.config.tools.media.models ?? [])
+    .filter((m) => Array.isArray(m.capabilities) && (m.capabilities as string[]).includes("pdf"))
+    .map((m) => ({
+      ...m,
+      capabilities: (m.capabilities as string[]).filter((c): c is MediaCapability => c === "image" || c === "audio" || c === "pdf"),
+    }));
   const out: string[] = [];
   for (const item of deduped) {
     const resolved = await resolveOne(item, ctx);
@@ -99,14 +104,14 @@ export async function analyzePdfs(
           try {
             const cliText = (
               await runCli(
-                entry.command,
+                entry.command!,
                 cliArgs(entry, { kind: "pdf", path: resolved.resolved }, {
                   maxChars: ctx.config.tools.media.pdf.maxChars || 4000,
                   prompt: String(a.prompt ?? "Analyze this PDF document."),
                   outputDir: "/tmp",
                   index: 0,
                 }),
-                (entry.timeoutSeconds > 0 ? entry.timeoutSeconds : ctx.config.tools.media.pdf.timeoutSeconds || 60) * 1000,
+                (Number(entry.timeoutSeconds ?? 0) > 0 ? entry.timeoutSeconds! : ctx.config.tools.media.pdf.timeoutSeconds || 60) * 1000,
               )
             ).trim();
             if (cliText) {

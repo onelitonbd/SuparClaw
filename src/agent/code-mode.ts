@@ -242,7 +242,7 @@ export class CodeMode {
   async execCell(code: string, title: string, signal?: AbortSignal): Promise<ExecCellResult> {
     const cfg = this.cfg();
     const runId = randomUUID();
-    const labels = title ? { title } : {};
+    const labels: Record<string, string> = title ? { title } : {};
     if (cfg.executor === "quickjs") {
       // their no-fallback rule: an engaged run STOPS rather than silently
       // falling back to broad direct tools or another executor

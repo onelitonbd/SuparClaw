@@ -207,7 +207,7 @@ const MONTHS: Record<string, number> = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4,
 export function parseInternalDate(raw: string): number {
   const m = /(\d{1,2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2}):(\d{2}) ([+-])(\d{4})/.exec(raw);
   if (!m) return 0;
-  const [, d, mon, y, hh, mm, ss, sign, off] = m;
+  const [, d = "", mon = "", y = "", hh = "", mm = "", ss = "", sign = "+", off = "0000"] = m;
   const utc = Date.UTC(Number(y), MONTHS[mon.toLowerCase()] ?? 0, Number(d), Number(hh), Number(mm), Number(ss));
   const rawOffMs = (Number(off.slice(0, 2)) * 60 + Number(off.slice(2))) * 60 * 1000;
   return sign === "-" ? utc + rawOffMs : utc - rawOffMs;
@@ -308,7 +308,7 @@ class SocketImapClient implements ImapClient {
     const lines = await this.cmd(t, `UID SEARCH UID ${cursor + 1}:*`, 60_000);
     const joined = lines.join(" ");
     const m = /\* SEARCH((?:\s+\d+)+)/i.exec(joined);
-    if (!m) return [];
+    if (!m || m[1] === undefined) return [];
     return m[1].trim().split(/\s+/).map(Number).filter((n) => n > cursor).sort((a, b) => a - b);
   }
 
@@ -486,11 +486,11 @@ export class ImapWatcher {
         for (const uid of uids) {
           const skipped = acctState.skips[String(uid)];
           if (skipped) continue;
-          const mail = await client.fetch(uid, Math.max(1, acct.maxBytes)).catch((e: Error) => {
+          const mail = await client.fetch(uid, Math.max(1, acct.maxBytes)).catch((e: Error): null => {
             this.deps.log.warn(`imap[${name}] fetch uid ${uid} failed: ${e.message}`);
-            null;
+            return null;
           });
-          if (mail === null) {
+          if (!mail) {
             this.recordSkip(acctState, uid, "message-parse-failed");
             acctState.cursor = Math.max(acctState.cursor, uid);
             continue;

@@ -20,9 +20,17 @@ import {
 // Telegram channel: grammY long polling, per-chat batching, one editable status
 // draft per turn, DM pairing + group allowlists + mention gating.
 
-/** grammY is only needed when the Telegram channel is enabled. */
+/** grammY is only needed when the Telegram channel is enabled.
+ *
+ *  Resolve `Bot` from the named export OR the module default: esbuild's code
+ *  splitting compiles grammy's CJS entry to a chunk whose only export is the
+ *  default namespace object, so `const { Bot } = await import("grammy")` is
+ *  undefined in the production bundle ("e is not a constructor") even though
+ *  tsx/dev resolves it named. */
 async function createBot(token: string) {
-  const { Bot } = await import("grammy");
+  const mod = (await import("grammy")) as typeof import("grammy") & { default?: { Bot?: typeof import("grammy").Bot } };
+  const Bot = mod.Bot ?? mod.default?.Bot;
+  if (typeof Bot !== "function") throw new Error("grammy Bot export unavailable (bundle shape mismatch)");
   return new Bot(token);
 }
 
@@ -451,10 +459,12 @@ export class TelegramChannel {
       if (anyEnabled && saved.length > 0) {
         const { selectAttachments, runUnderstanding, renderMediaBlocks, toolsMediaConfig } = await import("../agent/media-understanding.js");
         const media = toolsMediaConfig(tmc);
-        const facts = saved.map((s) => {
+        const facts = saved.flatMap((s) => {
+          if (!s.path) return [];
           const isPdf = s.media.kind === "document" && /(\.pdf$|^application\/pdf$)/i.test(`${s.media.fileName ?? ""} ${s.media.mime ?? ""}`);
-          const kind = s.media.kind === "photo" ? "image" : s.media.kind === "voice" || s.media.kind === "audio" ? "audio" : isPdf ? "pdf" : s.media.kind === "video" ? "video" : "other";
-          return { fact: { kind, path: s.path, contentType: s.media.mime, name: s.media.fileName }, savedIndex: saved.indexOf(s), kind };
+          const kind: import("../agent/media-understanding.js").MediaFact["kind"] = s.media.kind === "photo" ? "image" : s.media.kind === "voice" || s.media.kind === "audio" ? "audio" : isPdf ? "pdf" : s.media.kind === "video" ? "video" : "other";
+          const fact: import("../agent/media-understanding.js").MediaFact = { kind, path: s.path, contentType: s.media.mime, name: s.media.fileName };
+          return [{ fact, savedIndex: saved.indexOf(s), kind }];
         });
         const deps = this.service.mediaUnderstandingDeps();
         const selected = selectAttachments(facts.map((f) => f.fact), media);
