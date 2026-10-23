@@ -102,13 +102,13 @@ const CHIPS = [
 ];
 
 interface Live {
-  root: HTMLElement;
-  head: HTMLElement;
-  status: HTMLElement;
-  tools: HTMLElement;
-  body: HTMLElement;
-  thought?: ThoughtBlock;
   startedAt: number;
+}
+
+interface LiveBody {
+  root: HTMLElement;
+  body: HTMLElement;
+  status: HTMLElement;
 }
 
 interface ThoughtBlock {
@@ -138,6 +138,9 @@ export class Chat {
   #handlers: ChatHandlers;
 
   #live: Live | null = null;
+  #liveThought: ThoughtBlock | null = null;
+  #liveBody: LiveBody | null = null;
+  #blockType: "thought" | "body" | null = null;
   #streamText = "";
   #streamDirty = false;
   #raf = 0;
@@ -350,7 +353,9 @@ export class Chat {
   clear(): void {
     this.stack.innerHTML = "";
     this.#live = null;
-    this.#looseThought = null;
+    this.#liveThought = null;
+    this.#liveBody = null;
+    this.#blockType = null;
     this.#streamText = "";
     this.#renderEmpty();
   }
@@ -376,77 +381,59 @@ export class Chat {
     this.stack.innerHTML = "";
     this.anchorMap.clear();
     this.#live = null;
-    this.#looseThought = null;
+    this.#blockType = null;
+    this.#liveThought = null;
+    this.#liveBody = null;
     this.#streamText = "";
     let rendered = 0;
 
-    type ReplayTool = { name: string; status: ToolStatus; detail: string; ms?: number; key: string };
-    type TurnGroup = { thoughts: string[]; tools: ReplayTool[]; text: string; ids: number[] };
-    let group: TurnGroup | null = null;
-    const newGroup = (): TurnGroup => ({ thoughts: [], tools: [], text: "", ids: [] });
     const markAnchor = (id?: number): void => {
       if (id === undefined) return;
       const node = this.stack.lastElementChild as HTMLElement | null;
       if (node) this.anchorMap.set(id, node);
     };
-    const flushGroup = (): void => {
-      if (!group) return;
-      const has = group.text || group.tools.length > 0 || group.thoughts.length > 0;
-      const { ids } = group;
-      if (has) this.#renderTurn(group);
-      // Group rows share one rendered turn: every member id anchors to it.
-      if (has) for (const id of ids) markAnchor(id);
-      group = null;
-    };
 
     for (const [index, row] of rows.entries()) {
       try {
         if (row.role === "user") {
-          flushGroup();
           this.user(row.content);
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "assistant" && row.content) {
-          group ??= newGroup();
-          group.ids.push(row.id ?? -1);
-          group.text += (group.text ? "\n\n" : "") + row.content;
+          const head = this.#head("Done");
+          const body = el("div", { class: "msg__body" });
+          body.innerHTML = renderMarkdown(row.content);
+          const root = el("div", { class: "msg msg--assistant" }, [head, body]);
+          this.stack.append(root);
+          markAnchor(row.id);
           rendered++;
         } else if (row.role === "tool" && row.content) {
-          // Persisted tool row: "→ name · 6ms\n<output>"
           const lines = row.content.split("\n");
           const head = (lines[0] ?? "").replace(/^→\s*/, "");
           const timed = head.match(/^(.*?)\s*·\s*(\d+)ms$/);
           const name = (timed?.[1] ?? head).trim() || "tool";
           const duration = timed?.[2] ? Number(timed[2]) : undefined;
           const output = lines.slice(1).join("\n");
-          group ??= newGroup();
-          group.ids.push(row.id ?? -1);
-          group.tools.push({
-            name,
-            status: output.startsWith("error") ? "error" : "done",
-            detail: output,
-            ms: duration,
-            key: `row-${index}`,
-          });
+          this.tool(name, output.startsWith("error") ? "error" : "done", output, duration, `row-${index}`);
+          markAnchor(row.id);
           rendered++;
         } else if (row.role === "error" && row.content) {
-          // fail() with no live bubble renders the same "error: …" notice the
-          // user saw live — errors were live-only and vanished on refresh.
-          flushGroup();
           this.fail(row.content);
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "reasoning" && row.content) {
-          group ??= newGroup();
-          group.ids.push(row.id ?? -1);
-          group.thoughts.push(row.content);
+          const block = this.#thought();
+          block.text = row.content;
+          block.body.innerHTML = renderMarkdown(row.content);
+          block.status.textContent = "";
+          this.stack.append(block.root);
+          markAnchor(row.id);
           rendered++;
         }
       } catch {
         /* one bad message must not take the thread with it */
       }
     }
-    flushGroup();
     if (rendered === 0) this.#renderEmpty();
     if (live) {
       this.assistantStart();
@@ -455,25 +442,9 @@ export class Chat {
     return rendered;
   }
 
-  /** One assistant turn: thought block(s) → tool cards → answer body (live order). */
-  #renderTurn(group: { thoughts: string[]; tools: { name: string; status: ToolStatus; detail: string; ms?: number; key: string }[]; text: string }): void {
-    const status = group.text ? "Done" : group.tools.length > 0 ? "Tools" : "Thinking";
-    const head = this.#head(status);
-    const tools = el("div", { class: "msg__tools" });
-    const body = el("div", { class: "msg__body" });
-    if (group.text) body.innerHTML = renderMarkdown(group.text);
-    const root = el("div", { class: "msg msg--assistant" }, [head, tools, body]);
-    for (const thought of group.thoughts) {
-      const block = this.#thought();
-      block.text = thought;
-      block.body.innerHTML = renderMarkdown(thought);
-      root.insertBefore(block.root, tools);
-    }
-    this.stack.append(root);
-    for (const t of group.tools) {
-      this.tool(t.name, t.status, t.detail, t.ms, t.key, tools);
-    }
-    this.#scrollToBottom();
+  #renderTurn(_group: { thoughts: string[]; tools: { name: string; status: ToolStatus; detail: string; ms?: number; key: string }[]; text: string }): void {
+    // Legacy — replaced by per-block rendering in replaceThread. Kept as a
+    // no-op stub so any external caller still type-checks.
   }
 
   /** ---- transcript writers ---- */
@@ -507,30 +478,26 @@ export class Chat {
   assistantStart(): void {
     this.#clearEmpty();
     if (this.#live) return;
-    const head = this.#head("Thinking");
-    const tools = el("div", { class: "msg__tools" });
-    const body = el("div", { class: "msg__body" }, [
-      el("div", { class: "dots", role: "status", "aria-label": "Thinking" }, [
-        el("span"), el("span"), el("span"),
-      ]),
-    ]);
-    const root = el("div", { class: "msg msg--assistant" }, [head, tools, body]);
-    // Thinking that arrived before the bubble opened moves INSIDE it — the
-    // turn is one visual unit (thought → tools → answer), live and on replay.
-    const loose = this.#looseThought;
-    if (loose) root.insertBefore(loose.root, tools);
-    this.stack.append(root);
-    this.#live = {
-      root, head, status: head.querySelector(".msg__status") as HTMLElement,
-      tools, body, startedAt: Date.now(),
-      thought: loose ?? undefined,
-    };
-    this.#looseThought = null;
+    this.#live = { startedAt: Date.now() };
+    this.#blockType = null;
+    this.#liveThought = null;
+    this.#liveBody = null;
+    this.#streamText = "";
     this.#scrollToBottom();
   }
 
   delta(text: string): void {
     if (!this.#live) this.assistantStart();
+    if (this.#blockType !== "body") {
+      this.#finalizeCurrentBlock();
+      const head = this.#head("Streaming");
+      const body = el("div", { class: "msg__body" });
+      const root = el("div", { class: "msg msg--assistant" }, [head, body]);
+      this.stack.append(root);
+      this.#liveBody = { root, body, status: head.querySelector(".msg__status") as HTMLElement };
+      this.#blockType = "body";
+      this.#streamText = "";
+    }
     this.#streamText += text;
     this.#streamDirty = true;
     this.#scheduleStreamRender();
@@ -542,13 +509,23 @@ export class Chat {
       return;
     }
     if (text !== undefined) this.#streamText = text;
-    const live = this.#live;
-    live.body.innerHTML = renderMarkdown(this.#streamText);
-    live.status.textContent = "Done";
-    live.status.classList.remove("is-live");
-    if (live.thought) live.thought.status.textContent = "";
+    this.#finalizeCurrentBlock();
+    // If there's remaining text and no body was created, make one.
+    if (this.#streamText.trim() && !this.#liveBody) {
+      const head = this.#head("Done");
+      const body = el("div", { class: "msg__body" });
+      body.innerHTML = renderMarkdown(this.#streamText);
+      const root = el("div", { class: "msg msg--assistant" }, [head, body]);
+      this.stack.append(root);
+    } else if (this.#liveBody) {
+      this.#liveBody.body.innerHTML = renderMarkdown(this.#streamText);
+      this.#liveBody.status.textContent = "Done";
+      this.#liveBody.status.classList.remove("is-live");
+    }
     this.#live = null;
-    this.#looseThought = null;
+    this.#blockType = null;
+    this.#liveThought = null;
+    this.#liveBody = null;
     this.#streamText = "";
     this.setBusy(false);
     this.#scrollToBottom();
@@ -559,13 +536,11 @@ export class Chat {
     const pretty = prettyError(message);
     this.notice(`error: ${pretty}`, "notice--error");
     if (!this.#live) return;
-    const live = this.#live;
-    live.body.innerHTML = renderMarkdown(this.#streamText);
-    live.status.textContent = `Error · ${pretty.slice(0, 80)}`;
-    live.status.classList.remove("is-live");
-    live.status.classList.add("is-error");
+    this.#finalizeCurrentBlock();
     this.#live = null;
-    this.#looseThought = null;
+    this.#blockType = null;
+    this.#liveThought = null;
+    this.#liveBody = null;
     this.#streamText = "";
     this.setBusy(false);
     this.#scrollToBottom();
@@ -588,6 +563,9 @@ export class Chat {
 
   tool(name: string, status: ToolStatus, detail?: string, ms?: number, key?: string, host?: HTMLElement): void {
     this.#clearEmpty();
+    // Finalize whatever block (thought/body) was open so the tool card lands
+    // as its own block in sequence.
+    this.#finalizeCurrentBlock();
     // Cards are keyed per call (callId live, synthetic on replay) — consecutive
     // calls of the same tool must each get their own pill. running→done of one
     // call share a key and land on the same card.
@@ -610,14 +588,7 @@ export class Chat {
         body.hidden = !open;
       };
       card = el("div", { class: "tool", "data-tool": cardKey }, [row, body]);
-      const target = host ?? this.#live?.tools ?? null;
-      if (target) {
-        target.append(card);
-      } else {
-        const head = this.#head("Tools");
-        const tools = el("div", { class: "msg__tools" }, [card]);
-        this.stack.append(el("div", { class: "msg msg--assistant" }, [head, tools]));
-      }
+      this.stack.append(card);
     }
 
     const iconBox = card.querySelector(".tool__icon") as HTMLElement;
@@ -678,37 +649,51 @@ export class Chat {
   }
 
   /**
-   * Stream a thinking fragment. Lands in the live bubble's thought block
-   * (positioned above the tools/answer), or as its own block if the run has
-   * not opened a bubble yet — fragments accumulate into ONE visible block.
+   * Stream a thinking fragment. Each contiguous run of reasoning becomes its own
+   * thought block; a tool call or answer text in between breaks the run, so the
+   * persisted order (reason → tool → response → tool) is preserved both live
+   * and after a reload.
    */
   reasoningDelta(text: string): void {
     if (!this.#live) {
-      if (!this.#looseThought) {
-        this.#looseThought = this.#thought();
+      if (!this.#liveThought || this.#blockType !== "thought") {
         this.#clearEmpty();
-        this.stack.append(this.#looseThought.root);
+        this.#liveThought = this.#thought();
+        this.stack.append(this.#liveThought.root);
+        this.#blockType = "thought";
       }
-      const block = this.#looseThought;
-      block.text += text;
-      block.status.textContent = "Thinking…";
-      this.#scheduleThoughtRender(block);
+      this.#liveThought.text += text;
+      this.#liveThought.status.textContent = "Thinking…";
+      this.#scheduleThoughtRender(this.#liveThought);
       return;
     }
-    const live = this.#live;
-    if (!live.thought) {
+    if (this.#blockType !== "thought") {
+      this.#finalizeCurrentBlock();
       const block = this.#thought();
-      live.thought = block;
-      live.root.insertBefore(block.root, live.tools);
+      this.#liveThought = block;
+      this.stack.append(block.root);
+      this.#blockType = "thought";
     }
-    const block = live.thought;
-    block.text += text;
-    block.status.textContent = "Thinking…";
-    this.#scheduleThoughtRender(block);
+    this.#liveThought!.text += text;
+    this.#liveThought!.status.textContent = "Thinking…";
+    this.#scheduleThoughtRender(this.#liveThought!);
   }
 
   /** Standalone thinking block reused across fragments until the run ends. */
-  #looseThought: ThoughtBlock | null = null;
+  #finalizeCurrentBlock(): void {
+    if (this.#blockType === "thought" && this.#liveThought) {
+      this.#liveThought.status.textContent = "";
+    }
+    if (this.#blockType === "body" && this.#liveBody) {
+      this.#liveBody.body.innerHTML = renderMarkdown(this.#streamText);
+      this.#liveBody.status.textContent = "Done";
+      this.#liveBody.status.classList.remove("is-live");
+    }
+    this.#blockType = null;
+    this.#liveThought = null;
+    this.#liveBody = null;
+    this.#streamText = "";
+  }
 
   #thoughtPending = new Set<ThoughtBlock>();
   #thoughtFrame = 0;
@@ -922,13 +907,12 @@ export class Chat {
     if (this.#raf) return;
     this.#raf = requestAnimationFrame(() => {
       this.#raf = 0;
-      if (!this.#streamDirty || !this.#live) return;
+      if (!this.#streamDirty || !this.#liveBody) return;
       this.#streamDirty = false;
-      const live = this.#live;
-      live.body.innerHTML = renderMarkdown(this.#streamText);
-      live.body.append(el("span", { class: "caret" }));
-      live.status.textContent = `Streaming · ${mmss(Date.now() - live.startedAt)}`;
-      live.status.classList.add("is-live");
+      this.#liveBody.body.innerHTML = renderMarkdown(this.#streamText);
+      this.#liveBody.body.append(el("span", { class: "caret" }));
+      this.#liveBody.status.textContent = `Streaming · ${mmss(Date.now() - this.#live!.startedAt)}`;
+      this.#liveBody.status.classList.add("is-live");
       if (this.#autoScroll) this.#thread.scrollTop = this.#thread.scrollHeight;
     });
   }
