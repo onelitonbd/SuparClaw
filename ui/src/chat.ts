@@ -855,15 +855,6 @@ export class Chat {
 
   /** ---- internals ---- */
 
-  #head(status: string): HTMLElement {
-    const statusEl = el("span", { class: "msg__status mono" }, [status]);
-    return el("div", { class: "msg__head" }, [
-      icon(SPARKLE, "msg__avatar"),
-      el("span", { class: "msg__name" }, ["Assistant"]),
-      statusEl,
-    ]);
-  }
-
   #renderEmpty(): void {
     const chips = el("div", { class: "chips" });
     for (const label of CHIPS) {
