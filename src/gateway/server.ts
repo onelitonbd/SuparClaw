@@ -254,6 +254,7 @@ export class Gateway {
       "config.replace",
       "config.path",
       "config.set",
+      "config.unset",
     ];
   }
 
@@ -1136,6 +1137,29 @@ case "sessions.rename": {
           // any key straight from these descriptors.
           send(okFrame(id, { schema: CONFIG_SCHEMA }));
           return;
+        case "config.unset": {
+          // Record editors (P4 #36 — IMAP accounts / hook mappings): leaf
+          // deletion with the same whole-root validation as config.set.
+          const path = String(params["path"] ?? "");
+          if (!path) {
+            send(errFrame(id, "bad_request", "path is required"));
+            return;
+          }
+          // Never let a whole section go by accident — same guard as set.
+          if (path.split(".").length < 3) {
+            send(errFrame(id, "bad_request", "unset targets a leaf inside a record (a.b.c)"));
+            return;
+          }
+          const res = service.configSvc.unsetPath(path);
+          if (!res.ok) {
+            send(errFrame(id, "bad_config", res.errors.join("; ") || "unset rejected"));
+            return;
+          }
+          // Same live-apply as config.set — a removed account/hook stops now.
+          service.applyConfig();
+          send(okFrame(id, { unset: true, path }));
+          return;
+        }
         case "config.replace": {
           // P4 #32 (their raw JSON editor): whole-document replace with
           // validation, redacted-sentinel resolution and live apply. A bad

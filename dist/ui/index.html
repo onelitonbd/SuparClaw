@@ -102,6 +102,17 @@
               <option value="inherit">auto</option>
             </select>
           </label>
+          <label class="think mono" id="queue-wrap" title="Queue mode (session): what a new message does while this session is busy">
+            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+            <select id="queue-select" class="think__select" aria-label="Queue mode">
+              <option value="inherit">queue</option>
+              <option value="steer">steer</option>
+              <option value="followup">followup</option>
+              <option value="collect">collect</option>
+              <option value="interrupt">interrupt</option>
+            </select>
+            <span class="queue-depth" id="queue-depth" hidden></span>
+          </label>
           <span class="mono composer__tokens" id="tok"></span>
           <button class="sendbtn sendbtn--stop" id="stop-btn" type="button" aria-label="Stop" hidden>
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>

@@ -69,6 +69,7 @@ export class Settings {
     }
 
     let config: any = {};
+    let configPath = "";
     let models: string[] = [];
     let modelsWarning: string | undefined;
     let configured: any[] = [];
@@ -80,6 +81,7 @@ export class Settings {
     try {
       const [cfg, modelRes, toolRes, skillRes, pluginRes] = await this.#load();
       config = (cfg as any).config ?? {};
+      configPath = String((cfg as any).path ?? "");
       models = (modelRes as any).models ?? [];
       modelsWarning = (modelRes as any).warning;
       configured = (modelRes as any).configured ?? [];
@@ -100,6 +102,8 @@ export class Settings {
     if (this.#tab === "model") {
       // Defaults tab offers the SELECTED models only — the strict filter.
       this.#renderModel(defaults, configured.filter((m) => m.enabled), modelsWarning);
+      this.#renderAgentIdentity(config);
+      this.#renderAgentDefaults(defaults);
     } else if (this.#tab === "models") {
       if (this.#modelsProvider) {
         this.#renderProviderModels(this.#modelsProvider, providers, configured, models, details, modelsWarning);
@@ -110,12 +114,12 @@ export class Settings {
     else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
     else if (this.#tab === "usage") void this.#renderUsage();
     else if (this.#tab === "skills") this.#renderSkills(skills);
-    else if (this.#tab === "tools") await this.#renderTools(tools);
+    else if (this.#tab === "tools") await this.#renderTools(tools, config);
     else if (this.#tab === "memory") await this.#renderMemory();
     else if (this.#tab === "automations") await this.#renderAutomations(config);
     else if (this.#tab === "alerts") this.#renderAlerts();
     else if (this.#tab === "config") await this.#renderConfigEditor(config);
-    else if (this.#tab === "gateway") this.#renderGateway(gw);
+    else if (this.#tab === "gateway") this.#renderGateway(gw, configPath);
     else await this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
 
@@ -245,6 +249,94 @@ export class Settings {
       ]),
       save,
     );
+  }
+
+  /** Agent identity (P4 #39 — their Personal identity page): name/emoji/theme
+   *  shown to channels and injected into the system prompt. */
+  #renderAgentIdentity(config: any): void {
+    const id = config.agents?.identity ?? {};
+    const mkField = (iid: string, label: string, value: string, placeholder: string) => {
+      const input = el("input", { class: "inp", id: iid, value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+      return el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), input]);
+    };
+    const saveId = el("button", { class: "btn", type: "button", id: "identity-save" }, ["Save identity"]) as HTMLButtonElement;
+    saveId.onclick = () => {
+      const name = (this.#root.querySelector("#identity-name") as HTMLInputElement).value.trim();
+      const emoji = (this.#root.querySelector("#identity-emoji") as HTMLInputElement).value.trim();
+      const theme = (this.#root.querySelector("#identity-theme") as HTMLInputElement).value.trim();
+      void this.#setMany(
+        [
+          ["agents.identity.name", name || "SuparClaw"],
+          ["agents.identity.emoji", emoji || "🦀"],
+          ["agents.identity.theme", theme],
+        ],
+        "identity saved — new sessions greet with it immediately",
+      );
+    };
+    this.#root.append(el("div", { class: "card agent-identity" }, [
+      el("h3", { style: "margin:0 0 8px" }, ["Agent identity"]),
+      mkField("identity-name", "Name", String(id.name ?? "SuparClaw"), "SuparClaw"),
+      mkField("identity-emoji", "Emoji", String(id.emoji ?? "🦀"), "🦀"),
+      mkField("identity-theme", "Theme (persona written into the system prompt)", String(id.theme ?? ""), "a warm, sharp, resourceful personal AI companion…"),
+      saveId,
+    ]));
+  }
+
+  /** Agent defaults (P4 #39): loop limits, lane caps, subagent budget,
+   *  reasoning + usage-visibility defaults — their Agents Defaults page. */
+  #renderAgentDefaults(d: any): void {
+    const mkNum = (iid: string, label: string, cur: number, hint?: string) => {
+      const input = el("input", { class: "inp mono", id: iid, value: String(cur), autocomplete: "off" }) as HTMLInputElement;
+      return { input, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), input, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
+    };
+    const mkSel = (iid: string, label: string, cur: string, options: [string, string][], hint?: string) => {
+      const sel = el("select", { class: "in", id: iid }) as HTMLSelectElement;
+      for (const [v, lab] of options) sel.append(el("option", { value: v, ...(cur === v ? { selected: "" } : {}) }, [lab]));
+      return { sel, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), sel, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
+    };
+    const sub = d.subagents ?? {};
+    const iterations = mkNum("ad-iterations", "Max tool iterations (1–40)", Number(d.maxToolIterations ?? 12));
+    const budget = mkNum("ad-budget", "Context budget (chars, min 2000)", Number(d.contextBudgetChars ?? 60000));
+    const concur = mkNum("ad-concurrent", "Max concurrent runs (0 = auto)", Number(d.maxConcurrent ?? 0), "auto = max(8, cpu × 4) — the main-lane formula");
+    const queueSel = mkSel("ad-queue", "Queue mode (legacy)", String(d.queueMode ?? "followup"), [["steer", "steer"], ["followup", "followup"]], "superseded by messages.queue.mode — kept for old configs, the new section wins");
+    const reasoning = mkSel("ad-reasoning", "Reasoning effort (sent to provider)", String(d.reasoningEffort ?? "inherit"), [["inherit", "inherit"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]]);
+    const viewSel = mkSel("ad-rview", "Thinking blocks visible in UI", String(d.reasoningView ?? "on"), [["on", "on"], ["off", "off"]], "blocks are persisted either way — off only hides them from view");
+    const usageSel = mkSel("ad-usage", "Reply usage footer", String(d.usage ?? "tokens"), [["off", "off"], ["tokens", "tokens"], ["full", "full"], ["cost", "cost"]], "cost needs a pricing card per model and degrades to tokens, never a guess");
+    const subConcur = mkNum("ad-sub-concurrent", "Subagent lane cap", Number(sub.maxConcurrent ?? 8), "per-spawning-session child budget + background lane");
+    const subModel = mkNum("ad-sub-model", "Subagent model override (blank = inherit)", NaN);
+    subModel.input.value = String(sub.model ?? "");
+    const subDepth = mkNum("ad-sub-depth", "Subagent max depth (1–4)", Number(sub.maxDepth ?? 1), "1 = children cannot spawn children");
+    const subThink = mkSel("ad-sub-think", "Subagent thinking override", String(sub.thinking ?? ""), [["", "inherit caller"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"]]);
+    const subDeleg = mkSel("ad-sub-deleg", "Delegation mode", String(sub.delegationMode ?? "inherit"), [["inherit", "inherit"], ["prefer", "prefer (:main)"], ["suggest", "suggest"]], "prompt guidance only");
+
+    const saveD = el("button", { class: "btn", type: "button", id: "agent-defaults-save" }, ["Save defaults"]) as HTMLButtonElement;
+    saveD.onclick = () => {
+      void this.#setMany(
+        [
+          ["agents.defaults.maxToolIterations", Math.max(1, Math.min(40, Number(iterations.input.value) || 12))],
+          ["agents.defaults.contextBudgetChars", Math.max(2000, Number(budget.input.value) || 60000)],
+          ["agents.defaults.queueMode", queueSel.sel.value],
+          ["agents.defaults.maxConcurrent", Math.max(0, Number(concur.input.value) || 0)],
+          ["agents.defaults.reasoningEffort", reasoning.sel.value],
+          ["agents.defaults.reasoningView", viewSel.sel.value],
+          ["agents.defaults.usage", usageSel.sel.value],
+          ["agents.defaults.subagents.maxConcurrent", Math.max(1, Number(subConcur.input.value) || 8)],
+          ["agents.defaults.subagents.model", subModel.input.value.trim()],
+          ["agents.defaults.subagents.maxDepth", Math.max(1, Math.min(4, Number(subDepth.input.value) || 1))],
+          ["agents.defaults.subagents.thinking", subThink.sel.value],
+          ["agents.defaults.subagents.delegationMode", subDeleg.sel.value],
+        ],
+        "agent defaults saved — applies to new runs immediately",
+      );
+    };
+
+    this.#root.append(el("div", { class: "card agent-defaults" }, [
+      el("h3", { style: "margin:0 0 8px" }, ["Agent defaults"]),
+      iterations.node, budget.node, concur.node, queueSel.node, reasoning.node, viewSel.node, usageSel.node,
+      el("div", { class: "usage-h" }, ["Subagents"]),
+      subConcur.node, subModel.node, subDepth.node, subThink.node, subDeleg.node,
+      saveD,
+    ]));
   }
 
   /* ---------------- models ---------------- */
@@ -934,6 +1026,205 @@ export class Settings {
 
   /* ---------------- tools: web search ---------------- */
 
+  /** Small field/cell builders shared by the tools config cards (P4 #38). */
+  #cfgSel(id: string, cur: string, options: [string, string][]): HTMLSelectElement {
+    const sel = el("select", { class: "in", id }) as HTMLSelectElement;
+    for (const [v, label] of options) {
+      sel.append(el("option", { value: v, ...(cur === v ? { selected: "" } : {}) }, [label]));
+    }
+    return sel;
+  }
+  #cfgField(id: string, label: string, input: HTMLInputElement | HTMLSelectElement, hint?: string): HTMLElement {
+    return el("div", { class: "modal__field" }, [
+      el("label", { class: "lbl", for: id }, [label]),
+      input,
+      ...(hint ? [el("span", { class: "hint" }, [hint])] : []),
+    ]);
+  }
+  #cfgNum(id: string, label: string, cur: number, hint?: string): { input: HTMLInputElement; node: HTMLElement } {
+    const input = el("input", { class: "inp mono", id, value: String(cur), autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    return { input, node: this.#cfgField(id, label, input, hint) };
+  }
+  #cfgStr(id: string, label: string, cur: string, placeholder = "", hint?: string): { input: HTMLInputElement; node: HTMLElement } {
+    const input = el("input", { class: "inp mono", id, value: cur, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    return { input, node: this.#cfgField(id, label, input, hint) };
+  }
+  #cfgCheck(id: string, label: string, cur: boolean): { input: HTMLInputElement; node: HTMLElement } {
+    const input = el("input", { id, type: "checkbox" }) as HTMLInputElement;
+    input.checked = cur;
+    return { input, node: el("div", { class: "row" }, [el("span", { class: "row__label" }, [label]), input]) };
+  }
+
+  /** Exec policy (P4 #38 — their tools.exec page): the full safety surface:
+   *  enabled/approvals, ask fallback with nobody-to-ask, safe-bin lists,
+   *  sandbox/Proot, unattended sources, timeout. */
+  #execPolicyCard(config: any): HTMLElement {
+    const x = config.tools?.exec ?? {};
+    const enabledCb = this.#cfgCheck("x-enabled", "Exec enabled", Boolean(x.enabled));
+    const approvalsCb = this.#cfgCheck("x-approvals", "Approvals (legacy bool — blank mode follows this)", x.approvals !== false);
+    const inlineCb = this.#cfgCheck("x-inline", "Never auto-allow inline eval (node -e, bash -c …)", Boolean(x.strictInlineEval));
+    const prootCb = this.#cfgCheck("x-proot", "Proot filesystem jail (strict mode; needs proot binary)", Boolean(x.sandboxProot));
+    const modeSel = this.#cfgSel("x-mode", String(x.mode ?? ""), [
+      ["", "inherit (follow approvals bool)"], ["deny", "deny"], ["allowlist", "allowlist"], ["ask", "ask"], ["full", "full"],
+    ]);
+    const askSel = this.#cfgSel("x-askfb", String(x.askFallback ?? "deny"), [
+      ["deny", "deny"], ["allowlist", "allowlist"], ["full", "full"],
+    ]);
+    const unatSel = this.#cfgSel("x-unattended", String(x.unattended ?? "deny"), [
+      ["deny", "deny — decline loudly (default)"], ["allowlist", "allowlist — safe bins only"], ["all", "all — auto-allow"],
+    ]);
+    const sandSel = this.#cfgSel("x-sandbox", String(x.sandbox ?? "off"), [
+      ["off", "off (plain)"], ["strict", "strict (scrubbed env + prlimit caps)"],
+    ]);
+    const binsF = this.#cfgStr("x-bins", "Safe bins (comma)", (x.safeBins ?? []).join(", "), "cut, uniq, head, tail, tr, wc");
+    const dirsF = this.#cfgStr("x-dirs", "Safe-bin trusted dirs (comma)", (x.safeBinTrustedDirs ?? []).join(", "), "/bin, /usr/bin");
+    const timeoutF = this.#cfgNum("x-timeout", "Timeout per command (ms, 1000–600000)", Number(x.timeoutMs ?? 600000), "safety cap only — a hung command cannot block a session forever");
+
+    const save = el("button", { class: "btn", type: "button", id: "exec-policy-save" }, ["Save"]) as HTMLButtonElement;
+    save.onclick = () => {
+      void this.#setMany(
+        [
+          ["tools.exec.enabled", enabledCb.input.checked],
+          ["tools.exec.approvals", approvalsCb.input.checked],
+          ["tools.exec.mode", /^(deny|allowlist|ask|full)$/.test(modeSel.value) ? modeSel.value : ""],
+          ["tools.exec.askFallback", askSel.value],
+          ["tools.exec.strictInlineEval", inlineCb.input.checked],
+          ["tools.exec.safeBins", binsF.input.value.split(",").map((v) => v.trim()).filter(Boolean)],
+          ["tools.exec.safeBinTrustedDirs", dirsF.input.value.split(",").map((v) => v.trim()).filter(Boolean)],
+          ["tools.exec.timeoutMs", Math.max(1000, Math.min(600000, Number(timeoutF.input.value) || 600000))],
+          ["tools.exec.sandbox", sandSel.value],
+          ["tools.exec.sandboxProot", prootCb.input.checked],
+          ["tools.exec.unattended", unatSel.value],
+        ],
+        "exec policy saved — applies to the next tool call",
+      );
+    };
+
+    return el("div", { class: "card exec-policy" }, [
+      el("h3", { style: "margin:0 0 8px" }, ["Exec policy"]),
+      enabledCb.node, approvalsCb.node,
+      this.#cfgField("x-mode", "Policy mode", modeSel, "deny | allowlist | ask | full — blank follows the legacy approvals bool (their unset-is-a-state rule)"),
+      this.#cfgField("x-askfb", "Ask fallback (no client connected)", askSel),
+      inlineCb.node, binsF.node, dirsF.node, timeoutF.node,
+      this.#cfgField("x-sandbox", "Sandbox", sandSel),
+      prootCb.node,
+      this.#cfgField("x-unattended", "Unattended sources (cron/webhook)", unatSel, "every unattended auto-decision is audited to the log + transcript"),
+      save,
+    ]);
+  }
+
+  /** Code Mode card (P4 #38 — their tools.codeMode): sandboxed JS execution
+   *  of tool calls for preferred models. */
+  #codeModeCard(config: any): HTMLElement {
+    const c = config.tools?.codeMode ?? {};
+    const enSel = this.#cfgSel("cm-enabled", String(c.enabled ?? "auto"), [
+      ["auto", "auto (preferred models only)"], ["true", "true (always)"], ["false", "false"],
+    ]);
+    const exSel = this.#cfgSel("cm-executor", String(c.executor ?? "node"), [
+      ["node", "node (default)"], ["quickjs", "quickjs"],
+    ]);
+    const timeoutF = this.#cfgNum("cm-timeout", "Timeout (ms, 100–60000)", Number(c.timeoutMs ?? 10000));
+    const charsF = this.#cfgNum("cm-chars", "Max code chars", Number(c.maxCodeChars ?? 32768));
+    const outF = this.#cfgNum("cm-out", "Max output bytes", Number(c.maxOutputBytes ?? 65536));
+    const pendF = this.#cfgNum("cm-pend", "Max pending tool calls", Number(c.maxPendingToolCalls ?? 16));
+    const directF = this.#cfgStr("cm-direct", "Direct-only tools (comma)", (c.directOnly ?? []).join(", "), "tool names that may never be code-wrapped");
+    const save = el("button", { class: "btn", type: "button", id: "codemode-save" }, ["Save"]) as HTMLButtonElement;
+    save.onclick = () => {
+      void this.#setMany(
+        [
+          ["tools.codeMode.enabled", enSel.value],
+          ["tools.codeMode.executor", exSel.value],
+          ["tools.codeMode.timeoutMs", Math.max(100, Math.min(60000, Number(timeoutF.input.value) || 10000))],
+          ["tools.codeMode.maxCodeChars", Math.max(1024, Number(charsF.input.value) || 32768)],
+          ["tools.codeMode.maxOutputBytes", Math.max(1024, Math.min(10485760, Number(outF.input.value) || 65536))],
+          ["tools.codeMode.maxPendingToolCalls", Math.max(1, Math.min(128, Number(pendF.input.value) || 16))],
+          ["tools.codeMode.directOnly", directF.input.value.split(",").map((v) => v.trim()).filter(Boolean)],
+        ],
+        "code mode saved",
+      );
+    };
+    return el("div", { class: "card" }, [
+      el("h3", { style: "margin:0 0 8px" }, ["Code mode"]),
+      this.#cfgField("cm-enabled", "Enabled", enSel),
+      this.#cfgField("cm-executor", "Executor", exSel),
+      timeoutF.node, charsF.node, outF.node, pendF.node, directF.node,
+      save,
+    ]);
+  }
+
+  /** Media understanding card (P4 #38 — their tools.media): per-capability
+   *  limits + preferred models + transcript echo. Per-capability model refs
+   *  use the configured models list (plain text, e.g. openai/vision-model). */
+  #mediaCard(config: any): HTMLElement {
+    const m = config.tools?.media ?? {};
+    const concF = this.#cfgNum("md-conc", "Concurrency", Number(m.concurrency ?? 2));
+    const img = m.image ?? {};
+    const aud = m.audio ?? {};
+    const pdf = m.pdf ?? {};
+    const imgCb = this.#cfgCheck("md-img-on", "Image understanding", img.enabled !== false);
+    const imgModel = this.#cfgStr("md-img-model", "Preferred image model", String(img.preferredModel ?? ""), "provider/model ref");
+    const imgChars = this.#cfgNum("md-img-chars", "Image max chars", Number(img.maxChars ?? 500));
+    const imgBytes = this.#cfgNum("md-img-bytes", "Image max bytes", Number(img.maxBytes ?? 10485760));
+    const imgTimeout = this.#cfgNum("md-img-timeout", "Image timeout (s)", Number(img.timeoutSeconds ?? 60));
+    const imgAllCb = this.#cfgCheck("md-img-all", "Send ALL attachments to the model", Boolean(img.attachments_all));
+    const audCb = this.#cfgCheck("md-aud-on", "Audio transcription", aud.enabled !== false);
+    const audModel = this.#cfgStr("md-aud-model", "Preferred audio model", String(aud.preferredModel ?? ""), "provider/model ref");
+    const audBytes = this.#cfgNum("md-aud-bytes", "Audio max bytes", Number(aud.maxBytes ?? 20971520));
+    const audTimeout = this.#cfgNum("md-aud-timeout", "Audio timeout (s)", Number(aud.timeoutSeconds ?? 60));
+    const audLang = this.#cfgStr("md-aud-lang", "Audio language", String(aud.language ?? ""), "e.g. en (blank = auto)");
+    const audEchoCb = this.#cfgCheck("md-aud-echo", "Echo transcript to chat", Boolean(aud.echoTranscript));
+    const audFmt = this.#cfgStr("md-aud-fmt", "Echo format", String(aud.echoFormat ?? '📝 "{transcript}"'), "use {transcript}");
+    const pdfCb = this.#cfgCheck("md-pdf-on", "PDF understanding", pdf.enabled !== false);
+    const pdfBytes = this.#cfgNum("md-pdf-bytes", "PDF max bytes", Number(pdf.maxBytes ?? 10485760));
+    const pdfChars = this.#cfgNum("md-pdf-chars", "PDF max chars", Number(pdf.maxChars ?? 4000));
+    const pdfTimeout = this.#cfgNum("md-pdf-timeout", "PDF timeout (s)", Number(pdf.timeoutSeconds ?? 60));
+
+    const save = el("button", { class: "btn", type: "button", id: "media-save" }, ["Save"]) as HTMLButtonElement;
+    save.onclick = () => {
+      void this.#setMany(
+        [
+          ["tools.media.concurrency", Math.max(1, Number(concF.input.value) || 2)],
+          ["tools.media.image", {
+            enabled: imgCb.input.checked,
+            preferredModel: imgModel.input.value.trim(),
+            prompt: String(img.prompt ?? ""),
+            maxChars: Math.max(0, Number(imgChars.input.value) || 500),
+            maxBytes: Math.max(0, Number(imgBytes.input.value) || 10485760),
+            timeoutSeconds: Math.max(0, Number(imgTimeout.input.value) || 60),
+            attachments_all: imgAllCb.input.checked,
+          }],
+          ["tools.media.audio", {
+            enabled: audCb.input.checked,
+            preferredModel: audModel.input.value.trim(),
+            maxBytes: Math.max(0, Number(audBytes.input.value) || 20971520),
+            timeoutSeconds: Math.max(0, Number(audTimeout.input.value) || 60),
+            language: audLang.input.value.trim(),
+            echoTranscript: audEchoCb.input.checked,
+            echoFormat: audFmt.input.value.trim() || '📝 "{transcript}"',
+          }],
+          ["tools.media.pdf", {
+            enabled: pdfCb.input.checked,
+            maxBytes: Math.max(0, Number(pdfBytes.input.value) || 10485760),
+            maxChars: Math.max(0, Number(pdfChars.input.value) || 4000),
+            timeoutSeconds: Math.max(0, Number(pdfTimeout.input.value) || 60),
+          }],
+        ],
+        "media understanding saved",
+      );
+    };
+
+    return el("div", { class: "card" }, [
+      el("h3", { style: "margin:0 0 8px" }, ["Media understanding"]),
+      concF.node,
+      imgCb.node, imgModel.node, imgChars.node, imgBytes.node, imgTimeout.node, imgAllCb.node,
+      el("div", { class: "usage-h" }, ["Audio"]),
+      audCb.node, audModel.node, audBytes.node, audTimeout.node, audLang.node, audEchoCb.node, audFmt.node,
+      el("div", { class: "usage-h" }, ["PDF"]),
+      pdfCb.node, pdfBytes.node, pdfChars.node, pdfTimeout.node,
+      save,
+    ]);
+  }
+
   async #webSearchCard(): Promise<HTMLElement> {
     let st: any;
     try {
@@ -1197,10 +1488,13 @@ export class Settings {
     ]);
   }
 
-  async #renderTools(tools: any[]): Promise<void> {
+  async #renderTools(tools: any[], config: any = {}): Promise<void> {
     const body = el("div", { class: "settings__body" });
 
     body.append(await this.#execApprovalsCard());
+    body.append(this.#execPolicyCard(config));
+    body.append(this.#codeModeCard(config));
+    body.append(this.#mediaCard(config));
     body.append(await this.#webSearchCard());
 
     body.append(el("div", { class: "card" }, [
@@ -1670,43 +1964,108 @@ export class Settings {
     );
   }
 
-  #renderGateway(gw: any): void {
+  /** Gateway tab (P4 #40 — their Gateway page): the full surface, not just
+   *  port + auth.mode — bind/net access, allowed hosts/origins, Control-UI
+   *  serving, the OpenAI HTTP endpoint toggle, and the loaded config path. */
+  #renderGateway(gw: any, configPath = ""): void {
     const port = el("input", {
-      class: "inp mono", id: "gw-port", value: String(gw.port ?? 18790), inputmode: "numeric",
-    });
-    const mode = el("input", {
-      class: "inp mono", id: "gw-mode", value: gw.auth?.mode ?? "token",
-    });
+      class: "inp mono", id: "gw-port", value: String(gw.port ?? 18790), inputmode: "numeric", autocomplete: "off",
+    }) as HTMLInputElement;
+    const bindSel = el("select", { class: "in", id: "gw-bind" }) as HTMLSelectElement;
+    for (const [v, lab] of [["loopback", "loopback (local only)"], ["lan", "lan (reachable on the network)"]] as [string, string][]) {
+      bindSel.append(el("option", { value: v, ...(String(gw.bind ?? "loopback") === v ? { selected: "" } : {}) }, [lab]));
+    }
+    const modeSel = el("select", { class: "in", id: "gw-mode" }) as HTMLSelectElement;
+    for (const [v, lab] of [["token", "token"], ["none", "none"]] as [string, string][]) {
+      modeSel.append(el("option", { value: v, ...(String(gw.auth?.mode ?? "token") === v ? { selected: "" } : {}) }, [lab]));
+    }
+    const bypassCb = el("input", { type: "checkbox", id: "gw-bypass" }) as HTMLInputElement;
+    bypassCb.checked = gw.auth?.loopbackBypass !== false;
+    const tokenNew = el("input", { class: "inp mono", id: "gw-token-new", type: "password", placeholder: "leave blank to keep", autocomplete: "off" }) as HTMLInputElement;
     const rawToken = String(gw.auth?.token ?? "");
     const token = el("div", { class: "inp mono" }, [rawToken ? "••••••••" + rawToken.slice(-4) : "Not set"]);
+    const hostsInp = el("input", { class: "inp mono", id: "gw-hosts", value: (gw.allowedHosts ?? []).join(", "), placeholder: "blank = any host", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const originsInp = el("input", { class: "inp mono", id: "gw-origins", value: (gw.allowedOrigins ?? []).join(", "), placeholder: "blank = any origin", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const uiCb = el("input", { type: "checkbox", id: "gw-cui" }) as HTMLInputElement;
+    uiCb.checked = gw.controlUi?.enabled !== false;
+    const basePathInp = el("input", { class: "inp mono", id: "gw-basepath", value: String(gw.controlUi?.basePath ?? ""), placeholder: "e.g. /ui (blank = root)", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const httpCb = el("input", { type: "checkbox", id: "gw-openai" }) as HTMLInputElement;
+    httpCb.checked = Boolean(gw.http?.endpoints?.chatCompletions?.enabled);
 
-    const save = el("button", { class: "btn pri", type: "button" }, ["Save and restart gateway"]);
+    const save = el("button", { class: "btn pri", type: "button", id: "gateway-save" }, ["Save and restart gateway"]) as HTMLButtonElement;
     save.onclick = async () => {
-      await this.#setMany([
+      const pairs: [string, unknown][] = [
         ["gateway.port", Number(port.value) || (gw.port ?? 18790)],
-        ["gateway.auth.mode", mode.value.trim() || "token"],
-      ], "gateway saved — reconnecting");
+        ["gateway.bind", bindSel.value],
+        ["gateway.auth.mode", /^(token|none)$/.test(modeSel.value) ? modeSel.value : "token"],
+        ["gateway.auth.loopbackBypass", bypassCb.checked],
+        ["gateway.allowedHosts", hostsInp.value.split(",").map((x) => x.trim()).filter(Boolean)],
+        ["gateway.allowedOrigins", originsInp.value.split(",").map((x) => x.trim()).filter(Boolean)],
+        ["gateway.controlUi.enabled", uiCb.checked],
+        ["gateway.controlUi.basePath", basePathInp.value.trim()],
+        ["gateway.http.endpoints.chatCompletions.enabled", httpCb.checked],
+      ];
+      if (tokenNew.value.trim()) pairs.push(["gateway.auth.token", tokenNew.value.trim()]);
+      await this.#setMany(pairs, "gateway saved — reconnecting");
       location.reload();
     };
 
     this.#root.append(
       el("div", { class: "card" }, [
-        el("div", {}, [
-          el("label", { class: "lbl", for: "gw-port" }, ["Port"]),
-          port,
+        el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "gw-port" }, ["Port"]), port]),
+        el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: "gw-bind" }, ["Bind"]),
+          bindSel,
+          el("p", { class: "hint" }, ["lan exposes the WebSocket + Control UI on your network — pair it with the token."]),
         ]),
         el("div", { class: "modal__field" }, [
           el("span", { class: "lbl" }, ["Auth token"]),
           token,
-          el("p", { class: "hint" }, ["Clients send this token when they connect."]),
+          tokenNew,
+          el("p", { class: "hint" }, ["Clients send this token when they connect; blank keeps the stored one."]),
         ]),
         el("div", { class: "modal__field" }, [
           el("label", { class: "lbl", for: "gw-mode" }, ["Auth mode"]),
-          mode,
+          modeSel,
           el("p", { class: "hint" }, ["token requires a secret; none allows any local client."]),
         ]),
+        el("div", { class: "row" }, [
+          el("span", { class: "row__label" }, ["Loopback bypass (no token needed from localhost)"]),
+          bypassCb,
+        ]),
+      ]),
+      el("div", { class: "card" }, [
+        el("h3", { style: "margin:0 0 8px" }, ["Network access"]),
+        el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: "gw-hosts" }, ["Allowed hosts (comma)"]),
+          hostsInp,
+          el("p", { class: "hint" }, ["Reject connections with an unlisted Host header."]),
+        ]),
+        el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: "gw-origins" }, ["Allowed origins (comma)"]),
+          originsInp,
+          el("p", { class: "hint" }, ["Reject WebSocket upgrades from browsers outside the list — their CSRF guard."]),
+        ]),
+      ]),
+      el("div", { class: "card" }, [
+        el("h3", { style: "margin:0 0 8px" }, ["Control UI"]),
+        el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Serve this web app from the gateway"]), uiCb]),
+        el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: "gw-basepath" }, ["Base path"]),
+          basePathInp,
+          el("p", { class: "hint" }, ["Mount the UI under a prefix (their controlUi.basePath) for reverse-proxy setups."]),
+        ]),
+      ]),
+      el("div", { class: "card" }, [
+        el("h3", { style: "margin:0 0 8px" }, ["OpenAI-compatible HTTP endpoint"]),
+        el("div", { class: "row" }, [
+          el("span", { class: "row__label" }, ["POST /v1/chat/completions (Bearer = gateway token)"]),
+          httpCb,
+        ]),
+        el("p", { class: "hint" }, ["Off by default — it grants full agent access over plain HTTP (their operator-grade warning)."]),
       ]),
       save,
+      ...(configPath ? [el("p", { class: "hint", style: "margin-top:8px" }, [`Config: ${configPath}`])] : []),
     );
   }
 
@@ -1840,11 +2199,13 @@ export class Settings {
       saveHb,
     ]));
 
-    // ----- imap -----
+    // ----- imap (P4 #36: status AND editing — their automation/imap form) -----
     const imapRows: HTMLElement[] = [];
     const imap = state?.imap ?? {};
+    // Live watcher status rows stay (cursor health came from the poller),
+    // followed by the editable account forms from the redacted config.
     if (!imap.enabled) {
-      imapRows.push(row("Watcher", "disabled"))
+      imapRows.push(row("Watcher", "disabled"));
     } else {
       for (const a of imap.accounts ?? []) {
         imapRows.push(row(
@@ -1853,12 +2214,175 @@ export class Settings {
           a.unhealthy ? "color:var(--err)" : "color:var(--ok)",
         ));
       }
-      if ((imap.accounts ?? []).length === 0) imapRows.push(row("Watcher", "enabled — 0 accounts"));
     }
+    const imapCfg = config.imap ?? {};
+    const accounts: Record<string, any> = imapCfg.accounts ?? {};
+    const imapMasterCb = el("input", { type: "checkbox", id: "imap-enabled" }) as HTMLInputElement;
+    imapMasterCb.checked = Boolean(imapCfg.enabled);
+    imapMasterCb.onchange = () => void this.#setMany([["imap.enabled", imapMasterCb.checked]], imapMasterCb.checked ? "imap watcher enabled" : "imap watcher disabled");
+    imapRows.push(el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), imapMasterCb]));
+    for (const [aname, acc] of Object.entries(accounts)) {
+      const bits = [
+        `${acc.secure === false ? "" : "ssl "}${acc.host ?? "?"}:${acc.port ?? 993}`,
+        acc.user ? String(acc.user) : "",
+        `mailbox ${acc.mailbox ?? "INBOX"}`,
+        `${acc.watch?.mode ?? "auto"}${acc.watch?.mode === "interval" || acc.watch?.mode === "auto" ? ` / ${acc.watch?.pollSeconds ?? 60}s` : ""}`,
+        Number(acc.enabled ?? 1) === 0 ? "· disabled" : "",
+      ].filter(Boolean).join(" · ");
+      const editBtn = el("button", { class: "btn", type: "button", id: `imap-edit-${aname}` }, ["Edit…"]) as HTMLButtonElement;
+      editBtn.onclick = () => this.#imapAccountDialog(aname, acc, config);
+      const delBtn = el("button", { class: "btn danger", type: "button", id: `imap-del-${aname}` }, ["Delete"]) as HTMLButtonElement;
+      delBtn.onclick = async () => {
+        if (!window.confirm(`Delete IMAP account "${aname}" and its watcher config?`)) return;
+        try {
+          await gateway.request("config.unset", { path: `imap.accounts.${aname}` });
+          toast(`removed account ${aname}`, "ok");
+          this.#onChanged();
+        } catch (err) { toast((err as Error).message, "err"); }
+      };
+      imapRows.push(el("div", { class: "row cron-job", "data-account": aname }, [
+        el("div", { class: "cron-job__body" }, [
+          el("span", { class: "row__label" }, [aname]),
+          el("span", { class: "hint cron-job__meta" }, [bits]),
+        ]),
+        editBtn, delBtn,
+      ]));
+    }
+    const addAcc = el("button", { class: "btn", type: "button", id: "imap-add" }, ["+ Add account"]) as HTMLButtonElement;
+    addAcc.onclick = () => this.#imapAccountDialog(null, null, config);
     this.#root.append(card("IMAP mail watcher", imapRows, [
       el("p", { class: "hint" }, [
-        "Per-account configurations sit under imap.accounts in the config (their automation/imap: baseline on start, UIDVALIDITY dedupe, sender allowlist, no-replay restarts).",
+        "Their automation/imap: baseline on start, UIDVALIDITY dedupe, sender allowlist, no-replay restarts. Password fields stay blank to keep the stored secret — or set passwordEnv to reference \${ENV}.",
       ]),
+      addAcc,
+    ]));
+
+    // ----- inbound hooks (P4 #36: token/path/mappings form) -----
+    const hooksCfg = config.hooks ?? {};
+    const hookRows: HTMLElement[] = [];
+    const hookEnabledCb = el("input", { type: "checkbox", id: "hooks-enabled" }) as HTMLInputElement;
+    hookEnabledCb.checked = Boolean(hooksCfg.enabled);
+    hookEnabledCb.onchange = () => void this.#setMany([["hooks.enabled", hookEnabledCb.checked]], hookEnabledCb.checked ? "inbound hooks enabled" : "inbound hooks disabled");
+    hookRows.push(el("div", { class: "row" }, [
+      el("span", { class: "row__label" }, ["Enabled (needs enabled + token set to live)"]),
+      hookEnabledCb,
+    ]));
+    const hookPathInp = el("input", { class: "inp mono", id: "hooks-path", value: String(hooksCfg.path ?? "/hooks"), autocomplete: "off" }) as HTMLInputElement;
+    const hookTokenInp = el("input", { class: "inp mono", id: "hooks-token-out", type: "password", placeholder: "leave blank to keep the stored token", autocomplete: "off" }) as HTMLInputElement;
+    const hookAskCb = el("input", { type: "checkbox", id: "hooks-ask" }) as HTMLInputElement;
+    hookAskCb.checked = Boolean(hooksCfg.allowRequestSessionKey);
+    const saveHooks = el("button", { class: "btn", type: "button", id: "hooks-save" }, ["Save hook settings"]) as HTMLButtonElement;
+    saveHooks.onclick = async () => {
+      const pairs: [string, unknown][] = [
+        ["hooks.path", hookPathInp.value.trim() || "/hooks"],
+        ["hooks.allowRequestSessionKey", hookAskCb.checked],
+      ];
+      if (hookTokenInp.value.trim()) pairs.push(["hooks.token", hookTokenInp.value.trim()]);
+      hookTokenInp.value = "";
+      await this.#setMany(pairs, "hook settings saved");
+    };
+    hookRows.push(el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "hooks-path" }, ["Path"]), hookPathInp]));
+    hookRows.push(el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "hooks-token-out" }, ["Bearer token (write-only)"]), hookTokenInp]));
+    hookRows.push(el("div", { class: "row" }, [el("span", { class: "row__label" }, ["allowRequestSessionKey"]), hookAskCb]));
+
+    const mappings: Record<string, any> = hooksCfg.mappings ?? {};
+    for (const [mname, m] of Object.entries(mappings)) {
+      const editBtn = el("button", { class: "btn", type: "button", id: `hook-map-edit-${mname}` }, ["Edit…"]) as HTMLButtonElement;
+      editBtn.onclick = () => this.#hookMappingDialog(mname, m, config);
+      const delBtn = el("button", { class: "btn danger", type: "button", id: `hook-map-del-${mname}` }, ["Delete"]) as HTMLButtonElement;
+      delBtn.onclick = async () => {
+        if (!window.confirm(`Delete hook mapping "${mname}"?`)) return;
+        try {
+          await gateway.request("config.unset", { path: `hooks.mappings.${mname}` });
+          toast(`removed mapping ${mname}`, "ok");
+          this.#onChanged();
+        } catch (err) { toast((err as Error).message, "err"); }
+      };
+      const desc = `${m.action ?? "agent"}${m.sessionKey ? ` → ${m.sessionKey}` : ""}${(m.message ?? m.text ?? "") ? ` — "${String(m.message ?? m.text).slice(0, 48)}"` : ""}`;
+      hookRows.push(el("div", { class: "row cron-job", "data-mapping": mname }, [
+        el("div", { class: "cron-job__body" }, [
+          el("span", { class: "row__label" }, [mname]),
+          el("span", { class: "hint cron-job__meta" }, [desc]),
+        ]),
+        editBtn, delBtn,
+      ]));
+    }
+    if (Object.keys(mappings).length === 0) {
+      hookRows.push(el("p", { class: "hint" }, ["No mappings — unmatched hook paths 404 (their unmapped-hook rule)."]));
+    }
+    const addMap = el("button", { class: "btn", type: "button", id: "hook-map-add" }, ["+ Add mapping"]) as HTMLButtonElement;
+    addMap.onclick = () => this.#hookMappingDialog(null, null, config);
+    this.#root.append(card("Inbound hooks", hookRows, [saveHooks, addMap]));
+
+    // ----- message queue (P4 #37 — their command-queue settings) -----
+    const queueCfg = config.messages?.queue ?? {};
+    const qModeSel = el("select", { class: "in", id: "queue-mode" }) as HTMLSelectElement;
+    for (const v of ["steer", "followup", "collect", "interrupt"]) {
+      qModeSel.append(el("option", { value: v, ...(String(queueCfg.mode ?? "steer") === v ? { selected: "" } : {}) }, [v]));
+    }
+    const qCap = el("input", { class: "inp mono", id: "queue-cap", value: String(queueCfg.cap ?? 20), autocomplete: "off" }) as HTMLInputElement;
+    const qDrop = el("select", { class: "in", id: "queue-drop" }) as HTMLSelectElement;
+    for (const v of ["summarize", "old", "new"]) {
+      qDrop.append(el("option", { value: v, ...(String(queueCfg.drop ?? "summarize") === v ? { selected: "" } : {}) }, [v]));
+    }
+    const qDebounce = el("input", { class: "inp mono", id: "queue-debounce", value: String(queueCfg.debounceMs ?? 500), autocomplete: "off" }) as HTMLInputElement;
+    const qTg = el("select", { class: "in", id: "queue-by-tg" }) as HTMLSelectElement;
+    const tgCur = String(queueCfg.byChannel?.telegram ?? "");
+    const tgChoices: [string, string][] = [["", "inherit (default)"], ["steer", "steer"], ["followup", "followup"], ["collect", "collect"], ["interrupt", "interrupt"]];
+    for (const [v, label] of tgChoices) {
+      qTg.append(el("option", { value: v, ...(tgCur === v ? { selected: "" } : {}) }, [label]));
+    }
+    const saveQueue = el("button", { class: "btn", type: "button", id: "queue-save" }, ["Save"]) as HTMLButtonElement;
+    saveQueue.onclick = () => {
+      const pairs: [string, unknown][] = [
+        ["messages.queue.mode", qModeSel.value],
+        ["messages.queue.cap", Math.max(1, Number(qCap.value) || 20)],
+        ["messages.queue.drop", qDrop.value],
+        ["messages.queue.debounceMs", Math.max(0, Number(qDebounce.value) || 0)],
+      ];
+      pairs.push(["messages.queue.byChannel", { ...(qTg.value ? { telegram: qTg.value } : {}) }]);
+      void this.#setMany(pairs, "queue settings saved");
+    };
+    this.#root.append(card("Message queue", [
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "queue-mode" }, ["Default mode"]),
+        qModeSel,
+        el("span", { class: "hint" }, ["steer: inject at tool boundaries · followup: run after the active turn · collect: merge in the quiet window · interrupt: kill and run newest"]),
+      ]),
+      el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "queue-cap" }, ["Cap (inputs held per session)"]), qCap]),
+      el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "queue-drop" }, ["On overflow (drop)"]), qDrop]),
+      el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "queue-debounce" }, ["Debounce (ms)"]), qDebounce]),
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "queue-by-tg" }, ["Per-channel override: telegram"]),
+        qTg,
+      ]),
+    ], [
+      el("p", { class: "hint" }, ["The chat header switch overrides these per session (queue.set); byChannel wins over the default here (their precedence)."]),
+      saveQueue,
+    ]));
+
+    // ----- memory.dreaming schedule (P4 #36) -----
+    const dreaming = config.memory?.dreaming ?? {};
+    const dreamCb = el("input", { type: "checkbox", id: "dreaming-enabled" }) as HTMLInputElement;
+    dreamCb.checked = dreaming.enabled !== false;
+    const dreamSched = el("input", { class: "inp mono", id: "dreaming-schedule", value: String(dreaming.schedule ?? "0 3 * * *"), autocomplete: "off" }) as HTMLInputElement;
+    const saveDream = el("button", { class: "btn", type: "button", id: "dreaming-save" }, ["Save"]) as HTMLButtonElement;
+    saveDream.onclick = () => void this.#setMany(
+      [
+        ["memory.dreaming.enabled", dreamCb.checked],
+        ["memory.dreaming.schedule", dreamSched.value.trim() || "0 3 * * *"],
+      ],
+      "dreaming schedule saved — the gateway daemon runs the next pass",
+    );
+    this.#root.append(card("Memory dreaming", [
+      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), dreamCb]),
+      el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "dreaming-schedule" }, ["Schedule (5-field cron — the gateway daemon runs it)"]),
+        dreamSched,
+      ]),
+    ], [
+      el("p", { class: "hint" }, ["Their default 0 3 * * * — nightly consolidation turns session transcripts into durable memory notes."]),
+      saveDream,
     ]));
   }
 
@@ -1934,6 +2458,137 @@ export class Settings {
         } catch (err) {
           toast((err as Error).message, "err");
         }
+      },
+    });
+  }
+
+  /** IMAP account editor (P4 #36): leaf writes only — the account object is
+   *  never round-tripped, so a redacted password can never be persisted as a
+   *  sentinel string. Blank password = keep (their editor contract). */
+  #imapAccountDialog(origName: string | null, acc: any | null, config: any): void {
+    const tf = (idSuffix: string, label: string, value: string, placeholder: string) => {
+      const input = el("input", { id: `imap-f-${idSuffix}`, class: "inp", type: "text", value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+      return { input, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `imap-f-${idSuffix}` }, [label]), input]) };
+    };
+    const nameF = tf("name", "Account name", String(origName ?? ""), "e.g. work");
+    if (origName) nameF.input.disabled = true; // record key ≙ id: edits keep it
+    const hostF = tf("host", "Host", String(acc?.host ?? ""), "imap.example.com");
+    const portF = tf("port", "Port", String(acc?.port ?? 993), "993");
+    const secureCb = el("input", { type: "checkbox", id: "imap-f-secure" }) as HTMLInputElement;
+    secureCb.checked = acc?.secure !== false;
+    const enabledCb = el("input", { type: "checkbox", id: "imap-f-enabled" }) as HTMLInputElement;
+    enabledCb.checked = Number(acc?.enabled ?? 1) !== 0;
+    const userF = tf("user", "Username", String(acc?.user ?? ""), "bot@example.com");
+    const pwF = tf("password", origName ? "Password (blank keeps stored)" : "Password", "", origName ? "leave blank to keep" : "app password");
+    if (origName) pwF.input.type = "password";
+    const pwEnvF = tf("passwenv", "passwordEnv (optional)", String(acc?.passwordEnv ?? ""), "e.g. IMAP_PASS — uses ${IMAP_PASS} env");
+    const mbxF = tf("mailbox", "Mailbox", String(acc?.mailbox ?? "INBOX"), "INBOX");
+    const watchSel = el("select", { class: "in", id: "imap-f-watch" }) as HTMLSelectElement;
+    for (const v of ["auto", "idle", "interval"]) {
+      watchSel.append(el("option", { value: v, ...(String(acc?.watch?.mode ?? "auto") === v ? { selected: "" } : {}) }, [v]));
+    }
+    const pollF = tf("poll", "Poll seconds (interval/auto)", String(acc?.watch?.pollSeconds ?? 60), "60");
+    const sendersF = tf("senders", "Allowed senders (comma list, blank = all)", (acc?.allowedSenders ?? []).join(", "), "alice@x.com, bob@y.io");
+    const authSel = el("select", { class: "in", id: "imap-f-authmin" }) as HTMLSelectElement;
+    for (const v of ["unverified", "mutable", "asserted", "verified"]) {
+      authSel.append(el("option", { value: v, ...(String(acc?.senderAuth?.min ?? "unverified") === v ? { selected: "" } : {}) }, [v]));
+    }
+    const deliverCb = el("input", { type: "checkbox", id: "imap-f-deliver" }) as HTMLInputElement;
+    deliverCb.checked = Boolean(acc?.deliver);
+    const toF = tf("to", "Deliver to (optional)", String(acc?.to ?? ""), "telegram:<chatId> | session:<key>");
+    const bodyCb = el("input", { type: "checkbox", id: "imap-f-body" }) as HTMLInputElement;
+    bodyCb.checked = acc?.includeBody !== false;
+
+    modal({
+      title: origName ? `Edit IMAP account: ${origName}` : "New IMAP account",
+      render: (box) => {
+        box.append(
+          nameF.node, hostF.node, portF.node, userF.node, pwF.node, pwEnvF.node, mbxF.node,
+          el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "imap-f-watch" }, ["Watch mode"]), watchSel]),
+          pollF.node, sendersF.node,
+          el("div", { class: "modal__field" }, [
+            el("label", { class: "lbl", for: "imap-f-authmin" }, ["Sender auth floor"]),
+            authSel,
+            el("span", { class: "hint" }, ["unverified is our only functioning floor without a DMARC verifier (see src/automation/imap.ts)."]),
+          ]),
+          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), enabledCb]),
+          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["SSL (secure)"]), secureCb]),
+          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Deliver results"]), deliverCb]),
+          toF.node,
+          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Include body"]), bodyCb]),
+        );
+      },
+      confirmLabel: origName ? "Save account" : "Add account",
+      onConfirm: async () => {
+        const rawName = origName ?? nameF.input.value.trim();
+        if (!rawName) { toast("account name is required", "err"); return; }
+        const aname = rawName.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "account";
+        if (aname.includes(".")) { toast("account name may not contain dots", "err"); return; }
+        const senders = sendersF.input.value.split(",").map((x) => x.trim()).filter(Boolean);
+        const base = `imap.accounts.${aname}`;
+        const pairs: [string, unknown][] = [
+          [`${base}.enabled`, enabledCb.checked],
+          [`${base}.host`, hostF.input.value.trim()],
+          [`${base}.port`, Math.max(1, Math.min(65535, Number(portF.input.value) || 993))],
+          [`${base}.secure`, secureCb.checked],
+          [`${base}.user`, userF.input.value.trim()],
+          [`${base}.mailbox`, mbxF.input.value.trim() || "INBOX"],
+          [`${base}.watch`, { mode: watchSel.value, pollSeconds: Math.max(15, Number(pollF.input.value) || 60) }],
+          [`${base}.allowedSenders`, senders],
+          [`${base}.senderAuth`, { ...(acc?.senderAuth ?? {}), min: authSel.value }],
+          [`${base}.deliver`, deliverCb.checked],
+          [`${base}.to`, toF.input.value.trim()],
+          [`${base}.includeBody`, bodyCb.checked],
+        ];
+        if (pwEnvF.input.value.trim()) pairs.push([`${base}.passwordEnv`, pwEnvF.input.value.trim()]);
+        if (pwF.input.value) pairs.push([`${base}.password`, pwF.input.value]);
+        await this.#setMany(pairs, origName ? `account ${aname} saved` : `account ${aname} added`);
+        this.#onChanged();
+      },
+    });
+  }
+
+  /** Hook mapping editor (P4 #36): action + payload per path suffix. The name
+   *  is the record key (URL segment), so it's write-once like account names. */
+  #hookMappingDialog(origName: string | null, m: any | null, config: any): void {
+    const tf = (idSuffix: string, label: string, value: string, placeholder: string) => {
+      const input = el("input", { id: `hmap-f-${idSuffix}`, class: "inp", type: "text", value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+      return { input, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `hmap-f-${idSuffix}` }, [label]), input]) };
+    };
+    const nameF = tf("name", "Mapping name (URL segment)", String(origName ?? ""), "e.g. github");
+    if (origName) nameF.input.disabled = true;
+    const actionSel = el("select", { class: "in", id: "hmap-f-action" }) as HTMLSelectElement;
+    for (const v of ["agent", "wake"]) {
+      actionSel.append(el("option", { value: v, ...(String(m?.action ?? "agent") === v ? { selected: "" } : {}) }, [v === "agent" ? "agent — run the payload" : "wake — nudge the main session"]));
+    }
+    const msgF = tf("message", "Message template", String(m?.message ?? m?.text ?? ""), "{{body}} or a fixed instruction");
+    const keyF = tf("sessionkey", "Session key (optional)", String(m?.sessionKey ?? ""), "blank = hook main session");
+
+    modal({
+      title: origName ? `Edit hook mapping: ${origName}` : "New hook mapping",
+      render: (box) => {
+        box.append(
+          nameF.node,
+          el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "hmap-f-action" }, ["Action"]), actionSel]),
+          msgF.node, keyF.node,
+          el("p", { class: "hint" }, ["POST {gateway}{path}/{name} with Authorization: Bearer <hooks.token>. Their templates support {{body}}, {{subject}} placeholders."]),
+        );
+      },
+      confirmLabel: origName ? "Save mapping" : "Add mapping",
+      onConfirm: async () => {
+        const rawName = origName ?? nameF.input.value.trim();
+        if (!rawName) { toast("mapping name is required", "err"); return; }
+        const mname = rawName.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "mapping";
+        if (mname.includes(".")) { toast("mapping name may not contain dots", "err"); return; }
+        await this.#setMany(
+          [[`hooks.mappings.${mname}`, {
+            action: actionSel.value,
+            ...(msgF.input.value.trim() ? { message: msgF.input.value.trim() } : {}),
+            ...(keyF.input.value.trim() ? { sessionKey: keyF.input.value.trim() } : {}),
+          }]],
+          origName ? `mapping ${mname} saved` : `mapping ${mname} added`,
+        );
+        this.#onChanged();
       },
     });
   }

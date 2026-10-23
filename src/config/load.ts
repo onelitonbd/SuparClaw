@@ -160,6 +160,23 @@ export class ConfigService {
     return this.set(root, clone[root] as SuparClawConfig[typeof root]);
   }
 
+  /** Delete the key at a dotted path (record entries — P4 #36 editors):
+   *  removes the leaf then re-validates the whole root through the same
+   *  caster as setPath, so a deletion can never write an invalid file. */
+  unsetPath(path: string): { ok: boolean; errors: string[] } {
+    const root = path.split(".")[0] as keyof SuparClawConfig;
+    const clone = structuredClone(this.#config) as unknown as Record<string, unknown>;
+    const parts = path.split(".");
+    let cursor = clone;
+    for (const part of parts.slice(0, -1)) {
+      const next = cursor[part];
+      if (!next || typeof next !== "object") cursor[part] = {};
+      cursor = cursor[part] as Record<string, unknown>;
+    }
+    delete cursor[parts[parts.length - 1] as string];
+    return this.set(root, clone[root] as SuparClawConfig[typeof root]);
+  }
+
   /** Debounced fs.watch hot reload; invalid edits keep the last good config live. */
   watchForChanges(onChange?: (config: SuparClawConfig) => void): void {
     if (this.#watcher) return;

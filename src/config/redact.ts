@@ -52,6 +52,14 @@ export function redactSecrets(config: SuparClawConfig): SuparClawConfig {
   };
   out.gateway.auth.token = maskSecret(out.gateway.auth.token);
   out.channels.telegram.token = maskSecret(out.channels.telegram.token);
+  // Inbound-hook bearer + IMAP account passwords are secrets too (P4 #36 —
+  // their forms must never round-trip material; blank = keep).
+  if (out.hooks && typeof out.hooks === "object") {
+    (out.hooks as { token: string }).token = maskSecret((out.hooks as { token: string }).token);
+  }
+  for (const account of Object.values(out.imap?.accounts ?? {})) {
+    (account as { password: string }).password = maskSecret((account as { password: string }).password);
+  }
   for (const provider of Object.values(out.providers)) {
     provider.apiKey = looksLikeBinding(provider.apiKey) ? provider.apiKey : maskSecret(provider.apiKey);
   }

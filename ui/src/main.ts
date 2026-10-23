@@ -231,6 +231,8 @@ async function refresh(): Promise<void> {
     $("model-name").textContent = models.find((m) => m.value === currentModel)?.label || currentModel || "no model";
     renderSessions((sessionRes as any).sessions ?? []);
     syncThinking(status, (sessionRes as any).sessions ?? []);
+    syncQueue((sessionRes as any).sessions ?? []);
+    void refreshQueueDepth();
     // Archived current session: read-only transcript + Unarchive banner
     // (their composer-disabled contract).
     const curRow = ((sessionRes as any).sessions ?? []).find((r: SessionListRow) => r.key === sessionKey);
@@ -299,6 +301,60 @@ $("think").addEventListener("change", async () => {
     toast((err as Error).message, "err");
   }
 });
+
+/* ---------------- per-session queue mode (P4 #37 — their /queue) ----------- */
+
+/** Mirror of syncThinking: the header select reflects the session's durable
+ *  queue override (config default shown as "queue" when no override). */
+function syncQueue(sessions: { key: string; queue_mode?: string | null }[]): void {
+  const select = $("queue-select") as HTMLSelectElement;
+  const row = (sessions ?? []).find((s) => s.key === sessionKey);
+  const desired = row?.queue_mode ?? "inherit";
+  for (const opt of Array.from(select.querySelectorAll("option"))) {
+    if (opt.getAttribute("value") === desired) opt.setAttribute("selected", "");
+    else opt.removeAttribute("selected");
+  }
+  try {
+    select.value = desired;
+  } catch { /* getter-only DOM */ }
+}
+
+$("queue-select").addEventListener("change", async () => {
+  const select = $("queue-select") as HTMLSelectElement;
+  const value = select.value;
+  if (value && !["inherit", "steer", "followup", "collect", "interrupt"].includes(value)) {
+    select.value = "inherit";
+    return;
+  }
+  try {
+    if (value === "inherit") {
+      await gateway.request("queue.set", { sessionKey, reset: true });
+      toast("queue mode: config default", "ok");
+    } else {
+      await gateway.request("queue.set", { sessionKey, mode: value });
+      toast(`queue mode: ${value}`, "ok");
+    }
+    void refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+});
+
+/** Queued-input depth from queue.status (their queued-count chip). */
+async function refreshQueueDepth(): Promise<void> {
+  const chip = $("queue-depth");
+  try {
+    const status = (await gateway.request("queue.status", { sessionKey })) as {
+      mode?: string; queued?: unknown[]; queuedCount?: number; steering?: number;
+    };
+    const n = typeof status.queuedCount === "number" ? status.queuedCount : Array.isArray(status.queued) ? status.queued.length : 0;
+    chip.hidden = n === 0;
+    chip.textContent = n > 0 ? String(n) : "";
+    chip.title = n > 0 ? `${n} input(s) queued for this session` : "";
+  } catch {
+    chip.hidden = true;
+  }
+}
 
 
 
