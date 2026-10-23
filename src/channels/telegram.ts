@@ -142,7 +142,7 @@ export class TelegramChannel {
    * Proactive outbound text (P2 cron delivery/alerts + later approval cards):
    * chunked by the usual rule; hard errors propagate for the caller to log.
    */
-  async sendText(chatId: number, text: string): Promise<void> {
+  async sendText(chatId: number | string, text: string): Promise<void> {
     if (!this.#bot) throw new Error("telegram bot not running");
     for (const chunk of splitForTelegram(text)) {
       await this.#bot.api.sendMessage(chatId, chunk);

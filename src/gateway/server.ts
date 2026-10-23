@@ -265,6 +265,7 @@ export class Gateway {
       "config.set",
       "channels.status",
       "channels.telegram.connect",
+      "channels.telegram.send",
       "config.unset",
     ];
   }
@@ -1332,6 +1333,14 @@ case "sessions.rename": {
         }
         case "channels.status": {
           send(okFrame(id, service.channelsStatus()));
+          return;
+        }
+        case "channels.telegram.send": {
+          const result = await service.telegramSend(
+            params["to"] as string | number | undefined,
+            String(params["text"] ?? ""),
+          );
+          send(okFrame(id, result));
           return;
         }
         case "channels.telegram.connect": {

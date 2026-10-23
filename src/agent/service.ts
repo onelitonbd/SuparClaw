@@ -394,6 +394,45 @@ export class Service {
     };
   }
 
+  /** One-line smoke test for the whole path (their channels send parity):
+   *  resolves the recipient — explicit id/@handle first, then the first
+   *  allowFrom entry (which is the user themselves after pairing), then a
+   *  plain "DM the bot first" explanation — and delivers over the live
+   *  channel (proxy included). */
+  resolveTelegramRecipient(ref: string | number | undefined): number | string | null {
+    if (ref !== undefined && ref !== null && String(ref).trim()) {
+      const v = String(ref).trim();
+      if (/^-?\d+$/.test(v)) return Number(v);
+      if (v.startsWith("@")) return v;
+      return v;
+    }
+    const mine = (this.config.channels.telegram.allowFrom ?? []).map((x) => String(x).trim()).find(Boolean);
+    if (!mine) return null;
+    if (/^-?\d+$/.test(mine)) return Number(mine);
+    return mine.startsWith("@") ? mine : `@${mine}`;
+  }
+
+  async telegramSend(ref: string | number | undefined, text: string): Promise<{ ok: boolean; to?: string; error?: string }> {
+    const tg = this.config.channels.telegram;
+    if (!tg.enabled) return { ok: false, error: "channels.telegram.enabled is off — enable it first" };
+    if (!this.#telegram?.running) return { ok: false, error: `telegram is offline (${this.#telegramError || "not connected"}) — run: sc channels connect` };
+    const to = this.resolveTelegramRecipient(ref);
+    if (to === null) {
+      return { ok: false, error: "no recipient: pass one — sc channels send <chat-id> hi — or message the bot first so it knows you, or add yourself to channels.telegram.allowFrom" };
+    }
+    const body = text.trim() || "suparclaw smoke test — telegram path works";
+    try {
+      await this.#telegram.sendText(to, body);
+      return { ok: true, to: String(to) };
+    } catch (err) {
+      let error = describeError(err);
+      if (/chat not found|user not found/i.test(error)) {
+        error += " — Telegram only lets bots DM users who have messaged them first: open the bot and press START (or fix the id/@handle).";
+      }
+      return { ok: false, error };
+    }
+  }
+
   /** Their one-tap Connect: stops any old instance, starts fresh, and returns
    *  the real outcome so the UI can say "@bot online" or WHY it failed —
    *  unlike the fs-watcher path which is silent (and may not fire at all on

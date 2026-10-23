@@ -79,6 +79,31 @@ export async function cmdChannels(rest: string[]): Promise<number> {
     return code;
   }
 
+  if (sub === "send") {
+    // sc channels send "text"               → to yourself (first allowFrom)
+    // sc channels send 123456789 "text"     → explicit chat id
+    // sc channels send @handle "text"       → explicit @handle
+    const args = rest.slice(1);
+    let to: string | undefined;
+    if (args.length > 0 && (/^-?\d+$/.test(args[0] ?? "") || (args[0] ?? "").startsWith("@"))) {
+      to = args.shift()!;
+    }
+    const text = args.join(" ").trim();
+    const res = await withGateway(async (client) => client.request("channels.telegram.send", { ...(to ? { to } : {}), text }));
+    if (res !== null) setImmediate(() => process.exit((res as { ok: boolean }).ok ? 0 : 1));
+    if (res === null) {
+      console.log(fg.red("gateway offline") + fg.dim("  — start it first: sc gateway (or sc service install + start)"));
+      return 1;
+    }
+    const r = res as { ok: boolean; to?: string; error?: string };
+    if (r.ok) {
+      console.log(fg.green(`delivered to ${r.to ?? "?"} — check the Telegram app now`));
+      return 0;
+    }
+    console.log(fg.red(`send failed: ${r.error ?? "unknown"}`));
+    return 1;
+  }
+
   if (sub === "connect") {
     const res = await withGateway(async (client) => client.request("channels.telegram.connect"));
     const had = res !== null;
@@ -101,6 +126,6 @@ export async function cmdChannels(rest: string[]): Promise<number> {
     return 1;
   }
 
-  console.log(fg.dim("usage: sc channels [status] | sc channels connect"));
+  console.log(fg.dim("usage: sc channels [status] | connect | send [chat-id|@handle] <text>"));
   return sub === "help" || sub === "--help" ? 0 : 64;
 }
