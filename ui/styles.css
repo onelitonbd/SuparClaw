@@ -785,6 +785,14 @@ textarea:focus-visible {
   font-size: 12px; color: var(--ink2, var(--ink));
 }
 
+/* System diagnostics (P4 #41) */
+.diag-row { align-items: flex-start; }
+.diag-mark { width: 18px; text-align: center; flex: none; font-weight: 700; }
+.diag-mark--ok { color: var(--ok); }
+.diag-mark--warn { color: var(--warn); }
+.diag-mark--fail { color: var(--err, #e5534b); }
+.diag-row__detail { flex: 1; word-break: break-word; }
+
 /* Cron job editor (P4 #35) */
 .cron-job { gap: 8px; align-items: center; }
 .cron-job__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }

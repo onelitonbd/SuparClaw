@@ -253,6 +253,15 @@ export class Gateway {
       "config.schema",
       "config.replace",
       "config.path",
+      "system.doctor",
+      "system.securityAudit",
+      "system.update.check",
+      "system.update.apply",
+      "secrets.audit",
+      "backup.create",
+      "backup.list",
+      "backup.verify",
+      "backup.restore",
       "config.set",
       "config.unset",
     ];
@@ -1194,6 +1203,131 @@ case "sessions.rename": {
         case "config.path":
           send(okFrame(id, { path: service.configSvc.path }));
           return;
+        case "system.doctor": {
+          // System tab (P4 #41 — their system-care panel): the same probes as
+          // `sc doctor`, minus the free-port one (this daemon owns the port).
+          const { runDoctorChecks } = await import("../cli/doctor.js");
+          const checks = await runDoctorChecks({ insideGateway: true });
+          send(okFrame(id, {
+            checks,
+            fails: checks.filter((c) => c.status === "fail").length,
+            warns: checks.filter((c) => c.status === "warn").length,
+          }));
+          return;
+        }
+        case "system.securityAudit": {
+          // Settings → Security parity: auditConfig exists, posture checks
+          // pure — plus the real file mode of the config on disk.
+          const { statSync } = await import("node:fs");
+          let configMode: number | undefined;
+          try {
+            configMode = statSync(service.configSvc.path).mode & 0o777;
+          } catch { /* missing file — configMode stays undefined */ }
+          const { auditConfig } = await import("../cli/audit.js");
+          const findings = auditConfig({ config: service.config, configMode });
+          send(okFrame(id, {
+            findings,
+            fails: findings.filter((f) => f.status === "fail").length,
+            warns: findings.filter((f) => f.status === "warn").length,
+          }));
+          return;
+        }
+        case "system.update.check": {
+          // Settings → Updates parity (P4 #41): slug/ref/current/remote/behind.
+          const { systemUpdateCheck } = await import("../cli/update.js");
+          const status = await systemUpdateCheck(params["ref"] ? String(params["ref"]) : undefined);
+          send(okFrame(id, status));
+          return;
+        }
+        case "system.update.apply": {
+          // Their Update Now flow — the UI gates this behind a typed confirm
+          // that echoes the target sha. Reject when the echo doesn't match.
+          const want = String(params["sha"] ?? "");
+          const { systemUpdateCheck, systemUpdateApply } = await import("../cli/update.js");
+          const status = await systemUpdateCheck();
+          if (!status.ok) {
+            send(errFrame(id, "update_unavailable", status.error ?? "update check failed"));
+            return;
+          }
+          if (status.upToDate) {
+            send(okFrame(id, { ok: true, upToDate: true, sha: status.currentSha }));
+            return;
+          }
+          if (want && status.remoteSha && !String(status.remoteSha).startsWith(want)) {
+            send(errFrame(id, "bad_request", `ship guard: confirmed sha ${want} ≠ remote ${String(status.remoteSha).slice(0, 12)} — re-check and try again`));
+            return;
+          }
+          const result = await systemUpdateApply();
+          send(okFrame(id, result));
+          return;
+        }
+        case "secrets.audit": {
+          // Settings → Secrets parity (P4 #43): plaintext creds + unresolved
+          // refs + invalid SecretRef shapes from the raw config file.
+          const { auditSecretsFile } = await import("../cli/secrets.js");
+          send(okFrame(id, auditSecretsFile(service.configSvc.path)));
+          return;
+        }
+        case "backup.list": {
+          const { mkdirSync, existsSync } = await import("node:fs");
+          const { join: joinPath } = await import("node:path");
+          const { stateDir } = await import("../util/paths.js");
+          const dir = joinPath(stateDir(), "backups");
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          const { listBackups } = await import("../backup/backup.js");
+          send(okFrame(id, { dir, backups: listBackups(dir) }));
+          return;
+        }
+        case "backup.create": {
+          // Backup UI (P4 #42): same engine as `sc backup create` (#29) —
+          // consistent sqlite snapshot, never overwrites. Verified by default;
+          // the checkboxes mirror the CLI flags exactly.
+          const { mkdirSync } = await import("node:fs");
+          const { join: joinPath } = await import("node:path");
+          const { stateDir } = await import("../util/paths.js");
+          const dir = joinPath(stateDir(), "backups");
+          mkdirSync(dir, { recursive: true });
+          const { createBackup } = await import("../backup/backup.js");
+          const onlyConfig = params["onlyConfig"] === true;
+          const result = await createBackup({
+            outputDir: dir,
+            includeWorkspace: params["includeWorkspace"] !== false,
+            onlyConfig,
+            dryRun: params["dryRun"] === true,
+            verify: params["verify"] !== false,
+          });
+          send(okFrame(id, result));
+          return;
+        }
+        case "backup.verify": {
+          const { verifyBackup } = await import("../backup/backup.js");
+          const archive = String(params["archive"] ?? "");
+          if (!archive) {
+            send(errFrame(id, "bad_request", "archive is required"));
+            return;
+          }
+          send(okFrame(id, await verifyBackup(archive)));
+          return;
+        }
+        case "backup.restore": {
+          // Destructive: the UI gates this behind a modal that names the
+          // archive + target and explains the post-restore restart.
+          const { restoreBackup } = await import("../backup/backup.js");
+          const archive = String(params["archive"] ?? "");
+          if (!archive) {
+            send(errFrame(id, "bad_request", "archive is required"));
+            return;
+          }
+          const { stateDir } = await import("../util/paths.js");
+          try {
+            const result = await restoreBackup(archive, params["target"] ? String(params["target"]) : stateDir(), { force: true });
+            send(okFrame(id, { ...result, restart: "restart the gateway (sc service restart) to load the restored state" }));
+          } catch (err) {
+            send(errFrame(id, "restore_failed", (err as Error).message));
+            return;
+          }
+          return;
+        }
         case "config.set": {
           const path = String(params["path"] ?? "");
           if (!path) {

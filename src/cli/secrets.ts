@@ -39,6 +39,41 @@ SecretRefs in config.json5 (plaintext still works — refs are additive):
   }
 `;
 
+export interface SecretsAuditResult {
+  ok: boolean;
+  findings: string[];
+  warnings: string[];
+  error?: string;
+  note?: string;
+}
+
+/** The audit core shared by the CLI and the Gateway secrets.audit RPC
+ *  (P4 #43 — their Settings → Secrets findings panel): plaintext creds,
+ *  unresolved refs, and invalid SecretRef shapes, all as findings. */
+export function auditSecretsFile(path: string): SecretsAuditResult {
+  if (!existsSync(path)) {
+    return { ok: true, findings: [], warnings: [], note: `no config at ${path}` };
+  }
+  let raw: unknown;
+  try {
+    raw = JSON5.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    return { ok: false, findings: [], warnings: [], error: `config parse failed: ${(err as Error).message}` };
+  }
+  const { findings, warnings } = resolveSecrets(raw);
+  const invalid: string[] = [];
+  const walk = (v: unknown, p: string): void => {
+    if (isSecretRef(v)) {
+      const bad = validateSecretRef(v);
+      if (bad) invalid.push(`invalid SecretRef at ${p}: ${bad}`);
+    } else if (Array.isArray(v)) v.forEach((item, i) => walk(item, `${p}[${i}]`));
+    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(x, p ? `${p}.${k}` : k);
+  };
+  walk(raw, "");
+  const all = [...findings, ...invalid.filter((f) => !findings.includes(f))];
+  return { ok: all.length === 0, findings: all, warnings };
+}
+
 export async function cmdSecrets(args: string[]): Promise<number> {
   const sub = args[0];
   const rest = args.slice(1);

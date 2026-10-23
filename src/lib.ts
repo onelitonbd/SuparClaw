@@ -29,6 +29,9 @@ export { hostAllowed, originAllowed, hostnameOf, type TrustPolicy } from "./gate
 export { parseWebAttachments, isImageMime, sanitizeAttachName, WEB_ATTACH_LIMITS } from "./gateway/web-attachments.js";
 export { redactSecrets, resolveRedacted, resolveRedactedDeep, isRedacted, maskSecret, REDACTED_PREFIX } from "./config/redact.js";
 export { auditConfig, type Finding } from "./cli/audit.js";
+export { runDoctorChecks, type DoctorCheck } from "./cli/doctor.js";
+export { auditSecretsFile, type SecretsAuditResult } from "./cli/secrets.js";
+export { systemUpdateCheck, systemUpdateApply, type UpdateStatus, type UpdateApplyResult } from "./cli/update.js";
 export { splitForTelegram } from "./channels/telegram.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";

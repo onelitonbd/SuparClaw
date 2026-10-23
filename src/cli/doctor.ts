@@ -10,12 +10,14 @@ import { configPath } from "../util/paths.js";
 import { STARTER_CONFIG, writeConfigFile } from "../config/load.js";
 import { readConfigFile } from "../config/load.js";
 
-interface Check {
+export interface DoctorCheck {
   name: string;
   status: "ok" | "warn" | "fail";
   detail: string;
   fix?: string;
 }
+
+type Check = DoctorCheck;
 
 const C = {
   ok: "\x1b[32m✔\x1b[39m",
@@ -25,7 +27,11 @@ const C = {
   bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
 };
 
-export async function doctor(): Promise<number> {
+/** Structured checks (P4 #41, System tab): the same probes the CLI prints,
+ *  without the printing. insideGateway skips the free-port probe — from the
+ *  running daemon the port is ours, so "in use" would be a false alarm. */
+export async function runDoctorChecks(opts: { insideGateway?: boolean } = {}): Promise<Check[]> {
+  const insideGateway = opts.insideGateway === true;
   const checks: Check[] = [];
 
   // Node
@@ -343,15 +349,19 @@ export async function doctor(): Promise<number> {
     ...(tg.enabled && !tg.token ? { fix: "sc config set channels.telegram.token <bot-token>" } : {}),
   });
 
-  // port
-  const port = load.config.gateway.port ?? DEFAULT_PORT;
-  const free = await portFree(port);
-  checks.push({
-    name: `port ${port}`,
-    status: free ? "ok" : "warn",
-    detail: free ? "available" : "in use (daemon may already be running)",
-    ...(free ? {} : { fix: "sc status" }),
-  });
+  // port — skipped inside the daemon (the configured port is ours by then)
+  if (!insideGateway) {
+    const port = load.config.gateway.port ?? DEFAULT_PORT;
+    const free = await portFree(port);
+    checks.push({
+      name: `port ${port}`,
+      status: free ? "ok" : "warn",
+      detail: free ? "available" : "in use (daemon may already be running)",
+      ...(free ? {} : { fix: "sc status" }),
+    });
+  } else {
+    checks.push({ name: "gateway", status: "ok", detail: "serving (this daemon answered the request)" });
+  }
 
   // disk
   try {
@@ -366,6 +376,11 @@ export async function doctor(): Promise<number> {
     /* statfs unavailable */
   }
 
+  return checks;
+}
+
+export async function doctor(): Promise<number> {
+  const checks = await runDoctorChecks();
   console.log(C.bold("\n  suparclaw doctor\n"));
   for (const check of checks) {
     const mark = check.status === "ok" ? C.ok : check.status === "warn" ? C.warn : C.fail;

@@ -111,6 +111,85 @@ function swapArtifacts(root: string, staged: string): void {
   }
 }
 
+export interface UpdateStatus {
+  ok: boolean;
+  slug?: string;
+  ref?: string;
+  currentSha?: string;
+  remoteSha?: string;
+  remoteDate?: string;
+  upToDate?: boolean;
+  behind?: boolean;
+  error?: string;
+}
+
+/** Settings → Updates parity (P4 #41): the check half of `sc update` as a
+ *  structured result, so the System tab can render version/behind state
+ *  instead of console text. */
+export async function systemUpdateCheck(refFlag?: string): Promise<UpdateStatus> {
+  let root = dirname(new URL(import.meta.url).pathname);
+  while (root !== "/" && !existsSync(join(root, "package.json"))) root = dirname(root);
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { repository?: string | { url?: string }; name: string };
+  const parsed = parseRepoSlug(pkg.repository);
+  if (!parsed) return { ok: false, error: "package.json has no github repository — cannot self-update" };
+  const ref = resolveRef(root, refFlag);
+  let remote: { sha: string; date: string };
+  try {
+    remote = await fetchRemoteHead(parsed, ref);
+  } catch (err) {
+    return { ok: false, slug: `${parsed.owner}/${parsed.repo}`, ref, error: `update check failed: ${(err as Error).message}` };
+  }
+  const plan = computeUpdatePlan(currentSha(root), remote.sha, remote.date, ref);
+  return {
+    ok: true,
+    slug: `${parsed.owner}/${parsed.repo}`,
+    ref,
+    currentSha: plan.currentSha,
+    remoteSha: remote.sha,
+    remoteDate: remote.date,
+    upToDate: plan.upToDate,
+    behind: !plan.upToDate,
+  };
+}
+
+export interface UpdateApplyResult {
+  ok: boolean;
+  sha?: string;
+  ref?: string;
+  at?: string;
+  error?: string;
+}
+
+/** The apply half (P4 #41 — their Update Now): staged download/build/swap,
+ *  live tree untouched until the staged smoke passes — identical steps to
+ *  the CLI path, structured for the UI's confirm-with-sha flow. */
+export async function systemUpdateApply(): Promise<UpdateApplyResult> {
+  const status = await systemUpdateCheck();
+  if (!status.ok) return { ok: false, error: status.error };
+  if (status.upToDate) return { ok: true, sha: status.currentSha, ref: status.ref, at: status.remoteDate };
+  const [owner, repo] = String(status.slug).split("/");
+  if (!owner || !repo) return { ok: false, error: `bad slug ${status.slug}` };
+  let root = dirname(new URL(import.meta.url).pathname);
+  while (root !== "/" && !existsSync(join(root, "package.json"))) root = dirname(root);
+  const sha = String(status.remoteSha);
+  const staging = mkdtempSync(join(tmpdir(), "sc-update-"));
+  try {
+    const tgz = join(staging, "tree.tgz");
+    await downloadTarball({ owner, repo }, sha, tgz);
+    const untar = spawnSync("tar", ["-xzf", tgz], { cwd: staging });
+    if (untar.status !== 0) throw new Error("tar unpack failed");
+    const packedDir = readdirOneDir(staging);
+    buildStaged(packedDir);
+    swapArtifacts(root, packedDir);
+    await writeFile(join(root, "dist", "build-stamp.json"), JSON.stringify({ sha, ref: status.ref, at: status.remoteDate }) + "\n");
+    return { ok: true, sha, ref: status.ref, at: status.remoteDate };
+  } catch (err) {
+    return { ok: false, error: `update failed: ${(err as Error).message} — your current install is unchanged` };
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 export async function cmdUpdate(args: string[]): Promise<number> {
   let refFlag: string | undefined;
   let check = false;

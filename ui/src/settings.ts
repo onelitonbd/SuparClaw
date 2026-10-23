@@ -7,7 +7,7 @@ import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./no
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "models" | "providers" | "channels" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime";
+type TabId = "model" | "models" | "providers" | "channels" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "model", label: "Defaults" },
@@ -23,6 +23,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "config", label: "All settings" },
   { id: "gateway", label: "Gateway" },
   { id: "runtime", label: "Runtime" },
+  { id: "system", label: "System" },
 ];
 
 export class Settings {
@@ -120,6 +121,7 @@ export class Settings {
     else if (this.#tab === "alerts") this.#renderAlerts();
     else if (this.#tab === "config") await this.#renderConfigEditor(config);
     else if (this.#tab === "gateway") this.#renderGateway(gw, configPath);
+    else if (this.#tab === "system") await this.#renderSystem(config);
     else await this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
 
@@ -893,6 +895,108 @@ export class Settings {
 
   /* ---------------- providers ---------------- */
 
+  /** Provider auth & connectivity buttons (P4 #44 — their Connect provider:
+   *  one-tap device-code sign-in, credential probe, connection test). All
+   *  three surface the gateway's own verdict text — no client-side guesses. */
+  #providerAuthButtons(name: string): HTMLElement[] {
+    const test = el("button", { class: "btn", type: "button", id: `prov-test-${name}`, title: "providers.test" }, ["Test"]) as HTMLButtonElement;
+    test.onclick = async () => {
+      test.disabled = true;
+      try {
+        const res = (await gateway.request("providers.test", { name })) as { ok: boolean; message?: string };
+        toast(`${name}: ${res.ok ? "connection ok" : "failed"}${res.message ? ` — ${res.message}` : ""}`, res.ok ? "ok" : "err");
+      } catch (err) {
+        toast((err as Error).message, "err");
+      } finally {
+        test.disabled = false;
+      }
+    };
+
+    const probe = el("button", { class: "btn", type: "button", id: `prov-probe-${name}`, title: "models.auth.probe" }, ["Probe"]) as HTMLButtonElement;
+    probe.onclick = async () => {
+      probe.disabled = true;
+      try {
+        const res = (await gateway.request("models.auth.probe", { provider: name })) as any;
+        const report = res.probe;
+        const healthy = Number(report?.healthy ?? report?.okCount ?? 0);
+        const total = Number(report?.total ?? 0);
+        const stale = Number(report?.stale ?? 0);
+        const dead = Number(report?.dead ?? 0);
+        toast(
+          total > 0
+            ? `probe ${name}: ${healthy}/${total} healthy${stale ? ` · ${stale} stale` : ""}${dead ? ` · ${dead} dead` : ""}`
+            : `probe ${name}: canonical credential ${report?.canonicalOk ? "reachable" : "unusable"}`,
+          dead > 0 || report?.canonicalOk === false ? "err" : "ok",
+        );
+      } catch (err) {
+        toast((err as Error).message, "err");
+      } finally {
+        probe.disabled = false;
+      }
+    };
+
+    const signin = el("button", { class: "btn pri", type: "button", id: `prov-signin-${name}`, title: "OAuth device code" }, ["Sign in"]) as HTMLButtonElement;
+    signin.onclick = () => void this.#deviceCodeFlow(name);
+    return [signin, probe, test];
+  }
+
+  /** Device-code login (P4 #44): begin → show the code + verification URL →
+   *  poll until done / cancel — exactly their Connect-provider card flow. */
+  async #deviceCodeFlow(name: string): Promise<void> {
+    let start: any;
+    try {
+      start = await gateway.request("models.auth.beginDeviceCode", { provider: name });
+    } catch (err) {
+      toast((err as Error).message, "err");
+      return;
+    }
+    const flow = String(start.flow ?? "");
+    const code = String(start.userCode ?? start.user_code ?? "—");
+    const uri = String(start.verificationUri ?? start.verification_url ?? "");
+    const statusEl = el("p", { class: "hint" }, ["Waiting for the sign-in to complete…"]);
+    const codeBox = el("div", { class: "device-code mono", id: `device-code-${name}` }, [code]);
+    const link = uri ? el("a", { href: uri, target: "_blank", rel: "noreferrer" }, [uri]) : null;
+    const close = modal({
+      title: `Sign in: ${name}`,
+      body: el("div", {}, [
+        el("p", {}, ["Enter this code at the provider's activation page:"]),
+        codeBox,
+        ...(link ? [el("p", {}, [link])] : []),
+        statusEl,
+      ]),
+      confirmLabel: "",
+      cancelLabel: "Cancel",
+    });
+    // Poll on an interval until the flow completes, expires, or the modal is
+    // closed — the RPC reports done/error itself.
+    const tick = async (): Promise<boolean> => {
+      try {
+        const res = (await gateway.request("models.auth.pollDeviceCode", { flow, setDefault: true })) as any;
+        if (res.done === true || res.status === "done" || res.ok === true) {
+          statusEl.textContent = `signed in — credential stored for ${name}. Thank you!`;
+          toast(`signed in: ${name}`, "ok");
+          void this.render();
+          return true;
+        }
+        if (res.error || res.status === "error" || res.status === "expired") {
+          statusEl.textContent = `sign-in failed: ${res.error ?? res.status}`;
+          return true;
+        }
+        statusEl.textContent = "Waiting for the sign-in to complete…";
+        return false;
+      } catch (err) {
+        statusEl.textContent = `poll failed: ${(err as Error).message}`;
+        return true;
+      }
+    };
+    for (let i = 0; i < 90; i++) {
+      await new Promise((r) => setTimeout(r, 2500));
+      if (document.getElementById("modal-overlay")!.hidden) { close(); return; } // cancelled
+      if (await tick()) return;
+    }
+    statusEl.textContent = "Timed out waiting for the sign-in — try again.";
+  }
+
   #renderProviders(providers: Record<string, Provider>): void {
     const body = el("div", { class: "settings__body" });
     for (const [name, p] of Object.entries(providers)) {
@@ -909,7 +1013,7 @@ export class Settings {
           ]),
           el("div", { class: "prov__url" }, [p.baseUrl ?? ""]),
           el("div", { class: "prov__key" }, [maskKey(p.apiKey ?? "")]),
-          el("div", { class: "prov__row" }, [edit, remove]),
+          el("div", { class: "prov__row" }, [...this.#providerAuthButtons(name), edit, remove]),
         ]),
       ]));
     }
@@ -2653,6 +2757,276 @@ export class Settings {
   /* ---------------- runtime ---------------- */
 
   /** Runtime tab: the daemon Service card (OpenClaw status --deep + restart). */
+  /* ---------------- system (P4 #41-#43 — their System care + Updates +
+   *  Backup + Secrets pages, one System tab at our scale) ---------------- */
+
+  async #renderSystem(config: any): Promise<void> {
+    const body = el("div", { class: "settings__body" });
+    this.#root.innerHTML = "";
+    this.#root.append(body);
+
+    const mkCard = (title: string, kids: Node[]): HTMLElement =>
+      el("div", { class: "card" }, [el("h3", { style: "margin:0 0 8px" }, [title]), ...kids]);
+
+    // ---------- Doctor ----------
+    const docBody = el("div", {}, [el("p", { class: "hint" }, ["Probes have not run this session."])]);
+    const runDoctor = el("button", { class: "btn", type: "button", id: "doctor-run" }, ["Run doctor"]) as HTMLButtonElement;
+    runDoctor.onclick = async () => {
+      docBody.innerHTML = "";
+      docBody.append(el("p", { class: "hint" }, ["Running probes…"]));
+      try {
+        const res = (await gateway.request("system.doctor")) as any;
+        docBody.innerHTML = "";
+        for (const c of res.checks ?? []) {
+          docBody.append(el("div", { class: "row diag-row" }, [
+            el("span", { class: `diag-mark diag-mark--${c.status}` }, [c.status === "ok" ? "✔" : c.status === "warn" ? "▲" : "✖"]),
+            el("span", { class: "row__label" }, [String(c.name)]),
+            el("span", { class: "hint diag-row__detail" }, [String(c.detail), ...(c.fix ? [`  ·  fix: ${c.fix}`] : [])]),
+          ]));
+        }
+        docBody.append(el("p", { class: "hint" }, [`${res.fails} failing, ${res.warns} warning(s)`]));
+        const err = docBody.querySelector("");
+        void err;
+      } catch (err) {
+        docBody.innerHTML = "";
+        docBody.append(el("p", { class: "hint" }, [`doctor failed: ${(err as Error).message}`]));
+      }
+    };
+    body.append(mkCard("Doctor — system checks", [docBody, runDoctor]));
+
+    // ---------- Security audit ----------
+    const secBody = el("div", {}, [el("p", { class: "hint" }, ["No audit run this session."])]);
+    const runAudit = el("button", { class: "btn", type: "button", id: "security-audit-run" }, ["Run security audit"]) as HTMLButtonElement;
+    runAudit.onclick = async () => {
+      secBody.innerHTML = "";
+      secBody.append(el("p", { class: "hint" }, ["Auditing posture…"]));
+      try {
+        const res = (await gateway.request("system.securityAudit")) as any;
+        secBody.innerHTML = "";
+        for (const f of res.findings ?? []) {
+          secBody.append(el("div", { class: "row diag-row" }, [
+            el("span", { class: `diag-mark diag-mark--${f.status}` }, [f.status === "ok" ? "✔" : f.status === "warn" ? "▲" : "✖"]),
+            el("span", { class: "row__label" }, [String(f.name)]),
+            el("span", { class: "hint diag-row__detail" }, [String(f.detail), ...(f.fix ? [`  ·  fix: ${f.fix}`] : [])]),
+          ]));
+        }
+        secBody.append(el("p", { class: "hint" }, [`${res.fails} critical, ${res.warns} warning(s) — the CLI's \`sc security audit\` reads the same posture.`]));
+      } catch (err) {
+        secBody.innerHTML = "";
+        secBody.append(el("p", { class: "hint" }, [`audit failed: ${(err as Error).message}`]));
+      }
+    };
+    body.append(mkCard("Security audit", [secBody, runAudit]));
+
+    // ---------- Updates ----------
+    const updStatus = el("p", { class: "hint" }, ["Not checked this session."]);
+    let checkedSha = "";
+    let checkedBehind = false;
+    const updBtn = el("button", { class: "btn", type: "button", id: "update-check" }, ["Check for updates"]) as HTMLButtonElement;
+    const applyBtn = el("button", { class: "btn pri", type: "button", id: "update-apply", disabled: "true" }, ["Update now"]) as HTMLButtonElement;
+    updBtn.onclick = async () => {
+      updStatus.textContent = "Checking remote…";
+      applyBtn.disabled = true;
+      try {
+        const res = (await gateway.request("system.update.check")) as any;
+        if (!res.ok) {
+          updStatus.textContent = res.error ?? "check failed";
+          return;
+        }
+        checkedSha = String(res.remoteSha ?? "");
+        checkedBehind = res.behind === true;
+        updStatus.textContent = res.upToDate
+          ? `up to date — ${res.slug}@${res.ref} ${String(res.currentSha ?? "").slice(0, 7)}`
+          : `update available: ${String(res.currentSha ?? "").slice(0, 7)} → ${String(res.remoteSha ?? "").slice(0, 7)} on ${res.ref} (${res.remoteDate})`;
+        applyBtn.disabled = !checkedBehind;
+      } catch (err) {
+        updStatus.textContent = `check failed: ${(err as Error).message}`;
+      }
+    };
+    applyBtn.onclick = () => {
+      // Their staged-build apply. Typed confirm: echo the target sha so a stale
+      // check cannot silently swap in a different commit (RPC re-verifies too).
+      const target = checkedSha ? checkedSha.slice(0, 12) : "";
+      modal({
+        title: "Apply update",
+        body: el("div", {}, [
+          el("p", {}, [`Download, build in staging, then swap to ${target}. Your current install stays in place until the staged build passes.`]),
+          el("p", { class: "hint" }, [`Type ${target} to confirm. The gateway restarts afterwards (sc service restart).`]),
+        ]),
+        fields: [{ name: "sha", label: "Confirm target sha", placeholder: target }],
+        confirmLabel: "Update",
+        danger: true,
+        onConfirm: async (values) => {
+          applyBtn.disabled = true;
+          updStatus.textContent = "Updating (staged build — this can take a few minutes)…";
+          try {
+            const res = (await gateway.request("system.update.apply", { sha: values["sha"]?.trim() ?? "" })) as any;
+            if (!res.ok) {
+              updStatus.textContent = res.error ?? "update failed — install unchanged";
+              applyBtn.disabled = checkedBehind;
+              return;
+            }
+            updStatus.textContent = res.upToDate
+              ? "already up to date — nothing swapped"
+              : `updated to ${String(res.sha ?? "").slice(0, 7)} — restart the service to run the new build`;
+          } catch (err) {
+            updStatus.textContent = `update failed: ${(err as Error).message}`;
+            applyBtn.disabled = checkedBehind;
+          }
+        },
+      });
+    };
+    body.append(mkCard("Software update", [updStatus, el("div", { class: "row", style: "gap:8px" }, [updBtn, applyBtn])]));
+
+    // ---------- Backup & restore (P4 #42) ----------
+    const backupList = el("div", {}, [el("p", { class: "hint" }, ["Archives load on open."])]);
+    let backupDir = "";
+    const renderBackups = (rows: { file: string; size: number; mtime: string }[]): void => {
+      backupList.innerHTML = "";
+      if (rows.length === 0) {
+        backupList.append(el("p", { class: "hint" }, ["No archives here yet — creates land in the state dir's backups/ folder."]));
+        return;
+      }
+      for (const r of rows) {
+        const full = `${backupDir}/${r.file}`.replace(/\/+$/g, "");
+        const vt = el("button", { class: "btn", type: "button", title: "Verify archive" }, ["Verify"]) as HTMLButtonElement;
+        vt.onclick = async () => {
+          vt.disabled = true;
+          try {
+            const v = (await gateway.request("backup.verify", { archive: `${backupDir}/${r.file}` })) as any;
+            toast(
+              v.ok
+                ? `verified: ${r.file} (${v.files ?? "?"} entries)`
+                : `verify failed: ${(v.errors ?? []).join("; ") || "corrupt"}`,
+              v.ok ? "ok" : "err",
+            );
+            void full;
+          } catch (err) { toast((err as Error).message, "err"); }
+          finally { vt.disabled = false; }
+        };
+        const rs = el("button", { class: "btn danger", type: "button" }, ["Restore…"]) as HTMLButtonElement;
+        rs.onclick = () => {
+          modal({
+            title: `Restore ${r.file}`,
+            body: el("div", {}, [
+              el("p", {}, ["This swaps the config, state database snapshot and workspace payload into the state dir, then you restart the gateway."]),
+              el("p", { class: "hint" }, ["The current state is replaced — create a fresh backup first if unsure."]),
+            ]),
+            confirmLabel: "Restore",
+            danger: true,
+            onConfirm: async () => {
+              try {
+                const res = (await gateway.request("backup.restore", { archive: `${backupDir}/${r.file}` })) as any;
+                toast(`restored ${res.restored} file(s) — ${res.restart}`, "ok");
+              } catch (err) {
+                toast(`restore failed: ${(err as Error).message}`, "err");
+              }
+            },
+          });
+        };
+        backupList.append(el("div", { class: "row cron-job", "data-archive": r.file }, [
+          el("div", { class: "cron-job__body" }, [
+            el("span", { class: "row__label" }, [r.file]),
+            el("span", { class: "hint cron-job__meta" }, [`${(r.size / 1048576).toFixed(2)} MiB · ${r.mtime.slice(0, 19).replace("T", " ")}`]),
+          ]),
+          vt, rs,
+        ]));
+      }
+    };
+    const loadBackups = async (): Promise<void> => {
+      try {
+        const res = (await gateway.request("backup.list")) as any;
+        backupDir = String(res.dir ?? "");
+        renderBackups(res.backups ?? []);
+      } catch { /* handler below swaps in the error */ }
+    };
+    const wsCb = el("input", { type: "checkbox", id: "backup-workspace" }) as HTMLInputElement;
+    wsCb.checked = true;
+    const cfgOnlyCb = el("input", { type: "checkbox", id: "backup-config-only" }) as HTMLInputElement;
+    const createBtn = el("button", { class: "btn pri", type: "button", id: "backup-create" }, ["Create backup"]) as HTMLButtonElement;
+    createBtn.onclick = async () => {
+      createBtn.disabled = true;
+      createBtn.textContent = "Creating…";
+      try {
+        const res = (await gateway.request("backup.create", {
+          includeWorkspace: wsCb.checked,
+          onlyConfig: cfgOnlyCb.checked,
+          verify: true,
+        })) as any;
+        toast(
+          `backup written: ${String(res.archivePath ?? "").split("/").pop()} (${res.files} file(s), ${(Number(res.bytes ?? 0) / 1048576).toFixed(2)} MiB${res.verified === false ? ", verification reported problems" : ", verified"})`,
+          res.verified === false ? "err" : "ok",
+        );
+        for (const w of res.warnings ?? []) toast(`warn: ${w}`, "info");
+        await loadBackups();
+      } catch (err) {
+        toast(`backup failed: ${(err as Error).message}`, "err");
+      } finally {
+        createBtn.disabled = false;
+        createBtn.textContent = "Create backup";
+      }
+    };
+    body.append(mkCard("Backup & restore", [
+      backupList,
+      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Include workspace"]), wsCb]),
+      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Only config (skip state + workspace)"]), cfgOnlyCb]),
+      el("p", { class: "hint" }, ["Consistent SQLite snapshot + atomic writes, archives never overwritten (P3 #29 parity with sc backup)."]),
+      createBtn,
+    ]));
+    void loadBackups();
+
+    // ---------- Secrets (P4 #43) ----------
+    const secFindings = el("div", {}, [el("p", { class: "hint" }, ["Not audited this session."])]);
+    const runSecrets = el("button", { class: "btn", type: "button", id: "secrets-audit-run" }, ["Audit secrets"]) as HTMLButtonElement;
+    runSecrets.onclick = async () => {
+      secFindings.innerHTML = "";
+      secFindings.append(el("p", { class: "hint" }, ["Scanning the config for plaintext creds + unresolved refs…"]));
+      try {
+        const res = (await gateway.request("secrets.audit")) as any;
+        secFindings.innerHTML = "";
+        if (res.note) secFindings.append(el("p", { class: "hint" }, [String(res.note)]));
+        else if (res.error) secFindings.append(el("p", { class: "hint" }, [String(res.error)]));
+        else if ((res.findings ?? []).length === 0) {
+          secFindings.append(el("div", { class: "row diag-row" }, [
+            el("span", { class: "diag-mark diag-mark--ok" }, ["✔"]),
+            el("span", { class: "row__label" }, ["No plaintext credentials or unresolved refs"]),
+          ]));
+        }
+        for (const f of res.findings ?? []) {
+          secFindings.append(el("div", { class: "row diag-row" }, [
+            el("span", { class: "diag-mark diag-mark--fail" }, ["✖"]),
+            el("span", { class: "hint diag-row__detail" }, [String(f)]),
+          ]));
+        }
+        for (const w of res.warnings ?? []) {
+          secFindings.append(el("div", { class: "row diag-row" }, [
+            el("span", { class: "diag-mark diag-mark--warn" }, ["▲"]),
+            el("span", { class: "hint diag-row__detail" }, [String(w)]),
+          ]));
+        }
+      } catch (err) {
+        secFindings.innerHTML = "";
+        secFindings.append(el("p", { class: "hint" }, [`secrets audit failed: ${(err as Error).message}`]));
+      }
+    };
+    const providersList = (Object.entries(config.providers ?? {}) as [string, any][]).map(([name, p]) =>
+      el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, [name]),
+        el("span", { class: "hint" }, [String(p.apiKey ?? "") === "" ? "no key (env only)" : /profiles|:/.test(String(p.apiKey)) && !String(p.apiKey).startsWith("sk-") ? `binding: ${String(p.apiKey).slice(0, 24)}…` : "stored credential (redacted)"]),
+      ]),
+    );
+    body.append(mkCard("Secrets", [
+      (providersList.length > 0
+        ? el("div", {}, [el("div", { class: "cap", style: "padding:4px 0" }, ["Configured providers"]), ...providersList])
+        : el("p", { class: "hint" }, ["No providers configured yet."])),
+      el("p", { class: "hint" }, [
+        "Recipes: store raw keys in the environment as ${OPENAI_API_KEY} (channels tab hint) or use a SecretRef — {source: 'env' | 'file' | 'exec', provider, id}. See `sc secrets refs` for the exact shapes + validation patterns.",
+      ]),
+      secFindings,
+      runSecrets,
+    ]));
+  }
+
   async #renderRuntime(config: any, counts: { tools: number; skills: number; models: number }): Promise<void> {
     let svc: any = null;
     try {
