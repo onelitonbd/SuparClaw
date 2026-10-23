@@ -93,7 +93,9 @@ export async function cmdChannels(rest: string[]): Promise<number> {
       return 0;
     }
     console.log(fg.red(`telegram connect failed: ${r.error ?? "unknown"}`));
-    console.log(fg.dim("fix: paste a fresh @BotFather token — Settings → Channels → Bot token, or"));
+    console.log(fg.dim("if api.telegram.org is blocked on your network, set a proxy first:"));
+    console.log(fg.dim("  sc config set channels.telegram.proxy http://127.0.0.1:PORT   then  sc channels connect"));
+    console.log(fg.dim("otherwise paste a fresh @BotFather token — Settings → Channels → Bot token, or"));
     console.log(fg.dim(`  sc config set channels.telegram.token "123456:ABC…"   then  sc channels connect`));
     process.exitCode = 1;
     return 1;

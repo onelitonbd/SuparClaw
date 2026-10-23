@@ -27,11 +27,62 @@ import {
  *  default namespace object, so `const { Bot } = await import("grammy")` is
  *  undefined in the production bundle ("e is not a constructor") even though
  *  tsx/dev resolves it named. */
-async function createBot(token: string) {
+async function createBot(token: string, proxy = "") {
   const mod = (await import("grammy")) as typeof import("grammy") & { default?: { Bot?: typeof import("grammy").Bot } };
   const Bot = mod.Bot ?? mod.default?.Bot;
   if (typeof Bot !== "function") throw new Error("grammy Bot export unavailable (bundle shape mismatch)");
-  return new Bot(token);
+  // Where api.telegram.org is blocked, the Bot's own fetch goes through a
+  // HTTP(S)/SOCKS proxy (undici ProxyAgent as the fetch dispatcher).
+  const url = proxy.trim();
+  if (!url) return new Bot(token);
+  const { ProxyAgent } = await import("undici");
+  type BotConfig = ConstructorParameters<typeof import("grammy").Bot>[1];
+  const client = { baseFetchConfig: { dispatcher: new ProxyAgent(url) } } as NonNullable<BotConfig>["client"];
+  return new Bot(token, { client });
+}
+
+/** The proxy a channel uses: explicit config first, then the standard env. */
+export function telegramProxy(cfgProxy: string | undefined): string {
+  const explicit = String(cfgProxy ?? "").trim();
+  if (explicit) return explicit;
+  for (const key of ["TELEGRAM_PROXY", "telegram_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) {
+    const v = process.env[key]?.trim();
+    if (v) return v;
+  }
+  return "";
+}
+
+/**
+ * Is api.telegram.org reachable from this device at all? This is what tells
+ * "your carrier blocks Telegram — set channels.telegram.proxy" apart from
+ * "network is fine, so the credential is wrong" (their connected-flavored
+ * diagnosis instead of grammy's bare "Network request failed").
+ */
+export async function probeTelegramApi(timeoutMs = 2500): Promise<{ ok: boolean; why: string }> {
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), Math.max(500, timeoutMs));
+    try {
+      await fetch("https://api.telegram.org/", { signal: ctl.signal });
+      return { ok: true, why: "reachable" };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    return { ok: false, why: describeError(err) };
+  }
+}
+
+/** Flatten an error + its .cause chain — grammy's wrapper hides the real one. */
+export function describeError(err: unknown): string {
+  const seen: string[] = [];
+  let cur: unknown = err;
+  for (let i = 0; i < 4 && cur !== undefined && cur !== null; i++) {
+    const msg = cur instanceof Error ? String(cur.message || cur.name) : String(cur);
+    if (!seen.includes(msg)) seen.push(msg);
+    cur = (cur as { cause?: unknown; code?: unknown }).cause ?? (cur as { code?: unknown }).code;
+  }
+  return seen.join(" | ") || String(err);
 }
 
 type GrammyBot = Awaited<ReturnType<typeof createBot>>;
@@ -98,7 +149,7 @@ export class TelegramChannel {
     const cfg = this.service.config.channels.telegram;
     if (!cfg.token) throw new Error("telegram.token is empty");
 
-    const bot = await createBot(cfg.token);
+    const bot = await createBot(cfg.token, telegramProxy((cfg as { proxy?: string }).proxy));
     this.#bot = bot;
 
     bot.on("message", (ctx) => {

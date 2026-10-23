@@ -35,7 +35,7 @@ import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileChec
 import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
 import { fetchModels } from "../config/providers.js";
-import { TelegramChannel } from "../channels/telegram.js";
+import { TelegramChannel, describeError, probeTelegramApi } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
 
 export interface ChatPayload {
@@ -372,7 +372,7 @@ export class Service {
       await this.#telegram.start();
       this.#telegramError = "";
     } catch (err) {
-      this.#telegramError = (err as Error).message;
+      this.#telegramError = describeError(err);
       this.log.error(`telegram failed to start: ${this.#telegramError}`);
     }
   }
@@ -407,7 +407,17 @@ export class Service {
     } catch { /* stopping is best-effort */ }
     await this.#startTelegram();
     if (this.#telegram?.running) return { ok: true, username: this.#telegram.username };
-    return { ok: false, error: this.#telegramError || "start failed" };
+    let error = this.#telegramError || "start failed";
+    // Diagnose like their connect flow does: the Bot API itself may be
+    // unreachable from this device entirely (carrier blocks) — then the
+    // remedy is a proxy, not a new token.
+    const probe = await probeTelegramApi(2500);
+    if (!probe.ok) {
+      error += ` — api.telegram.org is unreachable from this device (${probe.why}); the network likely blocks Telegram. Set channels.telegram.proxy (sc config set channels.telegram.proxy http://127.0.0.1:PORT, or the TELEGRAM_PROXY env) and retry: sc channels connect`;
+    } else if (/network|fetch/i.test(error)) {
+      error += " — api.telegram.org is reachable, so the credential itself is the problem; paste a fresh @BotFather token (or /revoke + re-issue) and retry";
+    }
+    return { ok: false, error };
   }
 
   /** Re-arm cron jobs changed outside the daemon (sc cron add, other tools). */

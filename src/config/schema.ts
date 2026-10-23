@@ -411,6 +411,9 @@ export const CONFIG_SCHEMA: SchemaNode = {
           fields: {
             enabled: { t: "bool", default: false },
             token: { t: "string", default: "" },
+            // http(s)/socks proxy for api.telegram.org — required where the
+            // carrier blocks Telegram (their per-channel proxy field).
+            proxy: { t: "string", default: "" },
             dmPolicy: { t: "enum", values: ["pairing", "open", "allowlist"], default: "pairing" },
             allowFrom: { t: "array", of: { t: "string" }, default: [] },
             groupPolicy: { t: "enum", values: ["allowlist", "open", "off"], default: "allowlist" },
@@ -895,6 +898,7 @@ export interface SuparClawConfig {
     telegram: {
       enabled: boolean;
       token: string;
+      proxy: string;
       dmPolicy: "pairing" | "open" | "allowlist";
       allowFrom: string[];
       groupPolicy: "allowlist" | "open" | "off";

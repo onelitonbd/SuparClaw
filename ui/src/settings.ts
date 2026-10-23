@@ -2092,6 +2092,16 @@ export class Settings {
               : "From @BotFather. To keep it out of config.json5 put \${TELEGRAM_TOKEN} or a SecretRef there instead (see: sc secrets refs).",
           ]),
         ]),
+        (() => {
+          const inp = el("input", { class: "inp mono", id: "ch-proxy", value: String(tg.proxy ?? ""), placeholder: "http://127.0.0.1:8080  (empty = direct)" });
+          return el("div", { class: "modal__field", "data-ch-key": "channels.telegram.proxy", "data-ch-kind": "str" }, [
+            el("label", { class: "lbl", for: "ch-proxy" }, ["API proxy (optional)"]),
+            inp,
+            el("p", { class: "hint" }, [
+              "Where api.telegram.org is blocked by the carrier, route the bot through a HTTP(S)/SOCKS proxy (a local VPN app's HTTP port works). TELEGRAM_PROXY / HTTPS_PROXY env also apply.",
+            ]),
+          ]);
+        })(),
         pick("DM policy", "channels.telegram.dmPolicy", tg.dmPolicy ?? "pairing", ["pairing", "open", "allowlist"],
           "pairing asks new senders to pair; open replies to everyone; allowlist replies only to the list below."),
         list("DM allowlist (user ids or @names, one per line)", "channels.telegram.allowFrom", tg.allowFrom ?? []),
