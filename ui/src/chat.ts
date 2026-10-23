@@ -108,7 +108,6 @@ interface Live {
 interface LiveBody {
   root: HTMLElement;
   body: HTMLElement;
-  status: HTMLElement;
 }
 
 interface ThoughtBlock {
@@ -400,11 +399,9 @@ export class Chat {
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "assistant" && row.content) {
-          const head = this.#head("Done");
           const body = el("div", { class: "msg__body" });
           body.innerHTML = renderMarkdown(row.content);
-          const root = el("div", { class: "msg msg--assistant" }, [head, body]);
-          this.stack.append(root);
+          this.stack.append(body);
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "tool" && row.content) {
@@ -490,11 +487,9 @@ export class Chat {
     if (!this.#live) this.assistantStart();
     if (this.#blockType !== "body") {
       this.#finalizeCurrentBlock();
-      const head = this.#head("Streaming");
       const body = el("div", { class: "msg__body" });
-      const root = el("div", { class: "msg msg--assistant" }, [head, body]);
-      this.stack.append(root);
-      this.#liveBody = { root, body, status: head.querySelector(".msg__status") as HTMLElement };
+      this.stack.append(body);
+      this.#liveBody = { root: body, body };
       this.#blockType = "body";
       this.#streamText = "";
     }
@@ -510,17 +505,10 @@ export class Chat {
     }
     if (text !== undefined) this.#streamText = text;
     this.#finalizeCurrentBlock();
-    // If there's remaining text and no body was created, make one.
-    if (this.#streamText.trim() && !this.#liveBody) {
-      const head = this.#head("Done");
+    if (this.#streamText.trim()) {
       const body = el("div", { class: "msg__body" });
       body.innerHTML = renderMarkdown(this.#streamText);
-      const root = el("div", { class: "msg msg--assistant" }, [head, body]);
-      this.stack.append(root);
-    } else if (this.#liveBody) {
-      this.#liveBody.body.innerHTML = renderMarkdown(this.#streamText);
-      this.#liveBody.status.textContent = "Done";
-      this.#liveBody.status.classList.remove("is-live");
+      this.stack.append(body);
     }
     this.#live = null;
     this.#blockType = null;
@@ -548,10 +536,9 @@ export class Chat {
 
   assistant(text: string): void {
     this.#clearEmpty();
-    const head = this.#head("Done");
     const body = el("div", { class: "msg__body" });
     body.innerHTML = renderMarkdown(text);
-    this.stack.append(el("div", { class: "msg msg--assistant" }, [head, body]));
+    this.stack.append(body);
     this.#scrollToBottom();
   }
 
@@ -686,8 +673,6 @@ export class Chat {
     }
     if (this.#blockType === "body" && this.#liveBody) {
       this.#liveBody.body.innerHTML = renderMarkdown(this.#streamText);
-      this.#liveBody.status.textContent = "Done";
-      this.#liveBody.status.classList.remove("is-live");
     }
     this.#blockType = null;
     this.#liveThought = null;
@@ -911,8 +896,6 @@ export class Chat {
       this.#streamDirty = false;
       this.#liveBody.body.innerHTML = renderMarkdown(this.#streamText);
       this.#liveBody.body.append(el("span", { class: "caret" }));
-      this.#liveBody.status.textContent = `Streaming · ${mmss(Date.now() - this.#live!.startedAt)}`;
-      this.#liveBody.status.classList.add("is-live");
       if (this.#autoScroll) this.#thread.scrollTop = this.#thread.scrollHeight;
     });
   }
