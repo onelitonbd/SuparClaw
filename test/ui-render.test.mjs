@@ -64,7 +64,7 @@ test("icon() parses trusted SVG into DOM — the avatar shows an icon, not marku
 test("chat.ts inserts every icon constant through icon(), never as an el() string child", () => {
   const src = readFileSync(join(ROOT, "ui/src/chat.ts"), "utf8");
   // the exact bug pattern: an icon constant passed as a child array entry
-  for (const name of ["SPARKLE"]) {
+  for (const name of ["FILE_ICON"]) {
     const leak = new RegExp(`\\[\\s*${name}\\s*\\]`);
     assert.ok(!leak.test(src), `${name} must not be passed as an el() string child`);
     assert.ok(src.includes(`icon(${name}`) || src.includes(`${name};`) || new RegExp(`innerHTML = ${name}`).test(src),
@@ -199,9 +199,8 @@ test("reload groups a turn into ONE bubble: thinking → tools → answer (the m
   assert.equal(groups[0].querySelectorAll(".agent-trace__subrow").length, 0, "single call group has no sub-rows");
   assert.equal(groups[1].querySelectorAll(".agent-trace__subrow").length, 2, "merged pair group has two sub-rows");
   assert.match(turn.querySelector(".msg__body")?.textContent ?? "", /খবর/, "answer body at the bottom of the same bubble");
-  // order: header, trace card (thinking above tools), answer body last
+  // order: trace card (thinking above tools), answer body last
   const kids = [...turn.children].map((c) => c.className);
-  assert.ok(kids[0].includes("msg__head"), "head first");
   assert.ok(kids.some((c) => c.includes("agent-trace")), "trace card present");
   const trace = turn.querySelector(".agent-trace-root");
   assert.ok(trace, "trace root inside the bubble");

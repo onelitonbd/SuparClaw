@@ -79,9 +79,6 @@ const IMAGE_RE = /^image\/(png|jpe?g|webp|gif)$/i;
 const FILE_ICON =
   '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
 
-const SPARKLE =
-  '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>';
-
 const CHIPS = [
   "Explain this repository",
   "Find and fix a failing test",
@@ -415,13 +412,6 @@ export class Chat {
       if (node) this.anchorMap.set(id, node);
     };
 
-    const head = () =>
-      el("div", { class: "msg__head" }, [
-        icon(SPARKLE, "msg__avatar"),
-        el("span", { class: "msg__name" }, ["Assistant"]),
-        el("span", { class: "msg__status" }, ["Working…"]),
-      ]);
-
     // A history turn is a user message plus every assistant-side row that
     // follows it, up to the next user message. Each turn gets its own trace
     // card (thinking → tools → answer), like a completed live run.
@@ -446,7 +436,7 @@ export class Chat {
         }
         if (!turnTrace) {
           const runId = `hist-${index}`;
-          const wrap = el("div", { class: "msg msg--assistant" }, [head()]);
+          const wrap = el("div", { class: "msg msg--assistant" });
           const traceRoot = el("div", { class: "agent-trace-root" });
           wrap.append(traceRoot);
           this.stack.append(wrap);
@@ -554,13 +544,7 @@ export class Chat {
     this.#streamText = "";
     const runId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     this.#liveRunId = runId;
-    const wrap = el("div", { class: "msg msg--assistant" }, [
-      el("div", { class: "msg__head" }, [
-        icon(SPARKLE, "msg__avatar"),
-        el("span", { class: "msg__name" }, ["Assistant"]),
-        el("span", { class: "msg__status" }, ["Working…"]),
-      ]),
-    ]);
+    const wrap = el("div", { class: "msg msg--assistant" });
     const traceRoot = el("div", { class: "agent-trace-root" });
     wrap.append(traceRoot);
     this.stack.append(wrap);
