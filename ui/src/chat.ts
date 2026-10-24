@@ -153,6 +153,7 @@ export class Chat {
   #streamDirty = false;
   #raf = 0;
   #autoScroll = true;
+  #scrollingToBottom = false;
   #toolStart = new Map<string, number>();
   #pendingApprovals = new Map<string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }>();
   /** ask_user card state (P2 #8): picked[qid] = chosen options/custom text. */
@@ -227,14 +228,42 @@ export class Chat {
     });
 
     this.#thread.addEventListener("scroll", () => {
+      if (this.#scrollingToBottom) return;
       const nearBottom = this.#thread.scrollHeight - this.#thread.scrollTop - this.#thread.clientHeight < 80;
       this.#autoScroll = nearBottom;
       this.#jump.hidden = nearBottom;
     });
     this.#jump.onclick = () => {
+      this.#scrollingToBottom = true;
       this.#autoScroll = true;
-      this.#thread.scrollTop = this.#thread.scrollHeight;
-      this.#jump.hidden = true;
+      const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      const start = this.#thread.scrollTop;
+      const target = Math.max(0, this.#thread.scrollHeight - this.#thread.clientHeight);
+      const distance = target - start;
+      if (distance <= 0 || reduce) {
+        this.#thread.scrollTop = target;
+        this.#jump.hidden = true;
+        this.#scrollingToBottom = false;
+        return;
+      }
+      // Smooth, eased scroll: fast at first, decelerates as it nears the end.
+      const duration = Math.min(700, Math.max(280, distance * 0.35));
+      const t0 = performance.now();
+      const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
+      const step = (now: number) => {
+        const p = Math.min(1, (now - t0) / duration);
+        this.#thread.scrollTop = start + distance * easeOut(p);
+        this.#autoScroll = true;
+        if (p < 1) {
+          requestAnimationFrame(step);
+        } else {
+          this.#thread.scrollTop = target;
+          this.#autoScroll = true;
+          this.#jump.hidden = true;
+          this.#scrollingToBottom = false;
+        }
+      };
+      requestAnimationFrame(step);
     };
 
     // copy a message
