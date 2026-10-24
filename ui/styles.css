@@ -1586,3 +1586,114 @@ textarea:focus-visible {
   12% { box-shadow: 0 0 0 3px var(--accsoft); }
   55% { box-shadow: 0 0 0 2px var(--accsoft); }
 }
+
+/* ---------------------------------------------------------- settings layout (new) ---- */
+
+.settings--layout {
+  max-width: 1100px;
+  gap: 18px;
+}
+
+.settings__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings__header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+
+.settings__shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.settings__sidebar {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+}
+
+.settings__search input {
+  width: 100%;
+  height: var(--tap);
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.settings__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings__group-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink3);
+  padding: 4px 8px;
+}
+
+.settings__nav-item {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings__nav-item:hover {
+  background: var(--accsoft);
+  color: var(--ink);
+}
+
+.settings__nav-item.is-active {
+  background: var(--accsoft);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.settings__main {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+@media (max-width: 880px) {
+  .settings__shell {
+    grid-template-columns: 1fr;
+  }
+  .settings__sidebar {
+    position: static;
+  }
+}

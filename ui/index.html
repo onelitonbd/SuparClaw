@@ -131,16 +131,26 @@
   <!-- Settings -->
   <section class="view view--settings" id="settings-view" hidden>
     <div class="scroll">
-      <div class="settings">
-        <div class="settings__head">
+      <div class="settings settings--layout">
+        <div class="settings__header">
           <button class="btn" id="settings-back" type="button">
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-            Chat
+            Back to Chat
           </button>
           <h1>Settings</h1>
         </div>
-        <nav class="tabs" id="settings-tabs" aria-label="Settings sections"></nav>
-        <div class="settings__body" id="settings-body"></div>
+        <div class="settings__shell">
+          <aside class="settings__sidebar" id="settings-sidebar">
+            <div class="settings__search">
+              <input id="settings-search" type="search" placeholder="Search settings…" aria-label="Search settings" autocomplete="off" spellcheck="false" />
+            </div>
+            <nav class="settings__nav" id="settings-nav" aria-label="Settings sections"></nav>
+          </aside>
+          <div class="settings__main">
+            <nav class="tabs" id="settings-tabs" aria-label="Settings sections (horizontal)"></nav>
+            <div class="settings__body" id="settings-body"></div>
+          </div>
+        </div>
       </div>
     </div>
   </section>

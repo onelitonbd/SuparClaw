@@ -9,28 +9,51 @@ type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: 
 
 type TabId = "model" | "models" | "providers" | "channels" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: "model", label: "Defaults" },
-  { id: "models", label: "Models" },
-  { id: "providers", label: "Providers" },
-  { id: "channels", label: "Channels" },
-  { id: "usage", label: "Usage" },
-  { id: "skills", label: "Skills" },
-  { id: "tools", label: "Tools" },
-  { id: "memory", label: "Memory" },
-  { id: "automations", label: "Automations" },
-  { id: "alerts", label: "Alerts" },
-  { id: "config", label: "All settings" },
-  { id: "gateway", label: "Gateway" },
-  { id: "runtime", label: "Runtime" },
-  { id: "system", label: "System" },
+const TABS: { id: TabId; label: string; group?: string }[] = [
+  { id: "model", label: "Defaults", group: "Chat" },
+  { id: "models", label: "Models", group: "Chat" },
+  { id: "providers", label: "Providers", group: "Chat" },
+  { id: "channels", label: "Channels", group: "Integrations" },
+  { id: "usage", label: "Usage", group: "Monitoring" },
+  { id: "skills", label: "Skills", group: "Agent" },
+  { id: "tools", label: "Tools", group: "Agent" },
+  { id: "memory", label: "Memory", group: "Agent" },
+  { id: "automations", label: "Automations", group: "Agent" },
+  { id: "alerts", label: "Alerts", group: "System" },
+  { id: "gateway", label: "Gateway", group: "System" },
+  { id: "runtime", label: "Runtime", group: "System" },
+  { id: "config", label: "All settings", group: "Advanced" },
+  { id: "system", label: "System", group: "Advanced" },
 ];
+
+const TAB_ALIASES: Record<string, TabId> = {
+  defaults: "model",
+  chat: "model",
+  models: "models",
+  providers: "providers",
+  channels: "channels",
+  usage: "usage",
+  skills: "skills",
+  tools: "tools",
+  memory: "memory",
+  automations: "automations",
+  alerts: "alerts",
+  notifications: "alerts",
+  config: "config",
+  all: "config",
+  gateway: "gateway",
+  runtime: "runtime",
+  system: "system",
+};
 
 export class Settings {
   #root: HTMLElement;
   #tabs: HTMLElement;
+  #nav: HTMLElement | null = null;
+  #search: HTMLInputElement | null = null;
   #onChanged: () => void;
   #tab: TabId = "model";
+  #hash: string = "";
   /** Models tab drill-down: provider name when its model list is open. */
   #modelsProvider: string | null = null;
   /** Search text on the provider model list (survives re-renders). */
@@ -41,11 +64,31 @@ export class Settings {
   constructor(root: HTMLElement, onChanged: () => void) {
     this.#root = root;
     this.#tabs = document.getElementById("settings-tabs") as HTMLElement;
+    this.#nav = document.getElementById("settings-nav") as HTMLElement | null;
+    this.#search = document.getElementById("settings-search") as HTMLInputElement | null;
     this.#onChanged = onChanged;
+    if (this.#search && !this.#search.dataset.bound) {
+      this.#search.dataset.bound = "1";
+      this.#search.oninput = () => this.#renderNav();
+    }
+  }
+
+  setHash(hash: string): void {
+    this.#hash = hash || "";
+    const m = this.#hash.match(/#\/settings\/?([^/?#]+)?/);
+    if (m && m[1]) {
+      const key = decodeURIComponent(m[1]).toLowerCase();
+      if (TAB_ALIASES[key]) {
+        this.#tab = TAB_ALIASES[key];
+      } else if ((TABS as any[]).some((t) => t.id === key)) {
+        this.#tab = key as TabId;
+      }
+    }
   }
 
   async render(): Promise<void> {
     this.#renderTabs();
+    this.#renderNav();
 
     // The gateway answers over the WebSocket. If it is not connected yet
     // (page just loaded, or reconnecting) every request would reject with
@@ -125,6 +168,56 @@ export class Settings {
     else await this.#renderRuntime(config, { tools: tools.length, skills: skills.length, models: models.length });
   }
 
+  #setTab(id: TabId): void {
+    this.#tab = id;
+    this.#modelsProvider = null;
+    try {
+      const map: Record<string, string> = {
+        model: "defaults",
+        models: "models",
+        providers: "providers",
+        channels: "channels",
+        usage: "usage",
+        skills: "skills",
+        tools: "tools",
+        memory: "memory",
+        automations: "automations",
+        alerts: "alerts",
+        config: "config",
+        gateway: "gateway",
+        runtime: "runtime",
+        system: "system",
+      };
+      location.hash = "#/settings/" + (map[id] || id);
+    } catch {}
+    void this.render();
+  }
+
+  #renderNav(): void {
+    if (!this.#nav) return;
+    const q = (this.#search?.value || "").toLowerCase().trim();
+    this.#nav.innerHTML = "";
+    const groups = new Map<string, typeof TABS>();
+    for (const t of TABS) {
+      const g = t.group || "Other";
+      if (q && !t.label.toLowerCase().includes(q) && !g.toLowerCase().includes(q)) continue;
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g)!.push(t);
+    }
+    for (const [g, items] of groups) {
+      const grp = el("div", { class: "settings__group" }, [el("div", { class: "settings__group-label" }, [g])]);
+      for (const t of items) {
+        const btn = el("button", {
+          class: `settings__nav-item${t.id === this.#tab ? " is-active" : ""}`,
+          type: "button",
+        }, [t.label]);
+        btn.onclick = () => this.#setTab(t.id);
+        grp.append(btn);
+      }
+      this.#nav.append(grp);
+    }
+  }
+
   #renderTabs(): void {
     this.#tabs.innerHTML = "";
     for (const t of TABS) {
@@ -134,9 +227,7 @@ export class Settings {
         id: `tab-${t.id}`,
       }, [t.label]);
       btn.onclick = () => {
-        this.#tab = t.id;
-        this.#modelsProvider = null;
-        void this.render();
+        this.#setTab(t.id);
       };
       this.#tabs.append(btn);
     }

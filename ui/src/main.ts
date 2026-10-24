@@ -9,7 +9,24 @@ import { onGatewayEvent } from "./notifications.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
-let sessionKey = localStorage.getItem("sc.session") || "main:main";
+function getSessionFromHash(): string | null {
+  const h = location.hash || "";
+  // match #/chat/sessionKey or #/c/sessionKey
+  const m = h.match(/#\/(?:chat|c)\/(.+)$/);
+  if (m && m[1]) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return m[1];
+    }
+  }
+  return null;
+}
+
+let sessionKey = getSessionFromHash() || localStorage.getItem("sc.session") || "main:main";
+if (!localStorage.getItem("sc.session") || getSessionFromHash()) {
+  localStorage.setItem("sc.session", sessionKey);
+}
 let currentModel = "";
 let busy = false;
 let models: { value: string; label: string; group: string }[] = [];
@@ -439,6 +456,7 @@ async function deleteSession(key: string): Promise<void> {
       sessionKey = "main:main";
       localStorage.setItem("sc.session", sessionKey);
       $("session-title").textContent = sessionKey;
+      try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
       await loadHistory();
     }
     await refresh();
@@ -490,10 +508,15 @@ function renderSessions(list: SessionListRow[]): void {
 }
 
 async function switchSession(key: string): Promise<void> {
-  if (key === sessionKey) return;
+  if (key === sessionKey) {
+    // Still update URL to be canonical
+    try { location.hash = "#/chat/" + encodeURIComponent(key); } catch { location.hash = "#/chat/" + key; }
+    return;
+  }
   sessionKey = key;
   localStorage.setItem("sc.session", key);
   $("session-title").textContent = key;
+  try { location.hash = "#/chat/" + encodeURIComponent(key); } catch { location.hash = "#/chat/" + key; }
   closeDrawer();
   await loadHistory();
   void refresh();
@@ -676,7 +699,7 @@ function renameSession(key: string): void {
       const next = `${prefix}:${v.name}`;
       try {
         await gateway.request("sessions.rename", { sessionKey: key, newKey: next });
-        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); $("session-title").textContent = next; }
+        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); $("session-title").textContent = next; try { location.hash = "#/chat/" + encodeURIComponent(next); } catch { location.hash = "#/chat/" + next; } }
         toast("session renamed", "ok");
         void refresh();
       } catch (err) { toast((err as Error).message, "err"); }
@@ -755,7 +778,11 @@ $("theme-btn").onclick = () => {
 };
 
 $("settings-btn").onclick = () => {
-  location.hash = location.hash === "#/settings" ? "" : "#/settings";
+  if ((location.hash || "").startsWith("#/settings")) {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+  } else {
+    location.hash = "#/settings";
+  }
 };
 
 /* ---------------- sub-agents panel (their Subagents view, compact) ---------------- */
@@ -826,20 +853,42 @@ function openSubagentsPanel(): void {
 }
 
 $("subagents-btn").onclick = () => openSubagentsPanel();
-$("settings-back").onclick = () => { location.hash = ""; };
+$("settings-back").onclick = () => { try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; } };
 $("session-btn").onclick = () => { void loadHistory(); };
 
 /* ---------------- routing ---------------- */
 
 function route(): void {
-  const settingsOpen = location.hash === "#/settings";
+  const h = location.hash || "";
+  const settingsOpen = h.startsWith("#/settings");
+  const chatHash = getSessionFromHash();
+  if (chatHash && chatHash !== sessionKey) {
+    sessionKey = chatHash;
+    localStorage.setItem("sc.session", sessionKey);
+    $("session-title").textContent = sessionKey;
+    void loadHistory();
+    void refresh();
+  } else if (!settingsOpen && h && h !== "#/" && !h.startsWith("#/chat") && !h.startsWith("#/c")) {
+    // default to current session
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+    return;
+  } else if (!settingsOpen && (h === "" || h === "#/")) {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+    return;
+  }
   $("chat-view").hidden = settingsOpen;
   $("settings-view").hidden = !settingsOpen;
   $("settings-btn").classList.toggle("is-on", settingsOpen);
   if (settingsOpen) {
     settings = new Settings($("settings-body"), () => { void refresh(); });
+    // pass hash for section
+    (settings as any).setHash?.(h);
     void settings.render();
     closeDrawer();
+  } else {
+    if (chatHash) {
+      $("session-title").textContent = sessionKey;
+    }
   }
 }
 window.addEventListener("hashchange", route);
@@ -857,6 +906,11 @@ document.addEventListener("keydown", (e) => {
 const savedTheme = localStorage.getItem("sc.theme");
 if (savedTheme) document.documentElement.dataset.themeMode = savedTheme;
 $("session-title").textContent = sessionKey;
+if (!(location.hash || "").startsWith("#/settings")) {
+  if (!getSessionFromHash()) {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+  }
+}
 route();
 gateway.connect();
 void refresh();
