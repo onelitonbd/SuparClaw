@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Trace Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { font-family: Inter, system-ui, sans-serif; background: #f6f7f9; margin: 0; padding: 24px; }
+  .container { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid #e3e6eb; background: white; cursor: pointer; font-family: inherit; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Agent Trace Demo</h1>
+  <div class="controls">
+    <button id="replay">Replay sample run</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div id="trace-root"></div>
+</div>
+<script type="module">
+  import { AgentTrace } from "../ui/src/trace/agent-trace.js";
+  import { replaySample } from "./mock-player.js";
+  const root = document.getElementById("trace-root");
+  let trace;
+  document.getElementById("reset").onclick = () => {
+    root.innerHTML = "";
+    trace = new AgentTrace(root);
+  };
+  document.getElementById("replay").onclick = async () => {
+    root.innerHTML = "";
+    trace = new AgentTrace(root);
+    await replaySample(trace);
+  };
+  trace = new AgentTrace(root);
+</script>
+</body>
+</html>
