@@ -101,6 +101,39 @@ const CHIPS = [
   "Review my last diff",
 ];
 
+const TOOL_LABELS: Record<string, string> = {
+  ask_user: "Asking you",
+  cautious: "Checking safety",
+  config: "Updating config",
+  cron: "Scheduling",
+  exec: "Running command",
+  fs_edit: "Editing file",
+  fs_list: "Listing files",
+  fs_read: "Reading file",
+  fs_write: "Writing file",
+  hooks: "Managing hooks",
+  memory_append: "Saving memory",
+  memory_search: "Searching memory",
+  model: "Switching model",
+  pdf: "Reading PDF",
+  session_send: "Sending to session",
+  sessions_spawn: "Spawning sub-agent",
+  sessions_yield: "Yielding to sub-agent",
+  skill_list: "Listing skills",
+  skill_read: "Reading skill",
+  skill_save: "Saving skill",
+  skills: "Managing skills",
+  store: "Storing data",
+  subagents: "Managing sub-agents",
+  telegram: "Telegram action",
+  time_now: "Checking time",
+  tools: "Managing tools",
+  wait: "Waiting",
+  web_fetch: "Fetching page",
+  web_search: "Searching the web",
+  workspace: "Workspace action",
+};
+
 interface Live {
   startedAt: number;
 }
@@ -563,7 +596,7 @@ export class Chat {
       this.#toolStart.set(cardKey, started);
       const row = el("button", { class: "tool__row", type: "button", "aria-expanded": "false" }, [
         icon(SPINNER, "tool__icon tool__icon--run"),
-        el("span", { class: "tool__name" }, [name]),
+        el("span", { class: "tool__name" }, [TOOL_LABELS[name] ?? name.replace(/_/g, " ")]),
         el("span", { class: "tool__summary" }, [""]),
         el("span", { class: "tool__dur" }, ["…"]),
         icon(CHEVRON),
