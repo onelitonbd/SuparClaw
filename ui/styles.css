@@ -1609,8 +1609,8 @@ textarea:focus-visible {
 
 .settings__shell {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  gap: 18px;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 24px;
   align-items: start;
 }
 
@@ -1620,10 +1620,10 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  padding: 8px 4px;
+  border-radius: 0;
+  border: none;
+  background: transparent;
 }
 
 .settings__search input {
@@ -1660,15 +1660,16 @@ textarea:focus-visible {
 .settings__nav-item {
   display: flex;
   align-items: center;
-  height: 34px;
+  height: 32px;
   padding: 0 10px;
-  border-radius: 10px;
+  border-radius: 8px;
   border: none;
   background: transparent;
   color: var(--ink2);
-  font-size: 13px;
+  font-size: 13.5px;
   text-align: left;
   cursor: pointer;
+  width: 100%;
 }
 
 .settings__nav-item:hover {
