@@ -32,6 +32,21 @@ let busy = false;
 let models: { value: string; label: string; group: string }[] = [];
 let toolCount = 0;
 let settings: Settings | null = null;
+let settingsInteriorLoaded = false;
+
+async function loadSettingsInterior(): Promise<void> {
+  if (settingsInteriorLoaded) return;
+  const res = await fetch("./interior/settings.html");
+  if (!res.ok) throw new Error(`settings interior: ${res.status}`);
+  $("settings-view").innerHTML = await res.text();
+  settingsInteriorLoaded = true;
+  // The interior DOM is injected now; bind the one delegated handler that
+  // lives in main.ts rather than in Settings.
+  $("settings-back").onclick = () => {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); }
+    catch { location.hash = "#/chat/" + sessionKey; }
+  };
+}
 
 /* ---------------- chat ---------------- */
 
@@ -853,12 +868,11 @@ function openSubagentsPanel(): void {
 }
 
 $("subagents-btn").onclick = () => openSubagentsPanel();
-$("settings-back").onclick = () => { try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; } };
 $("session-btn").onclick = () => { void loadHistory(); };
 
 /* ---------------- routing ---------------- */
 
-function route(): void {
+async function route(): Promise<void> {
   const h = location.hash || "";
   const settingsOpen = h.startsWith("#/settings");
   const chatHash = getSessionFromHash();
@@ -880,6 +894,7 @@ function route(): void {
   $("settings-view").hidden = !settingsOpen;
   $("settings-btn").classList.toggle("is-on", settingsOpen);
   if (settingsOpen) {
+    await loadSettingsInterior();
     settings = new Settings($("settings-body"), () => { void refresh(); });
     // pass hash for section
     (settings as any).setHash?.(h);

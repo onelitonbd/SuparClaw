@@ -79,6 +79,9 @@ await mkdir(uiOut, { recursive: true });
     metafile: true,
   });
   await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
+  // Settings interior: a separate light file loaded lazily by the app shell.
+  await mkdir(join(uiOut, "interior"), { recursive: true });
+  await copyFile(join(root, "ui/interior/settings.html"), join(uiOut, "interior", "settings.html"));
   // Agent Trace demo: a self-contained playground that needs no bundler.
   // The component ships as source next to the demo; the HTML is rewritten so
   // the same page works from ui/trace-demo/ and from dist/ui/trace-demo/.

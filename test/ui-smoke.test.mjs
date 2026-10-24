@@ -79,7 +79,12 @@ class El {
 }
 
 async function boot() {
-  const html = await readFile(join(root, "ui/index.html"), "utf8");
+  const indexHtml = await readFile(join(root, "ui/index.html"), "utf8");
+  let interiorHtml = "";
+  try {
+    interiorHtml = await readFile(join(root, "ui/interior/settings.html"), "utf8");
+  } catch {}
+  const html = indexHtml + "\n" + interiorHtml;
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
 
   const make = (tag) => new El(tag);
@@ -141,12 +146,18 @@ async function boot() {
     WebSocket: globalThis.WebSocket,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     matchMedia: globalThis.matchMedia,
+    fetch: globalThis.fetch,
   };
 
   globalThis.window = win;
   globalThis.location = win.location;
   globalThis.document = document;
   globalThis.localStorage = localStorage;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => interiorHtml,
+  });
   Object.defineProperty(globalThis, "navigator", {
     value: { clipboard: { writeText: async () => {} } },
     configurable: true,
