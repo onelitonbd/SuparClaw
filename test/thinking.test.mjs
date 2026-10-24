@@ -288,7 +288,7 @@ test("gateway: session thinking level persists across refresh and reasoning save
   assert.equal(fresh.payload.thinking, "medium");
 });
 
-test("ui: thinking preview streams, replays from storage, and never hides", async () => {
+test("ui: thinking preview streams in the turn's trace card", async () => {
   const { build } = await import("esbuild");
   const { parseHTML } = await import("linkedom");
   const outDir = mkdtempSync(join(TEST_TMP, "sc-thinkui-"));
@@ -309,29 +309,36 @@ test("ui: thinking preview streams, replays from storage, and never hides", asyn
   globalThis.requestAnimationFrame = (cb) => setTimeout(cb, 0);
   const chat = new Chat(dom.document.body, { send: () => {}, abort: () => {}, approve: () => {} });
 
-  // THE reported bug: thinking arrives BEFORE any bubble opens (the common
-  // case) and was rendered-but-hidden. It must be visible immediately.
+  // Thinking arrives before any bubble opens — it renders immediately inside
+  // the turn's trace card, collapsed by default (expand on demand).
   chat.reasoningDelta("Step one: ");
   chat.reasoningDelta("inspect the config.");
   await new Promise((r) => setTimeout(r, 30));
-  let thought = dom.document.querySelector("#stack .thought");
-  assert.ok(thought, "standalone thinking block exists");
-  assert.match(thought.textContent ?? "", /Step one: inspect the config\./, "fragments accumulate");
-  assert.equal(thought.querySelector(".thought__body")?.hasAttribute("hidden"), false, "standalone body visible — not hidden");
-  assert.equal(thought.querySelector("button"), null, "no collapse toggle — thinking is always shown");
+  const step = dom.document.querySelector("#stack .agent-trace__item--thinking");
+  assert.ok(step, "thinking step exists");
+  assert.match(step.textContent ?? "", /Step one: inspect the config\./, "fragments accumulate");
+  assert.equal(step.querySelector(".agent-trace__detail")?.hasAttribute("hidden"), true, "collapsed by default");
+  assert.ok(step.querySelector("button"), "toggle button to expand the step");
+  assert.match(dom.document.querySelector("#stack .agent-trace__title")?.textContent ?? "", /Thinking/, "header names the live step");
 
-  // inside a live bubble the preview is visible too
+  // inside a live turn the preview keeps accumulating in the same step
   chat.assistantStart();
-  chat.reasoningDelta("Second thought.");
+  chat.reasoningDelta(" Second thought.");
+  chat.tool("web_search", "done", "hits", 100, "c1");
   chat.delta("Here is the answer.");
   await new Promise((r) => setTimeout(r, 30));
-  const inBubble = [...dom.document.querySelectorAll("#stack .thought")].find((n) =>
-    /Second thought/.test(n.textContent ?? ""),
-  );
-  assert.ok(inBubble, "live bubble thinking block exists");
-  assert.equal(inBubble.querySelector(".thought__body")?.hasAttribute("hidden"), false, "live body visible");
+  const turn = dom.document.querySelector("#stack .msg--assistant");
+  assert.ok(turn, "one assistant turn wrapper");
+  const steps = turn.querySelectorAll(".agent-trace__item--thinking");
+  assert.equal(steps.length, 1, "contiguous reasoning stays one step");
+  assert.match(steps[0].textContent ?? "", /Step one: inspect the config. Second thought\./, "fragments accumulate in place");
+  assert.ok(turn.querySelector(".agent-trace__item--tool"), "tool row lives in the same turn");
+  assert.match(turn.querySelector(".agent-trace__meta-inline")?.textContent ?? "", /100ms/, "tool timing survives");
+  const body = turn.querySelector(".msg__body");
+  assert.ok(body, "answer body is at the bottom of the turn");
+  assert.match(body.textContent ?? "", /Here is the answer\./);
 
-  // reload: saved segments come back fully visible (nothing collapsed)
+  // reload: saved segments replay into the same turn trace
   chat.finish("Here is the answer.");
   const n = chat.replaceThread([
     { role: "user", content: "q" },
@@ -342,16 +349,22 @@ test("ui: thinking preview streams, replays from storage, and never hides", asyn
     { role: "assistant", content: "final a" },
   ]);
   assert.equal(n, 6, "every row including reasoning reloads");
-  const blocks = dom.document.querySelectorAll("#stack .thought");
+  const blocks = dom.document.querySelectorAll("#stack .agent-trace__item--thinking");
   assert.equal(blocks.length, 2, "both saved segments present");
   assert.match(blocks[0].textContent ?? "", /check the docs first/);
-  assert.equal(blocks[0].querySelector(".thought__body")?.hasAttribute("hidden"), false, "replays visible — never collapsed");
-  assert.equal(blocks[0].querySelector("button"), null, "no toggle on replay blocks either");
+  assert.equal(blocks[0].querySelector(".agent-trace__detail")?.hasAttribute("hidden"), true, "replays collapsed by default");
   assert.match(blocks[1].textContent ?? "", /Second segment/);
+  const tool = dom.document.querySelector("#stack .agent-trace__item--tool[data-id='hist-tool-4']");
+  assert.ok(tool, "replayed tool card");
+  assert.match(
+    (tool?.querySelector(".agent-trace__duration")?.textContent ?? "") + (tool?.querySelector(".agent-trace__meta-inline")?.textContent ?? ""),
+    /0\.2s|6ms/,
+    "tool timing survives the reload",
+  );
 
-  // thinking preview is always visible — no view toggle exists anymore
+  // thinking preview is collapsible but never removed by a view toggle
   assert.equal(typeof chat.setThinkingView, "undefined", "the on/off button is gone by request");
-  assert.equal(dom.document.querySelectorAll("#stack .thought").length, 2, "both saved segments stay visible");
+  assert.equal(dom.document.querySelectorAll("#stack .agent-trace__item--thinking").length, 2, "both saved segments stay visible");
 });
 
 test("llm: thinking streamed only as reasoning_details still reaches the preview", async (t) => {

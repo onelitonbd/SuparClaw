@@ -53,7 +53,7 @@ test("#41-#43 System RPCs: doctor, security audit, update check + sha-guarded ap
 test("#41 UI System tab runs doctor / security audit / update flow end-to-end", () => {
   const src = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
   assert.match(src, /\| "runtime" \| "system";/);
-  assert.match(src, /\{ id: "system", label: "System" \}/);
+  assert.match(src, /\{ id: "system", label: "System", group: "Advanced" \}/);
   assert.match(src, /this\.#tab === "system"\) await this\.#renderSystem\(config\)/);
   // doctor
   assert.match(src, /id: "doctor-run"/);

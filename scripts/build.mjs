@@ -79,6 +79,19 @@ await mkdir(uiOut, { recursive: true });
     metafile: true,
   });
   await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
+  // Agent Trace demo: a self-contained playground that needs no bundler.
+  // The component ships as source next to the demo; the HTML is rewritten so
+  // the same page works from ui/trace-demo/ and from dist/ui/trace-demo/.
+  const demoOut = join(uiOut, "trace-demo");
+  await mkdir(demoOut, { recursive: true });
+  await copyFile(join(root, "ui/src/trace/agent-trace.js"), join(demoOut, "agent-trace.js"));
+  await copyFile(join(root, "ui/src/trace/agent-trace.css"), join(demoOut, "agent-trace.css"));
+  const mockPlayer = (await readFile(join(root, "ui/trace-demo/mock-player.js"), "utf8"))
+    .replaceAll("../src/trace/", "./");
+  await writeFile(join(demoOut, "mock-player.js"), mockPlayer, "utf8");
+  const demoHtml = (await readFile(join(root, "ui/trace-demo/index.html"), "utf8"))
+    .replaceAll("../src/trace/", "./");
+  await writeFile(join(demoOut, "index.html"), demoHtml, "utf8");
   // Stylesheet = the SuparClaw design system + the vendored webfonts.
   // The font faces live in ui/fonts/, but the sheet ships as dist/ui/styles.css,
   // so the URLs have to be re-pointed at dist/ui/fonts/.
@@ -87,7 +100,11 @@ await mkdir(uiOut, { recursive: true });
   const appCss = await readFile(join(root, "ui/styles.css"), "utf8");
   const css = `${fontCss}\n${appCss}`;
   const min = await esbuild.transform(css, { loader: "css", minify: !dev });
-  await writeFile(join(uiOut, "styles.css"), min.code, "utf8");
+  // Bundle the Agent Trace component styles into the app stylesheet (all
+  // classes are .agent-trace-scoped, so they cannot collide with the design
+  // system). The standalone trace-demo keeps its own copy of the file.
+  const traceCss = await readFile(join(root, "ui/src/trace/agent-trace.css"), "utf8");
+  await writeFile(join(uiOut, "styles.css"), `${min.code}\n/* Agent Trace component */\n${traceCss}`, "utf8");
   // fonts next to the stylesheet
   const fontOut = join(uiOut, "fonts");
   await mkdir(fontOut, { recursive: true });

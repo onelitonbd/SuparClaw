@@ -64,7 +64,7 @@ test("icon() parses trusted SVG into DOM — the avatar shows an icon, not marku
 test("chat.ts inserts every icon constant through icon(), never as an el() string child", () => {
   const src = readFileSync(join(ROOT, "ui/src/chat.ts"), "utf8");
   // the exact bug pattern: an icon constant passed as a child array entry
-  for (const name of ["SPARKLE", "SPINNER", "CHECK", "CROSS", "PAUSE", "CHEVRON"]) {
+  for (const name of ["SPARKLE"]) {
     const leak = new RegExp(`\\[\\s*${name}\\s*\\]`);
     assert.ok(!leak.test(src), `${name} must not be passed as an el() string child`);
     assert.ok(src.includes(`icon(${name}`) || src.includes(`${name};`) || new RegExp(`innerHTML = ${name}`).test(src),
@@ -110,7 +110,7 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
     approve: () => {},
   });
 
-  // plain history reload — user, assistant, tool pills, and error rows all
+  // plain history reload — user, assistant, tool cards, and error rows all
   // round-trip (tool calls and errors used to vanish on refresh)
   let n = chat.replaceThread([
     { role: "user", content: "q1" },
@@ -120,17 +120,17 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
   ]);
   assert.equal(n, 4, "every visible row type renders");
   assert.equal(dom2.document.querySelectorAll("#stack .msg--user").length, 1, "user bubble");
-  // ONE grouped assistant bubble per turn: answer body + tool cards together
-  // (row-by-row replay used to scatter each tool into its own host bubble).
+  // ONE grouped assistant bubble per turn: trace card (thinking → tools)
+  // with the answer body below it.
   assert.equal(dom2.document.querySelectorAll("#stack .msg--assistant").length, 1, "one grouped turn bubble");
   const turn = dom2.document.querySelector("#stack .msg--assistant");
-  assert.ok(turn.querySelector(".tool[data-tool='row-2']"), "tool card lives inside the turn bubble");
+  assert.ok(turn.querySelector(".agent-trace__item--tool[data-id='hist-tool-2']"), "tool row lives inside the turn bubble");
   assert.match(turn.querySelector(".msg__body")?.textContent ?? "", /a1/, "answer body shares the bubble");
-  assert.ok(dom2.document.querySelector("#stack .tool[data-tool='row-2']"), "tool row replays as a card");
+  assert.ok(dom2.document.querySelector("#stack .agent-trace__item--tool[data-id='hist-tool-2']"), "tool row replays as a trace step");
   assert.match(
-    (dom2.document.querySelector("#stack .tool__dur")?.textContent ?? "") + (dom2.document.querySelector("#stack .tool__body")?.textContent ?? ""),
-    /6ms|file body/,
-    "tool timing/output survive the reload",
+    (turn.querySelector(".agent-trace__meta-inline")?.textContent ?? "") + (turn.querySelector(".agent-trace__duration")?.textContent ?? ""),
+    /6ms/,
+    "tool timing survive the reload",
   );
   assert.match(
     dom2.document.querySelector("#stack").textContent ?? "",
@@ -143,7 +143,7 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
     { role: "tool", content: "→ exec · 3ms\nerror: user declined this action" },
   ]);
   assert.equal(n, 1);
-  assert.ok(dom2.document.querySelector("#stack .tool__icon--err"), "failed tool row shows the error state");
+  assert.ok(dom2.document.querySelector("#stack .agent-trace__circle--error"), "failed tool row shows the error state");
 
   // one bad row must not take the thread with it (render isolation)
   n = chat.replaceThread([
@@ -192,17 +192,24 @@ test("reload groups a turn into ONE bubble: thinking → tools → answer (the m
   assert.equal(dom3.document.querySelectorAll("#stack .msg--user").length, 1);
   assert.equal(dom3.document.querySelectorAll("#stack .msg--assistant").length, 1, "ONE bubble for the whole turn");
   const turn = dom3.document.querySelector("#stack .msg--assistant");
-  assert.equal(turn.querySelectorAll(".tool").length, 3, "all three tool cards in the bubble");
-  assert.equal(turn.querySelectorAll(".thought").length, 2, "thinking blocks live inside the bubble");
+  assert.equal(turn.querySelectorAll(".agent-trace__item--tool").length, 2, "consecutive same-kind calls merge into groups");
+  assert.equal(turn.querySelectorAll(".agent-trace__item--thinking").length, 2, "thinking blocks live inside the bubble");
+  // three calls total, grouped into two rows (one lone call + one merged pair)
+  const groups = [...turn.querySelectorAll(".agent-trace__item--tool")];
+  assert.equal(groups[0].querySelectorAll(".agent-trace__subrow").length, 0, "single call group has no sub-rows");
+  assert.equal(groups[1].querySelectorAll(".agent-trace__subrow").length, 2, "merged pair group has two sub-rows");
   assert.match(turn.querySelector(".msg__body")?.textContent ?? "", /খবর/, "answer body at the bottom of the same bubble");
-  // order: thought blocks above the tool cards, answer body last
+  // order: header, trace card (thinking above tools), answer body last
   const kids = [...turn.children].map((c) => c.className);
   assert.ok(kids[0].includes("msg__head"), "head first");
-  assert.ok(kids.some((c) => c.includes("thought")), "thought blocks present");
-  assert.ok(
-    kids.findIndex((c) => c.includes("thought")) < kids.findIndex((c) => c.includes("msg__tools")),
-    "thinking above tools (live order)",
-  );
+  assert.ok(kids.some((c) => c.includes("agent-trace")), "trace card present");
+  const trace = turn.querySelector(".agent-trace-root");
+  assert.ok(trace, "trace root inside the bubble");
+  const items = [...trace.querySelectorAll(".agent-trace__item")];
+  const thoughtIdx = items.findIndex((el) => el.classList.contains("agent-trace__item--thinking"));
+  const toolIdx = items.findIndex((el) => el.classList.contains("agent-trace__item--tool"));
+  assert.ok(thoughtIdx >= 0 && toolIdx >= 0, "both thinking and tool steps present");
+  assert.ok(thoughtIdx < toolIdx, "thinking above tools (live order)");
   assert.ok(kids.at(-1).includes("msg__body"), "body last");
 });
 
@@ -216,18 +223,18 @@ test("live: thinking that arrives before the bubble opens moves inside it", asyn
 
   chat.reasoningDelta("Early thought."); // no bubble open yet
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(dom4.document.querySelectorAll("#stack > .thought").length, 1, "loose block while waiting");
+  assert.equal(dom4.document.querySelectorAll("#stack .agent-trace__item--thinking").length, 1, "thinking row renders while waiting");
   chat.assistantStart();
   chat.reasoningDelta(" More.");
   chat.tool("web_search", "done", "hits", 100, "c1");
   chat.delta("answer");
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(dom4.document.querySelectorAll("#stack > .thought").length, 0, "no floating loose block");
   const turn = dom4.document.querySelector("#stack .msg--assistant");
-  const thought = turn.querySelector(".thought");
-  assert.ok(thought, "thought block inside the bubble");
+  const thought = turn.querySelector(".agent-trace__item--thinking");
+  assert.ok(thought, "thinking step inside the bubble");
   assert.match(thought.textContent ?? "", /Early thought\. More\./, "fragments keep accumulating in place");
-  assert.ok(turn.querySelector(".tool"), "tool card in the same bubble");
+  assert.ok(turn.querySelector(".agent-trace__item--tool"), "tool card in the same bubble");
+  assert.ok(turn.querySelector(".msg__body"), "answer body at the bottom of the bubble");
 });
 
 test("loadHistory replaces via replaceThread and never clears before the fetch", () => {

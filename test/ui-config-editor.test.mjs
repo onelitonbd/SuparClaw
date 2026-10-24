@@ -82,7 +82,7 @@ test("ConfigService.replaceAll + setPath — channels.telegram.* round-trips thr
 test("ui: Channels tab renders every telegram section incl. token sentinel + secrets hint", () => {
   const ui = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
   assert.match(ui, /"channels"/); // TabId
-  assert.match(ui, /\{ id: "channels", label: "Channels" \}/);
+  assert.match(ui, /\{ id: "channels", label: "Channels", group: "Integrations" \}/);
   assert.match(ui, /#renderChannels\(config\.channels/);
   for (const path of [
     "channels.telegram.enabled",
@@ -112,7 +112,7 @@ test("ui: Channels tab renders every telegram section incl. token sentinel + sec
 
 test("ui: All-settings tab — form from config.schema, raw JSON5 editor, redaction-aware save", () => {
   const ui = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
-  assert.match(ui, /\{ id: "config", label: "All settings" \}/);
+  assert.match(ui, /\{ id: "config", label: "All settings", group: "Advanced" \}/);
   assert.match(ui, /gateway\.request\("config\.schema"/);
   assert.match(ui, /gateway\.request\("config\.replace", \{ text: rawArea\.value \}\)/);
   assert.match(ui, /data-cfg-path/);

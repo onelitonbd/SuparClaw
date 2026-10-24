@@ -7,8 +7,10 @@
 //                       > .msg__body
 
 import { askOnceOnFirstSend } from "./notifications.js";
-import { el, fmtDuration, icon, toast } from "./dom.js";
+import { el, icon, toast } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
+import { AgentTrace, formatValue } from "./trace/agent-trace.js";
+import type { TraceItem } from "./trace/types.js";
 
 /**
  * Provider errors arrive as raw JSON blobs ({"error":{"message":"..."}} or
@@ -80,21 +82,6 @@ const FILE_ICON =
 const SPARKLE =
   '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>';
 
-const CHECK =
-  '<svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
-
-const CROSS =
-  '<svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
-
-const PAUSE =
-  '<svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"><path d="M9 6v12M15 6v12"/></svg>';
-
-const SPINNER =
-  '<svg class="spin" aria-label="Running" role="img" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>';
-
-const CHEVRON =
-  '<svg class="tool__chev" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
-
 const CHIPS = [
   "Explain this repository",
   "Find and fix a failing test",
@@ -143,13 +130,6 @@ interface LiveBody {
   body: HTMLElement;
 }
 
-interface ThoughtBlock {
-  root: HTMLElement;
-  body: HTMLElement;
-  status: HTMLElement;
-  text: string;
-}
-
 export class Chat {
   readonly stack: HTMLElement;
   #thread: HTMLElement;
@@ -170,7 +150,6 @@ export class Chat {
   #handlers: ChatHandlers;
 
   #live: Live | null = null;
-  #liveThought: ThoughtBlock | null = null;
   #liveBody: LiveBody | null = null;
   #blockType: "thought" | "body" | null = null;
   #streamText = "";
@@ -181,6 +160,14 @@ export class Chat {
   #pendingApprovals = new Map<string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }>();
   /** ask_user card state (P2 #8): picked[qid] = chosen options/custom text. */
   #pendingQuestion: { id: string; questions: { id: string; question: string; options: string[]; multi: boolean }[]; picked: Record<string, string[]> } | null = null;
+
+  /** One AgentTrace card per assistant turn; only the live one is mutable. */
+  #liveTrace: AgentTrace | null = null;
+  #liveRunId: string | null = null;
+  #liveWrap: HTMLElement | null = null;
+  #liveThinkingId: string | null = null;
+  /** Last user send, so Retry can resend it as a new message at the bottom. */
+  #lastSend: { text: string; attachments: StagedAttachment[] } | null = null;
 
   constructor(root: HTMLElement, handlers: ChatHandlers) {
     this.#handlers = handlers;
@@ -271,6 +258,8 @@ export class Chat {
     const text = this.#input.value.trim();
     const ready = this.#staged.filter((a) => a.error === undefined);
     if (!text && ready.length === 0) return;
+    // Keep the last send so a failed run can be retried as a new message.
+    this.#lastSend = { text, attachments: ready };
     this.#input.value = "";
     this.#autosize();
     this.#sendBtn.disabled = true;
@@ -385,7 +374,6 @@ export class Chat {
   clear(): void {
     this.stack.innerHTML = "";
     this.#live = null;
-    this.#liveThought = null;
     this.#liveBody = null;
     this.#blockType = null;
     this.#streamText = "";
@@ -414,9 +402,11 @@ export class Chat {
     this.anchorMap.clear();
     this.#live = null;
     this.#blockType = null;
-    this.#liveThought = null;
+    this.#liveThinkingId = null;
     this.#liveBody = null;
     this.#streamText = "";
+    this.#liveTrace = null;
+    this.#liveWrap = null;
     let rendered = 0;
 
     const markAnchor = (id?: number): void => {
@@ -425,26 +415,80 @@ export class Chat {
       if (node) this.anchorMap.set(id, node);
     };
 
+    const head = () =>
+      el("div", { class: "msg__head" }, [
+        icon(SPARKLE, "msg__avatar"),
+        el("span", { class: "msg__name" }, ["Assistant"]),
+        el("span", { class: "msg__status" }, ["Working…"]),
+      ]);
+
+    // A history turn is a user message plus every assistant-side row that
+    // follows it, up to the next user message. Each turn gets its own trace
+    // card (thinking → tools → answer), like a completed live run.
+    let turnTrace: AgentTrace | null = null;
+    let turnWrap: HTMLElement | null = null;
+    const flushTurn = (): void => {
+      if (turnTrace) {
+        turnTrace.push({ type: "run_end", ts: Date.now(), status: "done" });
+      }
+      turnTrace = null;
+      turnWrap = null;
+    };
+
     for (const [index, row] of rows.entries()) {
       try {
         if (row.role === "user") {
+          flushTurn();
           this.user(row.content);
           markAnchor(row.id);
           rendered++;
-        } else if (row.role === "assistant" && row.content) {
+          continue;
+        }
+        if (!turnTrace) {
+          const runId = `hist-${index}`;
+          const wrap = el("div", { class: "msg msg--assistant" }, [head()]);
+          const traceRoot = el("div", { class: "agent-trace-root" });
+          wrap.append(traceRoot);
+          this.stack.append(wrap);
+          turnWrap = wrap;
+          turnTrace = new AgentTrace(traceRoot, { scrollRoot: this.#thread, jump: false });
+          turnTrace.push({ type: "run_start", runId, ts: 1000 + index * 100 });
+        }
+        const t = turnTrace!;
+        const wrap = turnWrap!;
+        const ts = 1000 + index * 100;
+        if (row.role === "assistant" && row.content) {
           const body = el("div", { class: "msg__body" });
           body.innerHTML = renderMarkdown(row.content);
-          this.stack.append(body);
+          wrap.append(body);
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "tool" && row.content) {
           const lines = row.content.split("\n");
-          const head = (lines[0] ?? "").replace(/^→\s*/, "");
-          const timed = head.match(/^(.*?)\s*·\s*(\d+)ms$/);
-          const name = (timed?.[1] ?? head).trim() || "tool";
+          const headText = (lines[0] ?? "").replace(/^→\s*/, "");
+          const timed = headText.match(/^(.*?)\s*·\s*(\d+)ms$/);
+          const name = (timed?.[1] ?? headText).trim() || "tool";
           const duration = timed?.[2] ? Number(timed[2]) : undefined;
           const output = lines.slice(1).join("\n");
-          this.tool(name, output.startsWith("error") ? "error" : "done", output, duration, `row-${index}`);
+          const callId = `hist-tool-${index}`;
+          t.push({
+            type: "tool_start",
+            stepId: callId,
+            tool: name,
+            label: TOOL_LABELS[name] ?? name.replace(/_/g, " "),
+            icon: name,
+            input: null,
+            ts,
+          });
+          t.push({
+            type: "tool_end",
+            stepId: callId,
+            output: output || null,
+            summary: output ? output.split("\n")[0]!.slice(0, 80) : undefined,
+            meta: duration ? `${duration}ms` : undefined,
+            ts: ts + (duration ?? 60),
+            outcome: output.startsWith("error") ? "error" : undefined,
+          });
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "error" && row.content) {
@@ -452,11 +496,10 @@ export class Chat {
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "reasoning" && row.content) {
-          const block = this.#thought();
-          block.text = row.content;
-          block.body.innerHTML = renderMarkdown(row.content);
-          block.status.textContent = "";
-          this.stack.append(block.root);
+          const id = `hist-think-${index}`;
+          t.push({ type: "thinking_start", stepId: id, ts });
+          t.push({ type: "thinking_delta", stepId: id, text: row.content });
+          t.push({ type: "thinking_end", stepId: id, ts: ts + 10 });
           markAnchor(row.id);
           rendered++;
         }
@@ -464,17 +507,13 @@ export class Chat {
         /* one bad message must not take the thread with it */
       }
     }
+    flushTurn();
     if (rendered === 0) this.#renderEmpty();
     if (live) {
       this.assistantStart();
       this.delta(liveText);
     }
     return rendered;
-  }
-
-  #renderTurn(_group: { thoughts: string[]; tools: { name: string; status: ToolStatus; detail: string; ms?: number; key: string }[]; text: string }): void {
-    // Legacy — replaced by per-block rendering in replaceThread. Kept as a
-    // no-op stub so any external caller still type-checks.
   }
 
   /** ---- transcript writers ---- */
@@ -510,9 +549,31 @@ export class Chat {
     if (this.#live) return;
     this.#live = { startedAt: Date.now() };
     this.#blockType = null;
-    this.#liveThought = null;
+    this.#liveThinkingId = null;
     this.#liveBody = null;
     this.#streamText = "";
+    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.#liveRunId = runId;
+    const wrap = el("div", { class: "msg msg--assistant" }, [
+      el("div", { class: "msg__head" }, [
+        icon(SPARKLE, "msg__avatar"),
+        el("span", { class: "msg__name" }, ["Assistant"]),
+        el("span", { class: "msg__status" }, ["Working…"]),
+      ]),
+    ]);
+    const traceRoot = el("div", { class: "agent-trace-root" });
+    wrap.append(traceRoot);
+    this.stack.append(wrap);
+    this.#liveWrap = wrap;
+    this.#liveTrace = new AgentTrace(traceRoot, {
+      scrollRoot: this.#thread,
+      jump: false, // the dock owns the single Jump-to-latest button
+      onApproval: (decision, step) => this.#resolve(step.id, decision),
+      onRetry: () => {
+        if (this.#lastSend) void this.#handlers.send(this.#lastSend.text, this.#lastSend.attachments);
+      },
+    });
+    this.#liveTrace.push({ type: "run_start", runId, ts: Date.now() });
     this.#scrollToBottom();
   }
 
@@ -521,7 +582,7 @@ export class Chat {
     if (this.#blockType !== "body") {
       this.#finalizeCurrentBlock();
       const body = el("div", { class: "msg__body" });
-      this.stack.append(body);
+      this.#liveWrap!.append(body);
       this.#liveBody = { root: body, body };
       this.#blockType = "body";
       this.#streamText = "";
@@ -541,11 +602,12 @@ export class Chat {
     if (this.#streamText.trim()) {
       const body = el("div", { class: "msg__body" });
       body.innerHTML = renderMarkdown(this.#streamText);
-      this.stack.append(body);
+      this.#liveWrap!.append(body);
     }
+    const t = this.#liveTrace;
+    if (t) t.push({ type: "run_end", ts: Date.now(), status: "done" });
     this.#live = null;
     this.#blockType = null;
-    this.#liveThought = null;
     this.#liveBody = null;
     this.#streamText = "";
     this.setBusy(false);
@@ -558,9 +620,10 @@ export class Chat {
     this.notice(`error: ${pretty}`, "notice--error");
     if (!this.#live) return;
     this.#finalizeCurrentBlock();
+    const t = this.#liveTrace;
+    if (t) t.push({ type: "run_end", ts: Date.now(), status: "error", message: pretty });
     this.#live = null;
     this.#blockType = null;
-    this.#liveThought = null;
     this.#liveBody = null;
     this.#streamText = "";
     this.setBusy(false);
@@ -583,165 +646,91 @@ export class Chat {
 
   tool(name: string, status: ToolStatus, detail?: string, ms?: number, key?: string, host?: HTMLElement): void {
     this.#clearEmpty();
-    // Finalize whatever block (thought/body) was open so the tool card lands
-    // as its own block in sequence.
+    // Finalize whatever block (thought/body) was open so the tool step lands
+    // in sequence inside the turn's trace card.
     this.#finalizeCurrentBlock();
-    // Cards are keyed per call (callId live, synthetic on replay) — consecutive
-    // calls of the same tool must each get their own pill. running→done of one
-    // call share a key and land on the same card.
-    const cardKey = key ?? name;
-    let card = this.stack.querySelector<HTMLElement>(`.tool[data-tool="${CSS.escape(cardKey)}"]`);
-    if (!card) {
-      const started = Date.now();
-      this.#toolStart.set(cardKey, started);
-      const row = el("button", { class: "tool__row", type: "button", "aria-expanded": "false" }, [
-        icon(SPINNER, "tool__icon tool__icon--run"),
-        el("span", { class: "tool__name" }, [TOOL_LABELS[name] ?? name.replace(/_/g, " ")]),
-        el("span", { class: "tool__summary" }, [""]),
-        el("span", { class: "tool__dur" }, ["…"]),
-        icon(CHEVRON),
-      ]);
-      const body = el("div", { class: "tool__body", hidden: "" });
-      row.onclick = () => {
-        const open = row.getAttribute("aria-expanded") !== "true";
-        row.setAttribute("aria-expanded", String(open));
-        body.hidden = !open;
-      };
-      card = el("div", { class: "tool", "data-tool": cardKey }, [row, body]);
-      this.stack.append(card);
-    }
-
-    const iconBox = card.querySelector(".tool__icon") as HTMLElement;
-    const summary = card.querySelector(".tool__summary") as HTMLElement;
-    const dur = card.querySelector(".tool__dur") as HTMLElement;
-    const body = card.querySelector(".tool__body") as HTMLElement;
-
-    const elapsed = ms ?? Date.now() - (this.#toolStart.get(cardKey) ?? Date.now());
+    const t = this.#liveTrace;
+    if (!t) return;
+    const callId = key ?? name;
+    const ts = Date.now();
     if (status === "running") {
-      iconBox.className = "tool__icon tool__icon--run";
-      iconBox.innerHTML = SPINNER;
-      dur.textContent = "…";
-    } else if (status === "done") {
-      iconBox.className = "tool__icon tool__icon--ok";
-      iconBox.innerHTML = CHECK;
-      dur.textContent = fmtDuration(elapsed);
-    } else if (status === "pending") {
-      iconBox.className = "tool__icon tool__icon--wait";
-      iconBox.innerHTML = PAUSE;
-      dur.textContent = "waiting";
-    } else if (status === "skipped") {
-      // Skipped to process an incoming message (steering boundary) — not a failure.
-      iconBox.className = "tool__icon tool__icon--skip";
-      iconBox.innerHTML = PAUSE;
-      dur.textContent = "skipped";
-    } else {
-      iconBox.className = "tool__icon tool__icon--err";
-      iconBox.innerHTML = CROSS;
-      dur.textContent = "failed";
+      // A retry re-emits "running" for the same call id — the reducer keeps
+      // one row and refreshes it instead of duplicating the step.
+      t.push({
+        type: "tool_start",
+        stepId: callId,
+        tool: String(name),
+        label: TOOL_LABELS[name] ?? String(name).replace(/_/g, " "),
+        icon: String(name),
+        input: null,
+        ts,
+      });
+    } else if (status === "done" || status === "error") {
+      // Backend sends running→done/error pairs, but tolerate a lone done/error.
+      const existing = t.getState().items.some(
+        (i: TraceItem) => i.kind === "tool" && i.calls.some((c: { id: string }) => c.id === callId),
+      );
+      if (!existing) {
+        t.push({
+          type: "tool_start",
+          stepId: callId,
+          tool: String(name),
+          label: TOOL_LABELS[name] ?? String(name).replace(/_/g, " "),
+          icon: String(name),
+          input: null,
+          ts: status === "done" && ms ? ts - ms : ts,
+        });
+      }
+      t.push({
+        type: "tool_end",
+        stepId: callId,
+        output: detail ?? null,
+        summary: detail ? String(detail).split("\n")[0]!.slice(0, 80) : undefined,
+        meta: ms ? `${ms}ms` : undefined,
+        ts,
+        outcome: status === "error" ? "error" : undefined,
+      });
     }
-
-    if (detail) {
-      summary.textContent = detail.split("\n")[0]!.slice(0, 80);
-      body.innerHTML = "";
-      body.append(el("div", {}, [
-        el("div", { class: "tool__label" }, ["Output"]),
-        el("pre", {}, [detail]),
-      ]));
-    }
+    // "pending" / "skipped" carry no trace transition — the approval card and
+    // queue rows own those states. Pending is not a failure.
     this.#scrollToBottom();
-  }
-
-  /* ---- thinking block (collapsed by default, click to expand — like tools) ---- */
-
-  /** Thinking block shared by live streams and history replay. Collapsed by
-   *  default: the user expands it on demand (same affordance as tool cards). */
-  #thought(): ThoughtBlock {
-    const body = el("div", { class: "thought__body", hidden: "" });
-    const status = el("span", { class: "thought__status mono" }, ["Thinking…"]);
-    const row = el(
-      "button",
-      { class: "thought__row", type: "button", "aria-expanded": "false" },
-      [icon(SPARKLE), el("span", { class: "thought__title" }, ["Thinking"]), status, icon(CHEVRON, "thought__chev")],
-    );
-    const root = el("div", { class: "thought" }, [row, body]);
-    row.onclick = () => {
-      const open = row.getAttribute("aria-expanded") !== "true";
-      row.setAttribute("aria-expanded", String(open));
-      body.hidden = !open;
-    };
-    return { root, body, status, text: "" };
   }
 
   /**
    * Stream a thinking fragment. Each contiguous run of reasoning becomes its own
-   * thought block; a tool call or answer text in between breaks the run, so the
-   * persisted order (reason → tool → response → tool) is preserved both live
-   * and after a reload.
+   * thinking step inside the turn's trace card; a tool call or answer text in
+   * between breaks the run (#finalizeCurrentBlock), so the persisted order
+   * (reason → tool → response → tool) is preserved both live and after a
+   * reload.
    */
   reasoningDelta(text: string): void {
-    if (!this.#live) {
-      if (!this.#liveThought || this.#blockType !== "thought") {
-        this.#clearEmpty();
-        this.#liveThought = this.#thought();
-        this.stack.append(this.#liveThought.root);
-        this.#blockType = "thought";
+    if (!this.#live) this.assistantStart();
+    const t = this.#liveTrace;
+    // Each contiguous run of reasoning becomes its own thinking step; a tool
+    // call or answer text in between breaks the run (#finalizeCurrentBlock).
+    if (!this.#liveThinkingId || this.#blockType !== "thought") {
+      if (this.#liveThinkingId && t) {
+        t.push({ type: "thinking_end", stepId: this.#liveThinkingId, ts: Date.now() });
       }
-      this.#liveThought.text += text;
-      this.#liveThought.status.textContent = "Thinking…";
-      this.#scheduleThoughtRender(this.#liveThought);
-      return;
+      this.#liveThinkingId = `think-${Date.now()}`;
+      if (t) t.push({ type: "thinking_start", stepId: this.#liveThinkingId, ts: Date.now() });
     }
-    if (this.#blockType !== "thought") {
-      this.#finalizeCurrentBlock();
-      const block = this.#thought();
-      this.#liveThought = block;
-      this.stack.append(block.root);
-      this.#blockType = "thought";
-    }
-    this.#liveThought!.text += text;
-    this.#liveThought!.status.textContent = "Thinking…";
-    this.#scheduleThoughtRender(this.#liveThought!);
+    if (t) t.push({ type: "thinking_delta", stepId: this.#liveThinkingId, text });
+    this.#blockType = "thought";
   }
 
-  /** Standalone thinking block reused across fragments until the run ends. */
   #finalizeCurrentBlock(): void {
-    if (this.#blockType === "thought" && this.#liveThought) {
-      this.#liveThought.status.textContent = "";
+    if (this.#blockType === "thought" && this.#liveThinkingId) {
+      const t = this.#liveTrace;
+      if (t) t.push({ type: "thinking_end", stepId: this.#liveThinkingId, ts: Date.now() });
+      this.#liveThinkingId = null;
     }
     if (this.#blockType === "body" && this.#liveBody) {
       this.#liveBody.body.innerHTML = renderMarkdown(this.#streamText);
     }
     this.#blockType = null;
-    this.#liveThought = null;
     this.#liveBody = null;
     this.#streamText = "";
-  }
-
-  #thoughtPending = new Set<ThoughtBlock>();
-  #thoughtFrame = 0;
-
-  #scheduleThoughtRender(block: ThoughtBlock): void {
-    this.#thoughtPending.add(block);
-    if (this.#thoughtFrame) return;
-    this.#thoughtFrame = requestAnimationFrame(() => {
-      this.#thoughtFrame = 0;
-      for (const b of this.#thoughtPending) {
-        b.body.innerHTML = renderMarkdown(b.text);
-      }
-      this.#thoughtPending.clear();
-      this.#scrollToBottom();
-    });
-  }
-
-  /** A complete, saved thinking segment (history replay) — always visible. */
-  reasoning(text: string): void {
-    this.#clearEmpty();
-    const block = this.#thought();
-    block.text = text;
-    block.body.innerHTML = renderMarkdown(text);
-    block.status.textContent = "";
-    this.stack.append(block.root);
-    this.#scrollToBottom();
   }
 
   /** ---- message queue row (their "waiting messages above the composer") ---- */
@@ -795,6 +784,16 @@ export class Chat {
     const [callId, pending] = first;
     this.#approval.hidden = false;
     this.#composer.classList.add("composer--attached");
+    const t = this.#liveTrace;
+    if (t && !t.getState().items.some((i: TraceItem) => i.kind === "approval" && i.id === callId)) {
+      const label = TOOL_LABELS[pending.tool] ?? pending.tool;
+      t.push({
+        type: "approval_request",
+        stepId: callId,
+        description: `${label}: ${formatValue(pending.args)}`,
+        ts: Date.now(),
+      });
+    }
     (document.getElementById("approval-tool") as HTMLElement).textContent = pending.tool;
     (document.getElementById("approval-args") as HTMLElement).textContent =
       typeof pending.args === "string" ? pending.args : JSON.stringify(pending.args ?? {});
@@ -820,11 +819,18 @@ export class Chat {
     (document.getElementById("approval-allow") as HTMLElement).onclick = () => this.#resolve(callId, "once");
   }
 
-  #resolve(callId: string, decision: "once" | "always" | "deny"): void {
+  #resolve(callId: string, decision: "allow" | "deny" | "once" | "always"): void {
     this.#pendingApprovals.delete(callId);
     this.#renderApprovals();
-    this.#handlers.approve(callId, decision);
+    // Trace buttons say allow/deny; the dock card says once/always/deny. The
+    // gateway only accepts once/always/deny.
+    const rpcDecision = decision === "allow" ? "once" : decision;
+    this.#handlers.approve(callId, rpcDecision as "once" | "always" | "deny");
     this.notice(decision === "deny" ? "denied" : decision === "always" ? "always allowed (this directory)" : "approved once");
+    // Update the trace row without re-invoking opts.onApproval (that would
+    // send the approval RPC a second time).
+    const t = this.#liveTrace;
+    if (t) t.setDecision(callId, decision === "deny" ? "deny" : "allow");
   }
 
   /** ---- ask_user (P2 #8): option card over the composer ---- */

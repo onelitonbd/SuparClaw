@@ -1,44 +1,220 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme-mode="light">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Trace Demo</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Trace — demo</title>
+<link rel="stylesheet" href="../src/trace/agent-trace.css" />
 <style>
-  body { font-family: Inter, system-ui, sans-serif; background: #f6f7f9; margin: 0; padding: 24px; }
-  .container { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
-  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
-  button { height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid #e3e6eb; background: white; cursor: pointer; font-family: inherit; }
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+  :root { color-scheme: light; }
+  body {
+    margin: 0;
+    background: #f6f7f9;
+    color: #14161a;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .page { max-width: 780px; margin: 0 auto; padding: 28px 16px 64px; }
+  .page h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.02em; }
+  .page p.lede { color: #5b6270; margin: 0 0 18px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+  .bar button {
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid #e3e6eb;
+    border-radius: 9px;
+    background: #fff;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .bar button:hover { background: #f1f3f6; }
+  .bar button[aria-pressed="true"] { border-color: #2f5bea; color: #2f5bea; }
+  .thread {
+    height: min(62vh, 620px);
+    overflow: auto;
+    padding: 4px 2px 12px;
+    border-radius: 14px;
+  }
+  .note { color: #5b6270; font-size: 12.5px; margin-top: 14px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .theme {
+    margin-left: auto;
+    align-self: center;
+    font-size: 12.5px;
+    color: #5b6270;
+  }
+  html[data-theme-mode="dark"] body { background: #0e0e11; color: #ededf0; }
+  html[data-theme-mode="dark"] .bar button { background: #19191d; border-color: #2a2a31; color: #ededf0; }
+  html[data-theme-mode="dark"] .bar button:hover { background: #222228; }
+  html[data-theme-mode="dark"] .page p.lede,
+  html[data-theme-mode="dark"] .note { color: #a9a9b2; }
+  html[data-theme-mode="dark"] .thread { background: #0e0e11; }
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>Agent Trace Demo</h1>
-  <div class="controls">
-    <button id="replay">Replay sample run</button>
-    <button id="reset">Reset</button>
+<main class="page">
+  <h1>Agent Trace</h1>
+  <p class="lede">
+    One response, many cycles: thinking → tools → commentary → answer. Live runs stay
+    open; completed runs collapse into a single “Worked for…” disclosure.
+  </p>
+
+  <div class="bar" role="group" aria-label="Demo scenarios">
+    <button type="button" id="btn-sample" aria-pressed="true">Sample run</button>
+    <button type="button" id="btn-approval">Needs approval</button>
+    <button type="button" id="btn-failure">Failure + retry</button>
+    <button type="button" id="btn-long">60-step run</button>
+    <button type="button" id="btn-stop">Stop mid-run</button>
+    <button type="button" id="btn-theme">Toggle dark</button>
   </div>
-  <div id="trace-root"></div>
-</div>
+
+  <div class="thread" id="thread" aria-label="Conversation transcript"></div>
+
+  <p class="note">
+    Keyboard: Tab to the trace header, Enter/Space to expand. While a run is live the
+    header is not collapsible. Raw JSON is hidden until a tool row is expanded and
+    “Show raw JSON” is pressed.
+  </p>
+</main>
+
 <script type="module">
-  import { AgentTrace } from "../ui/src/trace/agent-trace.js";
-  import { replaySample } from "./mock-player.js";
-  const root = document.getElementById("trace-root");
-  let trace;
-  document.getElementById("reset").onclick = () => {
-    root.innerHTML = "";
-    trace = new AgentTrace(root);
+  import { AgentTrace } from "../src/trace/agent-trace.js";
+  import {
+    replaySample,
+    replayApproval,
+    finishApproval,
+    replayFailure,
+    replayLongRun,
+    stopReplay,
+  } from "./mock-player.js";
+
+  const thread = document.getElementById("thread");
+  const buttons = {
+    sample: document.getElementById("btn-sample"),
+    approval: document.getElementById("btn-approval"),
+    failure: document.getElementById("btn-failure"),
+    long: document.getElementById("btn-long"),
   };
-  document.getElementById("replay").onclick = async () => {
-    root.innerHTML = "";
-    trace = new AgentTrace(root);
-    await replaySample(trace);
-  };
-  trace = new AgentTrace(root);
+
+  let trace = null;
+  let active = "";
+  let log = [];
+  let sampleTimer = 0;
+  const STORE = "agent-trace-demo-log-v1";
+
+  function setActive(name) {
+    active = name;
+    for (const [key, btn] of Object.entries(buttons)) {
+      btn.setAttribute("aria-pressed", key === name ? "true" : "false");
+    }
+  }
+
+  function saveLog() {
+    try {
+      localStorage.setItem(STORE, JSON.stringify(log.slice(-600)));
+    } catch {
+      /* storage full / disabled — persistence is best-effort */
+    }
+  }
+
+  function fresh({ restore = false } = {}) {
+    stopReplay();
+    clearTimeout(sampleTimer);
+    thread.replaceChildren();
+    log = [];
+    trace = new AgentTrace(thread, {
+      scrollRoot: thread,
+      onApproval: (decision) => finishApproval(trace, decision),
+      onRetry: () => {
+        setActive("failure");
+        replayFailure(trace);
+      },
+    });
+    // Record every wire event so a reload can rebuild the trace mid-run.
+    const push = trace.push.bind(trace);
+    trace.push = (event) => {
+      log.push(event);
+      saveLog();
+      push(event);
+    };
+    if (restore) trace.replay(log);
+    return trace;
+  }
+
+  function replaySaved() {
+    try {
+      const raw = localStorage.getItem(STORE);
+      if (!raw) return false;
+      const events = JSON.parse(raw);
+      if (!Array.isArray(events) || events.length === 0) return false;
+      stopReplay();
+      thread.replaceChildren();
+      log = events;
+      trace = new AgentTrace(thread, {
+        scrollRoot: thread,
+        onApproval: (decision) => finishApproval(trace, decision),
+        onRetry: () => replayFailure(trace),
+      });
+      const push = trace.push.bind(trace);
+      trace.push = (event) => {
+        log.push(event);
+        saveLog();
+        push(event);
+      };
+      trace.replay(events);
+      setActive("restored");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  buttons.sample.addEventListener("click", async () => {
+    setActive("sample");
+    await replaySample(fresh());
+  });
+
+  buttons.approval.addEventListener("click", () => {
+    setActive("approval");
+    replayApproval(fresh());
+  });
+
+  buttons.failure.addEventListener("click", () => {
+    setActive("failure");
+    replayFailure(fresh());
+  });
+
+  buttons.long.addEventListener("click", async () => {
+    setActive("long");
+    await replayLongRun(fresh());
+  });
+
+  document.getElementById("btn-stop").addEventListener("click", () => {
+    if (!trace) return;
+    stopReplay();
+    trace.push({ type: "run_end", ts: Date.now(), status: "stopped" });
+  });
+
+  document.getElementById("btn-theme").addEventListener("click", () => {
+    const root = document.documentElement;
+    root.dataset.themeMode = root.dataset.themeMode === "dark" ? "light" : "dark";
+    document.documentElement.style.colorScheme = root.dataset.themeMode;
+  });
+
+  // A reload mid-run rebuilds from the recorded event log; otherwise start
+  // with the sample so the page is useful immediately.
+  if (!replaySaved()) {
+    (async () => {
+      setActive("sample");
+      await replaySample(fresh());
+    })();
+  }
 </script>
 </body>
 </html>
