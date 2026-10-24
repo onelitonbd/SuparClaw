@@ -618,20 +618,24 @@ export class Chat {
     this.#scrollToBottom();
   }
 
-  /* ---- thinking preview (always visible — never collapsed, never toggled) ---- */
+  /* ---- thinking block (collapsed by default, click to expand — like tools) ---- */
 
-  /** Thinking block shared by live streams and history replay. Body is always
-   * shown: the preview must never hide what the model is thinking (the user
-   * rejected both the on/off toggle and collapsed-by-default blocks). */
+  /** Thinking block shared by live streams and history replay. Collapsed by
+   *  default: the user expands it on demand (same affordance as tool cards). */
   #thought(): ThoughtBlock {
-    const body = el("div", { class: "thought__body" });
+    const body = el("div", { class: "thought__body", hidden: "" });
     const status = el("span", { class: "thought__status mono" }, ["Thinking…"]);
-    const head = el(
-      "div",
-      { class: "thought__row" },
-      [icon(SPARKLE), el("span", { class: "thought__title" }, ["Thinking"]), status],
+    const row = el(
+      "button",
+      { class: "thought__row", type: "button", "aria-expanded": "false" },
+      [icon(SPARKLE), el("span", { class: "thought__title" }, ["Thinking"]), status, icon(CHEVRON, "thought__chev")],
     );
-    const root = el("div", { class: "thought" }, [head, body]);
+    const root = el("div", { class: "thought" }, [row, body]);
+    row.onclick = () => {
+      const open = row.getAttribute("aria-expanded") !== "true";
+      row.setAttribute("aria-expanded", String(open));
+      body.hidden = !open;
+    };
     return { root, body, status, text: "" };
   }
 

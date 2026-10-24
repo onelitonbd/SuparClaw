@@ -1428,7 +1428,25 @@ textarea:focus-visible {
   padding: 0 10px;
   color: var(--ink2);
   font-size: 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
 }
+
+.thought__row:hover { background: var(--hover); }
+
+.thought__chev {
+  margin-left: auto;
+  transition: transform .15s ease;
+}
+
+.thought__row[aria-expanded="true"] .thought__chev {
+  transform: rotate(180deg);
+}
+
+.thought__body[hidden] { display: none; }
 
 .thought__title { font-weight: 600; }
 .thought__status { opacity: .7; font-size: 11px; }
