@@ -1587,10 +1587,10 @@ textarea:focus-visible {
 /* ---------------------------------------------------------- settings layout (OpenClaw-style two panes) ---- */
 
 .settings__topbar {
-  display: none;
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   position: relative;
@@ -1752,9 +1752,6 @@ textarea:focus-visible {
 }
 
 @media (max-width: 880px) {
-  .settings__topbar {
-    display: flex;
-  }
   .settings__panes {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1781,6 +1778,13 @@ textarea:focus-visible {
   }
   .settings__body {
     padding: 6px 16px 40px;
+  }
+}
+
+@media (min-width: 881px) {
+  .settings__menu-btn,
+  .settings__topbar-brand {
+    display: none;
   }
 }
 
