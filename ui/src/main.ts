@@ -892,6 +892,10 @@ async function route(): Promise<void> {
   }
   $("chat-view").hidden = settingsOpen;
   $("settings-view").hidden = !settingsOpen;
+  // The top rail is chat-only chrome (session title, new chat, subagents,
+  // gear, theme). Settings is a dedicated page with its own sidebar — drop
+  // the rail so it doesn't bleed into Settings.
+  $("rail").hidden = settingsOpen;
   $("settings-btn").classList.toggle("is-on", settingsOpen);
   if (settingsOpen) {
     await loadSettingsInterior();
