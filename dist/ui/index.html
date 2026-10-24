@@ -96,18 +96,28 @@
           <input id="attach-input" type="file" multiple hidden />
           <button class="model-btn" id="model-btn" type="button" aria-haspopup="dialog" aria-label="Choose model">
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>
-            <span class="mono" id="model-name">model…</span>
+            <span class="mono" id="model-name" hidden>model…</span>
             <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
           </button>
-          <label class="think mono" id="think-wrap" title="Thinking effort (session)">
-            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a5 5 0 0 1 5 5c0 1.5-.7 2.6-1.5 3.5-.6.7-1 1.3-1 2.5v1a3 3 0 0 1-3 3h-1"/><path d="M12 3a5 5 0 0 0-5 5c0 1.5.7 2.6 1.5 3.5.6.7 1 1.3 1 2.5v1a3 3 0 0 0 3 3h1"/><path d="M9 21h6"/></svg>
-            <select id="think" class="think__select" aria-label="Thinking effort">
+          <div class="think" id="think-wrap" title="Thinking effort (session)">
+            <button class="think__btn" id="think-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Thinking effort">
+              <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a5 5 0 0 1 5 5c0 1.5-.7 2.6-1.5 3.5-.6.7-1 1.3-1 2.5v1a3 3 0 0 1-3 3h-1"/><path d="M12 3a5 5 0 0 0-5 5c0 1.5.7 2.6 1.5 3.5.6.7 1 1.3 1 2.5v1a3 3 0 0 0 3 3h1"/><path d="M9 21h6"/></svg>
+              <span class="think__value mono" id="think-value">auto</span>
+              <svg class="think__chev" aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="think__menu" id="think-menu" role="listbox" hidden></div>
+            <select id="think" class="think__select" aria-label="Thinking effort" hidden>
               <option value="inherit">auto</option>
             </select>
-          </label>
-          <label class="think mono" id="queue-wrap" title="Queue mode (session): what a new message does while this session is busy">
-            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-            <select id="queue-select" class="think__select" aria-label="Queue mode">
+          </div>
+          <div class="think" id="queue-wrap" title="Queue mode (session): what a new message does while this session is busy">
+            <button class="think__btn" id="queue-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Queue mode">
+              <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+              <span class="think__value mono" id="queue-value">queue</span>
+              <svg class="think__chev" aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="think__menu" id="queue-menu" role="listbox" hidden></div>
+            <select id="queue-select" class="think__select" aria-label="Queue mode" hidden>
               <option value="inherit">queue</option>
               <option value="steer">steer</option>
               <option value="followup">followup</option>
@@ -115,7 +125,7 @@
               <option value="interrupt">interrupt</option>
             </select>
             <span class="queue-depth" id="queue-depth" hidden></span>
-          </label>
+          </div>
           <span class="mono composer__tokens" id="tok"></span>
           <button class="sendbtn sendbtn--stop" id="stop-btn" type="button" aria-label="Stop" hidden>
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>

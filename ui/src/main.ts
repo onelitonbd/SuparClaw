@@ -260,7 +260,10 @@ async function refresh(): Promise<void> {
       group: String(m.ref ?? "").split("/")[0] || "default",
     }));
     currentModel = status.model || models[0]?.value || "";
-    $("model-name").textContent = models.find((m) => m.value === currentModel)?.label || currentModel || "no model";
+    const modelLabel = models.find((m) => m.value === currentModel)?.label || currentModel || "no model";
+    $("model-name").textContent = modelLabel;
+    $("model-btn").setAttribute("title", `Model: ${modelLabel}`);
+    $("model-btn").setAttribute("aria-label", `Choose model (${modelLabel})`);
     renderSessions((sessionRes as any).sessions ?? []);
     syncThinking(status, (sessionRes as any).sessions ?? []);
     syncQueue((sessionRes as any).sessions ?? []);
@@ -307,13 +310,8 @@ function syncThinking(status: any, sessions: { key: string; thinking?: string | 
       select.append(opt);
     }
   }
-  // Explicit session override, or "auto" when inheriting — selecting a level
-  // patches the session immediately (survives refresh); the choice applies to
-  // later turns and never interrupts one in flight.
   const row = (sessions ?? []).find((s) => s.key === sessionKey);
   const desired = row?.thinking ?? "inherit";
-  // Attribute first (works in every DOM), then the value setter where it
-  // exists — a throwing setter must never skip the selection.
   for (const opt of Array.from(select.querySelectorAll("option"))) {
     if (opt.getAttribute("value") === desired) opt.setAttribute("selected", "");
     else opt.removeAttribute("selected");
@@ -321,6 +319,31 @@ function syncThinking(status: any, sessions: { key: string; thinking?: string | 
   try {
     select.value = desired;
   } catch { /* getter-only DOM */ }
+
+  // Custom dropdown mirror (not the native browser select).
+  const menu = $("think-menu");
+  const valueEl = $("think-value") as HTMLElement;
+  const btn = $("think-btn") as HTMLButtonElement;
+  if (menu) {
+    menu.innerHTML = "";
+    for (const level of levels) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "think__option" + (level === desired ? " is-active" : "");
+      item.textContent = level === "inherit" ? "auto" : level;
+      item.dataset.value = level;
+      item.onclick = (e) => {
+        e.stopPropagation();
+        select.value = level;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        valueEl.textContent = level === "inherit" ? "auto" : level;
+        menu.hidden = true;
+        btn.setAttribute("aria-expanded", "false");
+      };
+      menu.append(item);
+    }
+  }
+  if (valueEl) valueEl.textContent = desired === "inherit" ? "auto" : desired;
 }
 
 $("think").addEventListener("change", async () => {
@@ -349,6 +372,37 @@ function syncQueue(sessions: { key: string; queue_mode?: string | null }[]): voi
   try {
     select.value = desired;
   } catch { /* getter-only DOM */ }
+
+  const labels: Record<string, string> = {
+    inherit: "queue",
+    steer: "steer",
+    followup: "followup",
+    collect: "collect",
+    interrupt: "interrupt",
+  };
+  const menu = $("queue-menu");
+  const valueEl = $("queue-value") as HTMLElement;
+  const btn = $("queue-btn") as HTMLButtonElement;
+  if (menu) {
+    menu.innerHTML = "";
+    for (const v of ["inherit", "steer", "followup", "collect", "interrupt"]) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "think__option" + (v === desired ? " is-active" : "");
+      item.textContent = labels[v] ?? v;
+      item.dataset.value = v;
+      item.onclick = (e) => {
+        e.stopPropagation();
+        select.value = v;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        if (valueEl) valueEl.textContent = labels[v] ?? v;
+        menu.hidden = true;
+        btn.setAttribute("aria-expanded", "false");
+      };
+      menu.append(item);
+    }
+  }
+  if (valueEl) valueEl.textContent = labels[desired] ?? desired;
 }
 
 $("queue-select").addEventListener("change", async () => {
@@ -370,6 +424,41 @@ $("queue-select").addEventListener("change", async () => {
   } catch (err) {
     toast((err as Error).message, "err");
   }
+});
+
+/* ---------------- custom dropdown toggles for think / queue ---------------- */
+
+function closeCustomMenus(): void {
+  for (const id of ["think-menu", "queue-menu"]) {
+    const m = document.getElementById(id);
+    if (m) m.hidden = true;
+  }
+  document.getElementById("think-btn")?.setAttribute("aria-expanded", "false");
+  document.getElementById("queue-btn")?.setAttribute("aria-expanded", "false");
+}
+
+function wireCustomSelect(btnId: string, menuId: string): void {
+  const btn = document.getElementById(btnId) as HTMLButtonElement | null;
+  const menu = document.getElementById(menuId);
+  if (!btn || !menu) return;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = menu.hidden;
+    closeCustomMenus();
+    if (open) {
+      menu.hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+    }
+  };
+}
+
+wireCustomSelect("think-btn", "think-menu");
+wireCustomSelect("queue-btn", "queue-menu");
+
+document.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest("#think-wrap") || t.closest("#queue-wrap")) return;
+  closeCustomMenus();
 });
 
 /** Queued-input depth from queue.status (their queued-count chip). */
@@ -769,6 +858,8 @@ $("model-btn").onclick = () => {
     onPick: async (value) => {
       const label = models.find((m) => m.value === value)?.label || value;
       $("model-name").textContent = label;
+      $("model-btn").setAttribute("title", `Model: ${label}`);
+      $("model-btn").setAttribute("aria-label", `Choose model (${label})`);
       try {
         await gateway.request("config.set", { path: "agents.defaults.model", value });
         currentModel = value;
