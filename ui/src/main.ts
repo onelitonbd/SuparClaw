@@ -720,6 +720,7 @@ $("drawer-btn").onclick = () => {
 $("drawer-close").onclick = closeDrawer;
 $("drawer-scrim").onclick = closeDrawer;
 $("new-session").onclick = newSession;
+$("new-chat-btn").onclick = newSession;
 
 /* ---------------- model sheet ---------------- */
 
