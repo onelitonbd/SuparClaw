@@ -182,7 +182,7 @@ test("the Control UI bundle boots and every element it looks up exists", async (
     "approval-deny", "approval-allow", "drawer-btn", "drawer-close", "drawer-scrim", "drawer",
     "sessions", "new-session", "sheet-overlay", "sheet-scrim", "sheet", "model-filter",
     "model-list", "sheet-add-provider", "modal-overlay", "modal-scrim", "modal", "modal-title",
-    "modal-body", "modal-foot", "toasts", "settings-view", "settings-tabs", "settings-body",
+    "modal-body", "modal-foot", "toasts", "settings-view", "settings-body",
     "settings-back", "settings-btn", "theme-btn", "session-btn", "session-title", "conn-dot",
     "conn-label",
   ];

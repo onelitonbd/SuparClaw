@@ -48,7 +48,6 @@ const TAB_ALIASES: Record<string, TabId> = {
 
 export class Settings {
   #root: HTMLElement;
-  #tabs: HTMLElement;
   #nav: HTMLElement | null = null;
   #search: HTMLInputElement | null = null;
   #onChanged: () => void;
@@ -63,7 +62,6 @@ export class Settings {
 
   constructor(root: HTMLElement, onChanged: () => void) {
     this.#root = root;
-    this.#tabs = document.getElementById("settings-tabs") as HTMLElement;
     this.#nav = document.getElementById("settings-nav") as HTMLElement | null;
     this.#search = document.getElementById("settings-search") as HTMLInputElement | null;
     this.#onChanged = onChanged;
@@ -87,7 +85,6 @@ export class Settings {
   }
 
   async render(): Promise<void> {
-    this.#renderTabs();
     this.#renderNav();
 
     // The gateway answers over the WebSocket. If it is not connected yet
@@ -215,21 +212,6 @@ export class Settings {
         grp.append(btn);
       }
       this.#nav.append(grp);
-    }
-  }
-
-  #renderTabs(): void {
-    this.#tabs.innerHTML = "";
-    for (const t of TABS) {
-      const btn = el("button", {
-        class: `tab${t.id === this.#tab ? " is-active" : ""}`,
-        type: "button",
-        id: `tab-${t.id}`,
-      }, [t.label]);
-      btn.onclick = () => {
-        this.#setTab(t.id);
-      };
-      this.#tabs.append(btn);
     }
   }
 
