@@ -50,6 +50,10 @@ export class Settings {
   #root: HTMLElement;
   #nav: HTMLElement | null = null;
   #search: HTMLInputElement | null = null;
+  #sidebar: HTMLElement | null = null;
+  #menu: HTMLElement | null = null;
+  #scrim: HTMLElement | null = null;
+  #title: HTMLElement | null = null;
   #onChanged: () => void;
   #tab: TabId = "model";
   #hash: string = "";
@@ -64,11 +68,37 @@ export class Settings {
     this.#root = root;
     this.#nav = document.getElementById("settings-nav") as HTMLElement | null;
     this.#search = document.getElementById("settings-search") as HTMLInputElement | null;
+    this.#sidebar = document.getElementById("settings-sidebar");
+    this.#menu = document.getElementById("settings-menu");
+    this.#scrim = document.getElementById("settings-scrim");
+    this.#title = document.getElementById("settings-title");
     this.#onChanged = onChanged;
-    if (this.#search && !this.#search.dataset.bound) {
-      this.#search.dataset.bound = "1";
+    // main.ts builds a fresh Settings per route change: always rebind so the
+    // handlers belong to the live instance (the elements are static).
+    if (this.#search) {
       this.#search.oninput = () => this.#renderNav();
+      this.#search.onkeydown = (e: KeyboardEvent) => {
+        // Escape in Search settings clears the field before leaving Settings.
+        if (e.key === "Escape" && !e.isComposing && this.#search!.value) {
+          e.stopPropagation();
+          this.#search!.value = "";
+          this.#renderNav();
+        }
+      };
     }
+    if (this.#menu) {
+      this.#menu.onclick = () => this.#setDrawer(!this.#sidebar?.classList.contains("is-open"));
+    }
+    if (this.#scrim) {
+      this.#scrim.onclick = () => this.#setDrawer(false);
+    }
+  }
+
+  /** Narrow viewports swap the sidebar for a slide-over drawer. */
+  #setDrawer(open: boolean): void {
+    this.#sidebar?.classList.toggle("is-open", open);
+    this.#menu?.setAttribute("aria-expanded", String(open));
+    if (this.#scrim) this.#scrim.hidden = !open;
   }
 
   setHash(hash: string): void {
@@ -85,6 +115,8 @@ export class Settings {
   }
 
   async render(): Promise<void> {
+    // The content pane title follows the open section (Back button + title).
+    if (this.#title) this.#title.textContent = TABS.find((t) => t.id === this.#tab)?.label ?? "Settings";
     this.#renderNav();
 
     // The gateway answers over the WebSocket. If it is not connected yet
@@ -168,6 +200,7 @@ export class Settings {
   #setTab(id: TabId): void {
     this.#tab = id;
     this.#modelsProvider = null;
+    this.#setDrawer(false);
     try {
       const map: Record<string, string> = {
         model: "defaults",

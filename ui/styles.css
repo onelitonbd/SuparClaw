@@ -1276,13 +1276,10 @@ textarea:focus-visible {
 /* ---------------------------------------------------------- settings ---- */
 
 .settings {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px 16px 32px;
-  max-width: 640px;
-  margin-inline: auto;
-  width: 100%;
 }
 
 .settings__head {
@@ -1587,43 +1584,49 @@ textarea:focus-visible {
   55% { box-shadow: 0 0 0 2px var(--accsoft); }
 }
 
-/* ---------------------------------------------------------- settings layout (new) ---- */
+/* ---------------------------------------------------------- settings layout (OpenClaw-style two panes) ---- */
 
-.settings--layout {
-  max-width: 1100px;
-  gap: 18px;
-}
-
-.settings__header {
-  display: flex;
+.settings__topbar {
+  display: none;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  position: relative;
+  z-index: 56;
 }
 
-.settings__header h1 {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -.02em;
+.settings__topbar-brand {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -.01em;
 }
 
-.settings__shell {
+.settings__panes {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  gap: 24px;
-  align-items: start;
+  grid-template-columns: 264px minmax(0, 1fr);
 }
 
 .settings__sidebar {
-  position: sticky;
-  top: 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 8px 4px;
-  border-radius: 0;
-  border: none;
-  background: transparent;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 14px 28px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.settings__brand {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  padding: 2px 8px 0;
 }
 
 .settings__search input {
@@ -1660,16 +1663,15 @@ textarea:focus-visible {
 .settings__nav-item {
   display: flex;
   align-items: center;
-  height: 32px;
+  height: 34px;
   padding: 0 10px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: none;
   background: transparent;
   color: var(--ink2);
-  font-size: 13.5px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
-  width: 100%;
 }
 
 .settings__nav-item:hover {
@@ -1683,18 +1685,81 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
+.settings__scrim {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 54;
+  border: none;
+  padding: 0;
+  background: rgb(0 0 0 / 38%);
+  cursor: pointer;
+}
+
 .settings__main {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
   min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings__pagehead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px 10px;
+  background: var(--bg);
+}
+
+.settings__pagehead h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+
+.settings__body {
+  padding: 6px 22px 48px;
+  max-width: 840px;
 }
 
 @media (max-width: 880px) {
-  .settings__shell {
-    grid-template-columns: 1fr;
+  .settings__topbar {
+    display: flex;
+  }
+  .settings__panes {
+    grid-template-columns: minmax(0, 1fr);
   }
   .settings__sidebar {
-    position: static;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(84vw, 320px);
+    z-index: 55;
+    border-right: 1px solid var(--line);
+    box-shadow: 12px 0 32px rgb(0 0 0 / 18%);
+    transform: translateX(-102%);
+    transition: transform .2s ease;
+  }
+  .settings__sidebar.is-open {
+    transform: none;
+  }
+  .settings__scrim:not([hidden]) {
+    display: block;
+  }
+  .settings__pagehead {
+    padding: 12px 16px 8px;
+  }
+  .settings__body {
+    padding: 6px 16px 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings__sidebar {
+    transition: none;
   }
 }
