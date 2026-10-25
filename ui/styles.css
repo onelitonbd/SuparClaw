@@ -627,17 +627,24 @@ textarea:focus-visible {
   transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: var(--tap);
-  padding: 0 16px;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--surface);
+  color: var(--ink2);
   box-shadow: var(--shadow);
-  font-size: 13px;
-  font-weight: 500;
   z-index: 5;
   animation: fadeDown .25s ease both;
+  transition: color .15s ease, border-color .15s ease;
+}
+
+.jump:hover { color: var(--ink); border-color: var(--ink3); }
+
+@media (pointer: coarse) {
+  .jump { width: var(--tap); height: var(--tap); }
 }
 
 /* Waiting message queue (parallels their queue row above the composer). */
@@ -747,11 +754,11 @@ textarea:focus-visible {
 .composer {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-xl);
   box-shadow: var(--shadow);
 }
 
-.composer--attached { border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.composer--attached { border-radius: 0 0 var(--r-xl) var(--r-xl); }
 
 /* Session menu + archived sessions (P4 #33) */
 .session { position: relative; }
@@ -841,16 +848,17 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-md, 10px);
-  border: 1px solid var(--line);
-  background: transparent;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: var(--hover);
   color: var(--ink2, var(--ink3));
   cursor: pointer;
   flex: none;
+  transition: background-color .15s ease, color .15s ease;
 }
-.attach-btn:hover { color: var(--ink); border-color: var(--ink3); }
+.attach-btn:hover { color: var(--ink); background: var(--line); }
 
 .attach-strip {
   display: flex;
@@ -909,34 +917,55 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px 10px;
+  padding: 6px 8px 8px;
   min-width: 0;
 }
 
-/* Model + thinking are matching pill chips; the token hint is a quiet
-   right-aligned label; the send button anchors the row. */
+/* Left group: attach + the session override chips. Right group: the quiet
+   status hint and the primary action, pinned to the end of the row. */
+.composer__tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.composer__side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Model + thinking are matching soft chips: an icon and the current value,
+   no caret — the value itself says what a click changes. */
 .model-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
-  max-width: 46%;
+  min-height: 32px;
+  max-width: 100%;
   min-width: 0;
-  padding: 0 12px;
-  border: 1px solid var(--line);
+  padding: 0 10px;
+  border: 1px solid transparent;
   border-radius: 999px;
+  background: var(--hover);
   color: var(--ink2);
-  font-size: 12px;
-  transition: background-color .15s ease, border-color .15s ease;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
 }
 
 .model-btn:hover {
-  background: var(--hover);
-  border-color: var(--ink3);
+  background: var(--line);
+  color: var(--ink);
 }
 
-.model-btn .mono {
-  font-size: 12px;
+.model-btn__name {
+  font-weight: 500;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -947,7 +976,7 @@ textarea:focus-visible {
 .model-wrap {
   position: relative;
   display: inline-flex;
-  flex: none;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -1069,41 +1098,42 @@ textarea:focus-visible {
 .think {
   position: relative;
   display: inline-flex;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .think__btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
-  padding: 0 10px 0 12px;
-  border: 1px solid var(--line);
+  min-height: 32px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
   border-radius: 999px;
-  background: transparent;
+  background: var(--hover);
   color: var(--ink2);
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
-  transition: background-color .15s ease, border-color .15s ease;
+  overflow: hidden;
+  transition: background-color .15s ease, color .15s ease;
 }
 
 .think__btn:hover {
-  background: var(--hover);
-  border-color: var(--ink3);
+  background: var(--line);
+  color: var(--ink);
 }
 
 .think__btn svg { flex: none; }
 
 .think__value {
   font-weight: 600;
-  max-width: 72px;
+  min-width: 0;
+  max-width: 92px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.think__chev {
-  opacity: .6;
 }
 
 .think__menu {
@@ -1158,10 +1188,10 @@ textarea:focus-visible {
 }
 
 .composer__tokens {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 45%;
   text-align: right;
-  margin-right: 2px;
   font-size: 11px;
   color: var(--ink3);
   white-space: nowrap;
@@ -1170,8 +1200,8 @@ textarea:focus-visible {
 }
 
 .sendbtn {
-  width: var(--tap);
-  height: var(--tap);
+  width: 36px;
+  height: 36px;
   flex: none;
   border-radius: 999px;
   display: grid;
@@ -1185,6 +1215,21 @@ textarea:focus-visible {
 .sendbtn--go:disabled { background: var(--hover); color: var(--ink3); }
 .sendbtn--stop { background: var(--ink); color: var(--bg); }
 .sendbtn:active { transform: scale(.96); }
+
+/* Bigger hit targets where the pointer is a finger. */
+@media (pointer: coarse) {
+  .sendbtn { width: var(--tap); height: var(--tap); }
+  .attach-btn { width: var(--tap); height: var(--tap); }
+  .model-btn, .think__btn { min-height: 36px; }
+}
+
+/* Narrow screens: the queue chip drops its value (the icon + tooltip still
+   say what it does) so the model name keeps room to read. The token hint
+   already shrinks to nothing before anything else has to. */
+@media (max-width: 640px) {
+  #queue-wrap .think__value { display: none; }
+  .model-btn__name { max-width: 104px; }
+}
 
 /* ------------------------------------------------------------ drawer ---- */
 

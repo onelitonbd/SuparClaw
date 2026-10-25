@@ -259,8 +259,9 @@ async function refresh(): Promise<void> {
       group: String(m.ref ?? "").split("/")[0] || "default",
     }));
     currentModel = status.model || models[0]?.value || "";
-    const modelLabel = models.find((m) => m.value === currentModel)?.label || currentModel || "no model";
-    $("model-name").textContent = modelLabel;
+    const current = models.find((m) => m.value === currentModel);
+    const modelLabel = current?.label || currentModel || "no model";
+    $("model-name").textContent = friendlyModelName(modelLabel, current?.group);
     $("model-btn").setAttribute("title", `Model: ${modelLabel}`);
     $("model-btn").setAttribute("aria-label", `Choose model (${modelLabel})`);
     renderSessions((sessionRes as any).sessions ?? []);
@@ -868,6 +869,23 @@ $("model-btn").onclick = (e) => {
   }
 };
 
+/** Human-friendly model display name: drops a redundant provider prefix, then
+ *  turns "gemini-3.1-flash-lite" into "Gemini 3.1 Flash Lite". */
+function friendlyModelName(label: string, provider?: string): string {
+  let short = label;
+  if (provider && provider !== "default") {
+    const prefix = provider + "/";
+    if (short.toLowerCase().startsWith(prefix.toLowerCase())) short = short.slice(prefix.length);
+  }
+  const words = short
+    .replace(/[\/:_-]+/g, " ")
+    .split(/\s+/)
+    .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(" ")
+    .trim();
+  return words || short;
+}
+
 function renderModelMenu(): void {
   const list = $("model-list");
   const filter = $("model-filter") as HTMLInputElement;
@@ -896,22 +914,11 @@ function renderModelMenu(): void {
       group = r.provider;
       list.append(el("div", { class: "model-menu__group" }, [group === "default" ? "default" : group]));
     }
-    // The group header already names the provider, so drop a redundant
-    // "provider/" prefix from the row label to keep long ids readable.
-    const provPrefix = r.provider + "/";
-    const short = r.provider !== "default" && r.label.toLowerCase().startsWith(provPrefix.toLowerCase())
-      ? r.label.slice(provPrefix.length)
-      : r.label;
-    // Human-friendly display: drop hyphens/underscores and capitalise the
-    // first letter of each word (gemini-3.1-flash-lite -> Gemini 3.1 Flash Lite).
-    const friendly = short
-      .replace(/[\/:_-]+/g, " ")
-      .split(/\s+/)
-      .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-      .join(" ")
-      .trim();
+    // The group header already names the provider, and the row reads best as
+    // a plain sentence-case name rather than the raw id.
+    const friendly = friendlyModelName(r.label, r.provider);
     const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, []);
-    row.append(el("span", { class: "model-menu__label" }, [friendly || short]));
+    row.append(el("span", { class: "model-menu__label" }, [friendly]));
     row.title = r.label;
     if (r.value === currentModel) {
       row.append(el("span", { class: "model-menu__check" }, ["✓"]));
@@ -925,8 +932,9 @@ function renderModelMenu(): void {
 }
 
 async function pickModelValue(value: string): Promise<void> {
-  const label = models.find((m) => m.value === value)?.label || value;
-  $("model-name").textContent = label;
+  const found = models.find((m) => m.value === value);
+  const label = found?.label || value;
+  $("model-name").textContent = friendlyModelName(label, found?.group);
   $("model-btn").setAttribute("title", `Model: ${label}`);
   $("model-btn").setAttribute("aria-label", `Choose model (${label})`);
   $("model-menu").hidden = true;
