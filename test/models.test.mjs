@@ -37,6 +37,9 @@ function startMockProvider(port, state) {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
       if ((req.url ?? "").endsWith("/models")) {
+        // Remember what the gateway authenticated with, so a test can prove the
+        // stored key survived an edit (config.get only ever shows the mask).
+        state.lastAuth = req.headers.authorization ?? "";
         if (state.failModels) {
           res.writeHead(500, { "content-type": "application/json" });
           res.end("{}");
@@ -261,6 +264,41 @@ test("gateway model pipeline: UI provider parity, strictness, loading, fetch war
   assert.equal(f.ok, true);
   f = await ws.request("models.auth.list", { provider: "openrouter" });
   assert.ok((f.payload.profiles ?? []).some((x) => x.id === renameKey), "a rename keeps the stored credential");
+
+  // ── 5d. A provider key that is not lowercase (hand-written or imported config)
+  //        is reachable by every provider action, and editing it keeps its real
+  //        API key instead of writing the redaction sentinel in its place.
+  f = await ws.request("config.set", {
+    path: "providers.MultiRouter",
+    value: { baseUrl: base, apiKey: "real-key-1234", models: ["m1", "m2"] },
+  });
+  assert.equal(f.ok, true, `config.set providers.MultiRouter: ${JSON.stringify(f)}`);
+  f = await ws.request("config.get");
+  const sentinel = f.payload.config.providers.MultiRouter.apiKey;
+  assert.match(String(sentinel), /^__redacted__:/, "the wire only ever carries the masked key");
+
+  f = await ws.request("providers.add", {
+    name: "MultiRouter",
+    previousName: "MultiRouter",
+    baseUrl: base,
+    apiKey: sentinel,
+    models: ["m1", "m2"],
+  });
+  assert.equal(f.ok, true, `providers.add with the stored sentinel: ${JSON.stringify(f)}`);
+  f = await ws.request("config.get");
+  assert.equal(f.payload.config.providers.multirouter, undefined, "it does not fork a lowercase twin");
+
+  // The wire never shows a raw key, so prove it survived the edit by using it:
+  // the gateway authenticates the probe with whatever is stored.
+  state.lastAuth = "";
+  f = await ws.request("providers.test", { name: "MultiRouter" });
+  assert.equal(f.payload.ok, true, `Test answers about the provider on the page: ${JSON.stringify(f.payload)}`);
+  assert.equal(state.lastAuth, "Bearer real-key-1234", "the real key is still stored, not the redaction sentinel");
+
+  f = await ws.request("providers.remove", { name: "MultiRouter" });
+  assert.equal(f.ok, true, `providers.remove multi-case: ${JSON.stringify(f)}`);
+  f = await ws.request("config.get");
+  assert.equal(f.payload.config.providers.MultiRouter, undefined, "it is gone from the config");
 
   // ── 6. failed refresh keeps saved rows and reports a warning
   state.failModels = true;

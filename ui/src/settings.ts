@@ -4695,11 +4695,15 @@ export class Settings {
    *  delete that leaves dead models in the picker is worse than no delete. */
   #removeProvider(name: string, providers: Record<string, Provider>, config: any, auth: any[], done: () => void): void {
     const advertised = (providers[name]?.models ?? []).length;
+    // Names are matched case-insensitively: a key stored as "MultiRouter" owns
+    // "MultiRouter/…" wherever the casing drifted.
+    const owns = (ref: unknown): boolean =>
+      String(ref ?? "").toLowerCase().startsWith(`${name.toLowerCase()}/`);
     const saved = Object.entries((config?.models ?? {}) as Record<string, any>)
-      .filter(([, m]) => String(m?.ref ?? "").startsWith(`${name}/`)).length;
-    const creds = (auth ?? []).filter((p) => String(p?.provider ?? "") === name).length;
+      .filter(([, m]) => owns(m?.ref)).length;
+    const creds = (auth ?? []).filter((p) => String(p?.provider ?? "").toLowerCase() === name.toLowerCase()).length;
     const def = String(config?.agents?.defaults?.model ?? "");
-    const isDefault = def.startsWith(`${name}/`);
+    const isDefault = owns(def);
 
     const lines = [`This removes ${name} and its ${advertised} models.`];
     if (saved) lines.push(`${saved} saved model${saved === 1 ? "" : "s"} in the system will be removed with it.`);

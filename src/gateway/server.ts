@@ -9,6 +9,7 @@ import {
   canonicalModelRef,
   discoverModels,
   removeProvider,
+  providerKey,
   testProvider,
   validateModelRef,
 } from "../config/providers.js";
@@ -973,7 +974,11 @@ case "sessions.rename": {
             typeof params["previousName"] === "string" && params["previousName"]
               ? params["previousName"]
               : name;
-          const stored = service.config.providers[prev.trim().toLowerCase()] as
+          // Resolve the previous record the way every read does — the key may be
+          // "MultiRouter" while "multirouter" is what a lowercase lookup finds
+          // (nothing). Missing it wrote the redaction sentinel as the API key.
+          const storedKey = providerKey(service.config.providers, prev);
+          const stored = (storedKey ? service.config.providers[storedKey] : undefined) as
             | { apiKey?: string }
             | undefined;
           const apiKeyRaw = typeof params["apiKey"] === "string" ? params["apiKey"] : undefined;
@@ -1005,7 +1010,10 @@ case "sessions.rename": {
           // it is ever added again. It is opt-in because a *rename* uses this
           // same call to drop the old record and must not take the keys with it.
           const purgeAuth = params["purgeAuth"] === true;
-          const creds = purgeAuth ? service.authProfilesView(removedName) : [];
+          // The auth store keys credentials by *lowercased* provider id, so ask it
+          // in its own namespace even when the config key is "MultiRouter".
+          const authId = removedName.trim().toLowerCase();
+          const creds = purgeAuth ? service.authProfilesView(authId) : [];
           const result = removeProvider(service.configSvc, removedName);
           if (!result.ok) {
             send(errFrame(id, "bad_request", result.message));

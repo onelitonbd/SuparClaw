@@ -258,6 +258,25 @@ export function formatProviders(config: SuparClawConfig): string {
   return [header, ...lines].join("\n");
 }
 
+/** Resolve a provider name from user input to the key actually stored in the
+ *  config. Everything that *reads* a ref already matches the provider part
+ *  case-insensitively (resolveModel, canonicalModelRef), so a config can hold a
+ *  key like "MultiRouter" and work — but every *write* path used to lowercase
+ *  the name and look that up literally, which made such a provider impossible
+ *  to test, edit or delete ("no such provider: multirouter") and made Edit fork
+ *  a lowercase twin with the models on the wrong record. */
+export function providerKey(
+  providers: Record<string, unknown> | undefined,
+  name: string,
+): string | null {
+  const wanted = name.trim();
+  if (!wanted) return null;
+  const all = providers ?? {};
+  if (Object.prototype.hasOwnProperty.call(all, wanted)) return wanted;
+  const lower = wanted.toLowerCase();
+  return Object.keys(all).find((key) => key.toLowerCase() === lower) ?? null;
+}
+
 export interface AddResult {
   ok: boolean;
   message: string;
@@ -270,13 +289,17 @@ export async function addProvider(
   name: string,
   opts: { baseUrl?: string; apiKey?: string; models?: string[]; renameFrom?: string } = {},
 ): Promise<AddResult> {
-  const clean = name.trim().toLowerCase();
+  // An existing key keeps its own casing ("MultiRouter" stays "MultiRouter");
+  // a genuinely new name is normalised to lowercase, as before.
+  const existingKey = providerKey(cfg.current.providers, name);
+  const clean = existingKey ?? name.trim().toLowerCase();
+  const lower = clean.toLowerCase();
   if (!clean) return { ok: false, message: "provider name is required" };
   if (!/^[\w.-]+$/.test(clean)) {
     return { ok: false, message: "provider name may only contain letters, digits, . - _" };
   }
 
-  const preset = presetByName(clean);
+  const preset = presetByName(lower);
   const baseUrl = (opts.baseUrl ?? preset?.baseUrl ?? "").trim();
   if (!baseUrl) return { ok: false, message: "a base url is required (…/v1)" };
 
@@ -313,7 +336,7 @@ export async function addProvider(
       moved.fallbacks ? `${moved.fallbacks} fallback${moved.fallbacks === 1 ? "" : "s"}` : "",
       moved.defaultModel ? "the default model" : "",
     ].filter(Boolean);
-    parts.push(`renamed from "${opts.renameFrom.trim().toLowerCase()}"${what.length ? ` — moved ${what.join(", ")}` : ""}`);
+    parts.push(`renamed from "${opts.renameFrom.trim()}"${what.length ? ` — moved ${what.join(", ")}` : ""}`);
   }
   return { ok: true, message: parts.join("\n") };
 }
@@ -334,7 +357,7 @@ export function remapProviderRefs(
   // Only an explicit "<provider>/…" ref is unambiguously ours; a bare model id
   // may belong to any provider and is left alone.
   const swap = (ref: unknown): string | null =>
-    typeof ref === "string" && ref.startsWith(`${src}/`) ? `${dst}/${ref.slice(src.length + 1)}` : null;
+    typeof ref === "string" && ref.toLowerCase().startsWith(`${src}/`) ? `${dst}/${ref.slice(src.length + 1)}` : null;
 
   const profiles = { ...(cfg.current.models ?? {}) } as Record<string, Record<string, unknown>>;
   for (const [id, entry] of Object.entries(profiles)) {
@@ -368,12 +391,16 @@ export function remapProviderRefs(
 }
 
 export function removeProvider(cfg: ConfigService, name: string): AddResult {
-  const clean = name.trim().toLowerCase();
+  // Resolve to the key actually stored — a config may hold "MultiRouter", and
+  // looking up only the lowercased form is what answered "no such provider"
+  // for a provider that is right there on the page.
+  const key = providerKey(cfg.current.providers, name);
   const providers = { ...(cfg.current.providers ?? {}) };
-  if (!providers[clean]) {
-    return { ok: false, message: `no such provider: ${clean}` };
+  if (!key) {
+    return { ok: false, message: `no such provider: ${name.trim()}` };
   }
-  delete providers[clean];
+  delete providers[key];
+  const clean = key;
   const saved = cfg.setPath("providers", providers);
   if (!saved.ok) return { ok: false, message: saved.errors.join("; ") };
 
@@ -381,10 +408,11 @@ export function removeProvider(cfg: ConfigService, name: string): AddResult {
   // offering a model with no endpoint and /model would still accept it, failing
   // later, far from the button that caused it. Same for a fallback entry.
   const profiles = { ...(cfg.current.models ?? {}) } as Record<string, Record<string, unknown>>;
+  const owns = (ref: unknown): boolean =>
+    typeof ref === "string" && ref.toLowerCase().startsWith(`${clean.toLowerCase()}/`);
   let droppedProfiles = 0;
   for (const [id, entry] of Object.entries(profiles)) {
-    const ref = entry?.["ref"];
-    if (typeof ref === "string" && ref.startsWith(`${clean}/`)) {
+    if (owns(entry?.["ref"])) {
       delete profiles[id];
       droppedProfiles++;
     }
@@ -392,20 +420,22 @@ export function removeProvider(cfg: ConfigService, name: string): AddResult {
   if (droppedProfiles) cfg.setPath("models", profiles);
 
   const fallbacks = Array.isArray(cfg.current.agents?.defaults?.fallbacks) ? cfg.current.agents.defaults.fallbacks : [];
-  const kept = fallbacks.filter((f) => !(typeof f === "string" && f.startsWith(`${clean}/`)));
+  const kept = fallbacks.filter((f) => !owns(f));
   const droppedFallbacks = fallbacks.length - kept.length;
   if (droppedFallbacks) cfg.setPath("agents.defaults.fallbacks", kept);
 
   // The auth order is config too, and it is keyed by provider name.
+  // The auth order is keyed by provider name too, and may hold either casing.
   const order = (cfg.current.auth?.order ?? {}) as Record<string, string[]>;
-  if (order[clean]) {
+  const orderKey = Object.keys(order).find((k) => k.toLowerCase() === clean.toLowerCase());
+  if (orderKey) {
     const next: Record<string, string[]> = { ...order };
-    delete next[clean];
+    delete next[orderKey];
     cfg.setPath("auth.order", next);
   }
 
   const stillDefault = cfg.current.agents?.defaults?.model ?? "";
-  const note = stillDefault.startsWith(`${clean}/`) ? `\nwarning: default model "${stillDefault}" now points at a removed provider` : "";
+  const note = owns(stillDefault) ? `\nwarning: default model "${stillDefault}" now points at a removed provider` : "";
   const extra = [
     droppedProfiles ? `${droppedProfiles} saved model${droppedProfiles === 1 ? "" : "s"}` : "",
     droppedFallbacks ? `${droppedFallbacks} fallback${droppedFallbacks === 1 ? "" : "s"}` : "",
@@ -437,9 +467,11 @@ export function parseProviderAddArgs(rest: string[]): {
 
 /** Hit /models and report. Used by `sc provider test`, /provider test. */
 export async function testProvider(config: SuparClawConfig, name: string): Promise<AddResult> {
-  const clean = name.trim().toLowerCase();
-  const p = config.providers?.[clean] as ProviderRecord | undefined;
-  if (!p) return { ok: false, message: `no such provider: ${clean}` };
+  const key = providerKey(config.providers, name);
+  if (!key) return { ok: false, message: `no such provider: ${name.trim()}` };
+  const clean = key;
+  const p = config.providers?.[key] as ProviderRecord | undefined;
+  if (!p) return { ok: false, message: `no such provider: ${key}` };
   const found = await fetchModels(p.baseUrl ?? "", p.apiKey ?? "");
   if (found.error) {
     return { ok: false, message: `${clean}: unreachable — ${found.error}\n  url: ${p.baseUrl}` };

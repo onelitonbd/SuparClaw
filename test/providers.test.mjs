@@ -237,3 +237,46 @@ test("renaming a provider brings its saved models, default and fallbacks along",
   assert.ok(cfg.current.providers.new, "the new record exists");
   assert.ok(cfg.current.providers.old, "the old record is the caller's to remove");
 });
+
+// --- provider names are matched the way refs are: case-insensitively --------
+
+test("a mixed-case provider key can be tested, edited and removed", async () => {
+  const cfg = scratchConfig();
+  const profile = (ref) => ({ ref, label: "", enabled: true, contextWindow: 0, maxTokens: 0, reasoningEffort: "inherit" });
+  // "MultiRouter" is a legitimate shape (resolveModel/canonicalModelRef match the
+  // provider part case-insensitively), but every write path used to lowercase it
+  // and look that up literally: Test/Remove answered "no such provider" for a
+  // provider on the page, and Edit forked a lowercase twin holding the models.
+  cfg.setPath("providers.MultiRouter", { baseUrl: "http://127.0.0.1:9/v1", apiKey: "k", models: ["m1"] });
+  cfg.setPath("models.MultiRouter-m1", profile("MultiRouter/m1"));
+  cfg.setPath("agents.defaults.fallbacks", ["MultiRouter/m1"]);
+  cfg.setPath("auth.order", { MultiRouter: ["multirouter:key:1"] });
+
+  const edited = await addProvider(cfg, "MultiRouter", {
+    baseUrl: "http://127.0.0.1:9/v1",
+    apiKey: "k2",
+    models: ["m1", "m2"],
+  });
+  assert.equal(edited.ok, true, edited.message);
+  assert.deepEqual(Object.keys(cfg.current.providers), ["MultiRouter"], "one record, original casing");
+  assert.deepEqual(cfg.current.providers.MultiRouter.models, ["m1", "m2"], "the models land on the record you edited");
+  assert.equal(cfg.current.providers.MultiRouter.apiKey, "k2");
+
+  const tested = await testProvider(cfg.current, "MultiRouter");
+  assert.match(tested.message, /^MultiRouter: (unreachable|ok)/, `testProvider answers about it: ${tested.message}`);
+
+  // Lowercase input still finds it — that is what the CLI and the UI send.
+  const removed = removeProvider(cfg, "multirouter");
+  assert.equal(removed.ok, true, removed.message);
+  assert.deepEqual(Object.keys(cfg.current.providers ?? {}), []);
+  assert.equal(cfg.current.models["MultiRouter-m1"], undefined, "its saved models go with it");
+  assert.deepEqual(cfg.current.agents.defaults.fallbacks, []);
+  assert.deepEqual(cfg.current.auth.order, {});
+  assert.match(removed.message, /removed "MultiRouter" — and 1 saved model and 1 fallback/);
+});
+
+test("an unknown provider name is echoed back as it was asked", () => {
+  const cfg = scratchConfig();
+  assert.match(removeProvider(cfg, "Nowhere").message, /no such provider: Nowhere/);
+  assert.match(removeProvider(cfg, "no where").message, /no such provider: no where/);
+});
