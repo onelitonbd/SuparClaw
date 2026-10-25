@@ -2,6 +2,7 @@
 
 import { Chat } from "./chat.js";
 import { el, esc, fmtTime, modal, toast, fuzzy } from "./dom.js";
+import { friendlyModelName } from "./model-name.js";
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
 import { onGatewayEvent } from "./notifications.js";
@@ -871,23 +872,6 @@ $("model-btn").onclick = (e) => {
     $("model-btn").setAttribute("aria-expanded", "false");
   }
 };
-
-/** Human-friendly model display name: drops a redundant provider prefix, then
- *  turns "gemini-3.1-flash-lite" into "Gemini 3.1 Flash Lite". */
-function friendlyModelName(label: string, provider?: string): string {
-  let short = label;
-  if (provider && provider !== "default") {
-    const prefix = provider + "/";
-    if (short.toLowerCase().startsWith(prefix.toLowerCase())) short = short.slice(prefix.length);
-  }
-  const words = short
-    .replace(/[\/:_-]+/g, " ")
-    .split(/\s+/)
-    .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
-    .join(" ")
-    .trim();
-  return words || short;
-}
 
 function renderModelMenu(): void {
   const list = $("model-list");

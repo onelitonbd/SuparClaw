@@ -1,7 +1,8 @@
 // Settings: Defaults, Models, Providers, Skills, Tools, Gateway, Runtime —
 // tabbed, one card per block.
 
-import { el, modal, toast } from "./dom.js";
+import { el, fuzzy, modal, toast } from "./dom.js";
+import { friendlyModelName } from "./model-name.js";
 import { gateway } from "./rpc.js";
 import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./notifications.js";
 
@@ -45,6 +46,18 @@ const TAB_ALIASES: Record<string, TabId> = {
   runtime: "runtime",
   system: "system",
 };
+
+/** One choice in a custom dropdown: `value` is what gets stored, `label` is
+ *  what a human reads, `title` keeps the raw ref on hover, `group` puts a
+ *  header over its rows (provider sections in a model menu). */
+type DdOption = { value: string; label: string; title?: string; group?: string };
+
+/** What #dropdown hands back: the hidden value store, the rendered node, and a
+ *  setter (the add-fallback control resets itself through it). */
+type Dd = { sel: HTMLSelectElement; node: HTMLElement; set: (v: string) => void };
+
+/** Close hooks of every open dropdown — Settings shows one menu at a time. */
+const openDds = new Set<() => void>();
 
 export class Settings {
   #root: HTMLElement;
@@ -248,115 +261,310 @@ export class Settings {
     }
   }
 
+  /* ---------------- custom dropdown ---------------- */
+
+  /**
+   * Custom listbox — never a native <select>, which browsers render and behave
+   * as they please. A hidden <select> keeps the value store, so save handlers
+   * still read `.value` and field ids stay exactly where they were.
+   *
+   * Their spec: "Model menus with more than eight choices include search …
+   * short menus stay compact." So search appears by itself past eight choices.
+   */
+  #dropdown(opts: {
+    id: string;
+    buttonId?: string;
+    value: string;
+    /** Field label — the button announces "label: value". */
+    label: string;
+    placeholder: string;
+    options: DdOption[];
+    searchable?: boolean;
+  }): Dd {
+    const { id, value, placeholder, label } = opts;
+    const buttonId = opts.buttonId ?? `${id}-btn`;
+    const choices = opts.options;
+    const present = (v: string): boolean => choices.some((o) => o.value === v);
+    const text = (v: string): string => {
+      const hit = choices.find((o) => o.value === v);
+      if (hit) return hit.label;
+      return v ? `${v} (not selected)` : placeholder;
+    };
+
+    // The store: a hidden <select> so `sel.value` keeps working everywhere.
+    const sel = el("select", { id, class: "dd__store", hidden: "", tabindex: "-1", "aria-hidden": "true" }) as HTMLSelectElement;
+    const fill = (v: string): void => {
+      sel.innerHTML = "";
+      const empty = el("option", { value: "" }, [placeholder]) as HTMLOptionElement;
+      if (!v) empty.selected = true;
+      sel.append(empty);
+      for (const o of choices) {
+        const opt = el("option", { value: o.value }, [o.label]) as HTMLOptionElement;
+        if (o.value === v) opt.selected = true;
+        sel.append(opt);
+      }
+      // A stored value whose model was removed stays visible, not dropped.
+      if (v && !present(v)) {
+        const orphan = el("option", { value: v }, [`${v} (not selected)`]) as HTMLOptionElement;
+        orphan.selected = true;
+        sel.append(orphan);
+      }
+    };
+    fill(value);
+
+    const val = el("span", { class: `dd__val${present(value) ? "" : " is-empty"}` }, [text(value)]);
+    const btn = el("button", {
+      class: "dd__btn",
+      id: buttonId,
+      type: "button",
+      "aria-haspopup": "listbox",
+      "aria-expanded": "false",
+      "aria-controls": `${id}-menu`,
+      "aria-label": `${label}: ${text(value)}`,
+    }, [val]) as HTMLButtonElement;
+
+    const searchable = opts.searchable ?? choices.length > 8;
+    const search = searchable
+      ? (el("input", { class: "dd__search", type: "search", placeholder: "Search…", autocomplete: "off", "aria-label": `Search ${label}` }) as HTMLInputElement)
+      : null;
+    const optsWrap = el("div", { class: "dd__opts" });
+    const menu = el("div", { class: "dd__menu", id: `${id}-menu`, role: "listbox", "aria-label": label, hidden: "" },
+      [...(search ? [search] : []), optsWrap]);
+
+    // Search scores the match, so a typed query ranks — it never reorders the
+    // saved value, and dismissing the menu leaves the selection alone.
+    const row = (o: DdOption): HTMLElement => {
+      const on = o.value === sel.value;
+      const node = el("button", {
+        class: `dd__opt${on ? " is-on" : ""}`,
+        type: "button",
+        role: "option",
+        "aria-selected": String(on),
+        title: o.title ?? o.value,
+      }, [el("span", { class: "dd__opt-label" }, [o.label])]);
+      if (on) node.append(el("span", { class: "dd__tick" }, ["✓"]));
+      node.onclick = () => set(o.value);
+      return node;
+    };
+    const paint = (): void => {
+      const q = (search?.value ?? "").trim();
+      optsWrap.innerHTML = "";
+      if (q) {
+        const hits = choices
+          .map((o) => ({ o, s: Math.max(fuzzy(q, o.label), fuzzy(q, o.title ?? ""), fuzzy(q, o.value)) }))
+          .filter((h) => h.s > 0)
+          .sort((a, b) => b.s - a.s);
+        if (!hits.length) {
+          optsWrap.append(el("div", { class: "dd__empty" }, ["No match"]));
+          return;
+        }
+        for (const { o } of hits) optsWrap.append(row(o));
+        return;
+      }
+      // Untyped: provider headers keep same-named models apart, in the order
+      // the catalog listed them.
+      const groups = new Map<string, DdOption[]>();
+      for (const o of choices) {
+        const g = o.group ?? "";
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g)!.push(o);
+      }
+      for (const [g, list] of groups) {
+        if (g) optsWrap.append(el("div", { class: "dd__group" }, [g]));
+        for (const o of list) optsWrap.append(row(o));
+      }
+    };
+
+    const close = (): void => {
+      openDds.delete(close);
+      menu.hidden = true;
+      btn.setAttribute("aria-expanded", "false");
+      dd.classList.remove("is-open");
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("mousedown", onOutside, true);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close();
+        btn.focus();
+      }
+    };
+    const onOutside = (e: Event): void => {
+      if (!dd.contains(e.target as Node)) close();
+    };
+    const open = (): void => {
+      for (const c of [...openDds]) c(); // one menu at a time
+      if (search) search.value = "";
+      paint();
+      dd.classList.remove("dd--up");
+      menu.hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+      // Flip upward only when the menu would spill past the pane it lives in
+      // (the settings pane scrolls itself; the window is not the constraint).
+      const r = btn.getBoundingClientRect();
+      const pane = dd.closest(".settings__main") as HTMLElement | null;
+      const bounds = pane ? pane.getBoundingClientRect() : { top: 0, bottom: window.innerHeight ?? 0 };
+      const h = menu.offsetHeight ?? 0;
+      if (r.bottom + h + 8 > bounds.bottom && r.top - h - 8 >= bounds.top) dd.classList.add("dd--up");
+      dd.classList.add("is-open");
+      openDds.add(close);
+      document.addEventListener("keydown", onKey, true);
+      document.addEventListener("mousedown", onOutside, true);
+      if (search) search.focus();
+    };
+    const set = (v: string): void => {
+      fill(v);
+      val.textContent = text(v);
+      val.classList.toggle("is-empty", !present(v));
+      btn.setAttribute("aria-label", `${label}: ${text(v)}`);
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      close();
+      btn.focus(); // keep focus where the user was, not on a hidden menu
+    };
+
+    btn.onclick = () => (menu.hidden ? open() : close());
+    if (search) {
+      search.oninput = () => paint();
+      search.onkeydown = (e) => {
+        if (e.key !== "Enter") return;
+        const first = optsWrap.querySelector(".dd__opt") as HTMLButtonElement | null;
+        if (first) {
+          e.preventDefault();
+          first.click();
+        }
+      };
+    }
+
+    const dd = el("div", { class: "dd" }, [sel, btn, menu]);
+    return { sel, node: dd, set };
+  }
+
   /* ---------------- model ---------------- */
 
   #renderModel(defaults: any, selected: any[], _warning?: string): void {
     // Pure selection: every choice comes from the models checked in the Models
     // tab — no typing refs. The fallback list is ordered and uncapped (10+).
-    const options = (selected as any[]).map((m) => ({
-      value: String(m.id ?? m.ref ?? ""),
-      label: String(m.label || m.ref || m.id),
-    }));
+    const options: DdOption[] = (selected as any[]).map((m) => {
+      const raw = String(m.label || m.ref || m.id);
+      const provider = String(m.ref ?? m.id ?? "").split("/")[0];
+      // Rows sit under a provider header and drop its prefix, so the eye reads
+      // the model — the stored id never changes.
+      return { value: String(m.id ?? m.ref ?? ""), label: friendlyModelName(raw, provider), group: provider };
+    });
 
-    const makeSelect = (value: string, emptyLabel: string): HTMLSelectElement => {
-      const sel = el("select", { class: "inp mono" }) as HTMLSelectElement;
-      const empty = el("option", { value: "" }, [emptyLabel]) as HTMLOptionElement;
-      if (!value) empty.selected = true;
-      sel.append(empty);
-      for (const o of options) {
-        const opt = el("option", { value: o.value }, [o.label]) as HTMLOptionElement;
-        if (o.value === value) opt.selected = true;
-        sel.append(opt);
-      }
-      // Keep a stored value visible even when its model is no longer selected.
-      if (value && !options.some((o) => o.value === value)) {
-        const opt = el("option", { value }, [`${value} (not selected)`]) as HTMLOptionElement;
-        opt.selected = true;
-        sel.append(opt);
-      }
-      return sel;
-    };
+    const defaultDd = this.#dropdown({
+      id: "defaults-model",
+      value: String(defaults.model ?? ""),
+      label: "Default model",
+      placeholder: "— choose a model —",
+      options,
+    });
 
-    const defaultSel = makeSelect(String(defaults.model ?? ""), "— choose a model —");
-
-    const fbRows = el("div", { class: "list" });
+    // Fallbacks are ONE field, not a growing list of selects: chips in
+    // priority order, remove/reorder from the chip, one menu adds the next —
+    // and that menu only offers models not already in the chain.
     const fallbackValues: string[] = [...(defaults.fallbacks ?? [])];
+    const chips = el("div", { class: "fbs" });
+    const addWrap = el("div", { class: "fbs__add" });
+    const count = el("span", { class: "setsec__count" }, [""]);
     const redrawFallbacks = (): void => {
-      fbRows.innerHTML = "";
-      fallbackValues.forEach((val, i) => {
-        const sel = makeSelect(val, "— choose a model —");
-        sel.onchange = () => {
-          fallbackValues[i] = sel.value;
+      chips.innerHTML = "";
+      fallbackValues.forEach((v, i) => {
+        const opt = options.find((o) => o.value === v);
+        const chip = el("div", { class: "fb" }, [
+          el("span", { class: "fb__n" }, [String(i + 1)]),
+          el("span", { class: "fb__t", title: opt?.title ?? v }, [opt?.label ?? friendlyModelName(v)]),
+        ]);
+        const swap = (dir: -1 | 1, name: string): HTMLButtonElement => {
+          const b = el("button", { class: "fb__b", type: "button", "aria-label": `${name} ${opt?.label ?? v}` }, [dir < 0 ? "‹" : "›"]) as HTMLButtonElement;
+          b.disabled = i + dir < 0 || i + dir >= fallbackValues.length;
+          b.onclick = () => {
+            const j = i + dir;
+            const tmp = fallbackValues[i] as string;
+            fallbackValues[i] = fallbackValues[j] as string;
+            fallbackValues[j] = tmp;
+            redrawFallbacks();
+          };
+          return b;
         };
-        const up = el("button", { class: "btn sm", type: "button", "aria-label": "Move up" }, ["↑"]) as HTMLButtonElement;
-        up.disabled = i === 0;
-        up.onclick = () => {
-          const t = fallbackValues[i - 1] as string;
-          fallbackValues[i - 1] = fallbackValues[i] as string;
-          fallbackValues[i] = t;
-          redrawFallbacks();
-        };
-        const down = el("button", { class: "btn sm", type: "button", "aria-label": "Move down" }, ["↓"]) as HTMLButtonElement;
-        down.disabled = i === fallbackValues.length - 1;
-        down.onclick = () => {
-          const t = fallbackValues[i + 1] as string;
-          fallbackValues[i + 1] = fallbackValues[i] as string;
-          fallbackValues[i] = t;
-          redrawFallbacks();
-        };
-        const rm = el("button", { class: "btn sm danger", type: "button" }, ["✕"]) as HTMLButtonElement;
+        const rm = el("button", { class: "fb__b fb__b--x", type: "button", "aria-label": `Remove ${opt?.label ?? v}` }, ["✕"]) as HTMLButtonElement;
         rm.onclick = () => {
           fallbackValues.splice(i, 1);
           redrawFallbacks();
         };
-        fbRows.append(el("div", { class: "row", style: "padding:8px 16px;gap:8px" }, [
-          el("span", { class: "row__label", style: "min-width:28px" }, [`#${i + 1}`]),
-          sel, up, down, rm,
-        ]));
+        chip.append(swap(-1, "Move earlier"), swap(1, "Move later"), rm);
+        chips.append(chip);
       });
-    };
-    redrawFallbacks();
+      if (!fallbackValues.length) chips.append(el("span", { class: "fbs__empty" }, ["No fallbacks — one model only."]));
 
-    const add = el("button", { class: "btn", type: "button" }, ["+ Add fallback"]);
-    add.onclick = () => {
-      fallbackValues.push("");
-      redrawFallbacks();
+      const used = new Set(fallbackValues);
+      const left = options.filter((o) => !used.has(o.value));
+      addWrap.innerHTML = "";
+      if (left.length) {
+        const addDd = this.#dropdown({
+          id: "fallback-add",
+          value: "",
+          label: "Add a fallback model",
+          placeholder: "+ Add fallback",
+          options: left,
+        });
+        addDd.sel.addEventListener("change", () => {
+          const v = addDd.sel.value;
+          if (!v) return;
+          fallbackValues.push(v);
+          redrawFallbacks();
+        });
+        addWrap.append(addDd.node);
+      } else {
+        addWrap.append(el("p", { class: "hint" }, [
+          options.length ? "Every selected model is already in the chain." : "No models selected yet — check models in the Models tab first.",
+        ]));
+      }
+      count.textContent = `${fallbackValues.length} configured`;
     };
 
     const save = el("button", { class: "btn pri", type: "button" }, ["Save changes"]);
     save.onclick = async () => {
       const fb = fallbackValues.map((v) => v.trim()).filter(Boolean);
       await this.#setMany([
-        ["agents.defaults.model", defaultSel.value],
+        ["agents.defaults.model", defaultDd.sel.value],
         ["agents.defaults.fallbacks", fb],
       ], "model saved");
     };
 
     this.#root.append(
-      el("div", { class: "card" }, [
-        el("div", { class: "modal__field" }, [
-          el("label", { class: "lbl" }, ["Default model"]),
-          defaultSel,
+      el("div", { class: "card setcard" }, [
+        el("div", { class: "setcard__head" }, [
+          el("h3", {}, ["Model"]),
           el("p", { class: "hint" }, [
             options.length === 0
               ? "No models selected yet — check models in the Models tab first."
-              : "Used for every new session. Choose from the models you selected in the Models tab.",
+              : "Every new session starts on the default model; fallbacks take over when it fails.",
           ]),
         ]),
-      ]),
-      el("div", { class: "card", style: "padding:8px 16px" }, [
-        el("div", { class: "cap", style: "padding:8px 0;display:flex;align-items:center;gap:8px" }, [
-          el("span", {}, ["Fallback models"]),
-          el("span", { class: "hint", style: "margin-left:auto" }, [`${fallbackValues.length} configured`]),
+        el("div", { class: "setgrid" }, [
+          el("div", { class: "setfield setfield--wide" }, [
+            el("label", { class: "lbl", for: "defaults-model-btn" }, ["Default model"]),
+            defaultDd.node,
+            el("p", { class: "hint" }, ["Used for every new session. Choose from the models selected in the Models tab."]),
+          ]),
         ]),
-        el("p", { class: "hint" }, [
-          "Tried in order when a model fails (each gets its own retry budget). Add as many as you like — at least 10 fit.",
+        el("div", { class: "setsec" }, [
+          el("div", { class: "setsec__head" }, [
+            el("span", { class: "cap" }, ["Fallback models"]),
+            count,
+          ]),
+          el("p", { class: "hint" }, [
+            "Tried in order when a model fails (each gets its own retry budget). Add as many as you like — at least 10 fit.",
+          ]),
+          chips,
+          addWrap,
         ]),
-        fbRows,
-        add,
+        el("div", { class: "setfoot" }, [save]),
       ]),
-      save,
     );
+    redrawFallbacks();
   }
 
   /** Agent identity (P4 #39 — their Personal identity page): name/emoji/theme
@@ -367,11 +575,17 @@ export class Settings {
       const input = el("input", { class: "inp", id: iid, value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
       return el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), input]);
     };
+    // The persona is prose — a real textarea, not a one-line input.
+    const mkArea = (iid: string, label: string, value: string, placeholder: string) => {
+      const area = el("textarea", { class: "inp area", id: iid, placeholder, rows: "5", autocomplete: "off", spellcheck: "false" }) as HTMLTextAreaElement;
+      area.value = value;
+      return el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), area]);
+    };
     const saveId = el("button", { class: "btn", type: "button", id: "identity-save" }, ["Save identity"]) as HTMLButtonElement;
     saveId.onclick = () => {
       const name = (this.#root.querySelector("#identity-name") as HTMLInputElement).value.trim();
       const emoji = (this.#root.querySelector("#identity-emoji") as HTMLInputElement).value.trim();
-      const theme = (this.#root.querySelector("#identity-theme") as HTMLInputElement).value.trim();
+      const theme = (this.#root.querySelector("#identity-theme") as HTMLTextAreaElement).value.trim();
       void this.#setMany(
         [
           ["agents.identity.name", name || "SuparClaw"],
@@ -381,12 +595,17 @@ export class Settings {
         "identity saved — new sessions greet with it immediately",
       );
     };
-    this.#root.append(el("div", { class: "card agent-identity" }, [
-      el("h3", { style: "margin:0 0 8px" }, ["Agent identity"]),
-      mkField("identity-name", "Name", String(id.name ?? "SuparClaw"), "SuparClaw"),
-      mkField("identity-emoji", "Emoji", String(id.emoji ?? "🦀"), "🦀"),
-      mkField("identity-theme", "Theme (persona written into the system prompt)", String(id.theme ?? ""), "a warm, sharp, resourceful personal AI companion…"),
-      saveId,
+    this.#root.append(el("div", { class: "card setcard agent-identity" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Agent identity"]),
+        el("p", { class: "hint" }, ["Who the agent says it is, everywhere it speaks."]),
+      ]),
+      el("div", { class: "setgrid" }, [
+        mkField("identity-name", "Name", String(id.name ?? "SuparClaw"), "SuparClaw"),
+        mkField("identity-emoji", "Emoji", String(id.emoji ?? "🦀"), "🦀"),
+      ]),
+      mkArea("identity-theme", "Theme (persona written into the system prompt)", String(id.theme ?? ""), "a warm, sharp, resourceful personal AI companion…"),
+      el("div", { class: "setfoot" }, [saveId]),
     ]));
   }
 
@@ -398,9 +617,14 @@ export class Settings {
       return { input, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), input, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
     };
     const mkSel = (iid: string, label: string, cur: string, options: [string, string][], hint?: string) => {
-      const sel = el("select", { class: "in", id: iid }) as HTMLSelectElement;
-      for (const [v, lab] of options) sel.append(el("option", { value: v, ...(cur === v ? { selected: "" } : {}) }, [lab]));
-      return { sel, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), sel, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
+      const dd = this.#dropdown({
+        id: iid,
+        value: cur,
+        label,
+        placeholder: "— choose —",
+        options: options.map(([value, lab]) => ({ value, label: lab })),
+      });
+      return { sel: dd.sel, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `${iid}-btn` }, [label]), dd.node, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
     };
     const sub = d.subagents ?? {};
     const iterations = mkNum("ad-iterations", "Max tool iterations (1–40)", Number(d.maxToolIterations ?? 12));
@@ -416,6 +640,12 @@ export class Settings {
     const subDepth = mkNum("ad-sub-depth", "Subagent max depth (1–4)", Number(sub.maxDepth ?? 1), "1 = children cannot spawn children");
     const subThink = mkSel("ad-sub-think", "Subagent thinking override", String(sub.thinking ?? ""), [["", "inherit caller"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"]]);
     const subDeleg = mkSel("ad-sub-deleg", "Delegation mode", String(sub.delegationMode ?? "inherit"), [["inherit", "inherit"], ["prefer", "prefer (:main)"], ["suggest", "suggest"]], "prompt guidance only");
+
+    const sec = (title: string, nodes: HTMLElement[]): HTMLElement =>
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, [title])]),
+        el("div", { class: "setgrid" }, nodes),
+      ]);
 
     const saveD = el("button", { class: "btn", type: "button", id: "agent-defaults-save" }, ["Save defaults"]) as HTMLButtonElement;
     saveD.onclick = () => {
@@ -438,12 +668,15 @@ export class Settings {
       );
     };
 
-    this.#root.append(el("div", { class: "card agent-defaults" }, [
-      el("h3", { style: "margin:0 0 8px" }, ["Agent defaults"]),
-      iterations.node, budget.node, concur.node, queueSel.node, reasoning.node, viewSel.node, usageSel.node,
-      el("div", { class: "usage-h" }, ["Subagents"]),
-      subConcur.node, subModel.node, subDepth.node, subThink.node, subDeleg.node,
-      saveD,
+    this.#root.append(el("div", { class: "card setcard agent-defaults" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Agent defaults"]),
+        el("p", { class: "hint" }, ["Where a session has no setting of its own, it falls back to these."]),
+      ]),
+      sec("Loop & limits", [iterations.node, budget.node, concur.node, queueSel.node]),
+      sec("Reasoning & replies", [reasoning.node, viewSel.node, usageSel.node]),
+      sec("Subagents", [subConcur.node, subModel.node, subDepth.node, subThink.node, subDeleg.node]),
+      el("div", { class: "setfoot" }, [saveD]),
     ]));
   }
 
