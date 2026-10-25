@@ -67,4 +67,19 @@ test("ui Usage tab: cards + three aggregate tables + json/csv exports", () => {
   const css = readFileSync(new URL("../ui/styles.css", import.meta.url), "utf8");
   assert.match(css, /\.usage-cards/);
   assert.match(css, /\.usage-table/);
+
+  // Redesign: the page uses this app's dropdowns (not raw selects), states what
+  // each column is per table, says which period the totals cover, and has one
+  // empty state with a way out.
+  assert.match(src, /id: "usage-period",/);
+  assert.match(src, /id: "usage-session",/);
+  assert.match(src, /#dropdown\(\{/);
+  assert.match(src, /"Input tokens"/);
+  assert.match(src, /"Output tokens"/);
+  assert.match(src, /usage-scope/);
+  assert.match(src, /id: "usage-refresh"/);
+  assert.match(src, /usage-tablewrap/);
+  assert.match(src, /usage-empty__title/);
+  assert.match(css, /\.usage-tablewrap/);
+  assert.match(css, /\.usage-scope/);
 });

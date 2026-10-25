@@ -2801,19 +2801,41 @@ export class Settings {
 
 
 
-  /** Usage dashboard (P4 #34 — their Usage page): totals cards, daily
-   *  rollups, session + model aggregates from `usage.report`. Cost only shows
-   *  when a pricing card covered every contributing run — n/a otherwise
-   *  (their never-guess-a-price rule). */
+  /** Usage dashboard (P4 #34 — their Usage page): totals, daily rollups and
+   *  session/model aggregates from `usage.report`. Cost only appears when a
+   *  pricing card covered every contributing run — never-guess-a-price: a total
+   *  we cannot compute says n/a instead of inventing a number. */
   #usageDays = 30;
   #usageSession = "";
   #usageReport: any = null;
+  /** Where focus goes back to after a re-render rebuilds the controls. */
+  #usageFocus: string | null = null;
+
+  /** A session key's last two segments — the part that tells two chats apart —
+   *  while the menu keeps the whole key as its title. */
+  #usageSessionLabel(key: string): string {
+    const parts = key.split(":");
+    return parts.length > 2 ? parts.slice(-2).join(":") : key;
+  }
 
   async #renderUsage(): Promise<void> {
     const body = el("div", { class: "settings__stack" });
     this.#root.innerHTML = "";
     this.#root.append(body);
-    body.append(el("div", { class: "hint" }, ["Loading usage report…"]));
+    body.append(el("p", { class: "hint", role: "status" }, ["Loading usage report…"]));
+
+    // A re-render replaces every control, so the pick that caused it would
+    // otherwise drop the keyboard user at the top of the page.
+    const finish = (): void => {
+      const id = this.#usageFocus;
+      this.#usageFocus = null;
+      if (id) (document.getElementById(id) as HTMLElement | null)?.focus();
+    };
+    const rerenderFor = (id: string): void => {
+      this.#usageFocus = id;
+      void this.#renderUsage();
+    };
+
     let res: any;
     try {
       res = await gateway.request("usage.report", {
@@ -2822,98 +2844,209 @@ export class Settings {
       });
     } catch (err) {
       body.innerHTML = "";
-      body.append(el("div", { class: "hint" }, [`usage report failed: ${(err as Error).message}`]));
+      const retry = el("button", { class: "btn pri", type: "button", id: "usage-retry" }, ["Try again"]);
+      retry.onclick = () => rerenderFor("usage-retry");
+      body.append(el("div", { class: "card usage-empty" }, [
+        el("p", { class: "usage-empty__title" }, ["The usage report could not be loaded"]),
+        el("p", { class: "hint" }, [(err as Error).message]),
+        el("div", { class: "usage-empty__actions" }, [retry]),
+      ]));
+      finish();
       return;
     }
     this.#usageReport = res.report;
     const report = res.report;
+    const t = report.total;
     body.innerHTML = "";
 
     const fmtTok = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+    // Zero is "$0.00" (four decimals on nothing reads like a rounding bug), a
+    // real sub-cent amount keeps its precision, and an unknown cost says so.
     const fmtUsd = (c: number | null, unknown: number) =>
-      c !== null ? `$${c >= 0.01 ? c.toFixed(2) : c.toFixed(4)}` : unknown > 0 ? "n/a" : "$0.00";
+      c === null ? (unknown > 0 ? "n/a" : "$0.00") : c === 0 ? "$0.00" : c >= 0.01 ? `$${c.toFixed(2)}` : `$${c.toFixed(4)}`;
+    const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-    const selectField = (label: string, options: { value: string; label: string }[], value: string, onchange: (v: string) => void) => {
-      const sel = el("select", { class: "in" }, options.map((o) => el("option", { value: o.value, ...(o.value === value ? { selected: "" } : {}) }, [o.label])) as Node[]);
-      (sel as HTMLSelectElement).onchange = () => onchange((sel as HTMLSelectElement).value);
-      return el("label", { class: "field" }, [el("span", { class: "cap" }, [label]), sel]);
+    const PERIODS = [
+      { value: "7", label: "Last 7 days" },
+      { value: "30", label: "Last 30 days" },
+      { value: "90", label: "Last 90 days" },
+      { value: "0", label: "All time" },
+    ];
+    const periodLabel = PERIODS.find((p) => p.value === String(this.#usageDays))?.label ?? `Last ${this.#usageDays} days`;
+
+    // Same dropdown as every other Settings page: button + listbox, search once
+    // the list is long, keyboard and focus handled in one place.
+    const periodDd = this.#dropdown({
+      id: "usage-period",
+      value: String(this.#usageDays),
+      label: "Period",
+      placeholder: "Last 30 days",
+      options: PERIODS,
+      searchable: false,
+    });
+    periodDd.sel.onchange = () => {
+      this.#usageDays = Number(periodDd.sel.value);
+      rerenderFor("usage-period-btn");
+    };
+    const sessionDd = this.#dropdown({
+      id: "usage-session",
+      value: this.#usageSession,
+      label: "Session",
+      placeholder: "All sessions",
+      searchable: true,
+      options: ((res.sessions ?? []) as string[]).map((k) => ({ value: k, label: this.#usageSessionLabel(k), title: k })),
+    });
+    sessionDd.sel.onchange = () => {
+      this.#usageSession = sessionDd.sel.value;
+      rerenderFor("usage-session-btn");
     };
 
-    const toolbar = el("div", { class: "usage-toolbar" }, [
-      selectField(
-        "Period",
-        [
-          { value: "7", label: "Last 7 days" },
-          { value: "30", label: "Last 30 days" },
-          { value: "90", label: "Last 90 days" },
-          { value: "0", label: "All time" },
-        ],
-        String(this.#usageDays),
-        (v) => { this.#usageDays = Number(v); void this.#renderUsage(); },
-      ),
-      selectField(
-        "Session",
-        [
-          { value: "", label: "All sessions" },
-          ...((res.sessions ?? []) as string[]).map((k) => ({ value: k, label: k })),
-        ],
-        this.#usageSession,
-        (v) => { this.#usageSession = v; void this.#renderUsage(); },
-      ),
-    ]);
-    const exJson = el("button", { class: "btn", type: "button", id: "usage-export-json" }, ["Export JSON"]) as HTMLButtonElement;
+    const nothing = t.runs === 0;
+    const refresh = el("button", { class: "btn", type: "button", id: "usage-refresh", title: "Fetch the report again" }, ["Refresh"]) as HTMLButtonElement;
+    refresh.onclick = () => rerenderFor("usage-refresh");
+    const exJson = el("button", { class: "btn", type: "button", id: "usage-export-json", title: "The whole report as JSON" }, ["Export JSON"]) as HTMLButtonElement;
     exJson.onclick = () => this.#usageExport("json");
-    const exCsv = el("button", { class: "btn", type: "button", id: "usage-export-csv" }, ["Export CSV (daily)"]) as HTMLButtonElement;
+    const exCsv = el("button", { class: "btn", type: "button", id: "usage-export-csv", title: "Daily rows for this period, one line per day" }, ["Export CSV (daily)"]) as HTMLButtonElement;
     exCsv.onclick = () => this.#usageExport("csv");
-    toolbar.append(el("span", { class: "settings__spacer" }), exJson, exCsv);
-    body.append(toolbar);
-
-    const t = report.total;
-    body.append(el("div", { class: "usage-cards" }, [
-      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [fmtTok(t.inputTokens)]), el("span", { class: "cap" }, ["input tokens"])]),
-      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [fmtTok(t.outputTokens)]), el("span", { class: "cap" }, ["output tokens"])]),
-      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [String(t.runs)]), el("span", { class: "cap" }, ["runs"])]),
-      el("div", { class: "usage-card" }, [el("span", { class: "usage-card__value" }, [fmtUsd(t.costUsd, t.unknownPriceRuns)]), el("span", { class: "cap" }, ["cost"])]),
-    ]));
-    if (t.costUsd === null && t.unknownPriceRuns > 0) {
-      body.append(el("div", { class: "hint" }, [`${t.unknownPriceRuns}/${t.runs} run(s) used a model with no pricing card — cost is partial (their never-guess-a-price rule).`]));
+    for (const b of [exJson, exCsv]) {
+      b.disabled = nothing;
+      if (nothing) b.title = "Nothing to export for this period yet";
     }
 
-    const addTable = (title: string, rows: { key: string; runs: number; in: number; out: number; cost: number | null; unknown: number }[], empty: string, cls: string) => {
-      body.append(el("div", { class: "usage-h" }, [title]));
-      if (rows.length === 0) {
-        body.append(el("div", { class: "hint" }, [empty]));
-        return;
+    body.append(el("div", { class: "usage-toolbar" }, [
+      el("div", { class: "field field--period" }, [el("span", { class: "cap" }, ["Period"]), periodDd.node]),
+      el("div", { class: "field field--session" }, [el("span", { class: "cap" }, ["Session"]), sessionDd.node]),
+      el("div", { class: "usage-actions" }, [refresh, exJson, exCsv]),
+    ]));
+
+    // What every number below covers, restated where the numbers are.
+    body.append(el("p", { class: "usage-scope" }, [
+      `${periodLabel} · ${this.#usageSession ? `session ${this.#usageSession}` : "all sessions"}`,
+    ]));
+
+    const card = (value: string, label: string, title: string) =>
+      el("div", { class: "usage-card", title }, [
+        el("span", { class: "usage-card__value" }, [value]),
+        el("span", { class: "cap" }, [label]),
+      ]);
+    body.append(el("div", { class: "usage-cards" }, [
+      card(fmtTok(t.inputTokens), "Input tokens", `${t.inputTokens.toLocaleString()} input tokens`),
+      card(fmtTok(t.outputTokens), "Output tokens", `${t.outputTokens.toLocaleString()} output tokens`),
+      card(String(t.runs), t.runs === 1 ? "Run" : "Runs", `${t.runs.toLocaleString()} completed runs`),
+      card(fmtUsd(t.costUsd, t.unknownPriceRuns), "Cost", t.costUsd === null ? "n/a — a run in this period has no pricing card" : `$${t.costUsd.toFixed(6)}`),
+    ]));
+    if (t.cachedInput > 0) {
+      body.append(el("p", { class: "hint" }, [`${fmtTok(t.cachedInput)} of the input tokens were served from cache.`]));
+    }
+    if (t.unknownPriceRuns > 0) {
+      body.append(el("p", { class: "hint" }, [
+        `${plural(t.unknownPriceRuns, "run")} of ${t.runs} used a model with no pricing card, so cost is not a real total — set a price on Models → Tune to get one.`,
+      ]));
+    }
+
+    if (nothing) {
+      // One empty state, not three tables that each say "nothing" differently.
+      const actions: HTMLElement[] = [];
+      if (this.#usageSession) {
+        const clearSession = el("button", { class: "btn", type: "button", id: "usage-clear-session" }, ["Show all sessions"]);
+        clearSession.onclick = () => {
+          this.#usageSession = "";
+          rerenderFor("usage-clear-session");
+        };
+        actions.push(clearSession);
       }
-      const thead = el("tr", {}, ["Day / key", "Runs", "In", "Out", "Cost"].map((h) => el("th", {}, [h])) as Node[]);
-      const tbody = el("tbody", {}, rows.map((r) => el("tr", {}, [
-        el("td", { class: "usage-key" }, [r.key]),
-        el("td", { class: "usage-num", "data-v": String(r.runs) }, [String(r.runs)]),
-        el("td", { class: "usage-num" }, [fmtTok(r.in)]),
-        el("td", { class: "usage-num" }, [fmtTok(r.out)]),
-        el("td", { class: "usage-num" }, [fmtUsd(r.cost, r.unknown)]),
-      ] as Node[])) as Node[]);
-      body.append(el("table", { class: `usage-table ${cls}` }, [el("thead", {}, [thead]), tbody]));
+      if (this.#usageDays !== 0) {
+        const allTime = el("button", { class: "btn pri", type: "button", id: "usage-all-time" }, ["Show all time"]);
+        allTime.onclick = () => {
+          this.#usageDays = 0;
+          rerenderFor("usage-all-time");
+        };
+        actions.push(allTime);
+      }
+      body.append(el("div", { class: "card usage-empty" }, [
+        el("p", { class: "usage-empty__title" }, [
+          this.#usageSession ? "No runs for this session in this period" : this.#usageDays !== 0 ? `No runs in the ${periodLabel.toLowerCase()}` : "No usage recorded yet",
+        ]),
+        el("p", { class: "hint" }, [
+          "A run is recorded whenever the agent answers, with the tokens the provider reported. Numbers appear here as soon as one finishes.",
+        ]),
+        ...(actions.length ? [el("div", { class: "usage-empty__actions" }, actions)] : []),
+      ]));
+      finish();
+      return;
+    }
+
+    const costCell = (c: number | null, unknown: number): HTMLElement =>
+      c === null
+        ? el("td", { class: "usage-num usage-na", title: unknown ? `${plural(unknown, "run")} here used a model with no pricing card` : "no pricing card" }, ["n/a"])
+        : el("td", { class: "usage-num", title: `$${c.toFixed(6)}` }, [fmtUsd(c, unknown)]);
+
+    const section = (
+      title: string,
+      note: string,
+      firstColumn: string,
+      rows: { key: string; runs: number; in: number; out: number; cost: number | null; unknown: number }[],
+      empty: string,
+      cls: string,
+    ) => {
+      const content = el("div");
+      if (rows.length === 0) {
+        content.append(el("p", { class: "hint" }, [empty]));
+      } else {
+        const table = el("table", { class: `usage-table ${cls}`, "aria-label": `${title}: ${firstColumn}, runs, input tokens, output tokens, cost` }, [
+          el("thead", {}, [el("tr", {}, [
+            el("th", { scope: "col" }, [firstColumn]),
+            el("th", { scope: "col", class: "usage-num" }, ["Runs"]),
+            el("th", { scope: "col", class: "usage-num" }, ["Input tokens"]),
+            el("th", { scope: "col", class: "usage-num" }, ["Output tokens"]),
+            el("th", { scope: "col", class: "usage-num" }, ["Cost"]),
+          ])]),
+          el("tbody", {}, rows.map((r) => el("tr", {}, [
+            el("td", { class: "usage-key", title: r.key }, [r.key]),
+            el("td", { class: "usage-num", "data-v": String(r.runs) }, [String(r.runs)]),
+            el("td", { class: "usage-num", title: `${r.in.toLocaleString()} input tokens` }, [fmtTok(r.in)]),
+            el("td", { class: "usage-num", title: `${r.out.toLocaleString()} output tokens` }, [fmtTok(r.out)]),
+            costCell(r.cost, r.unknown),
+          ] as Node[])) as Node[]),
+        ]);
+        content.append(el("div", { class: "usage-tablewrap" }, [table]));
+      }
+      return el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, [title]),
+          el("span", { class: "setsec__count" }, [note]),
+        ]),
+        content,
+      ]);
     };
 
-    addTable(
-      "Daily rollup",
-      report.perDay.map((d: any) => ({ key: d.day, runs: d.runs, in: d.inputTokens, out: d.outputTokens, cost: d.costUsd, unknown: d.unknownPriceRuns })),
-      "No runs recorded in this period.",
-      "usage-table--daily",
+    body.append(
+      section(
+        "Daily rollup",
+        `${plural(report.perDay.length, "day")} · newest first`,
+        "Day",
+        report.perDay.map((d: any) => ({ key: d.day, runs: d.runs, in: d.inputTokens, out: d.outputTokens, cost: d.costUsd, unknown: d.unknownPriceRuns })),
+        "No runs recorded in this period.",
+        "usage-table--daily",
+      ),
+      section(
+        "Per session",
+        `${plural(report.perSession.length, "session")} · by tokens`,
+        "Session",
+        report.perSession.map((x: any) => ({ key: x.session, runs: x.runs, in: x.inputTokens, out: x.outputTokens, cost: x.costUsd, unknown: x.unknownPriceRuns })),
+        "No sessions with usage yet.",
+        "usage-table--sessions",
+      ),
+      section(
+        "Per model",
+        `${plural(report.perModel.length, "model")} · by runs`,
+        "Model",
+        report.perModel.map((m: any) => ({ key: m.model, runs: m.runs, in: m.inputTokens, out: m.outputTokens, cost: m.costUsd, unknown: m.unknownPriceRuns })),
+        "No models with usage yet.",
+        "usage-table--models",
+      ),
     );
-    addTable(
-      "Per session",
-      report.perSession.map((x: any) => ({ key: x.session, runs: x.runs, in: x.inputTokens, out: x.outputTokens, cost: x.costUsd, unknown: x.unknownPriceRuns })),
-      "No sessions with usage yet.",
-      "usage-table--sessions",
-    );
-    addTable(
-      "Per model",
-      report.perModel.map((m: any) => ({ key: m.model, runs: m.runs, in: m.inputTokens, out: m.outputTokens, cost: m.costUsd, unknown: m.unknownPriceRuns })),
-      "No models with usage yet.",
-      "usage-table--models",
-    );
+    finish();
   }
 
   #usageExport(kind: "json" | "csv"): void {
