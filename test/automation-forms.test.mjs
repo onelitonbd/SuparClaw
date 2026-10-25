@@ -47,30 +47,34 @@ test("automations tab: imap form (master toggle, account CRUD, leaf writes), hoo
   const src = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
   // IMAP: master toggle + account rows + add/edit dialog + guarded delete
   assert.match(src, /id: "imap-enabled"/);
-  assert.match(src, /\["imap\.enabled", imapMasterCb\.checked\]/);
+  assert.match(src, /\["imap\.enabled", masterCb\.checked\]/);
   assert.match(src, /id: `imap-edit-\$\{aname\}`/);
   assert.match(src, /id: `imap-del-\$\{aname\}`/);
-  assert.match(src, /window\.confirm\(`Delete IMAP account/);
-  assert.match(src, /config\.unset", \{ path: `imap\.accounts\.\$\{aname\}` \}/);
+  // The delete is the app's own dialog (window.confirm is banned in ui/src/dom.ts),
+  // and it states what stops rather than asking a yes/no question.
+  assert.match(src, /title: `Delete mailbox \$\{aname\}\?`/);
+  assert.match(src, /danger: true,[\s\S]*?config\.unset", \{ path: `imap\.accounts\.\$\{aname\}` \}/);
+  assert.ok(!src.includes("window.confirm"), "no native confirm anywhere in settings");
   assert.match(src, /id: "imap-add"/);
   assert.match(src, /#imapAccountDialog\(origName: string \| null/);
   // leaf writes only — the account object never round-trips (no sentinel leaks)
   assert.match(src, /const base = `imap\.accounts\.\$\{aname\}`;/);
   assert.match(src, /`\$\{base\}\.allowedSenders`, senders\]/);
   assert.match(src, /if \(pwF\.input\.value\) pairs\.push\(\[`\$\{base\}\.password`/); // blank keeps
-  assert.match(src, /account name may not contain dots/); // record-key safety
+  assert.match(src, /may not contain dots/); // record-key safety
   // hooks form
   assert.match(src, /id: "hooks-enabled"/);
-  assert.match(src, /\["hooks\.path", hookPathInp\.value/);
-  assert.match(src, /\["hooks\.allowRequestSessionKey", hookAskCb\.checked\]/);
-  assert.match(src, /if \(hookTokenInp\.value\.trim\(\)\) pairs\.push\(\["hooks\.token"/);
+  assert.match(src, /\["hooks\.path", nextPath\]/);
+  assert.match(src, /\["hooks\.allowRequestSessionKey", askCb\.checked\]/);
+  assert.match(src, /if \(typed\) pairs\.push\(\["hooks\.token", typed\]\)/); // write-only
   assert.match(src, /id: "hook-map-add"/);
   assert.match(src, /#hookMappingDialog\(origName: string \| null/);
   assert.match(src, /config\.unset", \{ path: `hooks\.mappings\.\$\{mname\}` \}/);
-  // dreaming
-  assert.match(src, /id: "dreaming-enabled"/);
-  assert.match(src, /id: "dreaming-schedule"/);
-  assert.match(src, /\["memory\.dreaming\.schedule", dreamSched\.value\.trim\(\)/);
+  // The dream sweep is edited once, on the Memory tab: Automations only points at it.
+  assert.match(src, /id: "auto-open-memory"/);
+  assert.ok(!src.includes('id: "dreaming-enabled"'), "one editor for memory.dreaming");
+  assert.ok(!src.includes('id: "dreaming-schedule"'));
+  assert.equal(src.includes("memory.dreaming.schedule"), false, "the schedule leaf is written by Memory alone");
 });
 
 test("queue controls: header switch writes queue.set, depth chip from queue.status, settings block", () => {
@@ -95,6 +99,9 @@ test("queue controls: header switch writes queue.set, depth chip from queue.stat
   assert.match(settings, /id: "queue-drop"/);
   assert.match(settings, /id: "queue-debounce"/);
   assert.match(settings, /id: "queue-by-tg"/);
-  assert.match(settings, /\["messages\.queue\.mode", qModeSel\.value\]/);
-  assert.match(settings, /\["messages\.queue\.byChannel", \{ \.\.\.\(qTg\.value \? \{ telegram: qTg\.value \} : \{\}\) \}\]/);
+  // A #dropdown keeps its value in a hidden store; reading `.value` off the store
+  // is the browser's opinion, so every read goes through the option list.
+  assert.match(settings, /\["messages\.queue\.mode", this\.#selValue\(modeDd\.sel\)\]/);
+  assert.match(settings, /const tg = this\.#selValue\(tgDd\.sel\);/);
+  assert.match(settings, /\["messages\.queue\.byChannel", \{ \.\.\.\(tg \? \{ telegram: tg \} : \{\}\) \}\]/);
 });

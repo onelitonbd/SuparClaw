@@ -30,15 +30,17 @@ test("gateway wires cron.upsert + cron.remove with the CLI's validation contract
 test("automations tab renders the cron editor: rows, toggle, edit, delete, new-job dialog", () => {
   const src = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
   assert.match(src, /gateway\.request\("cron\.list"\)/);
-  assert.match(src, /class: "row cron-job"/);
+  assert.match(src, /class: `row setrec \$\{kind\}`/);
+  assert.match(src, /, "cron-job"\)/); // the cron list's own row class
   assert.match(src, /id: `cron-toggle-\$\{j\.id\}`/);
   assert.match(src, /id: `cron-edit-\$\{j\.id\}`/);
   assert.match(src, /id: `cron-del-\$\{j\.id\}`/);
   assert.match(src, /id: "cron-new"/);
   // toggle writes enabled through cron.upsert (same validated path)
-  assert.match(src, /await gateway\.request\("cron\.upsert", \{ id: String\(j\.id\).*enabled: !enabled \}\)/s);
-  // delete confirmation (their destructive-action rule) → cron.remove
-  assert.match(src, /window\.confirm\(`Delete cron job/);
+  assert.match(src, /await gateway\.request\("cron\.upsert", \{[\s\S]*?id: String\(j\.id\),[\s\S]*?enabled: !enabled,\s*\}\)/);
+  // delete confirmation (the destructive-action rule) → the app's own dialog → cron.remove
+  assert.match(src, /title: `Delete \$\{name\}\?`/);
+  assert.match(src, /danger: true,[\s\S]*?gateway\.request\("cron\.remove", \{ id: String\(j\.id\) \}\)/);
   assert.match(src, /gateway\.request\("cron\.remove", \{ id: String\(j\.id\) \}\)/);
   // dialog: every JobRow field is editable
   assert.match(src, /#cronJobDialog\(job: any \| null, config: any\)/);
@@ -46,15 +48,19 @@ test("automations tab renders the cron editor: rows, toggle, edit, delete, new-j
   assert.match(src, /"Schedule \(cron\)"/);
   assert.match(src, /"Prompt"/);
   assert.match(src, /"Timezone \(IANA, optional\)"/);
-  assert.match(src, /default \(cron\.delivery\)/);
+  // A choice says what it does; a config path is never an option label.
+  assert.match(src, /the configured default/);
+  assert.ok(!src.includes("default (cron.delivery)"));
   assert.match(src, /Delivery target \(optional\)/);
   assert.match(src, /Suppress empty results/);
   assert.match(src, /"Enabled"/);
   // create vs edit label; edits keep the id in the payload
   assert.match(src, /job \? `Edit job: /);
   assert.match(src, /\.\.\.\(job\?\.id \? \{ id: String\(job\.id\) \} : \{\}\)/);
-  // last-run status surfaced per job (their jobs page shows recent runs)
-  assert.match(src, /lastRunByJob/);
+  // last-run status surfaced per job, from the run history the list returns
+  assert.match(src, /const runs = new Map<string, any>\(\)/);
+  assert.match(src, /for \(const r of \(cronData\?\.runs \?\? \[\]\) as any\[\]\)/);
+  assert.match(src, /Number\(j\.last_run_at \?\? 0\)/);
   const css = readFileSync(new URL("../ui/styles.css", import.meta.url), "utf8");
   assert.match(css, /\.cron-job__toggle/);
   assert.match(css, /\.cron-job__meta/);

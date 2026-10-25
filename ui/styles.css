@@ -805,7 +805,6 @@ textarea:focus-visible {
 .cron-job__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .cron-job__meta { font-size: 11px; }
 .cron-job__toggle { min-width: 44px; }
-.cron-job__toggle.is-on { border-color: var(--ok); color: var(--ok); }
 .cron-job .btn { padding: 4px 8px; font-size: 12px; }
 .btn.danger { color: var(--err, #e5534b); }
 
@@ -1452,6 +1451,13 @@ textarea:focus-visible {
 
 .modal__field { margin-top: 12px; }
 .modal__field:first-child { margin-top: 6px; }
+
+/* A dialog with more than a handful of fields gets named groups, so the reader
+   is not counting inputs. Uses the same .cap label as a card's sections. */
+.modal__sec { margin-top: 18px; }
+.modal__sec > .cap { display: block; }
+.modal__sec > .modal__field { margin-top: 10px; }
+.modal__sec > .modal__field:first-of-type { margin-top: 8px; }
 
 .modal__foot {
   display: flex;
@@ -3374,6 +3380,19 @@ html[data-theme-mode='dark'] .settings select.inp {
   min-width: 44px;
 }
 
+/* A record's verbs sit in one cluster so the same control is in the same place
+   on every row: state tag, verb, edit, delete. It wraps under the name on a
+   phone instead of squeezing the name into three characters. */
+.settings .cron-job__act {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.settings .cron-job__act .settings__tag { margin-right: 2px; }
+
 .settings .card.diary > summary {
   padding: 13px var(--card-pad);
 }
@@ -3534,6 +3553,7 @@ html[data-theme-mode='dark'] .settings select.inp {
 
 /* State words carry the colour, never a whole pill. */
 .settings .row__value.is-ok { color: var(--ok); }
+.settings .row__value.is-warn { color: var(--warn); }
 .settings .row__value.is-err { color: var(--err); }
 .settings .hint.is-warn { color: var(--warn); }
 

@@ -4795,326 +4795,774 @@ export class Settings {
   }
 
 
-  /* ---------------- automations (P3 #27 — their Automation settings page) ---------------- */
+  /* ---------------- automations (OpenClaw's Automation page, adapted) ---------------- */
 
+  /** Five cards: cron, heartbeat, mail, hooks, queue.
+   *
+   *  One rule decides how everything behaves: a *setting* is edited into a draft
+   *  and committed by the card's footer, while a *record* (a job, a mailbox, a
+   *  mapping, a job's enabled state) acts immediately through its own dialog or
+   *  verb. Before this, the two models were mixed inside single cards. */
   async #renderAutomations(config: any): Promise<void> {
+    // Two independent reads: the job editor is useful even when the runtime state
+    // cannot be read, and vice versa.
     let state: any = null;
+    let stateErr = "";
     try {
       state = await gateway.request("automations.state");
     } catch (err) {
-      toast((err as Error).message, "err");
+      stateErr = (err as Error).message;
     }
-    // Cron editor (P4 #35) — richer data (jobs + last runs) than
-    // automations.state; reconcile happens server-side on every list.
     let cronData: any = null;
     try {
       cronData = await gateway.request("cron.list");
-    } catch { /* covered by state fallback */ }
+    } catch (err) {
+      stateErr ||= (err as Error).message;
+    }
 
-    const row = (label: string, value: string, style = ""): HTMLElement =>
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, [label]),
-        el("span", { class: "row__value", style }, [value]),
-      ]);
-    const card = (title: string, rows: HTMLElement[], extra: Node[] = []): HTMLElement =>
-      el("div", { class: "card" }, [el("h3", {}, [title]), ...rows, ...extra]);
+    const body = el("div", { class: "settings__stack" }, [
+      this.#cronCard(config, state, cronData, stateErr),
+      this.#heartbeatCard(config, state, stateErr),
+      this.#imapCard(config, state, stateErr),
+      this.#hooksCard(config, stateErr),
+      this.#queueCard(config, stateErr),
+    ]);
 
-    // ----- cron (P4 #35: full editor — their Cron page) -----
-    const cronRows: HTMLElement[] = [];
-    const cronCardExtra: Node[] = [];
-    const jobs: any[] = cronData?.jobs ?? state?.cron?.jobs ?? [];
-    const lastRunByJob = new Map<string, any>();
-    for (const r of cronData?.runs ?? []) {
-      if (!lastRunByJob.has(r.job_id)) lastRunByJob.set(r.job_id, r);
-    }
-    if (state?.cron?.enabled === false) {
-      cronRows.push(row("Scheduler", "disabled"));
-    } else {
-      cronRows.push(row("Scheduler", `on · ${jobs.length} jobs`));
-    }
-    for (const j of jobs) {
-      const enabled = Number(j.enabled ?? 1) === 1;
-      const last = lastRunByJob.get(String(j.id));
-      const meta = [
-        `${j.schedule ?? j.expr ?? j.cron ?? ""}${j.tz ? ` [${j.tz}]` : ""}`,
-        last ? `· last ${last.status ?? "run"} ${new Date(Number(last.started_at)).toLocaleString()}` : "",
-        j.delivery_mode ? `· ${j.delivery_mode}${j.delivery_to ? ` → ${j.delivery_to}` : ""}` : "",
-      ].filter(Boolean).join(" ");
-      cronRows.push(
-        el("div", { class: "row cron-job", "data-job": String(j.id) }, [
-          el("div", { class: "cron-job__body" }, [
-            el("span", { class: "row__label" }, [String(j.name ?? j.id ?? "job")]),
-            el("span", { class: "hint cron-job__meta" }, [meta]),
-          ]),
-          (() => {
-            const toggle = el("button", {
-              class: `btn cron-job__toggle${enabled ? " is-on" : ""}`,
-              type: "button",
-              id: `cron-toggle-${j.id}`,
-              "aria-pressed": enabled ? "true" : "false",
-            }, [enabled ? "On" : "Off"]) as HTMLButtonElement;
-            toggle.onclick = async () => {
-              try {
-                await gateway.request("cron.upsert", { id: String(j.id), name: String(j.name ?? j.id), schedule: String(j.schedule ?? j.expr ?? ""), prompt: String(j.prompt ?? ""), enabled: !enabled });
-                await this.#renderAutomations(config);
-              } catch (err) { toast((err as Error).message, "err"); }
-            };
-            return toggle;
-          })(),
-          (() => {
-            const edit = el("button", { class: "btn", type: "button", id: `cron-edit-${j.id}` }, ["Edit…"]) as HTMLButtonElement;
-            edit.onclick = () => this.#cronJobDialog(j, config);
-            return edit;
-          })(),
-          (() => {
-            const del = el("button", { class: "btn danger", type: "button", id: `cron-del-${j.id}` }, ["Delete"]) as HTMLButtonElement;
-            del.onclick = async () => {
-              if (!window.confirm(`Delete cron job "${j.name ?? j.id}"?`)) return;
-              try {
-                await gateway.request("cron.remove", { id: String(j.id) });
-                toast(`removed ${j.id}`, "ok");
-                await this.#renderAutomations(config);
-              } catch (err) { toast((err as Error).message, "err"); }
-            };
-            return del;
-          })(),
-        ]),
-      );
-    }
-    if (jobs.length === 0 && state?.cron?.enabled !== false) {
-      cronCardExtra.push(el("p", { class: "hint" }, ["No jobs yet — give the agent time-based work."]));
-    }
-    const newJob = el("button", { class: "btn", type: "button", id: "cron-new" }, ["+ New job"]) as HTMLButtonElement;
-    newJob.onclick = () => this.#cronJobDialog(null, config);
-    cronCardExtra.push(newJob);
-    this.#root.append(card("Cron jobs", cronRows, cronCardExtra));
-
-    // ----- heartbeat -----
-    const hb = state?.heartbeat ?? {};
-    const everyIn = el("input", { class: "inp mono", id: "hb-every", value: String(hb.every ?? "30m") });
-    const lightCb = el("input", { type: "checkbox" });
-    (lightCb as HTMLInputElement).checked = Boolean(hb.lightContext);
-    const isoCb = el("input", { type: "checkbox" });
-    (isoCb as HTMLInputElement).checked = Boolean(hb.isolatedSession);
-    const saveHb = el("button", { class: "btn", type: "button" }, ["Save"]);
-    saveHb.onclick = async () => {
-      await this.#setMany(
-        [
-          ["agents.defaults.heartbeat.every", everyIn.value.trim() || "30m"],
-          ["agents.defaults.heartbeat.lightContext", (lightCb as HTMLInputElement).checked],
-          ["agents.defaults.heartbeat.isolatedSession", (isoCb as HTMLInputElement).checked],
-        ],
-        "heartbeat saved — rebuilds on next tick",
-      );
-    };
-    this.#root.append(card("Heartbeat", [
-      row("Cadence", hb.armed ? `${hb.every ?? "30m"} · armed` : `${hb.every ?? "30m"} · not running`, hb.armed ? "color:var(--ok)" : "color:var(--warn)"),
-      row("Target", String(hb.target ?? "owner")),
-      row("Last DM", hb.lastTargetChat ? String(hb.lastTargetChat) : "—"),
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl", for: "hb-every" }, ["every (e.g. 30m, 1h, 0m to disable)"]),
-        everyIn,
-      ]),
-      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["lightContext"]), lightCb]),
-      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["isolatedSession"]), isoCb]),
-    ], [
-      el("p", { class: "hint" }, [
-        "Standing orders (their automation/standing-orders) live in AGENTS.md and are injected every session; heartbeat only pokes the agent to act on them. Quiet by default via the NO_REPLY contract.",
-      ]),
-      saveHb,
+    // The dream sweep is a Memory-tab setting and its editor lives there. One
+    // line and a way to reach it, instead of a second copy of the same two keys.
+    const go = el("button", { class: "btn sm", type: "button", id: "auto-open-memory" }, ["Open Memory"]) as HTMLButtonElement;
+    go.onclick = () => this.#setTab("memory");
+    body.append(el("div", { class: "settings__inline auto-pointer" }, [
+      el("p", { class: "hint" }, ["The nightly dream sweep — its switch, schedule and diary — is on the Memory tab."]),
+      go,
     ]));
 
-    // ----- imap (P4 #36: status AND editing — their automation/imap form) -----
-    const imapRows: HTMLElement[] = [];
-    const imap = state?.imap ?? {};
-    // Live watcher status rows stay (cursor health came from the poller),
-    // followed by the editable account forms from the redacted config.
-    if (!imap.enabled) {
-      imapRows.push(row("Watcher", "disabled"));
-    } else {
-      for (const a of imap.accounts ?? []) {
-        imapRows.push(row(
-          `${a.name} · ${a.mailbox}`,
-          `${a.unhealthy ? "unhealthy" : `cursor ${a.cursor}`}${a.skips ? ` · ${a.skips} skip(s)` : ""}${a.lastError ? " · " + a.lastError.slice(0, 60) : ""}`,
-          a.unhealthy ? "color:var(--err)" : "color:var(--ok)",
-        ));
-      }
-    }
-    const imapCfg = config.imap ?? {};
-    const accounts: Record<string, any> = imapCfg.accounts ?? {};
-    const imapMasterCb = el("input", { type: "checkbox", id: "imap-enabled" }) as HTMLInputElement;
-    imapMasterCb.checked = Boolean(imapCfg.enabled);
-    imapMasterCb.onchange = () => void this.#setMany([["imap.enabled", imapMasterCb.checked]], imapMasterCb.checked ? "imap watcher enabled" : "imap watcher disabled");
-    imapRows.push(el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), imapMasterCb]));
-    for (const [aname, acc] of Object.entries(accounts)) {
-      const bits = [
-        `${acc.secure === false ? "" : "ssl "}${acc.host ?? "?"}:${acc.port ?? 993}`,
-        acc.user ? String(acc.user) : "",
-        `mailbox ${acc.mailbox ?? "INBOX"}`,
-        `${acc.watch?.mode ?? "auto"}${acc.watch?.mode === "interval" || acc.watch?.mode === "auto" ? ` / ${acc.watch?.pollSeconds ?? 60}s` : ""}`,
-        Number(acc.enabled ?? 1) === 0 ? "· disabled" : "",
-      ].filter(Boolean).join(" · ");
-      const editBtn = el("button", { class: "btn", type: "button", id: `imap-edit-${aname}` }, ["Edit…"]) as HTMLButtonElement;
-      editBtn.onclick = () => this.#imapAccountDialog(aname, acc, config);
-      const delBtn = el("button", { class: "btn danger", type: "button", id: `imap-del-${aname}` }, ["Delete"]) as HTMLButtonElement;
-      delBtn.onclick = async () => {
-        if (!window.confirm(`Delete IMAP account "${aname}" and its watcher config?`)) return;
-        try {
-          await gateway.request("config.unset", { path: `imap.accounts.${aname}` });
-          toast(`removed account ${aname}`, "ok");
-          this.#onChanged();
-        } catch (err) { toast((err as Error).message, "err"); }
-      };
-      imapRows.push(el("div", { class: "row cron-job", "data-account": aname }, [
-        el("div", { class: "cron-job__body" }, [
-          el("span", { class: "row__label" }, [aname]),
-          el("span", { class: "hint cron-job__meta" }, [bits]),
-        ]),
-        editBtn, delBtn,
-      ]));
-    }
-    const addAcc = el("button", { class: "btn", type: "button", id: "imap-add" }, ["+ Add account"]) as HTMLButtonElement;
-    addAcc.onclick = () => this.#imapAccountDialog(null, null, config);
-    this.#root.append(card("IMAP mail watcher", imapRows, [
-      el("p", { class: "hint" }, [
-        "Their automation/imap: baseline on start, UIDVALIDITY dedupe, sender allowlist, no-replay restarts. Password fields stay blank to keep the stored secret — or set passwordEnv to reference \${ENV}.",
-      ]),
-      addAcc,
-    ]));
-
-    // ----- inbound hooks (P4 #36: token/path/mappings form) -----
-    const hooksCfg = config.hooks ?? {};
-    const hookRows: HTMLElement[] = [];
-    const hookEnabledCb = el("input", { type: "checkbox", id: "hooks-enabled" }) as HTMLInputElement;
-    hookEnabledCb.checked = Boolean(hooksCfg.enabled);
-    hookEnabledCb.onchange = () => void this.#setMany([["hooks.enabled", hookEnabledCb.checked]], hookEnabledCb.checked ? "inbound hooks enabled" : "inbound hooks disabled");
-    hookRows.push(el("div", { class: "row" }, [
-      el("span", { class: "row__label" }, ["Enabled (needs enabled + token set to live)"]),
-      hookEnabledCb,
-    ]));
-    const hookPathInp = el("input", { class: "inp mono", id: "hooks-path", value: String(hooksCfg.path ?? "/hooks"), autocomplete: "off" }) as HTMLInputElement;
-    const hookTokenInp = el("input", { class: "inp mono", id: "hooks-token-out", type: "password", placeholder: "leave blank to keep the stored token", autocomplete: "off" }) as HTMLInputElement;
-    const hookAskCb = el("input", { type: "checkbox", id: "hooks-ask" }) as HTMLInputElement;
-    hookAskCb.checked = Boolean(hooksCfg.allowRequestSessionKey);
-    const saveHooks = el("button", { class: "btn", type: "button", id: "hooks-save" }, ["Save hook settings"]) as HTMLButtonElement;
-    saveHooks.onclick = async () => {
-      const pairs: [string, unknown][] = [
-        ["hooks.path", hookPathInp.value.trim() || "/hooks"],
-        ["hooks.allowRequestSessionKey", hookAskCb.checked],
-      ];
-      if (hookTokenInp.value.trim()) pairs.push(["hooks.token", hookTokenInp.value.trim()]);
-      hookTokenInp.value = "";
-      await this.#setMany(pairs, "hook settings saved");
-    };
-    hookRows.push(el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "hooks-path" }, ["Path"]), hookPathInp]));
-    hookRows.push(el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "hooks-token-out" }, ["Bearer token (write-only)"]), hookTokenInp]));
-    hookRows.push(el("div", { class: "row" }, [el("span", { class: "row__label" }, ["allowRequestSessionKey"]), hookAskCb]));
-
-    const mappings: Record<string, any> = hooksCfg.mappings ?? {};
-    for (const [mname, m] of Object.entries(mappings)) {
-      const editBtn = el("button", { class: "btn", type: "button", id: `hook-map-edit-${mname}` }, ["Edit…"]) as HTMLButtonElement;
-      editBtn.onclick = () => this.#hookMappingDialog(mname, m, config);
-      const delBtn = el("button", { class: "btn danger", type: "button", id: `hook-map-del-${mname}` }, ["Delete"]) as HTMLButtonElement;
-      delBtn.onclick = async () => {
-        if (!window.confirm(`Delete hook mapping "${mname}"?`)) return;
-        try {
-          await gateway.request("config.unset", { path: `hooks.mappings.${mname}` });
-          toast(`removed mapping ${mname}`, "ok");
-          this.#onChanged();
-        } catch (err) { toast((err as Error).message, "err"); }
-      };
-      const desc = `${m.action ?? "agent"}${m.sessionKey ? ` → ${m.sessionKey}` : ""}${(m.message ?? m.text ?? "") ? ` — "${String(m.message ?? m.text).slice(0, 48)}"` : ""}`;
-      hookRows.push(el("div", { class: "row cron-job", "data-mapping": mname }, [
-        el("div", { class: "cron-job__body" }, [
-          el("span", { class: "row__label" }, [mname]),
-          el("span", { class: "hint cron-job__meta" }, [desc]),
-        ]),
-        editBtn, delBtn,
-      ]));
-    }
-    if (Object.keys(mappings).length === 0) {
-      hookRows.push(el("p", { class: "hint" }, ["No mappings — unmatched hook paths 404 (their unmapped-hook rule)."]));
-    }
-    const addMap = el("button", { class: "btn", type: "button", id: "hook-map-add" }, ["+ Add mapping"]) as HTMLButtonElement;
-    addMap.onclick = () => this.#hookMappingDialog(null, null, config);
-    this.#root.append(card("Inbound hooks", hookRows, [saveHooks, addMap]));
-
-    // ----- message queue (P4 #37 — their command-queue settings) -----
-    const queueCfg = config.messages?.queue ?? {};
-    const qModeSel = el("select", { class: "in", id: "queue-mode" }) as HTMLSelectElement;
-    for (const v of ["steer", "followup", "collect", "interrupt"]) {
-      qModeSel.append(el("option", { value: v, ...(String(queueCfg.mode ?? "steer") === v ? { selected: "" } : {}) }, [v]));
-    }
-    const qCap = el("input", { class: "inp mono", id: "queue-cap", value: String(queueCfg.cap ?? 20), autocomplete: "off" }) as HTMLInputElement;
-    const qDrop = el("select", { class: "in", id: "queue-drop" }) as HTMLSelectElement;
-    for (const v of ["summarize", "old", "new"]) {
-      qDrop.append(el("option", { value: v, ...(String(queueCfg.drop ?? "summarize") === v ? { selected: "" } : {}) }, [v]));
-    }
-    const qDebounce = el("input", { class: "inp mono", id: "queue-debounce", value: String(queueCfg.debounceMs ?? 500), autocomplete: "off" }) as HTMLInputElement;
-    const qTg = el("select", { class: "in", id: "queue-by-tg" }) as HTMLSelectElement;
-    const tgCur = String(queueCfg.byChannel?.telegram ?? "");
-    const tgChoices: [string, string][] = [["", "inherit (default)"], ["steer", "steer"], ["followup", "followup"], ["collect", "collect"], ["interrupt", "interrupt"]];
-    for (const [v, label] of tgChoices) {
-      qTg.append(el("option", { value: v, ...(tgCur === v ? { selected: "" } : {}) }, [label]));
-    }
-    const saveQueue = el("button", { class: "btn", type: "button", id: "queue-save" }, ["Save"]) as HTMLButtonElement;
-    saveQueue.onclick = () => {
-      const pairs: [string, unknown][] = [
-        ["messages.queue.mode", qModeSel.value],
-        ["messages.queue.cap", Math.max(1, Number(qCap.value) || 20)],
-        ["messages.queue.drop", qDrop.value],
-        ["messages.queue.debounceMs", Math.max(0, Number(qDebounce.value) || 0)],
-      ];
-      pairs.push(["messages.queue.byChannel", { ...(qTg.value ? { telegram: qTg.value } : {}) }]);
-      void this.#setMany(pairs, "queue settings saved");
-    };
-    this.#root.append(card("Message queue", [
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl", for: "queue-mode" }, ["Default mode"]),
-        qModeSel,
-        el("span", { class: "hint" }, ["steer: inject at tool boundaries · followup: run after the active turn · collect: merge in the quiet window · interrupt: kill and run newest"]),
-      ]),
-      el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "queue-cap" }, ["Cap (inputs held per session)"]), qCap]),
-      el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "queue-drop" }, ["On overflow (drop)"]), qDrop]),
-      el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "queue-debounce" }, ["Debounce (ms)"]), qDebounce]),
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl", for: "queue-by-tg" }, ["Per-channel override: telegram"]),
-        qTg,
-      ]),
-    ], [
-      el("p", { class: "hint" }, ["The chat header switch overrides these per session (queue.set); byChannel wins over the default here (their precedence)."]),
-      saveQueue,
-    ]));
-
-    // ----- memory.dreaming schedule (P4 #36) -----
-    const dreaming = config.memory?.dreaming ?? {};
-    const dreamCb = el("input", { type: "checkbox", id: "dreaming-enabled" }) as HTMLInputElement;
-    dreamCb.checked = dreaming.enabled !== false;
-    const dreamSched = el("input", { class: "inp mono", id: "dreaming-schedule", value: String(dreaming.schedule ?? "0 3 * * *"), autocomplete: "off" }) as HTMLInputElement;
-    const saveDream = el("button", { class: "btn", type: "button", id: "dreaming-save" }, ["Save"]) as HTMLButtonElement;
-    saveDream.onclick = () => void this.#setMany(
-      [
-        ["memory.dreaming.enabled", dreamCb.checked],
-        ["memory.dreaming.schedule", dreamSched.value.trim() || "0 3 * * *"],
-      ],
-      "dreaming schedule saved — the gateway daemon runs the next pass",
-    );
-    this.#root.append(card("Memory dreaming", [
-      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), dreamCb]),
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl", for: "dreaming-schedule" }, ["Schedule (5-field cron — the gateway daemon runs it)"]),
-        dreamSched,
-      ]),
-    ], [
-      el("p", { class: "hint" }, ["Their default 0 3 * * * — nightly consolidation turns session transcripts into durable memory notes."]),
-      saveDream,
-    ]));
+    this.#root.append(body);
   }
 
-  /** Cron job editor dialog (P4 #35 — their Add/Edit job flow): the same
-   *  validated contract as `sc cron add` — schedule + IANA zone checked by
-   *  croner server-side (`bad_schedule`), webhook delivery needs a target
-   *  (`bad_request`). Edits keep the job id + session key. */
+  #cronCard(config: any, state: any, cronData: any, loadErr: string): HTMLElement {
+    const jobsKnown = Boolean(cronData?.jobs) || Boolean(state?.cron?.jobs);
+    const jobs: any[] = cronData?.jobs ?? state?.cron?.jobs ?? [];
+    const stateKnown = Boolean(state?.cron);
+    const runs = new Map<string, any>();
+    for (const r of (cronData?.runs ?? []) as any[]) {
+      if (!runs.has(String(r.job_id))) runs.set(String(r.job_id), r);
+    }
+
+    const strip = this.#statusStrip();
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    // `cron.enabled` is a config leaf this card also writes, so config wins over
+    // the runtime snapshot: after a save the page must not disagree with itself.
+    const schedulerCb = el("input", { type: "checkbox", id: "cron-enabled" }) as HTMLInputElement;
+    const cfgEnabled = config?.cron?.enabled;
+    schedulerCb.checked = typeof cfgEnabled === "boolean"
+      ? cfgEnabled
+      : stateKnown ? state.cron.enabled !== false : true;
+
+    const syncStatus = (): void => {
+      if (!stateKnown && !jobsKnown) {
+        strip.set("unknown", "", `Could not read the runtime state${loadErr ? ` — ${loadErr}` : ""}.`);
+        return;
+      }
+      if (!schedulerCb.checked) {
+        strip.set("off", "is-warn", "Nothing fires while the scheduler is off. The jobs below are kept.");
+        return;
+      }
+      const active = jobs.filter((j) => Number(j.enabled ?? 1) === 1).length;
+      const paused = jobs.length - active;
+      const lastAt = Math.max(
+        jobs.reduce((max, j) => Math.max(max, Number(j.last_run_at ?? 0)), 0),
+        ...[...runs.values()].map((r) => Number(r.started_at ?? 0)),
+      );
+      strip.set(
+        "on",
+        "is-ok",
+        (paused > 0
+          ? `${paused} ${paused === 1 ? "job is" : "jobs are"} paused. `
+          : `${jobs.length} ${jobs.length === 1 ? "job is" : "jobs are"} scheduled and running. `) +
+          (lastAt ? `The last one fired ${this.#relTime(lastAt)}.` : "Nothing has fired yet."),
+      );
+    };
+    schedulerCb.onchange = () => syncStatus();
+
+    const save = el("button", { class: "btn pri", type: "button", id: "cron-save" }, ["Save scheduler"]) as HTMLButtonElement;
+    save.onclick = async () => {
+      save.disabled = true;
+      save.textContent = "Saving…";
+      const ok = await this.#commit(
+        [["cron.enabled", schedulerCb.checked]],
+        note,
+        problem,
+        schedulerCb.checked ? "scheduler saved — jobs fire on the next tick" : "scheduler saved — nothing fires until it is back on",
+      );
+      save.disabled = false;
+      save.textContent = "Save scheduler";
+      if (ok) void this.render();
+    };
+
+    const jobRows = jobs.map((j) => {
+      const enabled = Number(j.enabled ?? 1) === 1;
+      const last = runs.get(String(j.id));
+      const lastAt = Number(j.last_run_at ?? 0) || Number(last?.started_at ?? 0);
+      const facts: (Node | string)[] = [
+        el("span", { class: "mono" }, [String(j.schedule ?? "")]),
+        j.tz ? `, ${String(j.tz)}` : "",
+        lastAt ? `, last ${last?.status ? `${String(last.status)} ` : "ran "}${this.#relTime(lastAt)}` : ", not run yet",
+        j.delivery_mode === "announce" ? `, posts the result to ${String(j.delivery_to ?? "a chat")}` : "",
+        j.delivery_mode === "webhook" ? `, POSTs the result to ${String(j.delivery_to ?? "a URL")}` : "",
+        j.delivery_mode === "none" ? ", keeps the result in its own session" : "",
+      ];
+      const stateTag = el("span", { class: `settings__tag${enabled ? " is-ok" : ""}` }, [enabled ? "on" : "paused"]);
+      const name = String(j.name ?? j.id);
+      const flip = el("button", {
+        class: "btn sm cron-job__toggle",
+        type: "button",
+        id: `cron-toggle-${j.id}`,
+        "aria-pressed": enabled ? "true" : "false",
+        "aria-label": `${enabled ? "Pause" : "Resume"} ${name}`,
+      }, [enabled ? "Pause" : "Resume"]) as HTMLButtonElement;
+      flip.onclick = async () => {
+        flip.disabled = true;
+        try {
+          // Same validated path as `sc cron add`: the running scheduler reconciles.
+          await gateway.request("cron.upsert", {
+            id: String(j.id), name, schedule: String(j.schedule ?? ""),
+            prompt: String(j.prompt ?? ""), enabled: !enabled,
+          });
+          toast(`${name} ${enabled ? "paused" : "resumed"}`, "ok");
+          await this.render();
+        } catch (err) {
+          flip.disabled = false;
+          toast((err as Error).message, "err");
+        }
+      };
+      const edit = el("button", {
+        class: "btn sm", type: "button", id: `cron-edit-${j.id}`, "aria-label": `Edit ${name}`,
+      }, ["Edit…"]) as HTMLButtonElement;
+      edit.onclick = () => this.#cronJobDialog(j, config);
+      const del = el("button", {
+        class: "btn sm danger", type: "button", id: `cron-del-${j.id}`, "aria-label": `Delete ${name}`,
+      }, ["Delete"]) as HTMLButtonElement;
+      del.onclick = () => modal({
+        title: `Delete ${name}?`,
+        body: "Its next run will not happen. Runs already recorded stay in the history.",
+        confirmLabel: "Delete job",
+        danger: true,
+        onConfirm: async () => {
+          try {
+            await gateway.request("cron.remove", { id: String(j.id) });
+            toast(`removed ${name}`, "ok");
+            await this.render();
+          } catch (err) {
+            toast((err as Error).message, "err");
+          }
+        },
+      });
+      return this.#recordRow(name, facts, [stateTag, flip, edit, del], "cron-job");
+    });
+
+    const newJob = el("button", { class: "btn sm", type: "button", id: "cron-new" }, ["+ New job"]) as HTMLButtonElement;
+    newJob.onclick = () => this.#cronJobDialog(null, config);
+
+    const zone = el("div", {}, [
+      this.#section("Scheduler", "1 setting", [
+        this.#settingRow(
+          "Run scheduled jobs",
+          "Off keeps every job below but fires none of them until this is back on.",
+          schedulerCb,
+          "cron-enabled",
+        ),
+      ]),
+      this.#section("Jobs", jobs.length === 1 ? "1 job" : `${jobs.length} jobs`, [
+        ...(!jobsKnown
+          ? [el("p", { class: "hint" }, [`Could not read the job list${loadErr ? ` — ${loadErr}` : ""}.`])]
+          : jobs.length === 0
+            ? [el("p", { class: "hint" }, ["No jobs yet — a job is a prompt plus a schedule."])]
+            : jobRows),
+        el("div", { class: "settings__inline" }, [newJob]),
+      ]),
+    ]);
+    this.#dirtyWatch(zone, note);
+    syncStatus();
+
+    return el("div", { class: "card auto-cron" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Cron jobs"]),
+        el("p", { class: "hint" }, ["Prompts the agent runs on a schedule, whether or not anyone is chatting."]),
+      ]),
+      strip.node,
+      zone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
+    ]);
+  }
+
+  #heartbeatCard(config: any, state: any, loadErr: string): HTMLElement {
+    const hbCfg: any = config?.agents?.defaults?.heartbeat ?? {};
+    const hb: any = state?.heartbeat ?? null;
+
+    const strip = this.#statusStrip();
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    const every = el("input", {
+      class: "inp mono",
+      id: "hb-every",
+      value: String(hb?.every ?? hbCfg.every ?? "30m"),
+      placeholder: "30m",
+      autocomplete: "off",
+      spellcheck: "false",
+    }) as HTMLInputElement;
+    const everyErr = el("p", { class: "hint hint--err" }, []);
+    everyErr.setAttribute("hidden", "");
+
+    const targetDd = this.#dropdown({
+      id: "hb-target",
+      value: String(hbCfg.target ?? hb?.target ?? "owner"),
+      label: "Where the heartbeat goes",
+      placeholder: "owner",
+      options: [
+        { value: "owner", label: "owner — the first paired Telegram chat" },
+        { value: "last", label: "last — wherever it spoke most recently" },
+        { value: "none", label: "none — run, but never send" },
+      ],
+    });
+
+    const lightCb = el("input", { type: "checkbox", id: "hb-light" }) as HTMLInputElement;
+    lightCb.checked = Boolean(hbCfg.lightContext ?? hb?.lightContext);
+    const isoCb = el("input", { type: "checkbox", id: "hb-isolated" }) as HTMLInputElement;
+    isoCb.checked = Boolean(hbCfg.isolatedSession ?? hb?.isolatedSession);
+
+    const syncStatus = (): void => {
+      if (!hb) {
+        strip.set("unknown", "", `Could not read the heartbeat state${loadErr ? ` — ${loadErr}` : ""}.`);
+        return;
+      }
+      strip.set(
+        hb.armed ? "armed" : "idle",
+        hb.armed ? "is-ok" : "is-warn",
+        hb.armed
+          ? `Runs every ${String(hb.every ?? every.value.trim())}. Its last answer reached ${hb.lastTargetChat ? String(hb.lastTargetChat) : "no one — nothing to send to"}.`
+          : "Not running: either the cadence is 0m, or the delivery target has no chat to reach.",
+      );
+    };
+    every.addEventListener("input", () => {
+      if (everyErr.hasAttribute("hidden")) return;
+      everyErr.setAttribute("hidden", "");
+      every.removeAttribute("aria-invalid");
+      problem.setAttribute("hidden", "");
+    });
+
+    const save = el("button", { class: "btn pri", type: "button", id: "hb-save" }, ["Save heartbeat"]) as HTMLButtonElement;
+    save.onclick = async () => {
+      const raw = every.value.trim().toLowerCase();
+      // `0m` is the documented off switch; the floor is one minute.
+      if (raw !== "0m" && !/^[1-9]\d*[smh]$/.test(raw)) {
+        everyErr.textContent = "Use a number and a unit — 30m, 1h, 90s — or 0m to turn the cadence off.";
+        everyErr.removeAttribute("hidden");
+        every.setAttribute("aria-invalid", "true");
+        problem.textContent = "Not saved — the cadence is not a duration.";
+        problem.removeAttribute("hidden");
+        every.focus();
+        return;
+      }
+      save.disabled = true;
+      save.textContent = "Saving…";
+      const ok = await this.#commit([
+        ["agents.defaults.heartbeat.every", raw],
+        ["agents.defaults.heartbeat.target", this.#selValue(targetDd.sel)],
+        ["agents.defaults.heartbeat.lightContext", lightCb.checked],
+        ["agents.defaults.heartbeat.isolatedSession", isoCb.checked],
+      ], note, problem, "heartbeat saved — the next tick uses it");
+      save.disabled = false;
+      save.textContent = "Save heartbeat";
+      if (ok) void this.render();
+    };
+
+    const zone = el("div", {}, [
+      this.#section("Cadence", "4 settings", [
+        this.#setField("hb-every", "Every", every, "A number and a unit: 30m, 1h, 90s. The floor is one minute; 0m turns the cadence off."),
+        this.#setField("hb-target", "Where it goes", targetDd.node, "A heartbeat with nowhere to send still runs — its answer is dropped.", null),
+        this.#settingRow(
+          "Light context",
+          "Sends only the recent conversation instead of the workspace files.",
+          lightCb,
+          "hb-light",
+        ),
+        this.#settingRow(
+          "Isolated session",
+          "Each heartbeat runs in a fresh session, so it cannot see this chat's history.",
+          isoCb,
+          "hb-isolated",
+        ),
+        everyErr,
+      ]),
+    ]);
+    this.#dirtyWatch(zone, note);
+    syncStatus();
+
+    return el("div", { class: "card auto-heartbeat" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Heartbeat"]),
+        el("p", { class: "hint" }, [
+          "A periodic nudge so the agent can act on the standing orders in AGENTS.md. It stays quiet unless there is something worth saying.",
+        ]),
+      ]),
+      strip.node,
+      zone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
+    ]);
+  }
+
+  #imapCard(config: any, state: any, loadErr: string): HTMLElement {
+    const cfg: any = config?.imap ?? {};
+    const accounts: Record<string, any> = cfg.accounts ?? {};
+    const names = Object.keys(accounts);
+    const live: any[] = state?.imap?.enabled ? (state.imap.accounts ?? []) : [];
+
+    const strip = this.#statusStrip();
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    const masterCb = el("input", { type: "checkbox", id: "imap-enabled" }) as HTMLInputElement;
+    masterCb.checked = Boolean(cfg.enabled);
+
+    const syncStatus = (): void => {
+      const unhealthy = live.filter((a) => a.unhealthy).length;
+      strip.set(
+        masterCb.checked ? "on" : "off",
+        masterCb.checked ? (unhealthy ? "is-warn" : "is-ok") : "",
+        !masterCb.checked
+          ? "Nothing is being read. The accounts below are kept."
+          : names.length === 0
+            ? "On, but no mailbox is configured yet."
+            : unhealthy
+              ? `${unhealthy} ${unhealthy === 1 ? "mailbox is" : "mailboxes are"} reporting an error.`
+              : "Every configured mailbox is reading without error.",
+      );
+    };
+    masterCb.onchange = () => syncStatus();
+
+    const save = el("button", { class: "btn pri", type: "button", id: "imap-save" }, ["Save watcher"]) as HTMLButtonElement;
+    save.onclick = async () => {
+      save.disabled = true;
+      save.textContent = "Saving…";
+      const ok = await this.#commit([["imap.enabled", masterCb.checked]], note, problem,
+        masterCb.checked ? "watcher saved — it starts on the next tick" : "watcher saved — nothing is being read now");
+      save.disabled = false;
+      save.textContent = "Save watcher";
+      if (ok) void this.render();
+    };
+
+    // The runtime read carries where each account has got to, not why it is idling:
+    // the watch mode is a setting and is stated on the account row below.
+    const liveRows = live.map((a) => this.#factRow(
+      String(a.name),
+      a.unhealthy ? "error" : `cursor ${String(a.cursor ?? 0)}`,
+      [
+        `Reading ${String(a.mailbox ?? "INBOX")}`,
+        a.skips ? `${String(a.skips)} ${a.skips === 1 ? "message" : "messages"} skipped` : "",
+        a.lastError ? String(a.lastError) : "",
+      ].filter(Boolean).join(", "),
+      a.unhealthy ? "is-err" : "is-ok",
+    ));
+
+    const watchWords = (w: any): string => {
+      const mode = String(w?.mode ?? "auto");
+      const secs = Number(w?.pollSeconds ?? 60);
+      return mode === "idle" ? "pushed as it arrives"
+        : mode === "interval" ? `checked every ${secs}s`
+          : `pushed as it arrives, checked every ${secs}s as a fallback`;
+    };
+
+    const accountRows = names.map((aname) => {
+      const acc = accounts[aname] ?? {};
+      const facts = [
+        `${String(acc.host ?? "?")}:${String(acc.port ?? 993)}`,
+        acc.secure === false ? "unencrypted" : "TLS",
+        acc.user ? String(acc.user) : "",
+        String(acc.mailbox ?? "INBOX"),
+        watchWords(acc.watch),
+        Number(acc.enabled ?? 1) === 0 ? "turned off" : "",
+      ].filter(Boolean).join(", ");
+      const edit = el("button", {
+        class: "btn sm", type: "button", id: `imap-edit-${aname}`, "aria-label": `Edit ${aname}`,
+      }, ["Edit…"]) as HTMLButtonElement;
+      edit.onclick = () => this.#imapAccountDialog(aname, acc, config);
+      const del = el("button", {
+        class: "btn sm danger", type: "button", id: `imap-del-${aname}`, "aria-label": `Delete ${aname}`,
+      }, ["Delete"]) as HTMLButtonElement;
+      del.onclick = () => modal({
+        title: `Delete mailbox ${aname}?`,
+        body: "The account and its cursor are removed; nothing in the mailbox itself is touched.",
+        confirmLabel: "Delete mailbox",
+        danger: true,
+        onConfirm: async () => {
+          try {
+            await gateway.request("config.unset", { path: `imap.accounts.${aname}` });
+            toast(`removed account ${aname}`, "ok");
+            this.#onChanged();
+            await this.render();
+          } catch (err) {
+            toast((err as Error).message, "err");
+          }
+        },
+      });
+      return this.#recordRow(aname, facts, [edit, del], "imap-account");
+    });
+
+    const addAcc = el("button", { class: "btn sm", type: "button", id: "imap-add" }, ["+ Add account"]) as HTMLButtonElement;
+    addAcc.onclick = () => this.#imapAccountDialog(null, null, config);
+
+    const zone = el("div", {}, [
+      this.#section("Watcher", "1 setting", [
+        this.#settingRow(
+          "Read this mail",
+          "The gateway idles or polls each account below and hands new mail to the agent.",
+          masterCb,
+          "imap-enabled",
+        ),
+      ]),
+      this.#section("Live status", live.length === 1 ? "1 mailbox" : `${live.length} mailboxes`, [
+        ...(!masterCb.checked
+          ? [el("p", { class: "hint" }, ["No cursor data — the watcher is off."])]
+          : liveRows.length === 0
+            ? [el("p", { class: "hint" }, [`Nothing read yet this run${loadErr ? ` — ${loadErr}` : "."}`])]
+            : liveRows),
+      ]),
+      this.#section("Accounts", names.length === 1 ? "1 account" : `${names.length} accounts`, [
+        ...(names.length === 0
+          ? [el("p", { class: "hint" }, ["No accounts yet — add one to let the agent read a mailbox."])]
+          : accountRows),
+        el("div", { class: "settings__inline" }, [addAcc]),
+      ]),
+    ]);
+    this.#dirtyWatch(zone, note);
+    syncStatus();
+
+    return el("div", { class: "card auto-imap" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["IMAP mail watcher"]),
+        el("p", { class: "hint" }, ["Each account remembers where it got to, so a restart never replays mail it has already read."]),
+      ]),
+      strip.node,
+      zone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
+    ]);
+  }
+
+  #hooksCard(config: any, stateErr: string): HTMLElement {
+    const cfg: any = config?.hooks ?? {};
+    const mappings: Record<string, any> = cfg.mappings ?? {};
+    const names = Object.keys(mappings);
+    const hasToken = Boolean(cfg.token);
+    const path = String(cfg.path ?? "/hooks");
+
+    const strip = this.#statusStrip();
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    const enabledCb = el("input", { type: "checkbox", id: "hooks-enabled" }) as HTMLInputElement;
+    enabledCb.checked = Boolean(cfg.enabled);
+    const pathInp = el("input", {
+      class: "inp mono", id: "hooks-path", value: path, placeholder: "/hooks", autocomplete: "off", spellcheck: "false",
+    }) as HTMLInputElement;
+    const tokenInp = el("input", {
+      class: "inp mono", id: "hooks-token-out", type: "password",
+      placeholder: hasToken ? "stored — leave blank to keep it" : "paste a token", autocomplete: "off",
+    }) as HTMLInputElement;
+    const askCb = el("input", { type: "checkbox", id: "hooks-ask" }) as HTMLInputElement;
+    askCb.checked = Boolean(cfg.allowRequestSessionKey);
+
+    const syncStatus = (): void => {
+      strip.set(
+        !enabledCb.checked ? "off" : hasToken ? "live" : "on, no token",
+        !enabledCb.checked ? "" : hasToken ? "is-ok" : "is-warn",
+        !enabledCb.checked
+          ? "Every request is refused while this is off."
+          : hasToken
+            ? `Accepting at ${String(cfg.path ?? "/hooks")}; each request needs the bearer token.`
+            : "On, but no token is stored — every request is refused without one.",
+      );
+    };
+    enabledCb.onchange = () => syncStatus();
+    pathInp.addEventListener("input", () => {
+      if (enabledCb.checked && hasToken) {
+        strip.set("live", "is-ok", `Accepting at ${pathInp.value.trim() || "/hooks"}; each request needs the bearer token.`);
+      }
+    });
+
+    const save = el("button", { class: "btn pri", type: "button", id: "hooks-save" }, ["Save hook settings"]) as HTMLButtonElement;
+    save.onclick = async () => {
+      const typed = tokenInp.value.trim();
+      const nextPath = pathInp.value.trim() || "/hooks";
+      if (!nextPath.startsWith("/")) {
+        problem.textContent = "Not saved — the path has to start with a slash.";
+        problem.removeAttribute("hidden");
+        pathInp.setAttribute("aria-invalid", "true");
+        pathInp.focus();
+        return;
+      }
+      save.disabled = true;
+      save.textContent = "Saving…";
+      const pairs: [string, unknown][] = [
+        ["hooks.enabled", enabledCb.checked],
+        ["hooks.path", nextPath],
+        ["hooks.allowRequestSessionKey", askCb.checked],
+      ];
+      // Write-only: the stored token only changes when something is typed here.
+      if (typed) pairs.push(["hooks.token", typed]);
+      const ok = await this.#commit(pairs, note, problem, "hook settings saved");
+      save.disabled = false;
+      save.textContent = "Save hook settings";
+      if (ok) {
+        tokenInp.value = "";
+        pathInp.removeAttribute("aria-invalid");
+        void this.render();
+      }
+    };
+
+    const mappingRows = names.map((mname) => {
+      const m = mappings[mname] ?? {};
+      const facts = [
+        m.action === "wake" ? "nudges the main session" : "runs the payload as a turn",
+        m.sessionKey ? `in session ${String(m.sessionKey)}` : "",
+        m.message ?? m.text ? `sends “${String(m.message ?? m.text).slice(0, 48)}”` : "",
+      ].filter(Boolean).join(", ");
+      const edit = el("button", {
+        class: "btn sm", type: "button", id: `hook-map-edit-${mname}`, "aria-label": `Edit ${mname}`,
+      }, ["Edit…"]) as HTMLButtonElement;
+      edit.onclick = () => this.#hookMappingDialog(mname, m, config);
+      const del = el("button", {
+        class: "btn sm danger", type: "button", id: `hook-map-del-${mname}`, "aria-label": `Delete ${mname}`,
+      }, ["Delete"]) as HTMLButtonElement;
+      del.onclick = () => modal({
+        title: `Delete mapping ${mname}?`,
+        body: `A POST to ${path}/${mname} will answer 404 afterwards. The rest of the configuration is untouched.`,
+        confirmLabel: "Delete mapping",
+        danger: true,
+        onConfirm: async () => {
+          try {
+            await gateway.request("config.unset", { path: `hooks.mappings.${mname}` });
+            toast(`removed mapping ${mname}`, "ok");
+            this.#onChanged();
+            await this.render();
+          } catch (err) {
+            toast((err as Error).message, "err");
+          }
+        },
+      });
+      return this.#recordRow(mname, facts, [edit, del], "hook-map");
+    });
+
+    const addMap = el("button", { class: "btn sm", type: "button", id: "hook-map-add" }, ["+ Add mapping"]) as HTMLButtonElement;
+    addMap.onclick = () => this.#hookMappingDialog(null, null, config);
+
+    const zone = el("div", {}, [
+      this.#section("Endpoint", "4 settings", [
+        this.#settingRow(
+          "Accept inbound hooks",
+          "Needs a token as well — with either missing, every request is refused.",
+          enabledCb,
+          "hooks-enabled",
+        ),
+        this.#setField("hooks-path", "Path", pathInp, "Where the endpoints live. A mapping named github answers at this path, then /github."),
+        this.#setField("hooks-token-out", "Bearer token", tokenInp, "Write-only: blank keeps the stored token. Every request has to send it.", null),
+        this.#settingRow(
+          "Trust a session key from the request",
+          "Lets an agent hook choose the session it lands in. Wake hooks always reach the main session.",
+          askCb,
+          "hooks-ask",
+        ),
+      ]),
+      this.#section("Mappings", names.length === 1 ? "1 mapping" : `${names.length} mappings`, [
+        ...(names.length === 0
+          ? [el("p", { class: "hint" }, ["No mappings yet — anything unmatched answers 404."])]
+          : mappingRows),
+        el("div", { class: "settings__inline" }, [addMap]),
+      ]),
+    ]);
+    this.#dirtyWatch(zone, note);
+    syncStatus();
+
+    return el("div", { class: "card auto-hooks" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Inbound hooks"]),
+        el("p", { class: "hint" }, ["HTTP endpoints that push work into the agent — a webhook from a repo, a shortcut from your phone."]),
+      ]),
+      strip.node,
+      zone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
+    ]);
+  }
+
+  #queueCard(config: any, stateErr: string): HTMLElement {
+    const cfg: any = config?.messages?.queue ?? {};
+    const modeWords: Record<string, string> = {
+      steer: "steer — inject into the live turn",
+      followup: "followup — run after the active turn",
+      collect: "collect — merge queued messages into one turn",
+      interrupt: "interrupt — stop the turn, run the newest",
+    };
+    // The sentence form ("it folds …"), because the status line reads as prose.
+    const overflowWords: Record<string, string> = {
+      summarize: "folds the oldest into one message",
+      old: "drops the oldest message",
+      new: "drops the newest message",
+    };
+    const dropWords: Record<string, string> = {
+      summarize: "summarize — fold the oldest into one message",
+      old: "old — drop the oldest message",
+      new: "new — drop the newest message",
+    };
+    const curMode = String(cfg.mode ?? "steer");
+    const curDrop = String(cfg.drop ?? "summarize");
+    const curTg = String(cfg.byChannel?.telegram ?? "");
+
+    const strip = this.#statusStrip();
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    const modeDd = this.#dropdown({
+      id: "queue-mode",
+      value: curMode,
+      label: "Default mode",
+      placeholder: "steer",
+      options: Object.entries(modeWords).map(([value, label]) => ({ value, label, title: value })),
+    });
+    const dropDd = this.#dropdown({
+      id: "queue-drop",
+      value: curDrop,
+      label: "On overflow",
+      placeholder: "summarize",
+      options: Object.entries(dropWords).map(([value, label]) => ({ value, label, title: value })),
+    });
+    const tgDd = this.#dropdown({
+      id: "queue-by-tg",
+      value: curTg,
+      label: "Telegram override",
+      placeholder: "inherit",
+      options: [
+        { value: "", label: "inherit — use the default above" },
+        ...Object.entries(modeWords).map(([value, label]) => ({ value, label, title: value })),
+      ],
+    });
+
+    const cap = el("input", { class: "inp mono", id: "queue-cap", value: String(cfg.cap ?? 20), autocomplete: "off" }) as HTMLInputElement;
+    const debounce = el("input", { class: "inp mono", id: "queue-debounce", value: String(cfg.debounceMs ?? 500), autocomplete: "off" }) as HTMLInputElement;
+    const capErr = el("p", { class: "hint hint--err" }, []);
+    capErr.setAttribute("hidden", "");
+    const debErr = el("p", { class: "hint hint--err" }, []);
+    debErr.setAttribute("hidden", "");
+
+    const syncStatus = (): void => {
+      const mode = this.#selValue(modeDd.sel);
+      const drop = this.#selValue(dropDd.sel);
+      const tg = this.#selValue(tgDd.sel);
+      const overflow = overflowWords[drop] ?? drop;
+      strip.set(
+        mode,
+        "is-ok",
+        `Holds ${cap.value.trim() || "20"} messages per session. Past that it ${overflow}.` +
+          (tg ? ` Telegram uses ${tg}.` : ""),
+      );
+    };
+    modeDd.sel.addEventListener("change", syncStatus);
+    dropDd.sel.addEventListener("change", syncStatus);
+    tgDd.sel.addEventListener("change", syncStatus);
+    cap.addEventListener("input", () => {
+      syncStatus();
+      if (capErr.hasAttribute("hidden")) return;
+      capErr.setAttribute("hidden", "");
+      cap.removeAttribute("aria-invalid");
+      problem.setAttribute("hidden", "");
+    });
+    debounce.addEventListener("input", () => {
+      if (debErr.hasAttribute("hidden")) return;
+      debErr.setAttribute("hidden", "");
+      debounce.removeAttribute("aria-invalid");
+      problem.setAttribute("hidden", "");
+    });
+
+    const save = el("button", { class: "btn pri", type: "button", id: "queue-save" }, ["Save queue"]) as HTMLButtonElement;
+    save.onclick = async () => {
+      const capRaw = cap.value.trim();
+      const debRaw = debounce.value.trim();
+      // No silent clamps: 0 is not "20", and text is not a number.
+      if (!/^[1-9]\d*$/.test(capRaw)) {
+        capErr.textContent = "A whole number, 1 or more — this is how many messages one session may hold.";
+        capErr.removeAttribute("hidden");
+        cap.setAttribute("aria-invalid", "true");
+        problem.textContent = "Not saved — the cap is not a number of 1 or more.";
+        problem.removeAttribute("hidden");
+        cap.focus();
+        return;
+      }
+      if (!/^\d+$/.test(debRaw)) {
+        debErr.textContent = "A whole number of milliseconds — 0 means no wait at all.";
+        debErr.removeAttribute("hidden");
+        debounce.setAttribute("aria-invalid", "true");
+        problem.textContent = "Not saved — the debounce is not a number.";
+        problem.removeAttribute("hidden");
+        debounce.focus();
+        return;
+      }
+      save.disabled = true;
+      save.textContent = "Saving…";
+      const tg = this.#selValue(tgDd.sel);
+      const ok = await this.#commit([
+        ["messages.queue.mode", this.#selValue(modeDd.sel)],
+        ["messages.queue.cap", Number(capRaw)],
+        ["messages.queue.drop", this.#selValue(dropDd.sel)],
+        ["messages.queue.debounceMs", Number(debRaw)],
+        ["messages.queue.byChannel", { ...(tg ? { telegram: tg } : {}) }],
+      ], note, problem, "queue settings saved");
+      save.disabled = false;
+      save.textContent = "Save queue";
+      if (ok) void this.render();
+    };
+
+    const zone = el("div", {}, [
+      this.#section("While the agent is busy", "3 settings", [
+        this.#setField("queue-mode", "Default mode", modeDd.node, "What happens to a message that arrives while a turn is running.", null),
+        this.#setField("queue-cap", "Cap", el("div", { class: "setline" }, [cap, el("span", { class: "setcard__echo" }, ["messages"])]),
+          "Held per session. The next message past the cap is dropped the way the overflow rule below says."),
+        this.#setField("queue-debounce", "Debounce", el("div", { class: "setline" }, [debounce, el("span", { class: "setcard__echo" }, ["ms"])]),
+          "How long to wait before merging queued messages. 0 merges immediately."),
+        capErr,
+        debErr,
+      ]),
+      this.#section("On overflow", "1 rule", [
+        this.#setField("queue-drop", "When the cap is reached", dropDd.node, "Applies to whichever message has to go.", null),
+      ]),
+      this.#section("Per channel", "1 override", [
+        this.#setField("queue-by-tg", "Telegram", tgDd.node, "A channel's own choice wins over the default mode above. A session's switch in the chat header wins over both.", null),
+      ]),
+    ]);
+    this.#dirtyWatch(zone, note);
+    syncStatus();
+
+    return el("div", { class: "card auto-queue" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Message queue"]),
+        el("p", { class: "hint" }, ["What happens to a new message while the agent is still working on the last one."]),
+      ]),
+      strip.node,
+      zone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
+    ]);
+  }
+
+  /** Cron job editor (their Add/Edit job flow): the same validated contract as
+   *  `sc cron add` — schedule + IANA zone checked by croner server-side — with the
+   *  same checks done here first, so a typo is refused by the field that has it.
+   *  Edits keep the job id + session key. */
   #cronJobDialog(job: any | null, config: any): void {
     const tf = (idSuffix: string, label: string, value: string, placeholder: string, mono = true) => {
       const input = el("input", {
@@ -5137,65 +5585,140 @@ export class Settings {
     const nameF = tf("name", "Name", String(job?.name ?? ""), "e.g. morning-brief", false);
     const schedF = tf("schedule", "Schedule (cron)", String(job?.schedule ?? job?.expr ?? ""), "e.g. 0 9 * * 1-5");
     const promptF = tf("prompt", "Prompt", String(job?.prompt ?? ""), "What the agent should do when it fires", false);
-    const tzF = tf("tz", "Timezone (IANA, optional)", String(job?.tz ?? ""), "e.g. Asia/Dhaka — default: cron.timezone/host");
-    const deliverySel = el("select", { class: "in", id: "cron-f-delivery" }) as HTMLSelectElement;
-    for (const v of ["", "none", "announce", "webhook"]) {
-      const opt = el("option", { value: v, ...(String(job?.delivery_mode ?? "") === v || (!job?.delivery_mode && v === "") ? { selected: "" } : {}) }, [v === "" ? "default (cron.delivery)" : v]);
-      deliverySel.append(opt);
-    }
+    const tzF = tf("tz", "Timezone (IANA, optional)", String(job?.tz ?? ""), "e.g. Asia/Dhaka — blank uses the host zone");
+    const deliveryDd = this.#dropdown({
+      id: "cron-f-delivery",
+      value: String(job?.delivery_mode ?? ""),
+      label: "Delivery",
+      placeholder: "the configured default",
+      options: [
+        { value: "", label: "the configured default" },
+        { value: "none", label: "none — keep it in the session" },
+        { value: "announce", label: "announce — post the result to a chat" },
+        { value: "webhook", label: "webhook — POST the result to a URL" },
+      ],
+    });
     const toF = tf("to", "Delivery target (optional)", String(job?.delivery_to ?? ""), "telegram:<chatId> · session:<key> · https://…");
     const suppressCb = el("input", { type: "checkbox", id: "cron-f-suppress" }) as HTMLInputElement;
     suppressCb.checked = Number(job?.delivery_suppress_empty ?? 1) === 1;
     const enabledCb = el("input", { type: "checkbox", id: "cron-f-enabled" }) as HTMLInputElement;
     enabledCb.checked = Number(job?.enabled ?? 1) === 1;
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
 
     const body = el("div", {}, [
-      nameF.node, schedF.node, promptF.node, tzF.node,
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl", for: "cron-f-delivery" }, ["Delivery"]),
-        deliverySel,
-        el("span", { class: "hint" }, ["none = keep it in the session only · announce = push to chat · webhook = POST to URL"]),
+      el("div", { class: "modal__sec" }, [
+        el("span", { class: "cap" }, ["The job"]),
+        nameF.node,
+        schedF.node,
+        promptF.node,
+        tzF.node,
       ]),
-      toF.node,
-      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Suppress empty results"]), suppressCb]),
-      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), enabledCb]),
+      el("div", { class: "modal__sec" }, [
+        el("span", { class: "cap" }, ["What happens to the result"]),
+        el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl", for: "cron-f-delivery" }, ["Delivery"]),
+        deliveryDd.node,
+      ]),
+        toF.node,
+        el("div", { class: "row" }, [
+          el("div", { class: "row__main" }, [
+            el("label", { class: "row__label", for: "cron-f-suppress" }, ["Suppress empty results"]),
+            el("span", { class: "hint" }, ["Sends nothing when a run finds nothing worth reporting."]),
+          ]),
+          suppressCb,
+        ]),
+      ]),
+      el("div", { class: "row" }, [
+        el("div", { class: "row__main" }, [
+          el("label", { class: "row__label", for: "cron-f-enabled" }, ["Enabled"]),
+          el("span", { class: "hint" }, ["Off keeps the job and its history but stops it firing."]),
+        ]),
+        enabledCb,
+      ]),
+      problem,
     ]);
 
+    const fail = (message: string, focus?: HTMLInputElement): void => {
+      problem.textContent = message;
+      problem.removeAttribute("hidden");
+      focus?.focus();
+    };
+
+    let close: () => void = () => {};
     modal({
       title: job ? `Edit job: ${job.name ?? job.id}` : "New cron job",
-      render: (box) => { box.append(body); },
+      render: (box, done) => {
+        close = done;
+        box.append(body);
+      },
       confirmLabel: job ? "Save job" : "Create job",
       onConfirm: async () => {
+        const name = nameF.input.value.trim();
+        const schedule = schedF.input.value.trim();
+        const prompt = promptF.input.value.trim();
+        const tz = tzF.input.value.trim();
+        const delivery = this.#selValue(deliveryDd.sel);
+        const to = toF.input.value.trim();
+        if (!name || !schedule || !prompt) {
+          fail("Name, schedule and prompt are all required.", !name ? nameF.input : !schedule ? schedF.input : promptF.input);
+          return;
+        }
+        const parts = schedule.split(/\s+/).filter(Boolean);
+        if (!/^@[a-z]+$/i.test(schedule) && (parts.length < 5 || parts.length > 7)) {
+          fail("That is not a cron schedule — 5 fields, e.g. 0 9 * * 1-5.", schedF.input);
+          return;
+        }
+        if (tz) {
+          try {
+            new Intl.DateTimeFormat("en", { timeZone: tz });
+          } catch {
+            fail(`"${tz}" is not an IANA timezone — e.g. Asia/Dhaka.`, tzF.input);
+            return;
+          }
+        }
+        if (delivery === "webhook" && !to) {
+          fail("Webhook delivery needs a target URL.", toF.input);
+          return;
+        }
         try {
           const res = (await gateway.request("cron.upsert", {
             ...(job?.id ? { id: String(job.id) } : {}),
-            name: nameF.input.value.trim(),
-            schedule: schedF.input.value.trim(),
-            prompt: promptF.input.value.trim(),
-            tz: tzF.input.value.trim() || undefined,
-            deliveryMode: deliverySel.value || undefined,
-            deliveryTo: toF.input.value.trim() || undefined,
+            name,
+            schedule,
+            prompt,
+            tz: tz || undefined,
+            deliveryMode: delivery || undefined,
+            deliveryTo: to || undefined,
             suppressEmpty: suppressCb.checked,
             enabled: enabledCb.checked,
           })) as any;
-          toast(`${job ? "saved" : "created"} ${res.job?.name ?? nameF.input.value} · next ${res.next ?? "?"}`, "ok");
-          await this.#renderAutomations(config);
+          toast(`${job ? "saved" : "created"} ${res.job?.name ?? name} · next ${res.next ?? "?"}`, "ok");
+          close();
+          await this.render();
         } catch (err) {
-          toast((err as Error).message, "err");
+          fail((err as Error).message);
         }
       },
     });
   }
 
-  /** IMAP account editor (P4 #36): leaf writes only — the account object is
-   *  never round-tripped, so a redacted password can never be persisted as a
-   *  sentinel string. Blank password = keep (their editor contract). */
+  /** IMAP account editor: leaf writes only — the account object is never
+   *  round-tripped, so a redacted password can never be persisted as a sentinel
+   *  string. Blank password = keep (their editor contract). */
   #imapAccountDialog(origName: string | null, acc: any | null, config: any): void {
-    const tf = (idSuffix: string, label: string, value: string, placeholder: string) => {
+    const tf = (idSuffix: string, label: string, value: string, placeholder: string, hint?: string) => {
       const input = el("input", { id: `imap-f-${idSuffix}`, class: "inp", type: "text", value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
-      return { input, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `imap-f-${idSuffix}` }, [label]), input]) };
+      return {
+        input,
+        node: el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: `imap-f-${idSuffix}` }, [label]),
+          input,
+          ...(hint ? [el("span", { class: "hint" }, [hint])] : []),
+        ]),
+      };
     };
-    const nameF = tf("name", "Account name", String(origName ?? ""), "e.g. work");
+    const nameF = tf("name", "Account name", String(origName ?? ""), "e.g. work", "Used as the record key — letters, digits, dot, dash.");
     if (origName) nameF.input.disabled = true; // record key ≙ id: edits keep it
     const hostF = tf("host", "Host", String(acc?.host ?? ""), "imap.example.com");
     const portF = tf("port", "Port", String(acc?.port ?? 993), "993");
@@ -5205,119 +5728,268 @@ export class Settings {
     enabledCb.checked = Number(acc?.enabled ?? 1) !== 0;
     const userF = tf("user", "Username", String(acc?.user ?? ""), "bot@example.com");
     const pwF = tf("password", origName ? "Password (blank keeps stored)" : "Password", "", origName ? "leave blank to keep" : "app password");
-    if (origName) pwF.input.type = "password";
-    const pwEnvF = tf("passwenv", "passwordEnv (optional)", String(acc?.passwordEnv ?? ""), "e.g. IMAP_PASS — uses ${IMAP_PASS} env");
+    pwF.input.type = "password";
+    const pwEnvF = tf("passwenv", "Environment variable (optional)", String(acc?.passwordEnv ?? ""), "e.g. IMAP_PASS", "Reads the password from that variable instead of the config file.");
     const mbxF = tf("mailbox", "Mailbox", String(acc?.mailbox ?? "INBOX"), "INBOX");
-    const watchSel = el("select", { class: "in", id: "imap-f-watch" }) as HTMLSelectElement;
-    for (const v of ["auto", "idle", "interval"]) {
-      watchSel.append(el("option", { value: v, ...(String(acc?.watch?.mode ?? "auto") === v ? { selected: "" } : {}) }, [v]));
-    }
-    const pollF = tf("poll", "Poll seconds (interval/auto)", String(acc?.watch?.pollSeconds ?? 60), "60");
-    const sendersF = tf("senders", "Allowed senders (comma list, blank = all)", (acc?.allowedSenders ?? []).join(", "), "alice@x.com, bob@y.io");
-    const authSel = el("select", { class: "in", id: "imap-f-authmin" }) as HTMLSelectElement;
-    for (const v of ["unverified", "mutable", "asserted", "verified"]) {
-      authSel.append(el("option", { value: v, ...(String(acc?.senderAuth?.min ?? "unverified") === v ? { selected: "" } : {}) }, [v]));
-    }
+    const watchDd = this.#dropdown({
+      id: "imap-f-watch",
+      value: String(acc?.watch?.mode ?? "auto"),
+      label: "Watch mode",
+      placeholder: "auto",
+      options: [
+        { value: "auto", label: "auto — real time, with polling as a fallback" },
+        { value: "idle", label: "idle only — the server pushes new mail" },
+        { value: "interval", label: "interval — check on a timer" },
+      ],
+    });
+    const pollF = tf("poll", "Poll seconds", String(acc?.watch?.pollSeconds ?? 60), "60", "Used for polling; the floor is 15 seconds.");
+    const sendersF = tf("senders", "Allowed senders (optional)", (acc?.allowedSenders ?? []).join(", "), "alice@x.com, bob@y.io",
+      "Comma-separated addresses. Blank accepts every sender; @x.com accepts the whole domain.");
+    const authDd = this.#dropdown({
+      id: "imap-f-authmin",
+      value: String(acc?.senderAuth?.min ?? "unverified"),
+      label: "Sender authentication floor",
+      placeholder: "unverified",
+      options: [
+        { value: "mutable", label: "mutable — no floor, any sender header passes" },
+        { value: "unverified", label: "unverified — this build's floor" },
+        { value: "asserted", label: "asserted — needs a DMARC verifier (not bundled)" },
+        { value: "verified", label: "verified — needs a DMARC verifier (not bundled)" },
+      ],
+    });
+    const authWarn = el("p", { class: "hint is-warn" }, ["This build has no DMARC verifier, so this floor can never be met: the watcher refuses to start and every message is rejected. Use unverified."]);
+    authWarn.setAttribute("hidden", "");
+    const syncAuthWarn = (): void => {
+      const v = this.#selValue(authDd.sel);
+      if (v === "asserted" || v === "verified") authWarn.removeAttribute("hidden");
+      else authWarn.setAttribute("hidden", "");
+    };
+    authDd.sel.addEventListener("change", syncAuthWarn);
+    syncAuthWarn();
     const deliverCb = el("input", { type: "checkbox", id: "imap-f-deliver" }) as HTMLInputElement;
     deliverCb.checked = Boolean(acc?.deliver);
     const toF = tf("to", "Deliver to (optional)", String(acc?.to ?? ""), "telegram:<chatId> | session:<key>");
     const bodyCb = el("input", { type: "checkbox", id: "imap-f-body" }) as HTMLInputElement;
     bodyCb.checked = acc?.includeBody !== false;
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
 
+    let close: () => void = () => {};
     modal({
       title: origName ? `Edit IMAP account: ${origName}` : "New IMAP account",
-      render: (box) => {
+      render: (box, done) => {
+        close = done;
         box.append(
-          nameF.node, hostF.node, portF.node, userF.node, pwF.node, pwEnvF.node, mbxF.node,
-          el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "imap-f-watch" }, ["Watch mode"]), watchSel]),
-          pollF.node, sendersF.node,
-          el("div", { class: "modal__field" }, [
-            el("label", { class: "lbl", for: "imap-f-authmin" }, ["Sender auth floor"]),
-            authSel,
-            el("span", { class: "hint" }, ["unverified is our only functioning floor without a DMARC verifier (see src/automation/imap.ts)."]),
+          el("div", { class: "modal__sec" }, [
+            el("span", { class: "cap" }, ["Connection"]),
+            nameF.node, hostF.node, portF.node, userF.node, pwF.node, pwEnvF.node,
+            el("div", { class: "row" }, [
+              el("div", { class: "row__main" }, [
+                el("label", { class: "row__label", for: "imap-f-secure" }, ["Encrypted (TLS)"]),
+                el("span", { class: "hint" }, ["Port 993 is usually TLS; port 143 usually is not."]),
+              ]),
+              secureCb,
+            ]),
           ]),
-          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Enabled"]), enabledCb]),
-          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["SSL (secure)"]), secureCb]),
-          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Deliver results"]), deliverCb]),
-          toF.node,
-          el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Include body"]), bodyCb]),
+          el("div", { class: "modal__sec" }, [
+            el("span", { class: "cap" }, ["What gets read"]),
+            mbxF.node,
+            el("div", { class: "modal__field" }, [
+              el("label", { class: "lbl", for: "imap-f-watch" }, ["Watch mode"]),
+              watchDd.node,
+            ]),
+            pollF.node,
+            sendersF.node,
+            el("div", { class: "modal__field" }, [
+              el("label", { class: "lbl", for: "imap-f-authmin" }, ["Sender authentication floor"]),
+              authDd.node,
+              authWarn,
+            ]),
+          ]),
+          el("div", { class: "modal__sec" }, [
+            el("span", { class: "cap" }, ["Where the answer goes"]),
+            el("div", { class: "row" }, [
+              el("div", { class: "row__main" }, [
+                el("label", { class: "row__label", for: "imap-f-deliver" }, ["Deliver results"]),
+                el("span", { class: "hint" }, ["Hands the run's answer to the chat named below."]),
+              ]),
+              deliverCb,
+            ]),
+            toF.node,
+            el("div", { class: "row" }, [
+              el("div", { class: "row__main" }, [
+                el("label", { class: "row__label", for: "imap-f-body" }, ["Include the message body"]),
+                el("span", { class: "hint" }, ["Off sends the subject and sender only."]),
+              ]),
+              bodyCb,
+            ]),
+            el("div", { class: "row" }, [
+              el("div", { class: "row__main" }, [
+                el("label", { class: "row__label", for: "imap-f-enabled" }, ["Enabled"]),
+                el("span", { class: "hint" }, ["Off keeps the account but stops reading it."]),
+              ]),
+              enabledCb,
+            ]),
+          ]),
+          problem,
         );
       },
       confirmLabel: origName ? "Save account" : "Add account",
       onConfirm: async () => {
         const rawName = origName ?? nameF.input.value.trim();
-        if (!rawName) { toast("account name is required", "err"); return; }
+        if (!rawName) {
+          problem.textContent = "The account needs a name — it is the record key.";
+          problem.removeAttribute("hidden");
+          nameF.input.focus();
+          return;
+        }
         const aname = rawName.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "account";
-        if (aname.includes(".")) { toast("account name may not contain dots", "err"); return; }
+        if (aname.includes(".")) {
+          problem.textContent = "The name may not contain dots.";
+          problem.removeAttribute("hidden");
+          nameF.input.focus();
+          return;
+        }
+        const host = hostF.input.value.trim();
+        if (!host) {
+          problem.textContent = "The host is required.";
+          problem.removeAttribute("hidden");
+          hostF.input.focus();
+          return;
+        }
+        const portRaw = portF.input.value.trim();
+        if (!/^\d+$/.test(portRaw) || Number(portRaw) < 1 || Number(portRaw) > 65535) {
+          problem.textContent = "The port has to be a whole number between 1 and 65535.";
+          problem.removeAttribute("hidden");
+          portF.input.focus();
+          return;
+        }
+        const pollRaw = pollF.input.value.trim();
+        if (!/^\d+$/.test(pollRaw) || Number(pollRaw) < 15) {
+          problem.textContent = "Poll seconds has to be a whole number of at least 15.";
+          problem.removeAttribute("hidden");
+          pollF.input.focus();
+          return;
+        }
         const senders = sendersF.input.value.split(",").map((x) => x.trim()).filter(Boolean);
         const base = `imap.accounts.${aname}`;
         const pairs: [string, unknown][] = [
           [`${base}.enabled`, enabledCb.checked],
-          [`${base}.host`, hostF.input.value.trim()],
-          [`${base}.port`, Math.max(1, Math.min(65535, Number(portF.input.value) || 993))],
+          [`${base}.host`, host],
+          [`${base}.port`, Number(portRaw)],
           [`${base}.secure`, secureCb.checked],
           [`${base}.user`, userF.input.value.trim()],
           [`${base}.mailbox`, mbxF.input.value.trim() || "INBOX"],
-          [`${base}.watch`, { mode: watchSel.value, pollSeconds: Math.max(15, Number(pollF.input.value) || 60) }],
+          [`${base}.watch`, { mode: this.#selValue(watchDd.sel), pollSeconds: Number(pollRaw) }],
           [`${base}.allowedSenders`, senders],
-          [`${base}.senderAuth`, { ...(acc?.senderAuth ?? {}), min: authSel.value }],
+          [`${base}.senderAuth`, { ...(acc?.senderAuth ?? {}), min: this.#selValue(authDd.sel) }],
           [`${base}.deliver`, deliverCb.checked],
           [`${base}.to`, toF.input.value.trim()],
           [`${base}.includeBody`, bodyCb.checked],
         ];
         if (pwEnvF.input.value.trim()) pairs.push([`${base}.passwordEnv`, pwEnvF.input.value.trim()]);
+        // Blank keeps the stored secret: the field is the only way to set one.
         if (pwF.input.value) pairs.push([`${base}.password`, pwF.input.value]);
-        await this.#setMany(pairs, origName ? `account ${aname} saved` : `account ${aname} added`);
-        this.#onChanged();
+        try {
+          for (const [path, value] of pairs) await gateway.request("config.set", { path, value });
+          toast(origName ? `account ${aname} saved` : `account ${aname} added`, "ok");
+          this.#onChanged();
+          close();
+          await this.render();
+        } catch (err) {
+          problem.textContent = `not saved — ${(err as Error).message}`;
+          problem.removeAttribute("hidden");
+        }
       },
     });
   }
 
-  /** Hook mapping editor (P4 #36): action + payload per path suffix. The name
-   *  is the record key (URL segment), so it's write-once like account names. */
+  /** Hook mapping editor: action + payload per path suffix. The name is the
+   *  record key (URL segment), so it is write-once like account names. */
   #hookMappingDialog(origName: string | null, m: any | null, config: any): void {
-    const tf = (idSuffix: string, label: string, value: string, placeholder: string) => {
+    const tf = (idSuffix: string, label: string, value: string, placeholder: string, hint?: string) => {
       const input = el("input", { id: `hmap-f-${idSuffix}`, class: "inp", type: "text", value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
-      return { input, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `hmap-f-${idSuffix}` }, [label]), input]) };
+      return {
+        input,
+        node: el("div", { class: "modal__field" }, [
+          el("label", { class: "lbl", for: `hmap-f-${idSuffix}` }, [label]),
+          input,
+          ...(hint ? [el("span", { class: "hint" }, [hint])] : []),
+        ]),
+      };
     };
-    const nameF = tf("name", "Mapping name (URL segment)", String(origName ?? ""), "e.g. github");
+    const nameF = tf("name", "Mapping name (URL segment)", String(origName ?? ""), "e.g. github", "The last part of the URL — letters, digits, dot, dash.");
     if (origName) nameF.input.disabled = true;
-    const actionSel = el("select", { class: "in", id: "hmap-f-action" }) as HTMLSelectElement;
-    for (const v of ["agent", "wake"]) {
-      actionSel.append(el("option", { value: v, ...(String(m?.action ?? "agent") === v ? { selected: "" } : {}) }, [v === "agent" ? "agent — run the payload" : "wake — nudge the main session"]));
-    }
-    const msgF = tf("message", "Message template", String(m?.message ?? m?.text ?? ""), "{{body}} or a fixed instruction");
-    const keyF = tf("sessionkey", "Session key (optional)", String(m?.sessionKey ?? ""), "blank = hook main session");
+    const actionDd = this.#dropdown({
+      id: "hmap-f-action",
+      value: String(m?.action ?? "agent"),
+      label: "Action",
+      placeholder: "agent",
+      options: [
+        { value: "agent", label: "agent — run the payload as a turn" },
+        { value: "wake", label: "wake — nudge the main session" },
+      ],
+    });
+    const msgF = tf("message", "Message template", String(m?.message ?? m?.text ?? ""), "{{body}} or a fixed instruction", "{{body}} and {{subject}} are filled from the request.");
+    const keyF = tf("sessionkey", "Session key (optional)", String(m?.sessionKey ?? ""), "blank = the hook's own session");
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
 
+    let close: () => void = () => {};
     modal({
       title: origName ? `Edit hook mapping: ${origName}` : "New hook mapping",
-      render: (box) => {
+      render: (box, done) => {
+        close = done;
         box.append(
           nameF.node,
-          el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "hmap-f-action" }, ["Action"]), actionSel]),
-          msgF.node, keyF.node,
-          el("p", { class: "hint" }, ["POST {gateway}{path}/{name} with Authorization: Bearer <hooks.token>. Their templates support {{body}}, {{subject}} placeholders."]),
+          el("div", { class: "modal__field" }, [
+            el("label", { class: "lbl", for: "hmap-f-action" }, ["Action"]),
+            actionDd.node,
+          ]),
+          msgF.node,
+          keyF.node,
+          el("p", { class: "hint" }, ["Send a POST to this path followed by the mapping name, with `Authorization: Bearer <token>`."]),
+          problem,
         );
       },
       confirmLabel: origName ? "Save mapping" : "Add mapping",
       onConfirm: async () => {
         const rawName = origName ?? nameF.input.value.trim();
-        if (!rawName) { toast("mapping name is required", "err"); return; }
+        if (!rawName) {
+          problem.textContent = "The mapping needs a name — it is the last part of the URL.";
+          problem.removeAttribute("hidden");
+          nameF.input.focus();
+          return;
+        }
         const mname = rawName.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "mapping";
-        if (mname.includes(".")) { toast("mapping name may not contain dots", "err"); return; }
-        await this.#setMany(
-          [[`hooks.mappings.${mname}`, {
-            action: actionSel.value,
-            ...(msgF.input.value.trim() ? { message: msgF.input.value.trim() } : {}),
-            ...(keyF.input.value.trim() ? { sessionKey: keyF.input.value.trim() } : {}),
-          }]],
-          origName ? `mapping ${mname} saved` : `mapping ${mname} added`,
-        );
-        this.#onChanged();
+        if (mname.includes(".")) {
+          problem.textContent = "The name may not contain dots.";
+          problem.removeAttribute("hidden");
+          nameF.input.focus();
+          return;
+        }
+        try {
+          await gateway.request("config.set", {
+            path: `hooks.mappings.${mname}`,
+            value: {
+              action: this.#selValue(actionDd.sel),
+              ...(msgF.input.value.trim() ? { message: msgF.input.value.trim() } : {}),
+              ...(keyF.input.value.trim() ? { sessionKey: keyF.input.value.trim() } : {}),
+            },
+          });
+          toast(origName ? `mapping ${mname} saved` : `mapping ${mname} added`, "ok");
+          this.#onChanged();
+          close();
+          await this.render();
+        } catch (err) {
+          problem.textContent = `not saved — ${(err as Error).message}`;
+          problem.removeAttribute("hidden");
+        }
       },
     });
   }
 
+  
   /* ---------------- alerts (their Settings → Notifications page) ---------------- */
 
   #renderAlerts(): void {
@@ -5802,19 +6474,6 @@ export class Settings {
     const counts = status?.counts ?? {
       memoryLines: 0, dailyNotes: 0, diaryEntries: 0, staged: 0, promotedToday: 0,
     };
-    const when = (ms?: number | null): string =>
-      ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never";
-    // "in 3 h" / "3 h ago": the status line leads with the distance and keeps the
-    // exact timestamp in the same sentence, so a reader gets both at a glance.
-    const rel = (ms?: number | null): string => {
-      if (!ms) return "never";
-      const mins = Math.round((ms - Date.now()) / 60000);
-      const abs = Math.abs(mins);
-      if (abs < 1) return mins >= 0 ? "in under a minute" : "under a minute ago";
-      const span = abs < 60 ? `${abs} min` : abs < 1440 ? `${Math.round(abs / 60)} h` : `${Math.round(abs / 1440)} d`;
-      return mins > 0 ? `in ${span}` : `${span} ago`;
-    };
-
     /* ---- state ---- */
 
     const scheduleError = String(status?.scheduleError ?? "");
@@ -5831,7 +6490,7 @@ export class Settings {
           ? scheduleError
           : enabled
             ? status?.nextRunAt
-              ? `Next sweep ${rel(status.nextRunAt)} — ${when(status.nextRunAt)}.`
+              ? `Next sweep ${this.#relTime(status.nextRunAt)} — ${this.#when(status.nextRunAt)}.`
               : "No next sweep could be computed for this schedule."
             : "No sweep is scheduled. Dream now still runs one on demand.",
     ]);
@@ -5876,7 +6535,7 @@ export class Settings {
           ? scheduleError
           : enabled
             ? status?.nextRunAt
-              ? `Next sweep ${rel(status.nextRunAt)} — ${when(status.nextRunAt)}.`
+              ? `Next sweep ${this.#relTime(status.nextRunAt)} — ${this.#when(status.nextRunAt)}.`
               : "No next sweep could be computed for this schedule."
             : "No sweep is scheduled. Dream now still runs one on demand.";
     };
@@ -5983,7 +6642,7 @@ export class Settings {
     const policyZone = el("div", { class: "memory__policy" }, [
       fact(
         "Last sweep",
-        status?.lastDreamAt ? rel(status.lastDreamAt) : "never",
+        status?.lastDreamAt ? this.#relTime(status.lastDreamAt) : "never",
         lastBits.length
           ? lastBits.join(" · ")
           : "No sweep has run yet — press Dream now, or wait for the schedule.",
@@ -6188,6 +6847,103 @@ export class Settings {
       input,
       ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
     ]);
+  }
+
+  /** A distance in words ("in 3 h", "3 h ago"), used wherever a status line or a
+   *  record row has to say *when* without printing a timestamp to the second. */
+  #relTime(ms?: number | null): string {
+    if (!ms) return "never";
+    const mins = Math.round((ms - Date.now()) / 60000);
+    const abs = Math.abs(mins);
+    if (abs < 1) return mins >= 0 ? "in under a minute" : "under a minute ago";
+    const span = abs < 60 ? `${abs} min` : abs < 1440 ? `${Math.round(abs / 60)} h` : `${Math.round(abs / 1440)} d`;
+    return mins > 0 ? `in ${span}` : `${span} ago`;
+  }
+
+  /** The exact time, for the sentence that already said the distance. */
+  #when(ms?: number | null): string {
+    return ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never";
+  }
+
+  /** A card's state line: a dot and words, then one sentence. Returned with a
+   *  setter so a switch can keep it honest without a re-render. */
+  #statusStrip(): { node: HTMLElement; set: (tag: string, tone: string, note: string) => void } {
+    const tag = el("span", { class: "settings__tag" }, [""]);
+    const note = el("span", { class: "setcard__status-note", "aria-live": "polite" }, [""]);
+    const node = el("div", { class: "setcard__status" }, [tag, note]);
+    return {
+      node,
+      set: (text: string, tone: string, sentence: string): void => {
+        tag.textContent = text;
+        tag.className = `settings__tag${tone ? ` ${tone}` : ""}`;
+        note.textContent = sentence;
+      },
+    };
+  }
+
+  /** A boolean's row: what it does on the left (with the consequence), the switch
+   *  on the right. The label is the control's name. */
+  #settingRow(label: string, hint: string, control: HTMLElement, forId?: string): HTMLElement {
+    return el("div", { class: "row" }, [
+      el("div", { class: "row__main" }, [
+        forId ? el("label", { class: "row__label", for: forId }, [label]) : el("span", { class: "row__label" }, [label]),
+        el("span", { class: "hint" }, [hint]),
+      ]),
+      control,
+    ]);
+  }
+
+  /** A read-only fact: a short value on the right, the explanation under the label. */
+  #factRow(label: string, value: string, hint: string, tone: "" | "is-ok" | "is-warn" | "is-err" = ""): HTMLElement {
+    return el("div", { class: "row" }, [
+      el("div", { class: "row__main" }, [
+        el("span", { class: "row__label" }, [label]),
+        el("span", { class: "hint" }, [hint]),
+      ]),
+      el("span", { class: `row__value${tone ? ` ${tone}` : ""}` }, [value]),
+    ]);
+  }
+
+  /** A named section with its count — the count is a quantity of what it holds. */
+  #section(title: string, count: string, children: Node[]): HTMLElement {
+    return el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, [title]),
+        el("span", { class: "setsec__count" }, [count]),
+      ]),
+      ...children,
+    ]);
+  }
+
+  /** A record's row: name and facts on the left, its verbs on the right, in the
+   *  same order on every row (state, verb, edit, delete). */
+  #recordRow(name: string, facts: string | (string | Node)[], controls: HTMLElement[], kind: string): HTMLElement {
+    return el("div", { class: `row setrec ${kind}` }, [
+      el("div", { class: "row__main" }, [
+        el("span", { class: "row__label" }, [name]),
+        el("span", { class: "hint" }, Array.isArray(facts) ? facts : [facts]),
+      ]),
+      el("div", { class: "cron-job__act" }, controls),
+    ]);
+  }
+
+  /** Commit a card's draft. Unlike #setMany it puts the gateway's own refusal in
+   *  the card's footer instead of only in a toast, so the sentence stays put. */
+  async #commit(pairs: [string, unknown][], note: HTMLElement, problem: HTMLElement, okMessage: string): Promise<boolean> {
+    try {
+      for (const [path, value] of pairs) await gateway.request("config.set", { path, value });
+      note.textContent = "";
+      delete note.dataset["dirty"];
+      problem.setAttribute("hidden", "");
+      toast(okMessage, "ok");
+      this.#onChanged();
+      return true;
+    } catch (err) {
+      problem.textContent = `not saved — ${(err as Error).message}`;
+      problem.removeAttribute("hidden");
+      toast(`not saved — ${(err as Error).message}`, "err");
+      return false;
+    }
   }
 
   /** Read a select through its options rather than `.value`: the same helper then
