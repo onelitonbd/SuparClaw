@@ -956,8 +956,8 @@ textarea:focus-visible {
   bottom: calc(100% + 6px);
   left: 0;
   z-index: 30;
-  width: min(360px, 92vw);
-  max-height: 60vh;
+  width: min(300px, 92vw);
+  max-height: 55vh;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--line);
@@ -1002,13 +1002,13 @@ textarea:focus-visible {
 .model-menu__row {
   display: flex;
   align-items: center;
-  height: 30px;
-  padding: 0 10px;
+  height: 32px;
+  padding: 0 12px;
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--ink2);
-  font-size: 12.5px;
+  color: var(--ink);
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
   white-space: nowrap;

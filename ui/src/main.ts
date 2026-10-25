@@ -896,7 +896,13 @@ function renderModelMenu(): void {
       group = r.provider;
       list.append(el("div", { class: "model-menu__group" }, [group === "default" ? "default" : group]));
     }
-    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, [r.label]);
+    // The group header already names the provider, so drop a redundant
+    // "provider/" prefix from the row label to keep long ids readable.
+    const short = r.provider !== "default" && r.label.startsWith(r.provider + "/")
+      ? r.label.slice(r.provider.length + 1)
+      : r.label;
+    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, [short]);
+    row.title = r.label;
     if (r.value === currentModel) {
       row.append(el("span", { class: "model-menu__check" }, ["✓"]));
     }
