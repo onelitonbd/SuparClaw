@@ -92,7 +92,7 @@ const TAB_META: Record<TabId, { icon: string; desc: string; keywords: string }> 
   },
   tools: {
     icon: glyph('<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M8 10l2.5 2.5L8 15"/><path d="M13 15h4"/>'),
-    desc: "What the agent may run on this device, and what needs your approval.",
+    desc: "What the agent may run, read and fetch on this device — and what needs your approval.",
     keywords: "exec shell approval sandbox code mode media web search policy",
   },
   memory: {
@@ -2519,7 +2519,7 @@ export class Settings {
     dirsInp.oninput = mark;
 
     const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
-    const save = el("button", { class: "btn pri", type: "button", id: "exec-policy-save" }, ["Save policy"]) as HTMLButtonElement;
+    const save = el("button", { class: "btn pri", type: "button", id: "exec-policy-save" }, ["Save exec policy"]) as HTMLButtonElement;
     let saving = false;
     save.onclick = async () => {
       if (saving) return;
@@ -2570,7 +2570,7 @@ export class Settings {
       } finally {
         saving = false;
         save.disabled = false;
-        save.textContent = "Save policy";
+        save.textContent = "Save exec policy";
       }
     };
 
@@ -2698,7 +2698,7 @@ export class Settings {
     const modeSection = el("div", { class: "setsec" }, [
       el("div", { class: "setsec__head" }, [
         el("span", { class: "cap" }, ["Mode"]),
-        el("span", { class: "setsec__count" }, [`now: ${effMode}`]),
+        el("span", { class: "setsec__count" }, ["4 modes + legacy"]),
       ]),
       modeGroup,
       legacyRow,
@@ -2724,7 +2724,10 @@ export class Settings {
     ]);
 
     const fallbackSection = el("div", { class: "setsec" }, [
-      el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["When nobody can answer"])]),
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["When nobody can answer"]),
+        el("span", { class: "setsec__count" }, ["2 rules"]),
+      ]),
       this.#setField("exec-ask-fallback", "If a prompt cannot be shown (no UI connected)", askSel),
       this.#setField("exec-unattended", "Runs with nobody watching (cron jobs, webhooks)", unatSel,
         "every unattended auto-decision is audited — it is written to the log and the session transcript"),
@@ -2733,7 +2736,7 @@ export class Settings {
     const limitsSection = el("div", { class: "setsec" }, [
       el("div", { class: "setsec__head" }, [
         el("span", { class: "cap" }, ["Limits & sandbox"]),
-        el("span", { class: "setsec__count" }, [`timeout ${Math.round(Number(x.timeoutMs ?? 600000) / 60000)} min`]),
+        el("span", { class: "setsec__count" }, ["3 settings"]),
       ]),
       el("div", { class: "setfield" }, [
         el("label", { class: "lbl", for: "exec-timeout" }, ["Timeout per command (ms)"]),
@@ -3104,7 +3107,7 @@ export class Settings {
     const runSection = el("div", { class: "setsec" }, [
       el("div", { class: "setsec__head" }, [
         el("span", { class: "cap" }, ["When it runs"]),
-        el("span", { class: "setsec__count" }, [stError ? "state unknown" : `now: ${st?.enabled ?? "?"}`]),
+        el("span", { class: "setsec__count" }, ["3 options"]),
       ]),
       modeGroup,
       el("div", { class: "setfield" }, [
@@ -3122,7 +3125,7 @@ export class Settings {
     const limitsSection = el("div", { class: "setsec" }, [
       el("div", { class: "setsec__head" }, [
         el("span", { class: "cap" }, ["Cell limits"]),
-        el("span", { class: "setsec__count" }, [`${hiddenCount()} tools bridged`]),
+        el("span", { class: "setsec__count" }, ["4 limits"]),
       ]),
       el("div", { class: "setgrid" }, [nTimeout.node, nChars.node, nOut.node, nPend.node]),
     ]);
@@ -3229,7 +3232,8 @@ export class Settings {
       capCount.image.textContent = imgOn ? "on" : "off";
       capCount.audio.textContent = audOn ? "on" : "off";
       capCount.pdf.textContent = pdfOn ? "on" : "off";
-      allCount.textContent = on.length === 3 ? "all on" : `${on.length} of 3 on`;
+      // One control in this group, so its count is that control's value.
+      allCount.textContent = `concurrency ${nConc.input.value.trim() || "?"}`;
     };
 
     /* ---- numbers: 0 is the runtime's "use the default", and it is shown ---- */
@@ -3273,6 +3277,7 @@ export class Settings {
 
     const nConc = makeNum("md-conc", "Attachments at once", Number(x.concurrency ?? 2), "count", null, null,
       "How many attachments are processed in parallel. At least 1.");
+    nConc.input.addEventListener("input", () => syncStatus());
     const nImgChars = makeNum("md-img-chars", "Max description chars", Number(x.image?.maxChars ?? 500), "chars", "image", "maxChars",
       "0 = the default. A longer description is cut at this many characters.");
     const nImgBytes = makeNum("md-img-bytes", "Max image bytes", Number(x.image?.maxBytes ?? 10485760), "bytes", "image", "maxBytes",
@@ -3881,7 +3886,10 @@ export class Settings {
           : [el("p", { class: "hint" }, ["The provider list could not be read, so there is nothing to configure here right now. The limits below still save."])]),
       ]),
       el("div", { class: "setsec" }, [
-        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Limits"])]),
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Limits"]),
+          el("span", { class: "setsec__count" }, ["2 limits"]),
+        ]),
         el("div", { class: "setgrid" }, [nMax.node, nCache.node]),
       ]),
     ]);
@@ -3910,21 +3918,44 @@ export class Settings {
     body.append(await this.#mediaCard(config));
     body.append(await this.#webSearchCard(config));
 
-    body.append(el("div", { class: "card" }, [
-      el("h3", {}, ["Built-in tools"]),
+    // The inventory is the *registered* list (tools.list → service.loop.tools), which
+    // is why a tool switched off in a card above disappears from it. Say so once,
+    // here, instead of letting the reader guess whether it was never built in.
+    const asksApproval = (tools as any[]).filter((t) => t.needsApproval === true).length;
+    body.append(el("div", { class: "card tools-inventory" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Built-in tools"]),
+        el("p", { class: "hint" }, [
+          "The inventory of what this build registers. Read-only: neither the agent nor you can add or remove a tool here.",
+        ]),
+      ]),
+      el("div", { class: "setcard__status" }, [
+        el("span", { class: "settings__tag" }, [`${tools.length} registered`]),
+        el("span", { class: "setcard__status-note" }, [
+          asksApproval === 0
+            ? "None of them asks for approval before running."
+            : `${asksApproval} of them ask${asksApproval === 1 ? "s" : ""} for approval before running.`,
+        ]),
+      ]),
       el("p", { class: "hint" }, [
-        `${tools.length} tools the agent can call. Read-only: neither the agent nor you can add or remove them here — they ship with the runtime.`,
+        "Only registered tools are listed: switch one off above (exec, web search, pdf) — or the fs and memory switches on the Config tab — and it leaves this list.",
+      ]),
+      el("p", { class: "hint" }, [
+        "Code mode picks from the same catalog, minus exec and wait, which it provides itself.",
       ]),
       ...(tools as any[]).map((t) =>
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name mono" }, [t.name]),
             el("span", { class: `settings__tag${t.needsApproval ? " is-warn" : ""}` }, [
-              t.needsApproval ? "asks approval" : "auto",
+              t.needsApproval ? "asks approval" : "no approval",
             ]),
           ]),
           el("div", { class: "prov__url" }, [t.description || ""]),
         ])),
+      el("div", { class: "setfoot" }, [
+        el("span", { class: "setfoot__note" }, ["Read-only inventory — nothing on this card changes the config."]),
+      ]),
     ]));
 
     this.#root.append(body);
