@@ -959,18 +959,53 @@ export class AgentLoop {
   /** Guard against concurrent sweeps on one session (auto-trigger + /compact + overflow). */
   #compactBusy = new Map<string, Promise<string | null>>();
 
+  /** Resolve the active model's context window in tokens (0 = unknown), by
+   *  looking up the configured model profile whose ref matches the default. */
+  #activeModelContextWindow(): number {
+    const config = this.deps.config;
+    const modelRef = (config.agents?.defaults?.model ?? "").trim();
+    const models = config.models ?? {};
+    if (modelRef && (models[modelRef]?.contextWindow ?? 0) > 0) {
+      return models[modelRef]!.contextWindow;
+    }
+    for (const p of Object.values(models)) {
+      if (p?.ref === modelRef && (p?.contextWindow ?? 0) > 0) return p!.contextWindow;
+    }
+    for (const fb of config.agents?.defaults?.fallbacks ?? []) {
+      if ((models[fb]?.contextWindow ?? 0) > 0) return models[fb]!.contextWindow;
+      for (const p of Object.values(models)) {
+        if (p?.ref === fb && (p?.contextWindow ?? 0) > 0) return p!.contextWindow;
+      }
+    }
+    return 0;
+  }
+
   async #buildMessagesWithCompaction(
     sessionId: string,
     sessionKey: string,
     input: RunInput,
     isMain: boolean,
   ): Promise<ChatMessage[]> {
-    const budget = this.deps.config.agents.defaults.contextBudgetChars;
+    const configuredBudget = this.deps.config.agents.defaults.contextBudgetChars;
+    // Model-aware budget: when the active model's context window is known,
+    // scale the history budget to ~70% of it (chars ≈ tokens×4) so we actually
+    // use the window instead of capping at a tiny fixed number. Never shrink
+    // below an explicitly lowered budget; fall back to a sane default when the
+    // window is unknown (and lift the legacy 60k default to the new 200k).
+    const modelWindow = this.#activeModelContextWindow();
+    let budget = configuredBudget;
+    if (modelWindow > 0) {
+      const autoBudget = Math.min(Math.round(modelWindow * 4 * 0.7), 400000);
+      const floor = configuredBudget === 60000 ? 200000 : configuredBudget;
+      budget = Math.max(floor, autoBudget);
+    } else if (configuredBudget === 60000) {
+      budget = 200000;
+    }
     // Compaction frontier: anything at or below `upto` exists only as the
     // summary; rows above it stay verbatim. Auto-sweep when the un-compacted
     // older share outgrows its slice of the budget (their near-limit trigger
     // translated to char accounting).
-    const fullTail = this.deps.store.messagesAfter(sessionId, 0, KEEP_TAIL_ROWS * 40);
+    const fullTail = this.deps.store.messagesAfter(sessionId, 0, Math.min(KEEP_TAIL_ROWS * 4, 2000));
     let summary = this.deps.store.getSummary(sessionId);
     {
       const upto = summary?.upto ?? 0;
@@ -991,7 +1026,7 @@ export class AgentLoop {
       }
     }
     const upto = summary?.upto ?? 0;
-    const rows = this.deps.store.messagesAfter(sessionId, upto, 80);
+    const rows = this.deps.store.messagesAfter(sessionId, upto, 400);
     const history: ChatMessage[] = [];
     let used = 0;
     // Walk backwards until the character budget is spent; keep order. Only

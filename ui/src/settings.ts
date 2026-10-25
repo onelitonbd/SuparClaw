@@ -638,7 +638,7 @@ export class Settings {
     };
     const sub = d.subagents ?? {};
     const iterations = mkNum("ad-iterations", "Max tool iterations (1–40)", Number(d.maxToolIterations ?? 12));
-    const budget = mkNum("ad-budget", "Context budget (chars, min 2000)", Number(d.contextBudgetChars ?? 60000));
+    const budget = mkNum("ad-budget", "Context budget (chars, min 2000)", Number(d.contextBudgetChars ?? 200000), "history cap when no model window is known; with a model window it scales up to ~70% of it");
     const concur = mkNum("ad-concurrent", "Max concurrent runs (0 = auto)", Number(d.maxConcurrent ?? 0), "auto = max(8, cpu × 4) — the main-lane formula");
     const queueSel = mkSel("ad-queue", "Queue mode (legacy)", String(d.queueMode ?? "followup"), [["steer", "steer"], ["followup", "followup"]], "superseded by messages.queue.mode — kept for old configs, the new section wins");
     const reasoning = mkSel("ad-reasoning", "Reasoning effort (sent to provider)", String(d.reasoningEffort ?? "inherit"), [["inherit", "inherit"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]]);

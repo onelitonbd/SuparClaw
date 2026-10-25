@@ -192,7 +192,7 @@ export const CONFIG_SCHEMA: SchemaNode = {
             model: { t: "string", default: "" },
             fallbacks: { t: "array", of: { t: "string" }, default: [] },
             maxToolIterations: { t: "int", min: 1, max: 40, default: 12 },
-            contextBudgetChars: { t: "int", min: 2000, default: 60000 },
+            contextBudgetChars: { t: "int", min: 2000, default: 200000 },
             // Legacy alias — superseded by messages.queue.mode. Kept so old
             // configs still validate; the new section wins when both exist.
             queueMode: { t: "enum", values: ["steer", "followup"], default: "followup" },
