@@ -7005,92 +7005,202 @@ export class Settings {
   /* ---------------- system (P4 #41-#43 — their System care + Updates +
    *  Backup + Secrets pages, one System tab at our scale) ---------------- */
 
+  /** System tab: the four surfaces that decide whether this install is well —
+   *  the probes, the posture audit, the update channel, the backup shelf — plus
+   *  the credentials the config points at.
+   *
+   *  Every card answers the same three questions in the same order: what state
+   *  is it in (a dot and words), what did the daemon actually say (facts and
+   *  rows), and what is the one action that changes that state (the footer).
+   *  Nothing is guessed: a read that fails says so, and a check that has never
+   *  run says that instead of "healthy". */
   async #renderSystem(config: any): Promise<void> {
     const body = el("div", { class: "settings__stack" });
     this.#root.innerHTML = "";
     this.#root.append(body);
 
-    const mkCard = (title: string, kids: Node[]): HTMLElement =>
-      el("div", { class: "card" }, [el("h3", {}, [title]), ...kids]);
+    const card = (cls: string, title: string, hint: string, kids: Node[]): HTMLElement =>
+      el("div", { class: `card ${cls}` }, [
+        el("div", { class: "setcard__head" }, [
+          el("h3", {}, [title]),
+          el("p", { class: "hint" }, [hint]),
+        ]),
+        ...kids,
+      ]);
+    const foot = (note: HTMLElement, buttons: HTMLElement[]): HTMLElement =>
+      el("div", { class: "setfoot" }, [note, ...buttons]);
+    const stamp = (): string => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
-    // ---------- Doctor ----------
-    const docBody = el("div", {}, [el("p", { class: "hint" }, ["Probes have not run this session."])]);
+    // One renderer for all three pass/fail lists. A mark (with the status as its
+    // accessible name), the name, then the detail and the fix on their own lines
+    // — the same row shape on every card, so the eye learns it once.
+    const diagRow = (c: any): HTMLElement => {
+      const status = String(c?.status ?? "");
+      // An explicit class per status: an unexpected value falls back to a failure
+      // mark rather than inventing a class name nothing styles.
+      const markClass = status === "ok" ? "diag-mark--ok" : status === "warn" ? "diag-mark--warn" : "diag-mark--fail";
+      const mark = status === "ok" ? "✔" : status === "warn" ? "▲" : "✖";
+      return el("div", { class: "row diag-row" }, [
+        el("span", { class: `diag-mark ${markClass}`, "aria-label": status || "fail" }, [mark]),
+        el("span", { class: "row__label" }, [String(c?.name ?? "check")]),
+        el("span", { class: "hint diag-row__detail" }, [
+          String(c?.detail ?? ""),
+          ...(c?.fix ? [`  ·  fix: ${c.fix}`] : []),
+        ]),
+      ]);
+    };
+    // The list is replaced wholesale, so a second run cannot leave a stale row.
+    const diagList = (host: HTMLElement, title: string, items: any[], empty: string): void => {
+      host.innerHTML = "";
+      if (items.length === 0) {
+        host.append(el("p", { class: "hint" }, [empty]));
+        return;
+      }
+      host.append(this.#section(title, `${items.length} ${items.length === 1 ? "row" : "rows"}`, items.map(diagRow)));
+    };
+
+    /* ---------------- Doctor ---------------- */
+
+    const docStrip = this.#statusStrip();
+    docStrip.set(
+      "not run",
+      "",
+      "The probes have not run on this page yet. Run doctor reads the same checks as sc doctor, minus the free-port one this daemon already owns.",
+    );
+    const docHost = el("div", {});
+    const docNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, ["Not run yet."]);
     const runDoctor = el("button", { class: "btn", type: "button", id: "doctor-run" }, ["Run doctor"]) as HTMLButtonElement;
     runDoctor.onclick = async () => {
-      docBody.innerHTML = "";
-      docBody.append(el("p", { class: "hint" }, ["Running probes…"]));
+      runDoctor.disabled = true;
+      runDoctor.textContent = "Running…";
+      docStrip.set("checking", "", "Running the probes — they read the machine, not the config.");
       try {
         const res = (await gateway.request("system.doctor")) as any;
-        docBody.innerHTML = "";
-        for (const c of res.checks ?? []) {
-          docBody.append(el("div", { class: "row diag-row" }, [
-            el("span", { class: `diag-mark diag-mark--${c.status}` }, [c.status === "ok" ? "✔" : c.status === "warn" ? "▲" : "✖"]),
-            el("span", { class: "row__label" }, [String(c.name)]),
-            el("span", { class: "hint diag-row__detail" }, [String(c.detail), ...(c.fix ? [`  ·  fix: ${c.fix}`] : [])]),
-          ]));
-        }
-        docBody.append(el("p", { class: "hint" }, [`${res.fails} failing, ${res.warns} warning(s)`]));
-        const err = docBody.querySelector("");
-        void err;
+        const checks: any[] = Array.isArray(res?.checks) ? res.checks : [];
+        const fails = checks.filter((c) => c.status === "fail").length;
+        const warns = checks.filter((c) => c.status === "warn").length;
+        diagList(docHost, "Checks", checks, "The daemon returned no checks — that is all this page knows.");
+        if (checks.length === 0) docStrip.set("no checks", "", "The daemon answered without probes.");
+        else if (fails > 0) docStrip.set(`${fails} failing`, "is-err", `${plural(fails, "probe", "probes")} of ${checks.length} failed — each row carries the command that fixes it.`);
+        else if (warns > 0) docStrip.set(`${warns} warning${warns === 1 ? "" : "s"}`, "is-warn", `Nothing is broken; ${plural(warns, "probe", "probes")} of ${checks.length} could be better.`);
+        else docStrip.set("all pass", "is-ok", `All ${plural(checks.length, "probe", "probes")} pass.`);
+        docNote.textContent = `Run at ${stamp()}.`;
       } catch (err) {
-        docBody.innerHTML = "";
-        docBody.append(el("p", { class: "hint" }, [`doctor failed: ${(err as Error).message}`]));
+        docStrip.set("unknown", "", `The probes could not run — ${(err as Error).message}.`);
+        docNote.textContent = `Failed at ${stamp()}.`;
+      } finally {
+        runDoctor.disabled = false;
+        runDoctor.textContent = "Run doctor";
       }
     };
-    body.append(mkCard("Doctor — system checks", [docBody, runDoctor]));
+    body.append(card("sys-doctor", "System checks", "What this device needs to run the gateway: node, sqlite, the platform, the config file and the auth store.", [
+      docStrip.node,
+      docHost,
+      foot(docNote, [runDoctor]),
+    ]));
 
-    // ---------- Security audit ----------
-    const secBody = el("div", {}, [el("p", { class: "hint" }, ["No audit run this session."])]);
+    /* ---------------- Security audit ---------------- */
+
+    const audStrip = this.#statusStrip();
+    audStrip.set(
+      "not audited",
+      "",
+      "The posture has not been read on this page yet. The audit reads the config and the real file mode on disk.",
+    );
+    const audHost = el("div", {});
+    const audNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, ["Not audited yet."]);
     const runAudit = el("button", { class: "btn", type: "button", id: "security-audit-run" }, ["Run security audit"]) as HTMLButtonElement;
     runAudit.onclick = async () => {
-      secBody.innerHTML = "";
-      secBody.append(el("p", { class: "hint" }, ["Auditing posture…"]));
+      runAudit.disabled = true;
+      runAudit.textContent = "Auditing…";
+      audStrip.set("checking", "", "Reading the posture checks and the file mode of the config on disk.");
       try {
         const res = (await gateway.request("system.securityAudit")) as any;
-        secBody.innerHTML = "";
-        for (const f of res.findings ?? []) {
-          secBody.append(el("div", { class: "row diag-row" }, [
-            el("span", { class: `diag-mark diag-mark--${f.status}` }, [f.status === "ok" ? "✔" : f.status === "warn" ? "▲" : "✖"]),
-            el("span", { class: "row__label" }, [String(f.name)]),
-            el("span", { class: "hint diag-row__detail" }, [String(f.detail), ...(f.fix ? [`  ·  fix: ${f.fix}`] : [])]),
-          ]));
-        }
-        secBody.append(el("p", { class: "hint" }, [`${res.fails} critical, ${res.warns} warning(s) — the CLI's \`sc security audit\` reads the same posture.`]));
+        const findings: any[] = Array.isArray(res?.findings) ? res.findings : [];
+        const fails = findings.filter((f) => f.status === "fail").length;
+        const warns = findings.filter((f) => f.status === "warn").length;
+        diagList(audHost, "Posture", findings, "No findings — every posture check passes.");
+        if (fails > 0) audStrip.set(`${fails} critical`, "is-err", `${plural(fails, "check", "checks")} of ${findings.length} fail — the row says what to change.`);
+        else if (warns > 0) audStrip.set(`${warns} warning${warns === 1 ? "" : "s"}`, "is-warn", `Nothing critical; ${plural(warns, "check", "checks")} of ${findings.length} would tighten the install.`);
+        else audStrip.set("all clear", "is-ok", `All ${plural(findings.length, "check", "checks")} pass. The CLI's sc security audit reads the same posture.`);
+        audNote.textContent = `Run at ${stamp()}.`;
       } catch (err) {
-        secBody.innerHTML = "";
-        secBody.append(el("p", { class: "hint" }, [`audit failed: ${(err as Error).message}`]));
+        audStrip.set("unknown", "", `The audit could not run — ${(err as Error).message}.`);
+        audNote.textContent = `Failed at ${stamp()}.`;
+      } finally {
+        runAudit.disabled = false;
+        runAudit.textContent = "Run security audit";
       }
     };
-    body.append(mkCard("Security audit", [secBody, runAudit]));
+    body.append(card("sys-audit", "Security audit", "Loopback trust, plaintext credentials, the config file mode and the other posture checks sc security audit prints.", [
+      audStrip.node,
+      audHost,
+      foot(audNote, [runAudit]),
+    ]));
 
-    // ---------- Updates ----------
-    const updStatus = el("p", { class: "hint" }, ["Not checked this session."]);
+    /* ---------------- Software update ---------------- */
+
+    const updStrip = this.#statusStrip();
+    updStrip.set(
+      "not checked",
+      "",
+      "Check asks GitHub for the newest commit on the branch this install was built from — it downloads nothing.",
+    );
+    const updHost = el("div", {});
     let checkedSha = "";
     let checkedBehind = false;
+    const shortSha = (v: unknown): string => String(v ?? "").slice(0, 7) || "unknown";
+    const updNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, ["Not checked yet."]);
     const updBtn = el("button", { class: "btn", type: "button", id: "update-check" }, ["Check for updates"]) as HTMLButtonElement;
-    const applyBtn = el("button", { class: "btn pri", type: "button", id: "update-apply", disabled: "true" }, ["Update now"]) as HTMLButtonElement;
+    const applyBtn = el("button", { class: "btn", type: "button", id: "update-apply", disabled: "true" }, ["Update now"]) as HTMLButtonElement;
+    const applyWhy = el("p", { class: "hint" }, ["Run a check first — the commit it finds is the only thing an update would apply."]);
     updBtn.onclick = async () => {
-      updStatus.textContent = "Checking remote…";
+      updBtn.disabled = true;
+      updBtn.textContent = "Checking…";
       applyBtn.disabled = true;
+      updStrip.set("checking", "", "Asking the remote for the newest commit on this branch.");
       try {
         const res = (await gateway.request("system.update.check")) as any;
-        if (!res.ok) {
-          updStatus.textContent = res.error ?? "check failed";
+        if (!res?.ok) {
+          checkedSha = "";
+          checkedBehind = false;
+          updHost.innerHTML = "";
+          updStrip.set("check failed", "is-err", String(res?.error ?? "The remote could not be read."));
+          applyWhy.textContent = "Nothing to apply — the check did not find a target.";
           return;
         }
+        const facts = [
+          this.#factRow("Installed commit", shortSha(res.currentSha), "The commit this checkout is on."),
+          this.#factRow("Remote commit", shortSha(res.remoteSha), "The newest commit on the branch below."),
+          this.#factRow("Branch", String(res.ref ?? "unknown"), "The branch the check asked about."),
+          this.#factRow("Repository", String(res.slug ?? "unknown"), "Where the check asked."),
+          this.#factRow("Remote date", String(res.remoteDate ?? "").slice(0, 10) || "unknown", "When that commit landed."),
+        ];
+        updHost.innerHTML = "";
+        updHost.append(this.#section("This install", `${facts.length} facts`, facts));
         checkedSha = String(res.remoteSha ?? "");
         checkedBehind = res.behind === true;
-        updStatus.textContent = res.upToDate
-          ? `up to date — ${res.slug}@${res.ref} ${String(res.currentSha ?? "").slice(0, 7)}`
-          : `update available: ${String(res.currentSha ?? "").slice(0, 7)} → ${String(res.remoteSha ?? "").slice(0, 7)} on ${res.ref} (${res.remoteDate})`;
+        if (res.upToDate) {
+          updStrip.set("up to date", "is-ok", `${String(res.slug ?? "")}@${String(res.ref ?? "")} matches this install — nothing to apply.`);
+          applyWhy.textContent = "Nothing to apply: this install already matches the remote branch.";
+        } else {
+          updStrip.set("update available", "is-warn", `${shortSha(res.currentSha)} → ${shortSha(res.remoteSha)} on ${String(res.ref ?? "")}. Applying builds in staging, then swaps.`);
+          applyWhy.textContent = "Applies the checked commit only — the gateway re-checks that commit before it swaps anything.";
+        }
         applyBtn.disabled = !checkedBehind;
+        updNote.textContent = `Checked at ${stamp()}.`;
       } catch (err) {
-        updStatus.textContent = `check failed: ${(err as Error).message}`;
+        updStrip.set("check failed", "is-err", `The check could not run — ${(err as Error).message}.`);
+        updNote.textContent = `Failed at ${stamp()}.`;
+      } finally {
+        updBtn.disabled = false;
+        updBtn.textContent = "Check for updates";
       }
     };
     applyBtn.onclick = () => {
       // Their staged-build apply. Typed confirm: echo the target sha so a stale
-      // check cannot silently swap in a different commit (RPC re-verifies too).
+      // check cannot silently swap in a different commit (the RPC re-verifies too).
       const target = checkedSha ? checkedSha.slice(0, 12) : "";
       modal({
         title: "Apply update",
@@ -7103,40 +7213,62 @@ export class Settings {
         danger: true,
         onConfirm: async (values) => {
           applyBtn.disabled = true;
-          updStatus.textContent = "Updating (staged build — this can take a few minutes)…";
+          applyBtn.textContent = "Updating…";
+          updStrip.set("updating", "", "Downloading and building in staging — this can take a few minutes. The install in place keeps serving.");
           try {
             const res = (await gateway.request("system.update.apply", { sha: values["sha"]?.trim() ?? "" })) as any;
-            if (!res.ok) {
-              updStatus.textContent = res.error ?? "update failed — install unchanged";
+            if (!res?.ok) {
+              updStrip.set("update failed", "is-err", String(res?.error ?? "The update failed — the install in place is unchanged."));
               applyBtn.disabled = checkedBehind;
-              return;
+            } else if (res.upToDate) {
+              updStrip.set("already current", "is-ok", "Nothing was swapped — the remote still matches this install.");
+              applyBtn.disabled = true;
+            } else {
+              updStrip.set("updated", "is-warn", `Swapped to ${shortSha(res.sha)}. Restart the service to run the new build.`);
+              applyBtn.disabled = true;
+              applyWhy.textContent = "Applied — restart the gateway, then check again to confirm.";
             }
-            updStatus.textContent = res.upToDate
-              ? "already up to date — nothing swapped"
-              : `updated to ${String(res.sha ?? "").slice(0, 7)} — restart the service to run the new build`;
           } catch (err) {
-            updStatus.textContent = `update failed: ${(err as Error).message}`;
+            updStrip.set("update failed", "is-err", `The update failed — ${(err as Error).message}. The install in place is unchanged.`);
             applyBtn.disabled = checkedBehind;
+          } finally {
+            applyBtn.textContent = "Update now";
+            updNote.textContent = `Updated at ${stamp()}.`;
           }
         },
       });
     };
-    body.append(mkCard("Software update", [updStatus, el("div", { class: "row row--actions" }, [updBtn, applyBtn])]));
+    body.append(card("sys-update", "Software update", "The checkout this gateway runs and the branch it follows — staged builds only, so a failed build never takes the install down.", [
+      updStrip.node,
+      updHost,
+      this.#section("Apply", "1 action", [
+        applyWhy,
+        el("div", { class: "settings__inline" }, [applyBtn]),
+      ]),
+      foot(updNote, [updBtn]),
+    ]));
 
-    // ---------- Backup & restore (P4 #42) ----------
-    const backupList = el("div", {}, [el("p", { class: "hint" }, ["Archives load on open."])]);
+    /* ---------------- Backup & restore ---------------- */
+
+    const bakStrip = this.#statusStrip();
+    bakStrip.set("loading", "", "Reading the backups folder.");
+    const bakHost = el("div", {});
     let backupDir = "";
+    const bakNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, ["Archives load when this tab opens."]);
+
     const renderBackups = (rows: { file: string; size: number; mtime: string }[]): void => {
-      backupList.innerHTML = "";
+      bakHost.innerHTML = "";
       if (rows.length === 0) {
-        backupList.append(el("p", { class: "hint" }, ["No archives here yet — creates land in the state dir's backups/ folder."]));
+        bakHost.append(el("p", { class: "hint" }, [
+          `No archives yet. Creates land in ${backupDir || "the state dir's backups/ folder"}.`,
+        ]));
         return;
       }
-      for (const r of rows) {
-        const full = `${backupDir}/${r.file}`.replace(/\/+$/g, "");
-        const vt = el("button", { class: "btn", type: "button", title: "Verify archive" }, ["Verify"]) as HTMLButtonElement;
+      const list = rows.map((r) => {
+        const vt = el("button", { class: "btn sm", type: "button", title: `Verify ${r.file}` }, ["Verify"]) as HTMLButtonElement;
         vt.onclick = async () => {
           vt.disabled = true;
+          vt.textContent = "Verifying…";
           try {
             const v = (await gateway.request("backup.verify", { archive: `${backupDir}/${r.file}` })) as any;
             toast(
@@ -7145,16 +7277,19 @@ export class Settings {
                 : `verify failed: ${(v.errors ?? []).join("; ") || "corrupt"}`,
               v.ok ? "ok" : "err",
             );
-            void full;
-          } catch (err) { toast((err as Error).message, "err"); }
-          finally { vt.disabled = false; }
+          } catch (err) {
+            toast(`verify failed: ${(err as Error).message}`, "err");
+          } finally {
+            vt.disabled = false;
+            vt.textContent = "Verify";
+          }
         };
-        const rs = el("button", { class: "btn danger", type: "button" }, ["Restore…"]) as HTMLButtonElement;
+        const rs = el("button", { class: "btn sm danger", type: "button", title: `Restore ${r.file}` }, ["Restore…"]) as HTMLButtonElement;
         rs.onclick = () => {
           modal({
             title: `Restore ${r.file}`,
             body: el("div", {}, [
-              el("p", {}, ["This swaps the config, state database snapshot and workspace payload into the state dir, then you restart the gateway."]),
+              el("p", {}, ["This swaps the config, the state database snapshot and the workspace payload into the state dir. Restart the gateway afterwards."]),
               el("p", { class: "hint" }, ["The current state is replaced — create a fresh backup first if unsure."]),
             ]),
             confirmLabel: "Restore",
@@ -7162,29 +7297,52 @@ export class Settings {
             onConfirm: async () => {
               try {
                 const res = (await gateway.request("backup.restore", { archive: `${backupDir}/${r.file}` })) as any;
+                bakStrip.set("restored", "is-warn", `${plural(Number(res.restored ?? 0), "file", "files")} came back — ${res.restart}`);
+                bakNote.textContent = `Restored at ${stamp()}.`;
                 toast(`restored ${res.restored} file(s) — ${res.restart}`, "ok");
               } catch (err) {
+                bakStrip.set("restore failed", "is-err", `The archive was not restored — ${(err as Error).message}. Nothing on disk changed.`);
                 toast(`restore failed: ${(err as Error).message}`, "err");
               }
             },
           });
         };
-        backupList.append(el("div", { class: "row cron-job", "data-archive": r.file }, [
+        return el("div", { class: "row cron-job", "data-archive": r.file }, [
           el("div", { class: "cron-job__body" }, [
             el("span", { class: "row__label" }, [r.file]),
-            el("span", { class: "hint cron-job__meta" }, [`${(r.size / 1048576).toFixed(2)} MiB · ${r.mtime.slice(0, 19).replace("T", " ")}`]),
+            el("span", { class: "hint cron-job__meta" }, [
+              `${(Number(r.size ?? 0) / 1048576).toFixed(2)} MiB · ${String(r.mtime ?? "").slice(0, 16).replace("T", " ")} · ${this.#relTime(Date.parse(String(r.mtime ?? "")))}`,
+            ]),
           ]),
-          vt, rs,
-        ]));
-      }
+          el("div", { class: "cron-job__act" }, [vt, rs]),
+        ]);
+      });
+      bakHost.append(this.#section("Archives", plural(rows.length, "archive", "archives"), list));
     };
-    const loadBackups = async (): Promise<void> => {
+    // `report` is false when a create already owns the strip sentence: the list is
+    // re-read quietly, and the caller writes the one line that matters.
+    const loadBackups = async (report = true): Promise<void> => {
       try {
         const res = (await gateway.request("backup.list")) as any;
-        backupDir = String(res.dir ?? "");
-        renderBackups(res.backups ?? []);
-      } catch { /* handler below swaps in the error */ }
+        backupDir = String(res?.dir ?? "");
+        const rows: { file: string; size: number; mtime: string }[] = Array.isArray(res?.backups) ? res.backups : [];
+        renderBackups(rows);
+        if (rows.length > 0) bakNote.textContent = `Newest archive ${this.#relTime(Date.parse(String(rows[0]?.mtime ?? "")))}.`;
+        if (!report) return;
+        bakStrip.set(
+          rows.length === 0 ? "no archives" : plural(rows.length, "archive", "archives"),
+          rows.length === 0 ? "is-warn" : "is-ok",
+          rows.length === 0 ? "Nothing has been backed up yet — the first create writes one." : `Kept in ${backupDir}.`,
+        );
+      } catch (err) {
+        if (!report) return;
+        bakHost.innerHTML = "";
+        bakHost.append(el("p", { class: "hint" }, ["The folder could not be read — a create still writes here."]));
+        bakNote.textContent = "Not read.";
+        bakStrip.set("unavailable", "is-err", `The backups folder could not be read — ${(err as Error).message}.`);
+      }
     };
+
     const wsCb = el("input", { type: "checkbox", id: "backup-workspace" }) as HTMLInputElement;
     wsCb.checked = true;
     const cfgOnlyCb = el("input", { type: "checkbox", id: "backup-config-only" }) as HTMLInputElement;
@@ -7192,83 +7350,146 @@ export class Settings {
     createBtn.onclick = async () => {
       createBtn.disabled = true;
       createBtn.textContent = "Creating…";
+      bakStrip.set("creating", "", "Snapshotting the database, then writing the archive.");
       try {
         const res = (await gateway.request("backup.create", {
           includeWorkspace: wsCb.checked,
           onlyConfig: cfgOnlyCb.checked,
           verify: true,
         })) as any;
+        const file = String(res.archivePath ?? "").split("/").pop() || "archive";
+        const size = (Number(res.bytes ?? 0) / 1048576).toFixed(2);
         toast(
-          `backup written: ${String(res.archivePath ?? "").split("/").pop()} (${res.files} file(s), ${(Number(res.bytes ?? 0) / 1048576).toFixed(2)} MiB${res.verified === false ? ", verification reported problems" : ", verified"})`,
+          `backup written: ${file} (${res.files} file(s), ${size} MiB${res.verified === false ? ", verification reported problems" : ", verified"})`,
           res.verified === false ? "err" : "ok",
         );
         for (const w of res.warnings ?? []) toast(`warn: ${w}`, "info");
-        await loadBackups();
+        bakNote.textContent = `Created at ${stamp()}.`;
+        await loadBackups(false);
+        bakStrip.set(
+          "created",
+          res.verified === false ? "is-warn" : "is-ok",
+          `${file} is in ${backupDir}. ${plural(Number(res.files ?? 0), "file", "files")}, ${size} MiB${res.verified === false ? " — verification reported problems" : " — verified"}.`,
+        );
       } catch (err) {
+        bakStrip.set("backup failed", "is-err", `Nothing was written — ${(err as Error).message}.`);
+        bakNote.textContent = `Failed at ${stamp()}.`;
         toast(`backup failed: ${(err as Error).message}`, "err");
       } finally {
         createBtn.disabled = false;
         createBtn.textContent = "Create backup";
       }
     };
-    body.append(mkCard("Backup & restore", [
-      backupList,
-      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Include workspace"]), wsCb]),
-      el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Only config (skip state + workspace)"]), cfgOnlyCb]),
-      el("p", { class: "hint" }, ["Consistent SQLite snapshot + atomic writes, archives never overwritten (P3 #29 parity with sc backup)."]),
-      createBtn,
+    body.append(card("sys-backup", "Backup & restore", "Consistent SQLite snapshot plus atomic writes; archives never overwritten.", [
+      bakStrip.node,
+      bakHost,
+      this.#section("New backup", "2 settings", [
+        this.#settingRow(
+          "Include workspace",
+          "Adds the workspace tree — the files the agent wrote, plus uploads.",
+          wsCb,
+          "backup-workspace",
+        ),
+        this.#settingRow(
+          "Only config",
+          "Skips the state database and the workspace: a small archive to move between installs.",
+          cfgOnlyCb,
+          "backup-config-only",
+        ),
+      ]),
+      foot(bakNote, [createBtn]),
     ]));
     void loadBackups();
 
-    // ---------- Secrets (P4 #43) ----------
-    const secFindings = el("div", {}, [el("p", { class: "hint" }, ["Not audited this session."])]);
+    /* ---------------- Secrets ---------------- */
+
+    // Three states, and they are the three the wire protocol can actually carry:
+    // the server masks every key except a profile binding (see `looksLikeBinding`
+    // in src/config/redact.ts — this test mirrors it so the page and the wire
+    // agree about what "visible" means), so a redacted value is a key, not a guess.
+    const provRows = Object.entries(config?.providers ?? {}).map(([name, p]: [string, any]) => {
+      const key = p?.apiKey;
+      if (typeof key !== "string" || key === "") {
+        return this.#factRow(name, "no key", "The key comes from the daemon's environment, not from the config file.");
+      }
+      if (key.startsWith("__redacted__:") || key.includes("•")) {
+        return this.#factRow(name, "stored key, redacted", "The key is in the config file or was resolved from a SecretRef; only the last four characters ever reach this page.");
+      }
+      if (/^[a-z0-9][a-z0-9-]*:[^/].+$/i.test(key) && key.length < 128) {
+        return this.#factRow(name, "profile binding", `${key} names a stored auth profile — the key itself stays in the auth store.`);
+      }
+      return this.#factRow(name, "literal key", "A key written straight into the config file — the audit below flags it.");
+    });
+
+    const secStrip = this.#statusStrip();
+    secStrip.set(
+      "not audited",
+      "",
+      "The config file has not been scanned on this page yet. The audit reads the file itself, not the redacted copy this page holds.",
+    );
+    const secHost = el("div", {});
+    const secNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, ["Not audited yet."]);
     const runSecrets = el("button", { class: "btn", type: "button", id: "secrets-audit-run" }, ["Audit secrets"]) as HTMLButtonElement;
     runSecrets.onclick = async () => {
-      secFindings.innerHTML = "";
-      secFindings.append(el("p", { class: "hint" }, ["Scanning the config for plaintext creds + unresolved refs…"]));
+      runSecrets.disabled = true;
+      runSecrets.textContent = "Scanning…";
+      secStrip.set("scanning", "", "Reading the config file for plaintext credentials, unresolved refs and invalid SecretRefs.");
       try {
         const res = (await gateway.request("secrets.audit")) as any;
-        secFindings.innerHTML = "";
-        if (res.note) secFindings.append(el("p", { class: "hint" }, [String(res.note)]));
-        else if (res.error) secFindings.append(el("p", { class: "hint" }, [String(res.error)]));
-        else if ((res.findings ?? []).length === 0) {
-          secFindings.append(el("div", { class: "row diag-row" }, [
-            el("span", { class: "diag-mark diag-mark--ok" }, ["✔"]),
+        secHost.innerHTML = "";
+        const findings: string[] = (res?.findings ?? []).map((f: unknown) => (typeof f === "string" ? f : JSON.stringify(f)));
+        const warnings: string[] = (res?.warnings ?? []).map((w: unknown) => (typeof w === "string" ? w : JSON.stringify(w)));
+        if (res?.note) {
+          secHost.append(el("p", { class: "hint" }, [String(res.note)]));
+          secStrip.set("no file", "", String(res.note));
+        } else if (res?.error) {
+          secHost.append(el("p", { class: "hint" }, [String(res.error)]));
+          secStrip.set("unreadable", "is-err", String(res.error));
+        } else if (findings.length === 0 && warnings.length === 0) {
+          secHost.append(el("div", { class: "row diag-row" }, [
+            el("span", { class: "diag-mark diag-mark--ok", "aria-label": "ok" }, ["✔"]),
             el("span", { class: "row__label" }, ["No plaintext credentials or unresolved refs"]),
           ]));
+          secStrip.set("clean", "is-ok", "Every key is a SecretRef, an environment lookup or already resolved.");
+        } else {
+          const rows = [
+            ...findings.map((f) => ({ status: "fail", name: f.split(" — ")[0], detail: f })),
+            ...warnings.map((w) => ({ status: "warn", name: w.split(" — ")[0], detail: w })),
+          ];
+          diagList(secHost, "Findings", rows, "No plaintext credentials or unresolved refs");
+          secStrip.set(
+            findings.length > 0 ? `${findings.length} finding${findings.length === 1 ? "" : "s"}` : `${warnings.length} warning${warnings.length === 1 ? "" : "s"}`,
+            findings.length > 0 ? "is-err" : "is-warn",
+            findings.length > 0
+              ? findings.length === 1
+                ? "One credential is in plain text or unresolved — replace it with a SecretRef."
+                : `${findings.length} credentials are in plain text or unresolved — replace each with a SecretRef.`
+              : "Nothing plaintext; some refs could not be resolved at start.",
+          );
         }
-        for (const f of res.findings ?? []) {
-          secFindings.append(el("div", { class: "row diag-row" }, [
-            el("span", { class: "diag-mark diag-mark--fail" }, ["✖"]),
-            el("span", { class: "hint diag-row__detail" }, [String(f)]),
-          ]));
-        }
-        for (const w of res.warnings ?? []) {
-          secFindings.append(el("div", { class: "row diag-row" }, [
-            el("span", { class: "diag-mark diag-mark--warn" }, ["▲"]),
-            el("span", { class: "hint diag-row__detail" }, [String(w)]),
-          ]));
-        }
+        secNote.textContent = `Audited at ${stamp()}.`;
       } catch (err) {
-        secFindings.innerHTML = "";
-        secFindings.append(el("p", { class: "hint" }, [`secrets audit failed: ${(err as Error).message}`]));
+        secStrip.set("unknown", "", `The audit could not run — ${(err as Error).message}.`);
+        secNote.textContent = `Failed at ${stamp()}.`;
+      } finally {
+        runSecrets.disabled = false;
+        runSecrets.textContent = "Audit secrets";
       }
     };
-    const providersList = (Object.entries(config.providers ?? {}) as [string, any][]).map(([name, p]) =>
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, [name]),
-        el("span", { class: "hint" }, [String(p.apiKey ?? "") === "" ? "no key (env only)" : /profiles|:/.test(String(p.apiKey)) && !String(p.apiKey).startsWith("sk-") ? `binding: ${String(p.apiKey).slice(0, 24)}…` : "stored credential (redacted)"]),
+    body.append(card("sys-secrets", "Secrets", "Where the keys behind the configured providers live — the file only ever holds a reference, or a redacted copy on this page.", [
+      secStrip.node,
+      provRows.length > 0
+        ? this.#section("Configured providers", plural(provRows.length, "provider", "providers"), provRows)
+        : el("p", { class: "hint" }, ["No providers are configured yet — add one on the Providers tab."]),
+      this.#section("Audit", "1 action", [
+        el("p", { class: "hint" }, [
+          "A key can also be a SecretRef: { source: 'env' | 'file' | 'exec', provider, id }. ",
+          el("span", { class: "setcard__echo" }, ["sc secrets refs"]),
+          " prints the exact shapes and the validation patterns.",
+        ]),
+        secHost,
       ]),
-    );
-    body.append(mkCard("Secrets", [
-      (providersList.length > 0
-        ? el("div", {}, [el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Configured providers"])]), ...providersList])
-        : el("p", { class: "hint" }, ["No providers configured yet."])),
-      el("p", { class: "hint" }, [
-        "Recipes: store raw keys in the environment as ${OPENAI_API_KEY} (channels tab hint) or use a SecretRef — {source: 'env' | 'file' | 'exec', provider, id}. See `sc secrets refs` for the exact shapes + validation patterns.",
-      ]),
-      secFindings,
-      runSecrets,
+      foot(secNote, [runSecrets]),
     ]));
   }
 
