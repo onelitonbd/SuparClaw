@@ -5,7 +5,7 @@ import { el, fuzzy, icon, modal, toast } from "./dom.js";
 import { AVATAR_ACCEPT, isStoredAvatar, prepareAvatar } from "./avatar.js";
 import { friendlyModelName } from "./model-name.js";
 import { gateway } from "./rpc.js";
-import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./notifications.js";
+import { askPermission, loadPrefs, permissionState, savePrefs, sendTest } from "./notifications.js";
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
@@ -497,9 +497,15 @@ export class Settings {
     const sel = el("select", { id, class: "dd__store", hidden: "", tabindex: "-1", "aria-hidden": "true" }) as HTMLSelectElement;
     const fill = (v: string): void => {
       sel.innerHTML = "";
-      const empty = el("option", { value: "" }, [placeholder]) as HTMLOptionElement;
-      if (!v) empty.selected = true;
-      sel.append(empty);
+      // The placeholder is only a stand-in for "nothing chosen". When a real
+      // choice has the empty value ("use the configured default"), the choices
+      // already carry it — adding the placeholder too would put the same entry in
+      // the store twice and print it twice in a read-out.
+      if (!choices.some((o) => o.value === "")) {
+        const empty = el("option", { value: "" }, [placeholder]) as HTMLOptionElement;
+        if (!v) empty.selected = true;
+        sel.append(empty);
+      }
       for (const o of choices) {
         const opt = el("option", { value: o.value }, [o.label]) as HTMLOptionElement;
         if (o.value === v) opt.selected = true;
@@ -5989,62 +5995,322 @@ export class Settings {
     });
   }
 
-  
-  /* ---------------- alerts (their Settings → Notifications page) ---------------- */
+  /* ---------------- alerts — this browser's notifications ---------------- */
 
+  /** Alerts: what this browser may announce, and when it stays quiet.
+   *
+   *  Nothing on this card reaches the gateway — the prefs live in this browser's
+   *  localStorage — so the card ends in the same footer band as every other one,
+   *  but the commit writes that store. The state words describe what can appear
+   *  right now; the raw permission API ("default") is not an answer anyone can
+   *  act on, so it never reaches the page. */
   #renderAlerts(): void {
     const prefs = loadPrefs();
-    const state = permissionState();
+    const perm = permissionState();
+    const stack = el("div", { class: "settings__stack" });
 
-    const stateRow = el("div", { class: "row" }, [
-      el("span", { class: "row__label" }, ["Browser permission"]),
-      el("span", { class: `row__value${state === "granted" ? " is-ok" : state === "denied" ? " is-err" : ""}` }, [state]),
-    ]);
+    const head = (hint: string): HTMLElement =>
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Browser alerts"]),
+        el("p", { class: "hint" }, [hint]),
+      ]);
 
-    if (!supported()) {
-      this.#root.append(el("div", { class: "card" }, [
-        stateRow,
-        el("p", { class: "hint" }, ["This browser has no Notification support — only the status surface is available (their unsupported-browser row)."]),
+    // No Notification constructor in this browser: say so once, keep no controls
+    // that would write prefs nothing can ever read.
+    if (perm === "unsupported") {
+      const strip = this.#statusStrip();
+      strip.set("unsupported", "", "This browser cannot show notifications, so there is nothing to set here.");
+      stack.append(el("div", { class: "card alerts-card" }, [
+        head("Alerts are a banner from this browser when the agent needs your attention."),
+        strip.node,
       ]));
+      this.#root.append(stack);
       return;
     }
 
-    const toggle = (key: "enabled" | "reply" | "approvals", label: string, hintText: string): HTMLElement => {
-      const cb = el("input", { type: "checkbox" }) as HTMLInputElement;
-      cb.checked = prefs[key];
-      cb.onchange = () => {
-        prefs[key] = cb.checked;
-        savePrefs(prefs);
-      };
-      return el("div", {}, [
-        el("div", { class: "row" }, [el("span", { class: "row__label" }, [label]), cb]),
-        el("p", { class: "hint" }, [hintText]),
-      ]);
+    /** Where these values live. The one fact a reader of this page must not miss. */
+    const PERSIST = "Saved in this browser only — not in the config file, and not on your other devices.";
+
+    const strip = this.#statusStrip();
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, [PERSIST]);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    const enabledCb = el("input", { type: "checkbox", id: "alerts-enabled" }) as HTMLInputElement;
+    enabledCb.checked = prefs.enabled;
+    const approvalsCb = el("input", { type: "checkbox", id: "alerts-approvals" }) as HTMLInputElement;
+    approvalsCb.checked = prefs.approvals;
+    const replyCb = el("input", { type: "checkbox", id: "alerts-reply" }) as HTMLInputElement;
+    replyCb.checked = prefs.reply;
+
+    // A hand-edited store can hold anything; coerce before it reaches an attribute.
+    const storedFromValue = String(prefs.quietFrom ?? "");
+    const storedToValue = String(prefs.quietTo ?? "");
+    const fromIn = el("input", {
+      class: "inp mono",
+      id: "alerts-quiet-from",
+      value: storedFromValue,
+      placeholder: "22:00",
+      autocomplete: "off",
+      spellcheck: "false",
+      "aria-label": "Quiet hours start",
+    }) as HTMLInputElement;
+    const toIn = el("input", {
+      class: "inp mono",
+      id: "alerts-quiet-to",
+      value: storedToValue,
+      placeholder: "08:00",
+      autocomplete: "off",
+      spellcheck: "false",
+      "aria-label": "Quiet hours end",
+    }) as HTMLInputElement;
+
+    /** `22:00` → `22:00`, `8:00` → `08:00`, anything else → "". The engine's own
+     *  parser is looser and silently ignores what it cannot read; a page that does
+     *  that would show a window that does nothing. */
+    const parseTime = (raw: string): string => {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(raw);
+      if (!m) return "";
+      const h = Number(m[1]);
+      const min = Number(m[2]);
+      if (h > 23 || min > 59) return "";
+      return `${String(h).padStart(2, "0")}:${m[2]}`;
     };
 
-    const fromIn = el("input", { class: "inp mono", placeholder: "22:00", value: prefs.quietFrom });
-    const toIn = el("input", { class: "inp mono", placeholder: "08:00", value: prefs.quietTo });
-    fromIn.onchange = () => { prefs.quietFrom = (fromIn as HTMLInputElement).value.trim(); savePrefs(prefs); };
-    toIn.onchange = () => { prefs.quietTo = (toIn as HTMLInputElement).value.trim(); savePrefs(prefs); };
-
-    const testBtn = el("button", { class: "btn", type: "button" }, ["Send test"]);
-    testBtn.onclick = async () => {
-      const ok = await sendTest();
-      toast(ok ? "test sent" : "Notification API unavailable", ok ? "ok" : "err");
+    /** The draft's own problem, in words, with the field(s) that carry it. */
+    const quietProblem = (from: string, to: string): { message: string; fields: HTMLInputElement[] } | null => {
+      const f = from ? parseTime(from) : "";
+      const t = to ? parseTime(to) : "";
+      if (from && !f) return { message: "The start is not a 24-hour time — use 22:00, not 10pm.", fields: [fromIn] };
+      if (to && !t) return { message: "The end is not a 24-hour time — use 08:00, not 8am.", fields: [toIn] };
+      if (Boolean(from) !== Boolean(to)) {
+        return { message: "Set both times, or clear both to turn quiet hours off.", fields: [from ? toIn : fromIn] };
+      }
+      if (f && f === t) {
+        return {
+          message: "The start and the end are the same, which would silence every alert. Clear both to turn quiet hours off.",
+          fields: [fromIn, toIn],
+        };
+      }
+      return null;
     };
 
-    this.#root.append(el("div", { class: "card" }, [
-      stateRow,
-      toggle("enabled", "Enable notifications", "Alerts appear when the page is hidden — generic lock-screen text only (their privacy rule: no prompts, commands, or excerpts)."),
-      toggle("approvals", "Approval requests", "On by default (their default category)."),
-      toggle("reply", "Final replies", "Opt-in (their every-other-category-off rule)."),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Quiet hours"]),
-        el("div", { class: "row__value" }, [fromIn, " – ", toIn]),
+    const quietErr = el("p", { class: "hint hint--err", id: "alerts-quiet-err" }, []);
+    quietErr.setAttribute("hidden", "");
+
+    // A window stored by an older build (or edited by hand) may not be usable. Say
+    // which way the engine is already treating it, instead of pretending it works.
+    const storedFrom = storedFromValue.trim();
+    const storedTo = storedToValue.trim();
+    const storedOkFrom = storedFrom ? parseTime(storedFrom) : "";
+    const storedOkTo = storedTo ? parseTime(storedTo) : "";
+    if ((storedFrom && !storedOkFrom) || (storedTo && !storedOkTo) || Boolean(storedFrom) !== Boolean(storedTo)) {
+      quietErr.textContent = "The saved window is not two valid times, so it is being ignored. Fix it below, or clear both.";
+      quietErr.removeAttribute("hidden");
+    } else if (storedOkFrom && storedOkFrom === storedOkTo) {
+      quietErr.textContent = "The saved window starts and ends at the same time, which silences every alert. Clear both to turn quiet hours off.";
+      quietErr.removeAttribute("hidden");
+    }
+
+    const quietField = el("div", { class: "setfield" }, [
+      el("span", { class: "lbl" }, ["Window"]),
+      el("div", { class: "setline alerts-quiet" }, [
+        fromIn,
+        el("span", { class: "setcard__echo" }, ["to"]),
+        toIn,
       ]),
-      el("p", { class: "hint" }, ["Alerts inside quiet hours are skipped, not queued (their quiet-hours rule)."]),
-      testBtn,
+      el("p", { class: "hint" }, [
+        "24-hour times. Leave both empty for no quiet hours; a window that crosses midnight is fine. Alerts in the window are dropped, not queued.",
+      ]),
+      quietErr,
+    ]);
+
+    // The tag answers "can an alert appear right now?" in order of what the reader
+    // has to act on: the switch first (it is off on a fresh install), then the
+    // browser's own answer. A blocked browser under an off switch is not "off" —
+    // but the switch is still the thing to turn on, so the row below says blocked.
+    const syncStatus = (): void => {
+      if (!enabledCb.checked) {
+        strip.set("off", "", "Nothing is sent, whatever is selected below.");
+        return;
+      }
+      if (perm === "denied") {
+        strip.set("blocked", "is-warn", "This browser blocks notifications for this site, so nothing below can be sent.");
+        return;
+      }
+      if (perm === "default") {
+        strip.set("not asked", "is-warn", "Nothing below can be sent until this browser is asked — use the button above.");
+        return;
+      }
+      const a = approvalsCb.checked;
+      const r = replyCb.checked;
+      const kinds = a && r ? "Approval requests and finished replies are announced" : a ? "Approval requests are announced" : r ? "Finished replies are announced" : "";
+      strip.set(
+        "on",
+        kinds ? "is-ok" : "is-warn",
+        kinds ? `${kinds} while the tab is in the background.` : "Nothing is selected below, so no alert will appear.",
+      );
+    };
+
+    /** One dependency to respect: nothing below the master switch can do anything
+     *  while it is off, so nothing below it looks live either. */
+    const syncAvailability = (): void => {
+      const on = enabledCb.checked;
+      for (const cb of [approvalsCb, replyCb]) cb.disabled = !on;
+      for (const inp of [fromIn, toIn]) inp.disabled = !on;
+      quietField.className = `setfield${on ? "" : " is-off"}`;
+    };
+
+    const askBtn = el("button", { class: "btn", type: "button", id: "alerts-ask" }, ["Ask this browser"]) as HTMLButtonElement;
+    askBtn.onclick = async () => {
+      askBtn.disabled = true;
+      askBtn.textContent = "Asking…";
+      const next = await askPermission();
+      if (next === "granted") toast("this browser now allows alerts", "ok");
+      else if (next === "denied") toast("the request was blocked — the browser's site settings can undo that", "err");
+      else toast("the browser kept its previous answer");
+      await this.render();
+    };
+
+    // Granted and blocked are facts here, not choices: the page cannot give or take
+    // the permission, and a button that pretends to would be a lie.
+    const permissionRow =
+      perm === "granted"
+        ? this.#factRow(
+          "Browser permission",
+          "allowed",
+          "Granted to this site. The browser's own site settings are the only place to take it back.",
+        )
+        : perm === "denied"
+          ? this.#factRow(
+            "Browser permission",
+            "blocked",
+            "Site settings → Notifications is the only way back.",
+          )
+          : this.#settingRow(
+            "Browser permission",
+            "The browser shows its own prompt; this page cannot grant it for you.",
+            askBtn,
+            "alerts-ask",
+          );
+
+    const masterRow = this.#settingRow(
+      "Send alerts from this browser",
+      "One switch for this browser; the kinds below decide what it announces.",
+      enabledCb,
+      "alerts-enabled",
+    );
+
+    const announce = this.#section("What gets announced", "2 settings", [
+      this.#settingRow("Approval requests", "A tool call is waiting for your answer.", approvalsCb, "alerts-approvals"),
+      this.#settingRow("Finished replies", "A turn finished while you were in another tab.", replyCb, "alerts-reply"),
+      el("p", { class: "hint" }, [
+        "An alert says that something needs you — never the prompt, the tool's arguments or the reply.",
+      ]),
+    ]);
+
+    const quiet = this.#section("Quiet hours", "2 times", [quietField]);
+
+    const testNote = el("p", { class: "hint", "aria-live": "polite" }, []);
+    testNote.setAttribute("hidden", "");
+    const testBtn = el("button", { class: "btn", type: "button", id: "alerts-test" }, ["Send test"]) as HTMLButtonElement;
+    // A test needs a permission to test with. "Not asked" still allows the click:
+    // it is a user gesture, so the browser will show its prompt there.
+    testBtn.disabled = perm === "denied";
+    testBtn.onclick = async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = "Sending…";
+      testNote.removeAttribute("hidden");
+      testNote.textContent = "Asking this browser to show one…";
+      const ok = await sendTest();
+      testBtn.disabled = perm === "denied";
+      testBtn.textContent = "Send test";
+      if (permissionState() !== perm) {
+        // The click was this browser's first ask, so the card now has a different
+        // fact to show. The toast keeps the outcome; the re-render keeps the row.
+        toast(ok ? "test sent — this browser now allows alerts" : "the browser did not show it", ok ? "ok" : "err");
+        void this.render();
+        return;
+      }
+      testNote.textContent = ok
+        ? "Sent — a banner should have appeared just now."
+        : "Nothing appeared: this browser is not allowing notifications for this site.";
+    };
+
+    const test = this.#section("Send a test", "1 action", [
+      el("p", { class: "hint" }, [
+        perm === "denied"
+          ? "The browser is blocking notifications for this site, so a test cannot appear."
+          : "Sends one now, using the browser's permission. It ignores the switches above, so it still works with alerts off.",
+      ]),
+      el("div", { class: "settings__inline" }, [testBtn]),
+      testNote,
+    ]);
+
+    const zone = el("div", {}, [masterRow, announce, quiet, test]);
+    this.#dirtyWatch(zone, note);
+
+    for (const inp of [fromIn, toIn]) {
+      inp.addEventListener("input", () => {
+        quietErr.setAttribute("hidden", "");
+        inp.removeAttribute("aria-invalid");
+        problem.setAttribute("hidden", "");
+      });
+    }
+    enabledCb.onchange = () => {
+      syncAvailability();
+      syncStatus();
+    };
+    approvalsCb.onchange = () => syncStatus();
+    replyCb.onchange = () => syncStatus();
+
+    const save = el("button", { class: "btn pri", type: "button", id: "alerts-save" }, ["Save alerts"]) as HTMLButtonElement;
+    save.onclick = () => {
+      const from = fromIn.value.trim();
+      const to = toIn.value.trim();
+      const bad = quietProblem(from, to);
+      if (bad) {
+        quietErr.textContent = bad.message;
+        quietErr.removeAttribute("hidden");
+        for (const f of bad.fields) f.setAttribute("aria-invalid", "true");
+        bad.fields[0]?.focus();
+        problem.textContent = "Not saved — the quiet hours are not a usable window.";
+        problem.removeAttribute("hidden");
+        return;
+      }
+      try {
+        // One write for the whole card: a half-written prefs object is worse than
+        // none, and this store can refuse (private browsing, quota).
+        savePrefs({
+          enabled: enabledCb.checked,
+          approvals: approvalsCb.checked,
+          reply: replyCb.checked,
+          quietFrom: from ? parseTime(from) : "",
+          quietTo: to ? parseTime(to) : "",
+        });
+      } catch (err) {
+        problem.textContent = `not saved — this browser refused the write (${(err as Error).message})`;
+        problem.removeAttribute("hidden");
+        return;
+      }
+      delete note.dataset["dirty"];
+      toast("alerts saved — this browser only", "ok");
+      // The status line and the normalised times come back from the store, so the
+      // page never shows a draft it did not actually save.
+      void this.render();
+    };
+
+    syncAvailability();
+    syncStatus();
+
+    stack.append(el("div", { class: "card alerts-card" }, [
+      head("A banner from this browser when the agent needs your attention — only while the tab is in the background."),
+      strip.node,
+      permissionRow,
+      zone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
     ]));
+    this.#root.append(stack);
   }
 
   /* ---------------- runtime ---------------- */

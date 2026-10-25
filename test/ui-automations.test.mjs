@@ -532,6 +532,9 @@ test("editing a job keeps its id, and the dialog never offers a config path as a
   assert.equal(byId("cron-f-schedule").value, "0 9 * * 1-5");
   const delivery = menuLabels("cron-f-delivery", dialog());
   assert.ok(delivery.every((l) => !l.includes("cron.")), "no config paths in a label");
+  // The placeholder and the "configured default" choice are the same value; the
+  // store must not carry both, or a read-out prints the entry twice.
+  assert.equal(opts("cron-f-delivery").filter((o) => o.value === "").length, 1, "one empty delivery choice, not two");
   await tap(confirmBtn());
   assert.equal(calls("cron.upsert")[0].params.id, "j1");
 });

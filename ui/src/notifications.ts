@@ -55,10 +55,27 @@ export function inQuietHours(from: string, to: string, d = new Date()): boolean 
   return f < t ? cur >= f && cur < t : cur >= f || cur < t;
 }
 
-/** Info string for the settings page (their status surface). */
-export function permissionState(): "unsupported" | "denied" | "granted" | "default" {
+/** The browser's own answer about alerts for this site. */
+export type PermissionState = "unsupported" | "denied" | "granted" | "default";
+
+export function permissionState(): PermissionState {
   if (!supported()) return "unsupported";
   return Notification.permission as "denied" | "granted" | "default";
+}
+
+/** Ask the browser, from a click. It shows its own prompt; the page cannot grant
+ *  anything on its own, and a denied state cannot be undone from here. */
+export async function askPermission(): Promise<PermissionState> {
+  if (!supported()) return "unsupported";
+  if (Notification.permission === "default") {
+    try {
+      // Old Safari returns nothing; both shapes are awaited the same way.
+      await Notification.requestPermission();
+    } catch {
+      /* a refused prompt is the same as a denial */
+    }
+  }
+  return permissionState();
 }
 
 /** Ask once (their "first chat send" auto-prompt — one shot per browser). */
@@ -69,15 +86,19 @@ export function askOnceOnFirstSend(): void {
   void Notification.requestPermission();
 }
 
-async function show(title: string, body: string): Promise<void> {
+/** Show one alert. Returns whether the browser actually displayed it, so a caller
+ *  cannot claim success after a refusal. */
+async function show(title: string, body: string): Promise<boolean> {
+  if (!supported()) return false;
   if (Notification.permission !== "granted") {
-    const perm = await Notification.requestPermission();
-    if (perm !== "granted") return;
+    if ((await askPermission()) !== "granted") return false;
   }
   try {
     new Notification(title, { body, icon: "/favicon.ico" });
+    return true;
   } catch {
     /* mobile/desktop quirks non-fatal */
+    return false;
   }
 }
 
@@ -86,19 +107,23 @@ export function onGatewayEvent(event: string, payload: { sessionKey?: string; ev
   if (event !== "chat") return;
   const prefs = loadPrefs();
   if (!prefs.enabled || !supported()) return;
+  // Only while the tab is in the background: a banner over the chat you are
+  // already reading is noise, and this is the rule the Settings page states.
+  if (document.hidden !== true) return;
+  // A gateway event is not a user gesture, so it can never raise the permission
+  // prompt — it can only use a permission that was granted earlier.
+  if (Notification.permission !== "granted") return;
   const ev = payload.event ?? {};
   if (inQuietHours(prefs.quietFrom, prefs.quietTo)) return;
   if (ev.type === "approval" && prefs.approvals) {
     // generic lock-screen text only (their privacy rule); name missing → plain.
     void show("Approval requested", ev.name ? `“${ev.name}” needs a decision.` : "A tool call needs a decision.");
-  } else if (ev.type === "final" && prefs.reply && document.hidden) {
+  } else if (ev.type === "final" && prefs.reply) {
     void show("Reply ready", "The agent finished a reply.");
   }
 }
 
-/** Settings "Send test" (their Settings → Notifications test). */
+/** Settings "Send test": true only when a notification was really shown. */
 export async function sendTest(): Promise<boolean> {
-  if (!supported()) return false;
-  await show("Test notification", "Notifications are working.");
-  return true;
+  return show("Test notification", "Notifications are working.");
 }
