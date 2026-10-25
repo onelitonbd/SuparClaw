@@ -6939,132 +6939,241 @@ export class Settings {
     ]));
   }
 
+  /** Runtime tab: the daemon behind this page — how it runs, what it has loaded,
+   *  and the one action that restarts it.
+   *
+   *  Every fact here comes from the daemon's own payload. A read that fails says
+   *  so; there is no fallback "Running", no hardcoded version and no config key
+   *  standing in for a live value (the earlier page printed all three, plus
+   *  `config.cron.jobs` — a field the schema has never had). */
   async #renderRuntime(config: any, counts: { tools: number; skills: number; models: number }): Promise<void> {
+    // Two independent reads. The log is still evidence when the status call
+    // fails, and the counts are still worth showing when the log cannot be read.
     let svc: any = null;
+    let statusErr = "";
     try {
       svc = await gateway.request("service.status");
-    } catch { /* offline guard already rendered */ }
-
-    if (svc) this.#root.append(this.#serviceCard(svc));
-
-    const rows: [string, string, string?][] = [
-      ["Status", "Running", "color:var(--ok)"],
-      ["Version", "0.1.0"],
-      ["Tools", String(counts.tools)],
-      ["Skills", String(counts.skills)],
-      ["Models", String(counts.models)],
-      ["Telegram", config.channels?.telegram?.enabled ? "on" : "off"],
-      ["Cron", config.cron?.enabled ? `${config.cron.jobs ?? 0} jobs` : "off"],
-      ["Providers", String(Object.keys(config.providers ?? {}).length)],
-    ];
-
-    const list = el("div", { class: "card card--flush" });
-    for (const [k, v, style] of rows) {
-      list.append(el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, [k]),
-        el("span", { class: "row__value", style }, [v]),
-      ]));
+    } catch (err) {
+      statusErr = (err as Error).message;
+    }
+    let logs: any = null;
+    let logsErr = "";
+    try {
+      logs = await gateway.request("service.logs", { lines: 30 });
+    } catch (err) {
+      logsErr = (err as Error).message;
     }
 
-    const tiles = el("div", { class: "tiles" }, [
-      tile(String(counts.tools), "tools"),
-      tile(String(counts.skills), "skills"),
-      tile(String(counts.models), "models"),
-      tile(String(Object.keys(config.providers ?? {}).length), "providers"),
-    ]);
+    const openGateway = el("button", { class: "btn sm", type: "button", id: "runtime-open-gateway" }, ["Open Gateway"]) as HTMLButtonElement;
+    openGateway.onclick = () => this.#setTab("gateway");
 
-    this.#root.append(tiles, list);
+    this.#root.append(el("div", { class: "settings__stack" }, [
+      this.#processCard(svc, statusErr, counts, config),
+      this.#logCard(logs, logsErr),
+      el("div", { class: "settings__inline" }, [
+        el("p", { class: "hint" }, ["Port and bind are set on the Gateway tab."]),
+        openGateway,
+      ]),
+    ]));
   }
 
-  /** The daemon lifecycle card: manager, boot state, restarts, log tail. */
-  #serviceCard(svc: any): HTMLElement {
-    const fmtUptime = (ms: number | undefined): string => {
-      const sec = Math.max(0, Math.round(Number(ms ?? 0) / 1000));
-      const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-      return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec % 60}s` : `${sec}s`;
+  /** The daemon card: one status line, the facts it reports about itself, and the
+   *  single action this tab owns. */
+  #processCard(svc: any, loadErr: string, counts: { tools: number; skills: number; models: number }, config: any): HTMLElement {
+    const strip = this.#statusStrip();
+    const v = (svc ?? {}) as any;
+    const installed = Boolean(v.installed);
+    const supervised = Boolean(v.supervised);
+    const running = Boolean(v.running);
+    // Names in words, never the payload's keys; anything unknown prints itself.
+    const managerWords: Record<string, string> = {
+      "systemd-user": "systemd (user)",
+      launchd: "launchd (macOS)",
+      "termux-services": "Termux services (runit)",
     };
-    const modeLabel: Record<string, string> = {
-      supervised: "supervised by sc gateway (restarts on crash)",
-      service: "OS service",
-      single: "single process — no supervisor",
-      stopped: "stopped",
-    };
+    const manager = v.manager ? managerWords[String(v.manager)] ?? String(v.manager) : "";
+    const uptime = typeof v.uptimeMs === "number" ? fmtUptime(v.uptimeMs) : "";
+    const sessionsKnown = typeof v.sessions === "number";
+    const busy = Array.isArray(v.busy) ? v.busy.length : 0;
 
-    const restart = el("button", { class: "btn", type: "button" }, ["Restart gateway"]) as HTMLButtonElement;
-    const willComeBack = svc.restartSupported === true;
-    if (!willComeBack) restart.disabled = true;
+    // The strip answers "is it running, and would it come back?" in that order,
+    // and claims nothing the payload does not support.
+    if (!svc) {
+      strip.set("unknown", "", `Could not read the daemon status${loadErr ? ` — ${loadErr}` : ""}.`);
+    } else if (!running) {
+      strip.set("answering", "is-warn", installed
+        ? `This page is talking to the daemon, but there is no live pid record — the ${manager || "service"} service can still start it again.`
+        : "This page is talking to the daemon, but there is no live pid record — a restart cannot be promised.");
+    } else if (supervised) {
+      strip.set("running", "is-ok", `Supervised by sc gateway — it starts the daemon again after a crash.${uptime ? ` Up ${uptime}.` : ""}`);
+    } else if (installed) {
+      strip.set("running", "is-ok", `Started by ${manager || "the service manager"} — it starts the daemon again after a crash.${uptime ? ` Up ${uptime}.` : ""}`);
+    } else {
+      strip.set("running", "is-warn", `No supervisor and no service: a crash leaves it down.${uptime ? ` Up ${uptime}.` : ""}`);
+    }
+
+    const processFacts: Node[] = [];
+    const supervision: Node[] = [];
+    if (svc) {
+      processFacts.push(
+        this.#factRow(
+          "Process ids",
+          v.pid ? (v.supervisorPid ? `child ${v.pid} · supervisor ${v.supervisorPid}` : `pid ${v.pid}`) : "not reported",
+          "Reported from the pid record the daemon writes when it starts.",
+        ),
+        this.#factRow(
+          "Uptime",
+          running && uptime ? uptime : "unknown",
+          v.startedAt ? `Started ${this.#relTime(v.startedAt)} — ${this.#when(v.startedAt)}.` : "Start time not recorded.",
+        ),
+        this.#factRow(
+          "Listening on",
+          v.port ? `port ${v.port}` : "not reported",
+          running
+            ? "The port the daemon wrote when it started. Bind and port are set on the Gateway tab."
+            : "The port in the pid record. Bind and port are set on the Gateway tab.",
+        ),
+        this.#factRow(
+          "Sessions",
+          sessionsKnown ? String(v.sessions) : "unknown",
+          sessionsKnown
+            ? `${busy > 0 ? `${busy} working right now.` : "None are working right now."}${Number(v.sessions) >= 200 ? " The count stops at 200." : ""}`
+            : "Not reported by this daemon.",
+        ),
+        this.#factRow("Version", String(v.version ?? "") || "unknown", "Reported by the daemon."),
+      );
+
+      const howRuns: [string, string] = running && supervised
+        ? ["supervised by sc gateway", "The parent process restarts it after a crash."]
+        : installed
+          ? [`${manager || "service manager"} service`, "The service manager restarts it after a crash."]
+          : running
+            ? ["unsupervised", "Nothing restarts it after a crash."]
+            : ["no live record", "Nothing is watching this process, so a restart would leave it down."];
+      supervision.push(
+        this.#factRow("How it runs", howRuns[0], howRuns[1]),
+        this.#factRow(
+          "Service manager",
+          installed ? `${manager} — installed` : manager ? `${manager} — not installed` : "none installed",
+          installed ? `Service file: ${String(v.servicePath ?? "")}` : "Nothing is installed as a service.",
+        ),
+        this.#factRow(
+          "Starts at boot",
+          installed ? (v.bootEnabled ? "enabled" : "disabled") : "not installed",
+          installed
+            ? (v.bootEnabled ? "The service manager starts it when the device boots." : "The service manager would not start it at boot.")
+            : "Install a service first.",
+        ),
+      );
+      if (!installed) {
+        supervision.push(el("p", { class: "hint" }, [
+          "Install it on the device — this page cannot: ",
+          el("span", { class: "setcard__echo" }, ["sc service install"]),
+        ]));
+      }
+    }
+
+    // Two reasons a restart cannot be offered, each with its own sentence, and the
+    // button disabled in exactly those states — so no dialog can stop the daemon
+    // with nothing left to start it again.
+    const canRestart = v.restartSupported === true && (running || installed);
+    const restartWhy = !running
+      ? installed
+        ? `The pid record is gone, but the ${manager || "service"} service starts the daemon again within a second or two. Open chats reconnect by themselves; a reply that is mid-flight is cut off.`
+        : "The daemon is answering, but its pid record is gone and nothing is installed as a service, so a restart would not come back. Restart it on the device."
+      : v.restartSupported !== true
+        ? "Nothing would start it again: no supervisor and no service. Start it with sc gateway (which supervises itself) or install it as a service first."
+        : `${supervised ? "The supervisor" : `The ${manager || "service"} manager`} starts the daemon again within a second or two. Open chats reconnect by themselves; a reply that is mid-flight is cut off.`;
+
+    const restart = el("button", { class: "btn", type: "button", id: "runtime-restart" }, ["Restart gateway"]) as HTMLButtonElement;
+    restart.disabled = !canRestart;
     restart.onclick = () => {
       modal({
         title: "Restart the gateway?",
-        body: willComeBack
-          ? "The daemon stops gracefully and its supervisor starts it right back. Open chats reconnect automatically."
-          : "No supervisor is running — this would STOP the gateway until you start it again.",
+        body: "The daemon stops and is started again. Open chats reconnect by themselves; a reply that is mid-flight is cut off.",
         confirmLabel: "Restart",
-        danger: !willComeBack,
         onConfirm: async () => {
+          restart.disabled = true;
+          restart.textContent = "Restarting…";
           try {
             const res: any = await gateway.request("service.restart", {});
-            toast(res?.willComeBack ? "restarting — reconnecting…" : "stopping (no supervisor)…", "ok");
+            // The server's own answer decides the sentence, not the page's guess.
+            toast(
+              res?.willComeBack ? "restarting — this page reconnects by itself" : "stopping — nothing will start it again",
+              res?.willComeBack ? "ok" : "err",
+            );
+            // The socket drops now; main.ts renders this tab again when it returns.
           } catch (err) {
+            restart.disabled = false;
+            restart.textContent = "Restart gateway";
             toast((err as Error).message, "err");
           }
-          // The socket drops; the app's reconnect handler re-renders this page.
         },
       });
     };
 
-    const refresh = el("button", { class: "btn sm", type: "button" }, ["↻ Refresh"]);
+    const readAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const refresh = el("button", { class: "btn", type: "button", id: "runtime-refresh" }, ["Refresh"]) as HTMLButtonElement;
     refresh.onclick = () => void this.render();
 
-    const card = el("div", { class: "card" }, [
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Daemon"]),
-        el("span", { class: `row__value${svc.running ? " is-ok" : " is-err"}` }, [
-          svc.running ? "running" : "not running",
+    const loaded = this.#section("Loaded", "4 facts", [
+      this.#factRow("Tools", String(counts.tools), "Registered and callable by the agent."),
+      this.#factRow("Skills", String(counts.skills), "Found on this device; the eligible ones load into a turn."),
+      this.#factRow("Models", String(counts.models), "The catalog this gateway can see."),
+      this.#factRow("Providers", String(Object.keys(config?.providers ?? {}).length), "Configured in the config file."),
+    ]);
+
+    return el("div", { class: "card runtime-process" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Gateway process"]),
+        el("p", { class: "hint" }, ["The daemon behind this page: how it runs, what it has loaded, and how to restart it."]),
+      ]),
+      strip.node,
+      ...(svc
+        ? [
+          this.#section("Process", "5 facts", processFacts),
+          this.#section("Supervision", "3 facts", supervision),
+          this.#section("Restart", "1 action", [
+            el("p", { class: "hint" }, [restartWhy]),
+            el("div", { class: "settings__inline" }, [restart]),
+          ]),
+        ]
+        : [
+          el("p", { class: "hint" }, [
+            "The process behind this page, its supervision and whether a restart would come back are unknown until this read succeeds. Refresh tries again.",
+          ]),
         ]),
+      loaded,
+      el("div", { class: "setfoot" }, [
+        el("span", { class: "setfoot__note", "aria-live": "polite" }, [`Read at ${readAt}.`]),
+        refresh,
       ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Mode"]),
-        el("span", { class: "row__value" }, [modeLabel[String(svc.mode)] ?? String(svc.mode ?? "—")]),
-      ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Uptime"]),
-        el("span", { class: "row__value" }, [fmtUptime(svc.uptimeMs)]),
-      ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Process"]),
-        el("span", { class: "row__value" }, [svc.supervisorPid ? `child ${svc.pid} · supervisor ${svc.supervisorPid}` : svc.pid ? `pid ${svc.pid}` : "—"]),
-      ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Service manager"]),
-        el("span", { class: "row__value" }, [svc.installed ? String(svc.manager) : svc.manager ? `${svc.manager} (not installed)` : "none"]),
-      ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Starts at boot"]),
-        el("span", { class: "row__value" }, [svc.bootEnabled ? "enabled" : "disabled"]),
-      ]),
-      el("div", { class: "modal__foot" }, [restart, refresh]),
-      el("p", { class: "hint" }, [svc.installed
-        ? `Service file: ${svc.servicePath}. Logs: ${svc.logPath}`
-        : "Agentic boot + crash restarts work via the supervisor. Install as an OS service too: sc service install"]),
     ]);
+  }
 
-    // The log tail — read-only evidence, OpenClaw's `sc logs` in the UI.
-    const logPre = el("pre", { class: "diary__body" }, ["loading…"]);
-    void gateway.request("service.logs", { lines: 30 }).then((res: any) => {
-      const lines = (res?.lines ?? []) as string[];
-      logPre.textContent = lines.length ? lines.join("\n") : "(log is empty)";
-    }).catch(() => { logPre.textContent = "(could not read the log)"; });
+  /** The daemon's own log: a reader on the pattern the memory tab uses — a head,
+   *  a count and the path the lines came from, then the text. The path is the one
+   *  the server says it read, not `svc.logPath`: the tail falls back to the app
+   *  log when the service log is empty. */
+  #logCard(logs: any, loadErr: string): HTMLElement {
+    const lines: string[] = Array.isArray(logs?.lines) ? (logs.lines as unknown[]).map(String) : [];
+    const path = String(logs?.path ?? "");
+    const tag = loadErr ? "unavailable" : lines.length === 0 ? "empty" : lines.length === 1 ? "1 line" : `${lines.length} lines`;
+    const bodyText = loadErr
+      ? `Could not read the log — ${loadErr}`
+      : lines.length > 0 ? lines.join("\n") : "(the log is empty)";
 
-    const logsDetails = el("details", { class: "card diary" }, [
-      el("summary", {}, [
-        el("span", { class: "row__label" }, ["Service log (last 30 lines)"]),
-        el("span", { class: "row__value mono" }, [String(svc.logPath ?? "service.log").split("/").pop() ?? "log"]),
+    return el("div", { class: "card runtime-log" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Service log"]),
+        el("p", { class: "hint" }, ["The daemon's own log, oldest first. It is read when this page opens — Refresh reads it again."]),
       ]),
-      logPre,
+      el("div", { class: "setcard__status" }, [
+        el("span", { class: "settings__tag" }, [tag]),
+        el("span", { class: "setcard__status-note" }, [loadErr ? "The log file could not be read." : path]),
+      ]),
+      el("pre", { class: "diary__body" }, [bodyText]),
     ]);
-
-    return el("div", { class: "settings__stack" }, [card, logsDetails]);
   }
 
   /* ---------------- memory (OpenClaw's Dreams tab, adapted) ---------------- */
@@ -7733,11 +7842,11 @@ function readIn(source: Record<string, unknown>, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, part) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[part] : undefined), source);
 }
 
-function tile(value: string, label: string): HTMLElement {
-  return el("div", { class: "card tile" }, [
-    el("div", { class: "tile__v" }, [value]),
-    el("div", { class: "tile__k" }, [label]),
-  ]);
+/** A duration in the shortest honest form: `3d 4h`, `2h 5m`, `5m 4s`, `8s`. */
+function fmtUptime(ms?: number): string {
+  const sec = Math.max(0, Math.round(Number(ms ?? 0) / 1000));
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${sec % 60}s` : `${sec}s`;
 }
 
 function maskKey(key: string): string {

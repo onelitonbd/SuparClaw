@@ -1554,23 +1554,6 @@ textarea:focus-visible {
 
 .list { display: flex; flex-direction: column; }
 
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.tile { padding: 14px 16px; }
-.tile__v {
-  font-family: var(--mono);
-  font-size: 22px;
-  font-weight: 500;
-  letter-spacing: -.02em;
-  color: var(--ink);
-}
-
-.tile__k { font-size: 13px; color: var(--ink3); margin-top: 2px; }
-
 .prov {
   display: flex;
   flex-direction: column;
@@ -2370,8 +2353,6 @@ html[data-theme-mode='dark'] .modal {
 .settings .card > .hint:last-child { margin-bottom: 0; }
 
 .settings .card.diary { padding: 0; }
-
-.settings .card.tile { --card-pad: 15px; }
 
 .settings .setsec { margin-top: 18px; }
 
@@ -3272,26 +3253,6 @@ html[data-theme-mode='dark'] .settings select.inp {
     flex: 1 1 auto;
     justify-content: center;
   }
-}
-
-.settings .tiles {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.settings .tile__v {
-  font-family: var(--mono);
-  font-size: 22px;
-  font-weight: 500;
-  letter-spacing: -.02em;
-  font-variant-numeric: tabular-nums;
-}
-
-.settings .tile__k {
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--ink3);
 }
 
 /* ------------------------------------------------------- config editor ---- */
