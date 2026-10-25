@@ -2348,7 +2348,7 @@ export class Settings {
     // The status line reads the draft, not the stored config, so it answers
     // "what happens if I save this?" while the radio is still being moved.
     const statusTag = el("span", { class: "settings__tag" });
-    const statusNote = el("span", { class: "exec__status-note", "aria-live": "polite" });
+    const statusNote = el("span", { class: "setcard__status-note", "aria-live": "polite" });
     const enabledHint = el("span", { class: "hint" });
     const draftMode = (): string => modeValue || (legacyCb.checked ? "ask" : "full");
     const syncStatus = (): void => {
@@ -2366,7 +2366,7 @@ export class Settings {
     enabledCb.onchange = () => { syncStatus(); mark(); };
 
     const modeRadios = new Map<string, HTMLInputElement>();
-    const modeGroup = el("div", { class: "exec__modes", role: "radiogroup", "aria-label": "Exec mode" });
+    const modeGroup = el("div", { class: "setcard__modes", role: "radiogroup", "aria-label": "Exec mode" });
     const modeRowOf = new Map<string, HTMLElement>();
     const syncMode = (): void => {
       for (const [value, row] of modeRowOf) row.classList.toggle("is-on", value === modeValue);
@@ -2395,9 +2395,9 @@ export class Settings {
         mark();
       };
       modeRadios.set(m.value, radio);
-      const row = el("div", { class: "exec__mode" }, [
-        el("div", { class: "exec__mode-main" }, [
-          el("label", { class: "exec__mode-label", for: id }, [m.label]),
+      const row = el("div", { class: "setcard__mode" }, [
+        el("div", { class: "setcard__mode-main" }, [
+          el("label", { class: "setcard__mode-label", for: id }, [m.label]),
           el("span", { class: "hint", id: `${id}-desc` }, [m.text]),
         ]),
         radio,
@@ -2435,15 +2435,6 @@ export class Settings {
       ["full", "run it anyway"],
     ]);
     askSel.onchange = mark;
-    // Read and write the options rather than `.value`: the same helper then works
-    // for a preset (which has to set a select programmatically) and for the save.
-    const selValue = (sel: HTMLSelectElement): string => {
-      const os = [...sel.querySelectorAll("option")];
-      return (os.find((o) => o.selected) ?? os[0])?.value ?? "";
-    };
-    const setSelValue = (sel: HTMLSelectElement, value: string): void => {
-      for (const o of [...sel.querySelectorAll("option")]) o.selected = o.value === value;
-    };
     const unatSel = this.#cfgSel("exec-unattended", String(x.unattended ?? "deny"), [
       ["deny", "refuse it — and say so (default)"],
       ["allowlist", "run it only if it is a safe bin"],
@@ -2455,7 +2446,7 @@ export class Settings {
       class: "inp mono", id: "exec-timeout", inputmode: "numeric", autocomplete: "off", spellcheck: "false",
       value: String(Number(x.timeoutMs ?? 600000)),
     }) as HTMLInputElement;
-    const timeoutEcho = el("span", { class: "exec__echo", "aria-live": "polite" }, []);
+    const timeoutEcho = el("span", { class: "setcard__echo", "aria-live": "polite" }, []);
     const syncEcho = (): void => {
       const n = Number(timeoutInp.value.trim());
       timeoutEcho.textContent = Number.isFinite(n) && n >= 1000 ? `≈ ${Math.round((n / 60000) * 10) / 10} min` : "";
@@ -2554,14 +2545,14 @@ export class Settings {
         enabled: enabledCb.checked,
         approvals: legacyCb.checked,
         mode: /^(deny|allowlist|ask|full)$/.test(chosen) ? chosen : "",
-        askFallback: selValue(askSel),
+        askFallback: this.#selValue(askSel),
         strictInlineEval: strictCb.checked,
         safeBins: [...bins],
         safeBinTrustedDirs: dirsInp.value.split(",").map((v) => v.trim()).filter(Boolean),
         timeoutMs: Math.round(timeoutMs),
         sandbox,
         sandboxProot: prootCb.checked,
-        unattended: selValue(unatSel),
+        unattended: this.#selValue(unatSel),
       };
       saving = true;
       save.disabled = true;
@@ -2715,17 +2706,17 @@ export class Settings {
         el("span", { class: "cap" }, ["Start from"]),
         (() => {
           const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-cautious", title: "ask + refuse when nobody can answer" }, ["Cautious"]);
-          b.onclick = () => { pickMode("ask"); setSelValue(askSel, "deny"); mark(); };
+          b.onclick = () => { pickMode("ask"); this.#setSelValue(askSel, "deny"); mark(); };
           return b;
         })(),
         (() => {
           const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-deny", title: "deny + refuse" }, ["Deny all"]);
-          b.onclick = () => { pickMode("deny"); setSelValue(askSel, "deny"); mark(); };
+          b.onclick = () => { pickMode("deny"); this.#setSelValue(askSel, "deny"); mark(); };
           return b;
         })(),
         (() => {
           const b = el("button", { class: "btn sm is-warn", type: "button", id: "exec-preset-yolo", title: "full + run even unattended" }, ["YOLO"]);
-          b.onclick = () => { pickMode("full"); setSelValue(askSel, "full"); setSelValue(unatSel, "all"); mark(); };
+          b.onclick = () => { pickMode("full"); this.#setSelValue(askSel, "full"); this.#setSelValue(unatSel, "all"); mark(); };
           return b;
         })(),
       ]),
@@ -2734,8 +2725,8 @@ export class Settings {
 
     const fallbackSection = el("div", { class: "setsec" }, [
       el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["When nobody can answer"])]),
-      this.#cfgField("exec-ask-fallback", "If a prompt cannot be shown (no UI connected)", askSel),
-      this.#cfgField("exec-unattended", "Runs with nobody watching (cron jobs, webhooks)", unatSel,
+      this.#setField("exec-ask-fallback", "If a prompt cannot be shown (no UI connected)", askSel),
+      this.#setField("exec-unattended", "Runs with nobody watching (cron jobs, webhooks)", unatSel,
         "every unattended auto-decision is audited — it is written to the log and the session transcript"),
     ]);
 
@@ -2806,7 +2797,7 @@ export class Settings {
           "How shell commands get authorized. Allowlisted commands and safe bins run without asking; anything else follows the mode. “Allow always” mints a grant for one exact command in one directory.",
         ]),
       ]),
-      el("div", { class: "exec__status" }, [statusTag, statusNote]),
+      el("div", { class: "setcard__status" }, [statusTag, statusNote]),
       el("div", { class: "row exec__enabled" }, [
         el("div", { class: "row__main" }, [
           el("label", { class: "row__label", for: "exec-enabled" }, ["Exec tool"]),
@@ -2820,42 +2811,352 @@ export class Settings {
     ]);
   }
 
-  /** Code Mode card (P4 #38 — their tools.codeMode): sandboxed JS execution
-   *  of tool calls for preferred models. */
-  #codeModeCard(config: any): HTMLElement {
-    const c = config.tools?.codeMode ?? {};
-    const enSel = this.#cfgSel("cm-enabled", String(c.enabled ?? "auto"), [
-      ["auto", "auto (preferred models only)"], ["true", "true (always)"], ["false", "false"],
-    ]);
-    const exSel = this.#cfgSel("cm-executor", String(c.executor ?? "node"), [
-      ["node", "node (default)"], ["quickjs", "quickjs"],
-    ]);
-    const timeoutF = this.#cfgNum("cm-timeout", "Timeout (ms, 100–60000)", Number(c.timeoutMs ?? 10000));
-    const charsF = this.#cfgNum("cm-chars", "Max code chars", Number(c.maxCodeChars ?? 32768));
-    const outF = this.#cfgNum("cm-out", "Max output bytes", Number(c.maxOutputBytes ?? 65536));
-    const pendF = this.#cfgNum("cm-pend", "Max pending tool calls", Number(c.maxPendingToolCalls ?? 16));
-    const directF = this.#cfgStr("cm-direct", "Direct-only tools (comma)", (c.directOnly ?? []).join(", "), "tool names that may never be code-wrapped");
-    const save = el("button", { class: "btn", type: "button", id: "codemode-save" }, ["Save"]) as HTMLButtonElement;
-    save.onclick = () => {
-      void this.#setMany(
-        [
-          ["tools.codeMode.enabled", enSel.value],
-          ["tools.codeMode.executor", exSel.value],
-          ["tools.codeMode.timeoutMs", Math.max(100, Math.min(60000, Number(timeoutF.input.value) || 10000))],
-          ["tools.codeMode.maxCodeChars", Math.max(1024, Number(charsF.input.value) || 32768)],
-          ["tools.codeMode.maxOutputBytes", Math.max(1024, Math.min(10485760, Number(outF.input.value) || 65536))],
-          ["tools.codeMode.maxPendingToolCalls", Math.max(1, Math.min(128, Number(pendF.input.value) || 16))],
-          ["tools.codeMode.directOnly", directF.input.value.split(",").map((v) => v.trim()).filter(Boolean)],
-        ],
-        "code mode saved",
-      );
+  /** Code Mode card (P4 #38 — their tools.codeMode): the model writes one JS
+   *  cell per turn and calls tools inside it, instead of calling them one by one.
+   *
+   *  The card is written around one question the old one could not answer — "is it
+   *  running right now?" — because "auto" silently depends on the model, and the
+   *  only executor that works in this build is one of the two the schema accepts. */
+  async #codeModeCard(config: any, tools: any[] = []): Promise<HTMLElement> {
+    const x = config.tools?.codeMode ?? {};
+    let st: any = null;
+    let stError = "";
+    try {
+      st = await gateway.request("codeMode.get");
+    } catch (err) {
+      // Engagement is a read; the policy below comes from config, so losing the
+      // RPC costs the status line and nothing else.
+      stError = (err as Error).message;
+    }
+
+    // The catalog decides what a direct-only name can even refer to. When the RPC
+    // failed, the page's own tools.list is the same list.
+    const catalog: string[] = Array.isArray(st?.catalog)
+      ? st.catalog.map(String)
+      : tools.map((t) => String(t?.name ?? "")).filter((n) => n && n !== "exec" && n !== "wait");
+    const preferred: string[] = Array.isArray(st?.preferred) ? st.preferred.map(String) : [];
+    const model = String(st?.model ?? "");
+    const preferredMatch = st?.preferredMatch === true;
+    const matched = new Set<string>(Array.isArray(st?.preferredMatched) ? st.preferredMatched.map(String) : []);
+
+    /* ---- draft ---- */
+
+    let modeValue = ["false", "true", "auto"].includes(String(x.enabled ?? "")) ? String(x.enabled) : "auto";
+    let executor = String(x.executor ?? "") === "quickjs" ? "quickjs" : "node";
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const mark = (): void => this.#dirtyMark(note);
+
+    const statusTag = el("span", { class: "settings__tag" });
+    const statusNote = el("span", { class: "setcard__status-note", "aria-live": "polite" });
+
+    const direct = new Set<string>(
+      (Array.isArray(x.directOnly) ? x.directOnly : []).map(String).filter(Boolean),
+    );
+    const hiddenCount = (): number => catalog.filter((n) => !direct.has(n)).length;
+
+    const draftEngages = (): "yes" | "waiting" | "no" => {
+      if (modeValue === "false") return "no";
+      if (modeValue === "true") return "yes";
+      return preferredMatch ? "yes" : "waiting";
     };
-    return el("div", { class: "card" }, [
-      el("h3", {}, ["Code mode"]),
-      this.#cfgField("cm-enabled", "Enabled", enSel),
-      this.#cfgField("cm-executor", "Executor", exSel),
-      timeoutF.node, charsF.node, outF.node, pendF.node, directF.node,
-      el("div", { class: "setfoot" }, [save]),
+    const syncStatus = (): void => {
+      const tone = (warn: boolean): void => { statusTag.className = `settings__tag${warn ? " is-warn" : " is-ok"}`; };
+      if (stError) {
+        // Not knowing is its own state: claiming "off" would be as wrong as claiming on.
+        statusTag.textContent = "unknown";
+        tone(true);
+        statusNote.textContent = `Engagement could not be read — ${stError}. The policy below still saves.`;
+        return;
+      }
+      const state = draftEngages();
+      if (executor !== "node") {
+        statusTag.textContent = "off — executor missing";
+        tone(true);
+        statusNote.textContent = "Every cell stops with executor_unavailable: node is the only executor bundled in this build.";
+        return;
+      }
+      if (state === "no") {
+        statusTag.textContent = "off";
+        tone(true);
+        statusNote.textContent = "The model calls tools one at a time, as it does today.";
+        return;
+      }
+      if (state === "waiting") {
+        statusTag.textContent = "on, waiting for a preferred model";
+        tone(true);
+        statusNote.textContent = model
+          ? `auto engages only for the families listed below, and ${model} is not one of them — so no cell runs.`
+          : "auto needs a default model on the list below; none is set yet, so no cell runs.";
+        return;
+      }
+      statusTag.textContent = "engaged now";
+      tone(false);
+      statusNote.textContent = `The model sees only exec and wait; ${hiddenCount()} tool${hiddenCount() === 1 ? "" : "s"} become async globals inside the cell.`;
+    };
+
+    /* ---- mode ladder ---- */
+
+    const MODES: { value: string; id: string; label: string; text: string }[] = [
+      { value: "false", id: "cm-mode-off", label: "off", text: "Off — the model calls tools one at a time, as today." },
+      { value: "auto", id: "cm-mode-auto", label: "auto (preferred models only)", text: "Auto — engages only for the model families listed below. This is the default." },
+      { value: "true", id: "cm-mode-on", label: "always", text: "Always — engages for every model, including ones the list was not written for." },
+    ];
+    const modeRadios = new Map<string, HTMLInputElement>();
+    const modeRows = new Map<string, HTMLElement>();
+    const modeGroup = el("div", { class: "setcard__modes", role: "radiogroup", "aria-label": "When code mode runs" });
+    const syncMode = (): void => {
+      for (const [value, row] of modeRows) row.classList.toggle("is-on", value === modeValue);
+      for (const [value, radio] of modeRadios) radio.checked = value === modeValue;
+    };
+    for (const m of MODES) {
+      const radio = el("input", { type: "radio", name: "cm-mode", id: m.id, value: m.value, "aria-describedby": `${m.id}-desc` }) as HTMLInputElement;
+      radio.checked = modeValue === m.value;
+      radio.onchange = () => {
+        if (!radio.checked) return;
+        modeValue = m.value;
+        syncMode();
+        syncStatus();
+        mark();
+      };
+      modeRadios.set(m.value, radio);
+      const row = el("div", { class: "setcard__mode" }, [
+        el("div", { class: "setcard__mode-main" }, [
+          el("label", { class: "setcard__mode-label", for: m.id }, [m.label]),
+          el("span", { class: "hint", id: `${m.id}-desc` }, [m.text]),
+        ]),
+        radio,
+      ]);
+      row.dataset["mode"] = m.value;
+      modeRows.set(m.value, row);
+      modeGroup.append(row);
+    }
+
+    // The families "auto" means. A dot on the ones the configured model matches,
+    // so the rule is legible instead of implied.
+    const families = el("div", { class: "setcard__tags", role: "group", "aria-label": "Preferred model families" },
+      preferred.length
+        ? preferred.map((label) => el("span", {
+            class: `settings__tag${matched.has(label) ? " is-ok" : ""}`,
+            title: matched.has(label) ? "your default model is one of these" : "",
+          }, [label]))
+        : [el("span", { class: "hint" }, ["the preferred family list could not be read"])]);
+
+    /* ---- executor ---- */
+
+    const executorSeg = el("div", { class: "seg", role: "group", "aria-label": "Executor" });
+    const executorBtns = new Map<string, HTMLButtonElement>();
+    for (const opt of [
+      { value: "node", label: "node", title: "Bundled: a worker thread holds each cell." },
+      { value: "quickjs", label: "quickjs", title: "Not bundled in this build — every cell stops instead of falling back." },
+    ]) {
+      const bundled = opt.value === "node";
+      const b = el("button", {
+        class: `seg__btn${bundled ? "" : " is-off"}`,
+        type: "button",
+        id: `cm-executor-${opt.value}`,
+        "aria-pressed": String(executor === opt.value),
+        title: opt.title,
+      }, [opt.label]) as HTMLButtonElement;
+      b.onclick = () => {
+        executor = opt.value;
+        syncExecutor();
+        syncStatus();
+        mark();
+      };
+      executorBtns.set(opt.value, b);
+      executorSeg.append(b);
+    }
+    function syncExecutor(): void {
+      for (const [value, b] of executorBtns) b.setAttribute("aria-pressed", String(executor === value));
+    }
+
+    /* ---- numbers: refuse, never clamp ---- */
+
+    const number = (id: string, label: string, cur: number, hint: string): {
+      input: HTMLInputElement; echo: HTMLElement; node: HTMLElement;
+    } => {
+      const input = el("input", {
+        class: "inp mono", id, inputmode: "numeric", autocomplete: "off", spellcheck: "false",
+        value: String(Number(cur)),
+      }) as HTMLInputElement;
+      const echo = el("span", { class: "setcard__echo", "aria-live": "polite" });
+      input.oninput = () => { syncEchoes(); mark(); };
+      return { input, echo, node: el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: id }, [label]),
+        el("div", { class: "settings__inline" }, [input, echo]),
+        el("p", { class: "hint" }, [hint]),
+      ]) };
+    };
+    const nTimeout = number("cm-timeout", "Timeout per call (ms)", Number(x.timeoutMs ?? 10000),
+      "100–60000. Also the ceiling for a wait call, unless the model passes its own.");
+    const nChars = number("cm-chars", "Max code chars", Number(x.maxCodeChars ?? 32768),
+      "At least 1024. A longer cell is refused before it runs.");
+    const nOut = number("cm-out", "Max output bytes", Number(x.maxOutputBytes ?? 65536),
+      "1024–10485760. Longer stdout is truncated, and the result says it was.");
+    const nPend = number("cm-pend", "Max pending tool calls", Number(x.maxPendingToolCalls ?? 16),
+      "1–128. Calls in flight before the bridge refuses more inside one cell.");
+    const bytes = (n: number): string => (n >= 1048576 ? `${Math.round((n / 1048576) * 10) / 10} MB` : `${Math.round((n / 1024) * 10) / 10} KB`);
+    function syncEchoes(): void {
+      const t = Number(nTimeout.input.value.trim());
+      nTimeout.echo.textContent = Number.isFinite(t) && t >= 100 ? `≈ ${Math.round((t / 1000) * 10) / 10} s` : "";
+      const c = Number(nChars.input.value.trim());
+      nChars.echo.textContent = Number.isFinite(c) && c >= 1024 ? bytes(c) : "";
+      const o = Number(nOut.input.value.trim());
+      nOut.echo.textContent = Number.isFinite(o) && o >= 1024 ? bytes(o) : "";
+      const p = Number(nPend.input.value.trim());
+      nPend.echo.textContent = Number.isFinite(p) && p >= 1 ? `calls` : "";
+    }
+    syncEchoes();
+
+    /* ---- direct-only chips: from the catalog, never free text ---- */
+
+    const chipsWrap = el("div", { class: "seg seg--wrap", role: "group", "aria-label": "Direct-only tools" });
+    const chip = (name: string, known: boolean): HTMLButtonElement => {
+      const b = el("button", {
+        class: `seg__btn${known ? "" : " is-off"}`,
+        type: "button",
+        id: `cm-direct-${name}`,
+        "aria-pressed": String(direct.has(name)),
+        title: known
+          ? `${name} stays visible next to exec instead of becoming a guest global`
+          : `${name} is not in this build's tool catalog — this entry does nothing`,
+      }, [name]) as HTMLButtonElement;
+      b.onclick = () => {
+        if (direct.has(name)) direct.delete(name);
+        else direct.add(name);
+        b.setAttribute("aria-pressed", String(direct.has(name)));
+        syncStatus();
+        mark();
+      };
+      return b;
+    };
+    for (const name of catalog) chipsWrap.append(chip(name, true));
+    for (const name of [...direct].filter((n) => !catalog.includes(n))) chipsWrap.append(chip(name, false));
+
+    /* ---- save: one write for the whole block ---- */
+
+    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
+    const save = el("button", { class: "btn pri", type: "button", id: "codemode-save" }, ["Save code mode"]) as HTMLButtonElement;
+    let saving = false;
+    save.onclick = async () => {
+      if (saving) return;
+      problem.textContent = "";
+      problem.setAttribute("hidden", "");
+      const fields = [nTimeout, nChars, nOut, nPend];
+      for (const f of fields) f.input.removeAttribute("aria-invalid");
+      const bad: { input: HTMLInputElement; msg: string }[] = [];
+      const readInt = (f: { input: HTMLInputElement }, label: string, lo: number, hi: number | null): number => {
+        const raw = f.input.value.trim();
+        const n = Number(raw);
+        const ok = raw !== "" && Number.isInteger(n) && n >= lo && (hi === null || n <= hi);
+        if (!ok) {
+          f.input.setAttribute("aria-invalid", "true");
+          bad.push({
+            input: f.input,
+            msg: `${label} must be ${hi === null ? `at least ${lo}` : `${lo}–${hi}`}${raw === "" ? " (not blank)" : ""}`,
+          });
+          return Number.NaN;
+        }
+        return n;
+      };
+      const timeoutMs = readInt(nTimeout, "timeout", 100, 60000);
+      const maxCodeChars = readInt(nChars, "max code chars", 1024, null);
+      const maxOutputBytes = readInt(nOut, "max output bytes", 1024, 10485760);
+      const maxPendingToolCalls = readInt(nPend, "max pending tool calls", 1, 128);
+      if (bad.length) {
+        problem.textContent = `Not saved — ${bad.map((b) => b.msg).join("; ")}.`;
+        problem.removeAttribute("hidden");
+        bad[0]?.input.focus();
+        return;
+      }
+      const block: Record<string, unknown> = {
+        ...structuredClone(x),
+        enabled: modeValue,
+        executor,
+        timeoutMs,
+        maxCodeChars,
+        maxOutputBytes,
+        maxPendingToolCalls,
+        directOnly: [...direct],
+      };
+      saving = true;
+      save.disabled = true;
+      save.textContent = "Saving…";
+      try {
+        await gateway.request("config.set", { path: "tools.codeMode", value: block });
+        clearDirty();
+        toast("code mode saved — applies to the next turn", "ok");
+        this.#onChanged();
+        void this.render();
+      } catch (err) {
+        problem.textContent = `not saved — ${(err as Error).message}`;
+        problem.removeAttribute("hidden");
+        toast(`not saved — ${(err as Error).message}`, "err");
+      } finally {
+        saving = false;
+        save.disabled = false;
+        save.textContent = "Save code mode";
+      }
+    };
+
+    /* ---- assembly ---- */
+
+    const runSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["When it runs"]),
+        el("span", { class: "setsec__count" }, [stError ? "state unknown" : `now: ${st?.enabled ?? "?"}`]),
+      ]),
+      modeGroup,
+      el("div", { class: "setfield" }, [
+        el("span", { class: "cap" }, ["auto means these model families"]),
+        families,
+        el("p", { class: "hint" }, ["Matched against the default model on the Defaults tab; anything else waits until you pick “always”."]),
+      ]),
+      el("div", { class: "setfield" }, [
+        el("span", { class: "cap" }, ["Executor"]),
+        executorSeg,
+        el("p", { class: "hint" }, ["node is the only executor bundled here. quickjs is accepted by the schema and listed for parity, but a cell that asks for it stops with executor_unavailable rather than falling back."]),
+      ]),
+    ]);
+
+    const limitsSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["Cell limits"]),
+        el("span", { class: "setsec__count" }, [`${hiddenCount()} tools bridged`]),
+      ]),
+      el("div", { class: "setgrid" }, [nTimeout.node, nChars.node, nOut.node, nPend.node]),
+    ]);
+
+    const directSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["Direct-only tools"]),
+        el("span", { class: "setsec__count" }, [`${direct.size} kept out`]),
+      ]),
+      chipsWrap,
+      el("p", { class: "hint" }, [
+        "These stay visible next to exec. Every other tool is only reachable from inside the cell as an async global — and those calls still go through exec policy and approvals, so code mode is not a way around the section above."
+      ]),
+    ]);
+
+    // One subtree for the dirty watch: every control below is a draft edit, and
+    // nothing outside it (the catalog card, the grants above) is part of the draft.
+    const policyZone = el("div", { class: "cm__policy" }, [runSection, limitsSection, directSection]);
+    const clearDirty = this.#dirtyWatch(policyZone, note);
+
+    syncMode();
+    syncExecutor();
+    syncStatus();
+
+    return el("div", { class: "card code-mode-card" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Code mode"]),
+        el("p", { class: "hint" }, [
+          "The model writes one JavaScript cell per turn and calls tools inside it, instead of calling them one at a time. Useful for loops and multi-step work; it does not raise what the agent may do.",
+        ]),
+      ]),
+      el("div", { class: "setcard__status" }, [statusTag, statusNote]),
+      policyZone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
     ]);
   }
 
@@ -3047,7 +3348,7 @@ export class Settings {
     const body = el("div", { class: "settings__stack" });
 
     body.append(await this.#execCard(config));
-    body.append(this.#codeModeCard(config));
+    body.append(await this.#codeModeCard(config, tools));
     body.append(this.#mediaCard(config));
     body.append(await this.#webSearchCard());
 
@@ -5072,6 +5373,27 @@ export class Settings {
       toast((err as Error).message, "err");
       return false;
     }
+  }
+
+  /** A field inside a settings card: label, control, explanatory sentence.
+   *  `#cfgField` is the modal idiom (`modal__field`); a card wants `setfield`. */
+  #setField(id: string, label: string, input: HTMLElement, hint?: string): HTMLElement {
+    return el("div", { class: "setfield" }, [
+      el("label", { class: "lbl", for: id }, [label]),
+      input,
+      ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
+    ]);
+  }
+
+  /** Read a select through its options rather than `.value`: the same helper then
+   *  works for a preset (which sets a select programmatically) and for a save. */
+  #selValue(sel: HTMLSelectElement): string {
+    const os = [...sel.querySelectorAll("option")];
+    return (os.find((o) => o.selected) ?? os[0])?.value ?? "";
+  }
+
+  #setSelValue(sel: HTMLSelectElement, value: string): void {
+    for (const o of [...sel.querySelectorAll("option")]) o.selected = o.value === value;
   }
 
   /** One field on a settings page: short label, the control, then the sentence

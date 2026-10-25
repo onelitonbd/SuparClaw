@@ -242,7 +242,13 @@ export {
   CodeMode,
   codeModeEngages,
   codeModeSurface,
+  codeModePreferredFamilies,
+  codeModeMatchedFamilies,
+  codeModeExecutorBundled,
+  isPreferredCodeModeModel,
   CODE_MODE_DEFAULTS,
+  CODE_MODE_EXECUTORS,
+  BUNDLED_CODE_MODE_EXECUTORS,
   type CodeModeConfig,
   type ExecCellResult,
 } from "./agent/code-mode.js";

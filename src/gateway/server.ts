@@ -216,6 +216,7 @@ export class Gateway {
       "approvals.preset",
       "approvals.entry.add",
       "approvals.entry.revoke",
+      "codeMode.get",
       "session.execMode",
       "web.search.get",
       "web.search.test",
@@ -510,6 +511,45 @@ export class Gateway {
         }
         case "approvals.get": {
           send(okFrame(id, service.approvalsState()));
+          return;
+        }
+        case "codeMode.get": {
+          // Engagement is decided by the engine's own predicate, not re-derived here:
+          // the card has to be able to answer "is it running now?" for the model that
+          // is actually configured, including the "auto but not preferred" case.
+          const {
+            codeModeEngages,
+            isPreferredCodeModeModel,
+            codeModePreferredFamilies,
+            codeModeMatchedFamilies,
+            codeModeExecutorBundled,
+          } = await import("../agent/code-mode.js");
+          const cfgNow = service.config;
+          const raw = cfgNow.tools.codeMode;
+          const model = String(cfgNow.agents?.defaults?.model ?? "");
+          const cmc = {
+            enabled: raw.enabled === "true" ? (true as const) : raw.enabled === "auto" ? ("auto" as const) : (false as const),
+            executor: raw.executor,
+            timeoutMs: raw.timeoutMs,
+            maxCodeChars: raw.maxCodeChars,
+            maxOutputBytes: raw.maxOutputBytes,
+            maxPendingToolCalls: raw.maxPendingToolCalls,
+            directOnly: raw.directOnly ?? [],
+          };
+          // `exec` is the code-mode surface's own name and is always visible, so a
+          // direct-only entry for it would be an inert chip that looks meaningful.
+          const catalog = service.loop.tools.map((t) => t.name).filter((n) => n !== "exec" && n !== "wait");
+          send(okFrame(id, {
+            enabled: raw.enabled,
+            engaged: codeModeEngages(cmc, model),
+            model,
+            preferredMatch: isPreferredCodeModeModel(model),
+            preferred: codeModePreferredFamilies(),
+            preferredMatched: codeModeMatchedFamilies(model),
+            executor: raw.executor,
+            executorBundled: codeModeExecutorBundled(raw.executor),
+            catalog,
+          }));
           return;
         }
         case "web.search.get": {

@@ -52,17 +52,55 @@ export const CODE_MODE_DEFAULTS: CodeModeConfig = {
   directOnly: [],
 };
 
-/** Their shipped "preferred" tiers (catalog flag compat.codeMode) — mirrored here as a static list until provider catalogs grow the metadata. */
-const PREFERRED_MODELS = [
-  /^openai\/gpt-5\.[56]/, /gpt-5\.[56]/,
-  /^anthropic\/claude-(fable|opus)-5/, /claude-opus-5/, /claude-sonnet-5/, /claude-mythos-5/,
-  /deepseek-v4-(pro|flash)/,
-  /gemini-(4-argon|3-flash-preview|3\.1-pro-preview|3\.1-flash-lite|3\.5-flash|3\.6-flash|3\.7-flash|3\.8-flash)/,
-  /^kimi\/k3/, /^(moonshot\/)?kimi-k3/,
-  /^minimax\/MiniMax-M3/,
-  /^zai\/glm-5\.[123]/,
-  /^xiaomi\/mimo-v2\.6/,
+/** Their shipped "preferred" tiers (catalog flag compat.codeMode) — mirrored here as a
+ *  static list until provider catalogs grow the metadata. The label travels with the
+ *  regex so "auto means which models?" has an answer that cannot drift from the test. */
+const PREFERRED_MODELS: { re: RegExp; label: string }[] = [
+  { re: /^openai\/gpt-5\.[56]/, label: "gpt-5.6" },
+  { re: /gpt-5\.[56]/, label: "gpt-5.6" },
+  { re: /^anthropic\/claude-(fable|opus)-5/, label: "claude fable / opus 5" },
+  { re: /claude-opus-5/, label: "claude opus 5" },
+  { re: /claude-sonnet-5/, label: "claude sonnet 5" },
+  { re: /claude-mythos-5/, label: "claude mythos 5" },
+  { re: /deepseek-v4-(pro|flash)/, label: "deepseek v4 pro / flash" },
+  { re: /gemini-(4-argon|3-flash-preview|3\.1-pro-preview|3\.1-flash-lite|3\.5-flash|3\.6-flash|3\.7-flash|3\.8-flash)/, label: "gemini 3.x flash / 3.1 pro / 4-argon" },
+  { re: /^kimi\/k3/, label: "kimi k3" },
+  { re: /^(moonshot\/)?kimi-k3/, label: "kimi k3" },
+  { re: /^minimax\/MiniMax-M3/, label: "MiniMax M3" },
+  { re: /^zai\/glm-5\.[123]/, label: "glm-5.1 – 5.3" },
+  { re: /^xiaomi\/mimo-v2\.6/, label: "mimo v2.6" },
 ];
+
+/** Executors the schema accepts (their "node" | "quickjs"). */
+export const CODE_MODE_EXECUTORS = ["node", "quickjs"] as const;
+
+/** Executors this build actually bundles. Their no-fallback rule means a requested
+ *  executor that is not here stops the run instead of degrading — so the UI has to be
+ *  able to say which ones work, from the same place the engine decides. */
+export const BUNDLED_CODE_MODE_EXECUTORS = ["node"] as const;
+
+export function codeModeExecutorBundled(executor: string): boolean {
+  return (BUNDLED_CODE_MODE_EXECUTORS as readonly string[]).includes(executor);
+}
+
+/** Does this model belong to a family code mode is designed for? The one predicate
+ *  behind `auto`, used by the engine, the gateway RPC and the tests. */
+export function isPreferredCodeModeModel(model: string | undefined): boolean {
+  const m = (model ?? "").toLowerCase();
+  return PREFERRED_MODELS.some((p) => p.re.test(m));
+}
+
+/** Human labels for those families, de-duplicated in declaration order. */
+export function codeModePreferredFamilies(): string[] {
+  return [...new Set(PREFERRED_MODELS.map((p) => p.label))];
+}
+
+/** The families (by label) this model actually matches — so "auto" can be shown as
+ *  a list with the matching entry marked instead of a promise the UI cannot check. */
+export function codeModeMatchedFamilies(model: string | undefined): string[] {
+  const m = (model ?? "").toLowerCase();
+  return [...new Set(PREFERRED_MODELS.filter((p) => p.re.test(m)).map((p) => p.label))];
+}
 
 /**
  * Activation resolution (their order, scaled): global false blocks, true
@@ -73,8 +111,7 @@ const PREFERRED_MODELS = [
 export function codeModeEngages(cfg: CodeModeConfig, model: string | undefined): boolean {
   if (cfg.enabled === false) return false;
   if (cfg.enabled === true) return true;
-  const m = (model ?? "").toLowerCase();
-  return PREFERRED_MODELS.some((re) => re.test(m));
+  return isPreferredCodeModeModel(model);
 }
 
 export interface GuestTool {
@@ -243,10 +280,10 @@ export class CodeMode {
     const cfg = this.cfg();
     const runId = randomUUID();
     const labels: Record<string, string> = title ? { title } : {};
-    if (cfg.executor === "quickjs") {
+    if (!codeModeExecutorBundled(cfg.executor)) {
       // their no-fallback rule: an engaged run STOPS rather than silently
       // falling back to broad direct tools or another executor
-      return { runId, status: "error", labels, error: { code: "executor_unavailable", error: "executor_unavailable", message: "quickjs executor is not bundled in this build (their no-fallback rule: the run stops instead of broad tool exposure)" } };
+      return { runId, status: "error", labels, error: { code: "executor_unavailable", error: "executor_unavailable", message: `${cfg.executor} executor is not bundled in this build (their no-fallback rule: the run stops instead of broad tool exposure)` } };
     }
     if (!code.trim()) {
       return { runId, status: "error", labels, error: invalidInput("empty code — exec evaluates JavaScript; `command` is their alias for code, not a shell string") };

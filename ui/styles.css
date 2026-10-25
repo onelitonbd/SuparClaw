@@ -4313,11 +4313,12 @@ html[data-theme-mode='dark'] .settings select.inp {
 
 .settings .setfoot__note[data-dirty="1"] { color: var(--warn); }
 
-/* --------------------------------------------------- exec & approvals ---- */
-/* One section: the mode ladder, the two fallbacks, limits, safe bins and the
-   grants ledger. Rows, hairlines and one card — no nested surfaces. */
+/* ----------------------------------------- exec & approvals / code mode ---- */
+/* Two sections, one idiom: a status line that answers "is it on right now?", a
+   radio ladder for the mode, fields with their echo, and a single footer save.
+   Rows, hairlines and one card — no nested surfaces. */
 
-.settings .exec__status {
+.settings .setcard__status {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -4325,7 +4326,7 @@ html[data-theme-mode='dark'] .settings select.inp {
   margin: 12px 0 2px;
 }
 
-.settings .exec__status-note {
+.settings .setcard__status-note {
   font-size: 12.5px;
   color: var(--ink2);
 }
@@ -4335,11 +4336,21 @@ html[data-theme-mode='dark'] .settings select.inp {
   padding-bottom: 2px;
 }
 
-.settings .exec__modes {
+/* Read-only family list ("auto" means these models). Deliberately not controls:
+   no hover, no press state — a tag that looks pressable and is not is worse than
+   plain text. */
+.settings .setcard__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.settings .setcard__modes {
   border-top: 1px solid var(--set-line);
 }
 
-.settings .exec__mode {
+.settings .setcard__mode {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -4350,12 +4361,12 @@ html[data-theme-mode='dark'] .settings select.inp {
 }
 
 /* The radio is the control; the tint is only a breadcrumb for the eye. */
-.settings .exec__mode.is-on {
+.settings .setcard__mode.is-on {
   background: var(--set-inset);
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.settings .exec__mode-main {
+.settings .setcard__mode-main {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -4363,18 +4374,18 @@ html[data-theme-mode='dark'] .settings select.inp {
   padding-left: 12px;
 }
 
-.settings .exec__mode-label {
+.settings .setcard__mode-label {
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
   cursor: pointer;
 }
 
-.settings .exec__mode .hint {
+.settings .setcard__mode .hint {
   margin: 0;
 }
 
-.settings .exec__mode input[type="radio"] {
+.settings .setcard__mode input[type="radio"] {
   width: 18px;
   height: 18px;
   margin: 0 2px 0 0;
@@ -4391,7 +4402,7 @@ html[data-theme-mode='dark'] .settings select.inp {
   align-items: center;
 }
 
-.settings .exec__echo {
+.settings .setcard__echo {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--ink3);

@@ -3,7 +3,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 const lib = await import("../dist/lib.js");
-const { CodeMode, codeModeEngages, codeModeSurface, buildRegistry, emptyConfig } = lib;
+const {
+  CodeMode, codeModeEngages, codeModeSurface, buildRegistry, emptyConfig,
+  isPreferredCodeModeModel, codeModePreferredFamilies, codeModeMatchedFamilies,
+  codeModeExecutorBundled, BUNDLED_CODE_MODE_EXECUTORS,
+} = lib;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -182,4 +186,38 @@ test("source is logged for session history (their transparency rule)", async () 
   const parsed = JSON.parse(out);
   assert.equal(parsed.status, "completed");
   assert.match(parsed.source, /^\/\/ Code Mode\nreturn 7;/, "// Code Mode source lands in history");
+});
+
+test("one predicate behind auto: isPreferredCodeModeModel agrees with codeModeEngages", () => {
+  const models = [
+    "openai/gpt-5.6", "gpt-5.6-mini", "anthropic/claude-opus-5", "anthropic/claude-sonnet-5",
+    "deepseek/deepseek-v4-pro", "google/gemini-3.1-pro-preview", "kimi/k3", "minimax/MiniMax-M3",
+    "zai/glm-5.2", "xiaomi/mimo-v2.6", "ollama/qwen3:32b", "local/llama-3", "",
+  ];
+  for (const model of models) {
+    assert.equal(
+      isPreferredCodeModeModel(model),
+      codeModeEngages(BASE_CFG({ enabled: "auto" }), model),
+      `auto and the family list agree for "${model}"`,
+    );
+  }
+  assert.equal(codeModeEngages(BASE_CFG({ enabled: true }), "ollama/qwen3:32b"), true, "always ignores the list");
+  assert.equal(codeModeEngages(BASE_CFG({ enabled: false }), "openai/gpt-5.6"), false, "off blocks a preferred model");
+});
+
+test("the families are labelled, de-duplicated, and matched models are a subset", () => {
+  const families = codeModePreferredFamilies();
+  assert.equal(new Set(families).size, families.length, "labels are unique");
+  assert.ok(families.length >= 8, "every family has a label the UI can show");
+  assert.deepEqual(codeModeMatchedFamilies("openai/gpt-5.6"), ["gpt-5.6"], "the two gpt regexes share one label");
+  assert.deepEqual(codeModeMatchedFamilies("ollama/qwen3"), []);
+  for (const label of codeModeMatchedFamilies("deepseek/deepseek-v4-flash")) {
+    assert.ok(families.includes(label), `${label} is one of the published families`);
+  }
+});
+
+test("only node is bundled, and that is the same question the engine asks", () => {
+  assert.deepEqual([...BUNDLED_CODE_MODE_EXECUTORS], ["node"]);
+  assert.equal(codeModeExecutorBundled("node"), true);
+  assert.equal(codeModeExecutorBundled("quickjs"), false);
 });

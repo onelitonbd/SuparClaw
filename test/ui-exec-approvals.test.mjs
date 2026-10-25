@@ -189,7 +189,7 @@ test("one section, one save: the old two-card split is gone", () => {
 });
 
 test("the mode ladder is five labelled radios, one of them checked", () => {
-  const group = $(".exec__modes");
+  const group = $(".setcard__modes");
   assert.equal(group.getAttribute("role"), "radiogroup");
   assert.equal(group.getAttribute("aria-label"), "Exec mode");
   const ids = ["deny", "allowlist", "ask", "full", "legacy"];
@@ -197,14 +197,14 @@ test("the mode ladder is five labelled radios, one of them checked", () => {
   assert.ok(byId("exec-mode-ask").checked, "the stored mode is ask");
   // Each option says what it does — the consequence, not the enum name.
   assert.match($("#exec-mode-full-desc").textContent, /Runs anything without asking/);
-  assert.match($("#exec-mode-full").closest(".exec__mode").textContent, /full/);
+  assert.match($("#exec-mode-full").closest(".setcard__mode").textContent, /full/);
 });
 
 test("picking a mode is a draft edit: the status line answers before the save", async () => {
   await choose("exec-mode-full");
   assert.ok(byId("exec-mode-full").checked);
-  assert.equal($(".exec__status .settings__tag").textContent, "mode full");
-  assert.match($(".exec__status-note").textContent, /Runs anything without asking/);
+  assert.equal($(".setcard__status .settings__tag").textContent, "mode full");
+  assert.match($(".setcard__status-note").textContent, /Runs anything without asking/);
   assert.equal(noteText(), "Unsaved changes");
   assert.equal(sets().length, 0, "nothing written yet");
   assert.ok($('[data-mode="full"]').classList.contains("is-on"), "the chosen row is marked");
@@ -215,11 +215,11 @@ test("the legacy approvals switch is only revealed when the mode follows it", as
   await choose("exec-mode-legacy");
   assert.equal(byId("exec-approvals").closest(".exec__legacy").hidden, false, "revealed for legacy");
   assert.equal(byId("exec-mode-legacy").checked, true);
-  assert.equal($(".exec__status .settings__tag").textContent, "mode ask", "an on legacy switch means ask");
+  assert.equal($(".setcard__status .settings__tag").textContent, "mode ask", "an on legacy switch means ask");
   byId("exec-approvals").checked = false;
   fire(byId("exec-approvals"), "change");
   await settle();
-  assert.equal($(".exec__status .settings__tag").textContent, "mode full", "an off legacy switch means full");
+  assert.equal($(".setcard__status .settings__tag").textContent, "mode full", "an off legacy switch means full");
 });
 
 test("saving writes the whole block once, merged over what is stored", async () => {
@@ -254,9 +254,9 @@ test("a timeout outside 1000–600000 is refused, never clamped", async () => {
 });
 
 test("the timeout says what it means in minutes, and the echo tracks typing", async () => {
-  assert.equal($(".exec__echo").textContent, "≈ 10 min");
+  assert.equal($(".setcard__echo").textContent, "≈ 10 min");
   await type("exec-timeout", "90000");
-  assert.equal($(".exec__echo").textContent, "≈ 1.5 min");
+  assert.equal($(".setcard__echo").textContent, "≈ 1.5 min");
 });
 
 test("the sandbox dependency is expressed: the proot jail needs strict", async () => {
@@ -362,7 +362,7 @@ test("presets fill the draft and do not save", async () => {
 
   await click("exec-preset-deny");
   assert.ok(byId("exec-mode-deny").checked);
-  assert.equal($(".exec__status .settings__tag").textContent, "mode deny");
+  assert.equal($(".setcard__status .settings__tag").textContent, "mode deny");
   assert.equal(selValue("exec-unattended"), "all", "a preset only touches what it names");
   setSel("exec-unattended", "deny");
 });
@@ -371,8 +371,8 @@ test("switching exec off says nothing below it applies", async () => {
   byId("exec-enabled").checked = false;
   fire(byId("exec-enabled"), "change");
   await settle();
-  assert.equal($(".exec__status .settings__tag").textContent, "exec off");
-  assert.match($(".exec__status-note").textContent, /no shell tool/);
+  assert.equal($(".setcard__status .settings__tag").textContent, "exec off");
+  assert.match($(".setcard__status-note").textContent, /no shell tool/);
   assert.match($(".exec__enabled .hint").textContent, /nothing below has any effect/);
   await click("exec-policy-save");
   assert.equal(sets().at(-1).params.value.enabled, false);

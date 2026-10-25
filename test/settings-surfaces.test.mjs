@@ -44,20 +44,28 @@ test("#38 exec & tools settings: one exec card owns the whole tools.exec block",
 });
 
 test("#38 code mode + media cards cover their config surfaces", () => {
-  assert.match(src, /#codeModeCard\(config: any\)/);
+  // Code mode had the same two-card seven-half-saves shape the exec section had:
+  // it is now one draft and one merged write.
+  assert.match(src, /#codeModeCard\(config: any, tools: any\[\] = \[\]\): Promise<HTMLElement>/);
   assert.match(src, /id: "codemode-save"/);
-  for (const path of [
-    "tools.codeMode.enabled",
-    "tools.codeMode.executor",
-    "tools.codeMode.timeoutMs",
-    "tools.codeMode.maxCodeChars",
-    "tools.codeMode.maxOutputBytes",
-    "tools.codeMode.maxPendingToolCalls",
-    "tools.codeMode.directOnly",
-  ]) {
-    assert.ok(src.includes(`["${path}"`), `missing leaf write ${path}`);
+  assert.match(src, /gateway\.request\("config\.set", \{ path: "tools\.codeMode", value: block \}\)/);
+  assert.doesNotMatch(src, /\["tools\.codeMode\./, "no leaf writes left for the code-mode block");
+  assert.match(src, /\.\.\.structuredClone\(x\),/);
+  // the stored enum is text; writing a boolean would silently disable code mode
+  for (const key of ["executor,", "timeoutMs,", "maxCodeChars,", "maxOutputBytes,", "maxPendingToolCalls,", "directOnly:"]) {
+    assert.ok(src.includes(key), `missing merged key ${key}`);
   }
+  assert.match(src, /enabled: modeValue,/);
   assert.match(src, /auto \(preferred models only\)/);
+  // refuse, never clamp
+  assert.match(src, /readInt\(nTimeout, "timeout", 100, 60000\)/);
+  assert.match(src, /readInt\(nChars, "max code chars", 1024, null\)/);
+  assert.match(src, /readInt\(nOut, "max output bytes", 1024, 10485760\)/);
+  assert.match(src, /readInt\(nPend, "max pending tool calls", 1, 128\)/);
+  // engagement comes from the engine's predicate through the gateway, not a UI copy
+  assert.match(src, /gateway\.request\("codeMode\.get"\)/);
+  assert.match(src, /executor_unavailable/);
+  assert.match(src, /still go through exec policy and approvals/);
 
   assert.match(src, /#mediaCard\(config: any\)/);
   assert.match(src, /id: "media-save"/);
