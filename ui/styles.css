@@ -944,6 +944,117 @@ textarea:focus-visible {
 
 .model-btn svg { flex: none; }
 
+.model-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  min-width: 0;
+}
+
+.model-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: min(360px, 92vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.model-menu[hidden] { display: none; }
+
+.model-menu__filter {
+  height: 34px;
+  margin: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+  outline: none;
+}
+
+.model-menu__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-menu__group {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink3);
+}
+
+.model-menu__row {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-menu__row:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.model-menu__row.is-current {
+  background: var(--accsoft);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.model-menu__check {
+  margin-left: auto;
+  color: var(--accent);
+}
+
+.model-menu__empty {
+  padding: 12px 10px;
+  font-size: 12.5px;
+  color: var(--ink3);
+  text-align: center;
+}
+
+.model-menu__add {
+  height: 34px;
+  margin: 4px 8px 8px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.model-menu__add:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
 .think {
   position: relative;
   display: inline-flex;

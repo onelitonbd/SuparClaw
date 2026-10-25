@@ -1,8 +1,7 @@
 // SuparClaw Control UI — app shell: rail, drawer, sheet, routing, wiring.
 
 import { Chat } from "./chat.js";
-import { el, esc, fmtTime, modal, toast } from "./dom.js";
-import { pickModel } from "./picker.js";
+import { el, esc, fmtTime, modal, toast, fuzzy } from "./dom.js";
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
 import { onGatewayEvent } from "./notifications.js";
@@ -851,26 +850,107 @@ $("new-chat-btn").onclick = newSession;
 
 /* ---------------- model sheet ---------------- */
 
-$("model-btn").onclick = () => {
-  pickModel({
-    current: currentModel,
-    models,
-    onPick: async (value) => {
-      const label = models.find((m) => m.value === value)?.label || value;
-      $("model-name").textContent = label;
-      $("model-btn").setAttribute("title", `Model: ${label}`);
-      $("model-btn").setAttribute("aria-label", `Choose model (${label})`);
-      try {
-        await gateway.request("config.set", { path: "agents.defaults.model", value });
-        currentModel = value;
-        toast(`model → ${label}`, "ok");
-        void refresh();
-      } catch (err) {
-        toast((err as Error).message, "err");
-      }
-    },
-  });
+$("model-btn").onclick = (e) => {
+  e.stopPropagation();
+  const menu = $("model-menu");
+  const open = menu.hidden;
+  // close think/queue menus
+  document.getElementById("think-menu")!.hidden = true;
+  document.getElementById("queue-menu")!.hidden = true;
+  if (open) {
+    renderModelMenu();
+    menu.hidden = false;
+    $("model-btn").setAttribute("aria-expanded", "true");
+    setTimeout(() => $("model-filter").focus(), 30);
+  } else {
+    menu.hidden = true;
+    $("model-btn").setAttribute("aria-expanded", "false");
+  }
 };
+
+function renderModelMenu(): void {
+  const list = $("model-list");
+  const filter = $("model-filter") as HTMLInputElement;
+  const q = (filter?.value ?? "").trim();
+  const rows = models.map((m) => ({
+    value: m.value,
+    label: m.label,
+    provider: m.group || "default",
+  }));
+  const scored = rows
+    .map((r) => ({ ...r, score: Math.max(fuzzy(q, r.label), fuzzy(q, r.value), fuzzy(q, r.provider)) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+  list.innerHTML = "";
+  if (rows.length === 0) {
+    list.append(el("div", { class: "model-menu__empty" }, ["No models selected — enable them in Settings → Models"]));
+    return;
+  }
+  if (scored.length === 0) {
+    list.append(el("div", { class: "model-menu__empty" }, ["No models match"]));
+    return;
+  }
+  let group = "";
+  for (const r of scored) {
+    if (r.provider !== group) {
+      group = r.provider;
+      list.append(el("div", { class: "model-menu__group" }, [group === "default" ? "default" : group]));
+    }
+    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, [r.label]);
+    if (r.value === currentModel) {
+      row.append(el("span", { class: "model-menu__check" }, ["✓"]));
+    }
+    row.onclick = (ev) => {
+      ev.stopPropagation();
+      void pickModelValue(r.value);
+    };
+    list.append(row);
+  }
+}
+
+async function pickModelValue(value: string): Promise<void> {
+  const label = models.find((m) => m.value === value)?.label || value;
+  $("model-name").textContent = label;
+  $("model-btn").setAttribute("title", `Model: ${label}`);
+  $("model-btn").setAttribute("aria-label", `Choose model (${label})`);
+  $("model-menu").hidden = true;
+  $("model-btn").setAttribute("aria-expanded", "false");
+  try {
+    await gateway.request("config.set", { path: "agents.defaults.model", value });
+    currentModel = value;
+    toast(`model → ${label}`, "ok");
+    void refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+}
+
+$("model-filter").addEventListener("input", () => renderModelMenu());
+$("model-filter").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    $("model-menu").hidden = true;
+    $("model-btn").setAttribute("aria-expanded", "false");
+  }
+});
+
+$("model-add").onclick = (e) => {
+  e.stopPropagation();
+  $("model-menu").hidden = true;
+  $("model-btn").setAttribute("aria-expanded", "false");
+  location.hash = "#/settings";
+  setTimeout(() => document.getElementById("tab-providers")?.click(), 80);
+};
+
+document.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest("#model-wrap")) return;
+  const m = $("model-menu");
+  if (m && !m.hidden) {
+    m.hidden = true;
+    $("model-btn").setAttribute("aria-expanded", "false");
+  }
+});
 
 /* ---------------- chrome ---------------- */
 
