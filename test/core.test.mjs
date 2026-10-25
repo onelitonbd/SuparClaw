@@ -273,3 +273,29 @@ test("a run's model override reaches the LLM (so /model really changes the model
   assert.ok(events.includes("start") && events.includes("final"), `run lifecycle events: ${events}`);
   store.close();
 });
+
+test("agents.defaults.queueMode is carried into messages.queue.mode when it was never written", () => {
+  // The legacy control is gone from Settings, so an old config must not quietly
+  // start behaving differently: the value it holds still decides the new key,
+  // which is the only one the loop reads (loop.ts resolveQueueMode).
+  const legacy = parseConfig({ agents: { defaults: { queueMode: "steer" } } });
+  assert.deepEqual(legacy.errors, []);
+  assert.equal(legacy.config.messages.queue.mode, "steer");
+
+  const fresh = parseConfig({});
+  assert.deepEqual(fresh.errors, []);
+  assert.equal(fresh.config.messages.queue.mode, "steer", "no legacy value leaves the schema default alone");
+
+  // Both present: the section the user can still edit wins.
+  const both = parseConfig({
+    agents: { defaults: { queueMode: "followup" } },
+    messages: { queue: { mode: "interrupt" } },
+  });
+  assert.deepEqual(both.errors, []);
+  assert.equal(both.config.messages.queue.mode, "interrupt");
+
+  // A legacy value with no counterpart in the new enum is not smuggled through.
+  const unknown = parseConfig({ agents: { defaults: { queueMode: "nonsense" } } });
+  assert.deepEqual(unknown.errors, []);
+  assert.equal(unknown.config.messages.queue.mode, "steer");
+});

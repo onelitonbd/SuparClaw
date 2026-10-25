@@ -242,6 +242,10 @@ function askToken(): void {
 
 /* ---------------- refresh ---------------- */
 
+/** Last observed agents.defaults.reasoningView (null = not observed yet, so the
+ *  first reading only seeds it and never triggers a redundant reload). */
+let showReasoning: boolean | null = null;
+
 async function refresh(): Promise<void> {
   try {
     const [statusRes, modelRes, sessionRes] = await Promise.all([
@@ -266,6 +270,17 @@ async function refresh(): Promise<void> {
     $("model-btn").setAttribute("title", `Model: ${modelLabel}`);
     $("model-btn").setAttribute("aria-label", `Choose model (${modelLabel})`);
     renderSessions((sessionRes as any).sessions ?? []);
+    // Settings → Run limits → Show thinking blocks. Already on the status wire;
+    // apply it here so the chat and the settings card agree without a reload.
+    const reasoningVisible = String(status?.reasoningView ?? "on") !== "off";
+    const firstLook = showReasoning === null;
+    if (reasoningVisible !== showReasoning) {
+      showReasoning = reasoningVisible;
+      chat.setReasoningVisible(reasoningVisible);
+      // Re-render the stored transcript so switching it back on reveals the
+      // thinking blocks immediately instead of on the next session switch.
+      if (!firstLook) void loadHistory();
+    }
     syncThinking(status, (sessionRes as any).sessions ?? []);
     syncQueue((sessionRes as any).sessions ?? []);
     void refreshQueueDepth();

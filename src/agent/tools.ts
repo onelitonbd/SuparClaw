@@ -37,6 +37,11 @@ export interface ToolContext {
   llmText?: (messages: { role: "system" | "user"; content: string }[], opts?: { model?: string; timeoutMs?: number }) => Promise<string>;
   /** Set by sessions_yield when this turn should end waiting for children. */
   yieldArmed?: boolean;
+  /** The model this run is using (profile id). A spawned child inherits it when
+   *  neither the tool argument nor agents.defaults.subagents.model names one. */
+  model?: string;
+  /** The thinking level this run resolved, for the same inheritance rule. */
+  thinking?: string;
   /** Sub-agent control surface, wired by the service (spawn/yield/list/send). */
   subagents?: SubagentCtl;
   /**
@@ -57,6 +62,9 @@ export interface SubagentCtl {
       model?: string;
       thinking?: string;
       context?: "isolated" | "fork";
+      /** What the requesting run uses; the last fallback before the config defaults. */
+      callerModel?: string;
+      callerThinking?: string;
     },
   ): Promise<
     | { accepted: true; childSessionKey: string; runId: string; taskName: string; context: string; resolvedModel?: string }
@@ -586,6 +594,10 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           model: args["model"] ? String(args["model"]) : undefined,
           thinking: args["thinking"] ? String(args["thinking"]) : undefined,
           context: args["context"] === "fork" ? "fork" : "isolated",
+          // Last resort only: spawn() prefers the explicit argument, then the
+          // configured subagents.* value, then what the caller is running on.
+          callerModel: ctx.model,
+          callerThinking: ctx.thinking,
         });
         if (!res.accepted) return `error: ${res.error}`;
         return (

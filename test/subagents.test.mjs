@@ -11,7 +11,7 @@ const HOME = mkdtempSync(join(tmpdir(), "sc-subs-"));
 process.env.SUPARCLAW_HOME = HOME;
 mkdirSync(join(HOME, ".suparclaw"), { recursive: true });
 
-const { AgentLoop, Store, Subagents, emptyConfig } = await import("../dist/lib.js");
+const { AgentLoop, Store, Subagents, buildRegistry, emptyConfig } = await import("../dist/lib.js");
 
 const waitFor = async (pred, what, tries = 240, gap = 250) => {
   for (let i = 0; i < tries; i += 1) {
@@ -32,11 +32,13 @@ function makeRig(patch = {}) {
   Object.assign(cfg.agents.defaults.subagents, patch.subagents ?? {});
   const store = Store.open(join(HOME, `s-${dbSeq++}.db`));
   const rounds = [];
+  const reasoningSeen = [];
   const gates = new Map();
   const llm = {
     async *stream(opts) {
       const lastUser = [...opts.messages].reverse().find((m) => m.role === "user")?.content ?? "";
       rounds.push(lastUser.slice(0, 120));
+      reasoningSeen.push(opts.reasoning);
       const toolCalls = patch.plan?.(opts, lastUser) ?? null;
       if (toolCalls?.calls?.length) {
         yield { type: "tool_calls", calls: toolCalls.calls };
@@ -47,7 +49,17 @@ function makeRig(patch = {}) {
     },
   };
   const childEvents = [];
+  const probes = [];
   const tools = [
+    {
+      name: "probe_context",
+      description: "records what the loop told this run about itself",
+      parameters: { type: "object", properties: {} },
+      async run(_args, ctx) {
+        probes.push({ model: ctx.model, thinking: ctx.thinking });
+        return "probed";
+      },
+    },
     {
       name: "sessions_yield",
       description: "test yield",
@@ -87,7 +99,7 @@ function makeRig(patch = {}) {
     emitChild: (key, ev) => childEvents.push([key, ev]),
   });
   loop.setSubagents(subs);
-  return { cfg, store, loop, subs, gates, childEvents, rounds };
+  return { cfg, store, loop, subs, gates, childEvents, rounds, reasoningSeen, probes };
 }
 
 test("spawn runs the child and announces the completion back to the parent", async () => {
@@ -203,4 +215,92 @@ test("session_send steers into a busy session and refuses an idle steer", async 
   const follow = await subs.send("idle:main", "hello", "followup");
   assert.equal(follow.ok, true);
   await waitFor(() => loop.busySessions().length === 0, "settled");
+});
+
+// "Blank inherits the caller's model" and "Overrides what the caller chose" are
+// what the Run limits card promises. Both used to be false: with nothing
+// configured the child fell back to the global default instead of the caller's
+// model, and nothing carried the caller's thinking level at all.
+test("a child inherits the caller's model and thinking when nothing names one", async () => {
+  const { subs, reasoningSeen } = makeRig();
+  const res = await subs.spawn("inherit:main", {
+    task: "carry on without a model of my own",
+    callerModel: "claude/caller-profile",
+    callerThinking: "high",
+  });
+  assert.equal(res.accepted, true, JSON.stringify(res));
+  assert.equal(res.resolvedModel, "claude/caller-profile", "resolvedModel reports what the child will run on");
+  await waitFor(() => reasoningSeen.includes("high"), `child streamed with the caller's thinking level: ${JSON.stringify(reasoningSeen)}`);
+  await waitFor(
+    () => subs.deps.store.getSubagent(res.childSessionKey)?.status !== "running",
+    "child finished",
+  );
+});
+
+test("the configured subagents.model / .thinking beat the caller, and a spawn argument beats both", async () => {
+  const { subs, reasoningSeen } = makeRig({ subagents: { model: "cfg/cheap-model", thinking: "low" } });
+
+  const cfgWins = await subs.spawn("precedence:main", {
+    task: "task one",
+    callerModel: "claude/caller-profile",
+    callerThinking: "high",
+  });
+  assert.equal(cfgWins.resolvedModel, "cfg/cheap-model", "the configured default wins over the caller");
+  await waitFor(() => reasoningSeen.includes("low"), `child used the configured level: ${JSON.stringify(reasoningSeen)}`);
+
+  const argWins = await subs.spawn("precedence:main", {
+    task: "task two",
+    model: "explicit/special-model",
+    thinking: "xhigh",
+    callerModel: "claude/caller-profile",
+    callerThinking: "high",
+    context: "fork",
+  });
+  assert.equal(argWins.resolvedModel, "explicit/special-model", "the spawn argument wins over everything");
+  await waitFor(() => reasoningSeen.includes("xhigh"), `child used the requested level: ${JSON.stringify(reasoningSeen)}`);
+});
+
+// The inheritance above only works if the loop hands the run's own model and
+// thinking level to the tool context — that wiring is what these two assert.
+test("the loop tells a run which model and thinking level it is on", async () => {
+  const { loop, probes } = makeRig({
+    plan: (_opts, lastUser) =>
+      lastUser === "what are you?" ? { calls: [{ id: "p1", name: "probe_context", args: "{}" }] } : null,
+  });
+  await loop.run({
+    sessionKey: "probe:main",
+    text: "what are you?",
+    model: "claude/caller-profile",
+    reasoning: "high",
+    onEvent: () => {},
+  });
+  await waitFor(() => probes.length > 0, "probe ran");
+  assert.deepEqual(probes[0], { model: "claude/caller-profile", thinking: "high" });
+});
+
+test("the spawn tool passes the caller's model and thinking into spawn()", async () => {
+  const tool = buildRegistry(emptyConfig()).find((t) => t.name === "sessions_spawn");
+  assert.ok(tool, "sessions_spawn is always in the registry");
+  const seen = [];
+  const ctx = {
+    sessionKey: "caller:main",
+    model: "claude/caller-profile",
+    thinking: "medium",
+    subagents: {
+      async spawn(parentKey, opts) {
+        seen.push([parentKey, opts]);
+        return { accepted: true, childSessionKey: "subagent:caller:main:00000000", runId: "r1", taskName: "t", context: "isolated" };
+      },
+    },
+  };
+  await tool.run({ task: "do the thing" }, ctx);
+
+  assert.equal(seen.length, 1);
+  const [parentKey, opts] = seen[0];
+  assert.equal(parentKey, "caller:main");
+  assert.equal(opts.callerModel, "claude/caller-profile");
+  assert.equal(opts.callerThinking, "medium");
+  // Still only a fallback: the tool does not force its own model on the child.
+  assert.equal(opts.model, undefined);
+  assert.equal(opts.thinking, undefined);
 });

@@ -46,6 +46,10 @@ export class Subagents implements SubagentCtl {
       model?: string;
       thinking?: string;
       context?: "isolated" | "fork";
+      /** What the requesting run is using — the fallback when nothing above names
+       *  a model/level, so "blank = inherit the caller" is true. */
+      callerModel?: string;
+      callerThinking?: string;
     },
   ): Promise<
     | { accepted: true; childSessionKey: string; runId: string; taskName: string; context: string; resolvedModel?: string }
@@ -117,8 +121,11 @@ export class Subagents implements SubagentCtl {
       }
     }
 
-    const resolvedModel = opts.model?.trim() || cfg?.model?.trim() || undefined;
-    const resolvedThinking = opts.thinking?.trim() || cfg?.thinking?.trim() || undefined;
+    // Precedence: what the tool asked for → the configured subagent default →
+    // whatever the caller run is using. A child on the caller's profile also
+    // inherits that model's tuning and context window.
+    const resolvedModel = opts.model?.trim() || cfg?.model?.trim() || opts.callerModel?.trim() || undefined;
+    const resolvedThinking = opts.thinking?.trim() || cfg?.thinking?.trim() || opts.callerThinking?.trim() || undefined;
 
     // Push-based start: never awaits the child turn — the completion announces
     // back through onRunFinished.

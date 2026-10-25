@@ -1132,9 +1132,6 @@ export class Settings {
       "No ceiling — one turn keeps working until it answers. The loop guard still stops a repeat.");
     const concur = mkNum("ad-concurrent", "Concurrent runs", Number(d.maxConcurrent ?? 0),
       "0 = auto (max(8, CPU × 4)).");
-    const queueSel = mkSel("ad-queue", "Legacy queue mode", String(d.queueMode ?? "followup"),
-      [["steer", "steer"], ["followup", "followup"]],
-      "Kept for old configs — superseded by messages.queue.mode, which wins when both are set.");
     const reasoning = mkSel("ad-reasoning", "Reasoning effort", String(d.reasoningEffort ?? "inherit"),
       [["inherit", "inherit"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]],
       "Sent to the provider as-is; inherit follows the model.");
@@ -1143,7 +1140,7 @@ export class Settings {
       "Blocks are stored either way — off only hides them here.");
     const usageSel = mkSel("ad-usage", "Reply footer", String(d.usage ?? "tokens"),
       [["off", "off"], ["tokens", "tokens"], ["full", "full"], ["cost", "cost"]],
-      "Cost needs a pricing card per model and degrades to tokens — never a guess.");
+      "Cost needs a pricing card per model; without one the footer says so and shows tokens — never a guess.");
     const subConcur = mkNum("ad-sub-concurrent", "Subagent lane cap", Number(sub.maxConcurrent ?? 8),
       "Children per spawning session, plus the background lane.");
     const subModel = mkNum("ad-sub-model", "Subagent model", 0,
@@ -1205,7 +1202,7 @@ export class Settings {
       ]),
       el("div", { class: "def-sec" }, [
         el("div", { class: "def-sec__head" }, [el("span", { class: "cap" }, ["Loop & limits"])]),
-        el("div", { class: "setgrid" }, [iterations.node, concur.node, queueSel.node]),
+        el("div", { class: "setgrid" }, [iterations.node, concur.node]),
         budgetLine(),
       ]),
       sec("Reasoning & replies", [reasoning.node, viewSel.node, usageSel.node]),
@@ -1218,7 +1215,6 @@ export class Settings {
       const ok = await this.#setMany(
         [
           ["agents.defaults.maxToolIterations", Math.max(1, Math.trunc(Number(iterations.input.value)) || 12)],
-          ["agents.defaults.queueMode", queueSel.sel.value],
           ["agents.defaults.maxConcurrent", Math.max(0, Number(concur.input.value) || 0)],
           ["agents.defaults.reasoningEffort", reasoning.sel.value],
           ["agents.defaults.reasoningView", viewSel.sel.value],

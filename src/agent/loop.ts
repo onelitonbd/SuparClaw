@@ -270,6 +270,25 @@ export class AgentLoop {
     return did;
   }
 
+  /**
+   * The thinking level this run will actually use: per-run input → the session's
+   * choice → the model's own default → the global default. Extracted so the child
+   * a sub-agent spawns inherits the same value the parent called the model with,
+   * instead of a second copy of this chain drifting from it.
+   */
+  #reasoningFor(
+    input: RunInput,
+    session: { thinking?: string | null } | undefined,
+    profile: { reasoningEffort?: string },
+  ): string | undefined {
+    return (
+      input.reasoning ??
+      session?.thinking ??
+      (profile.reasoningEffort && profile.reasoningEffort !== "inherit" ? profile.reasoningEffort : undefined) ??
+      (this.deps.config.agents.defaults.reasoningEffort as string | undefined)
+    );
+  }
+
   /** Queue mode for a new input: /queue override → input override → channel → config → steer. */
   resolveQueueMode(sessionKey: string, input: RunInput): QueueMode {
     if (input.queueMode) return input.queueMode;
@@ -554,6 +573,9 @@ export class AgentLoop {
       // family of tools (their default of no delegation inside sub-agents).
       let sessionTools = this.#toolsForSession(sessionKey);
       const schema = toolsToSchema(sessionTools);
+      // Resolved once for the tool context: model + the thinking level this run
+      // will call the model with, so a spawned child can inherit both.
+      const runProfile = modelProfile(this.deps.config, input.model ?? "");
       const ctx: ToolContext = {
         workspace: this.workspace,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
@@ -568,6 +590,11 @@ export class AgentLoop {
           ctx.skills = this.skills;
         },
         sessionKey,
+        // What a spawned child inherits when nothing names a model/level. The
+        // profile ID (not the wire ref) so the child also picks up that model's
+        // tuning and its context window.
+        model: runProfile.id || undefined,
+        thinking: this.#reasoningFor(input, session, runProfile),
         subagents: this.deps.subagents,
         // ask_user (P2 #8): main-session-only, exactly like their gate.
         askUser: isMain && this.deps.askUser ? (qs) => this.deps.askUser!(sessionKey, qs) : undefined,
@@ -669,11 +696,7 @@ export class AgentLoop {
             tuning,
             temperature: profile.temperature,
             maxTokens: profile.maxTokens,
-            reasoning:
-              input.reasoning ??
-              session.thinking ??
-              (profile.reasoningEffort !== "inherit" ? profile.reasoningEffort : undefined) ??
-              (this.deps.config.agents.defaults.reasoningEffort as string | undefined),
+            reasoning: this.#reasoningFor(input, session, profile),
             onRetry: (info) =>
               onEvent({ type: "retry", model: info.model, attempt: info.attempt, max: info.max, error: info.error }),
           })) {

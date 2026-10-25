@@ -215,9 +215,12 @@ export const CONFIG_SCHEMA: SchemaNode = {
             // in the chain declares a window; `hidden` keeps it out of the
             // All-settings form so it cannot look like a live knob.
             contextBudgetChars: { t: "int", min: 2000, default: 200000, hidden: true },
-            // Legacy alias — superseded by messages.queue.mode. Kept so old
-            // configs still validate; the new section wins when both exist.
-            queueMode: { t: "enum", values: ["steer", "followup"], default: "followup" },
+            // Legacy alias — superseded by messages.queue.mode, which is the only
+            // live control (Gateway → message queue). Kept so old configs still
+            // validate; parseConfig() copies the value across when the new key was
+            // never written, and the new key wins when both exist. `hidden` keeps a
+            // dead-looking knob out of the All-settings form.
+            queueMode: { t: "enum", values: ["steer", "followup"], default: "followup", hidden: true },
             // Global lane caps (OpenClaw command-queue parity). 0 = auto:
             // max(8, cpu parallelism * 4), their default main-lane formula.
             maxConcurrent: { t: "int", min: 0, default: 0 },
@@ -1085,6 +1088,28 @@ export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: st
   const r = (raw ?? {}) as { tools?: { web?: { search?: unknown } } };
   if (typeof r.tools?.web?.search === "boolean") {
     (r as { tools: { web: { search: unknown } } }).tools.web.search = { enabled: r.tools.web.search };
+  }
+  // Migration: agents.defaults.queueMode ("steer" | "followup") was superseded by
+  // messages.queue.mode (four values), which is the one the loop reads. Carry an
+  // old value across when the new key was never written — otherwise removing the
+  // control from Settings would silently change what an old config does. When both
+  // are present the new section wins, exactly as its comment claims.
+  const legacyQueue = (r as { agents?: { defaults?: { queueMode?: unknown } } }).agents?.defaults?.queueMode;
+  if (legacyQueue !== undefined) {
+    if (legacyQueue === "steer" || legacyQueue === "followup") {
+      const withQueue = r as { messages?: { queue?: { mode?: unknown } } };
+      if (withQueue.messages?.queue?.mode === undefined) {
+        withQueue.messages = {
+          ...(withQueue.messages ?? {}),
+          queue: { ...(withQueue.messages?.queue ?? {}), mode: legacyQueue },
+        };
+      }
+    }
+    // Drop the leaf either way: it is `hidden` now, so nothing in Settings can
+    // show it and a stale or misspelled value must not fail the whole load with
+    // an error about a setting the UI no longer offers.
+    const defaults = (r as { agents?: { defaults?: Record<string, unknown> } }).agents?.defaults;
+    if (defaults) delete defaults["queueMode"];
   }
   const errors = validate(CONFIG_SCHEMA, raw ?? {});
   if (errors.length > 0) return { config: emptyConfig(), errors };

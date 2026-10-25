@@ -166,6 +166,10 @@ export class Chat {
   #liveThinkingId: string | null = null;
   /** Last user send, so Retry can resend it as a new message at the bottom. */
   #lastSend: { text: string; attachments: StagedAttachment[] } | null = null;
+  /** agents.defaults.reasoningView (Settings → Defaults → Run limits): "off"
+   *  hides thinking blocks in this UI. The rows are still persisted — the
+   *  switch decides what is drawn, never what is stored. */
+  #showReasoning = true;
 
   constructor(root: HTMLElement, handlers: ChatHandlers) {
     this.#handlers = handlers;
@@ -366,6 +370,13 @@ export class Chat {
     }
   }
 
+  /** Honour Settings → Run limits → Show thinking blocks. Applied live to the
+   *  next reasoning event and to the next transcript render; existing blocks are
+   *  left alone (main.ts reloads the thread when the value actually flips). */
+  setReasoningVisible(on: boolean): void {
+    this.#showReasoning = on;
+  }
+
   /** Archived sessions (P4 #33 — their composer-disabled + Unarchive banner):
    *  the transcript stays readable; writing needs an explicit Unarchive. */
   setArchived(archived: boolean, onUnarchive: () => void): void {
@@ -539,6 +550,12 @@ export class Chat {
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "reasoning" && row.content) {
+          // The stored row stays; only the drawing is conditional. The anchor is
+          // still marked so an incremental reload does not walk it again.
+          if (!this.#showReasoning) {
+            markAnchor(row.id);
+            continue;
+          }
           const id = `hist-think-${index}`;
           t.push({ type: "thinking_start", stepId: id, ts });
           t.push({ type: "thinking_delta", stepId: id, text: row.content });
@@ -742,6 +759,9 @@ export class Chat {
    * reload.
    */
   reasoningDelta(text: string): void {
+    // Hidden by settings: skip the event entirely rather than draw-and-hide, so the
+    // collapsed trace header does not count thinking steps it is not showing.
+    if (!this.#showReasoning) return;
     if (!this.#live) this.assistantStart();
     const t = this.#liveTrace;
     // Each contiguous run of reasoning becomes its own thinking step; a tool

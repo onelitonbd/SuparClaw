@@ -80,9 +80,13 @@ test("#39 agent identity + defaults on the Defaults tab", () => {
   assert.ok(!src.includes('["agents.defaults.contextBudgetChars"'), "and it writes no budget leaf");
   assert.match(src, /No ceiling/); // iterations: no 1-40 rating any more
   assert.ok(!src.includes("Math.min(40,"), "the 40-round clamp is gone");
+  // No queue row: agents.defaults.queueMode was superseded by messages.queue.mode,
+  // which the loop actually reads (see the migration case in core.test.mjs). A
+  // second control here could only disagree with the one place that decides.
+  assert.ok(!src.includes("ad-queue"), "the dead legacy queue control is gone");
+  assert.ok(!src.includes('["agents.defaults.queueMode"'), "and nothing writes the legacy leaf");
   for (const path of [
     "agents.defaults.maxToolIterations",
-    "agents.defaults.queueMode",
     "agents.defaults.maxConcurrent",
     "agents.defaults.reasoningEffort",
     "agents.defaults.reasoningView",
@@ -96,7 +100,6 @@ test("#39 agent identity + defaults on the Defaults tab", () => {
     assert.ok(src.includes(`["${path}"`), `missing leaf write ${path}`);
   }
   // honesty hints
-  assert.match(src, /superseded by messages\.queue\.mode/);
   assert.match(src, /never a guess/);
   assert.match(src, /prompt guidance only/);
 });

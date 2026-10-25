@@ -142,17 +142,19 @@ const tap = (node) => fire(node, "click");
 const press = (node, key) => fire(node, "keydown", { key });
 
 test("Defaults page renders: no visible native <select>, every value store hidden", () => {
+  // Seven, not eight: the legacy queue store went with the control it served
+  // (messages.queue.mode owns that decision now, see core.test.mjs).
   const selects = $$("select");
-  assert.equal(selects.length, 8, `expected the eight value stores, saw ${selects.length}`);
+  assert.equal(selects.length, 7, `expected the seven value stores, saw ${selects.length}`);
   for (const sel of selects) {
     assert.ok(sel.hasAttribute("hidden"), `select#${sel.id} must be hidden (it is only the value store)`);
     assert.ok(sel.querySelector("option"), `select#${sel.id} must still carry its options`);
   }
-  assert.ok($$(".dd__btn").length >= 8, "one custom trigger per dropdown");
+  assert.ok($$(".dd__btn").length >= 7, "one custom trigger per dropdown");
 });
 
 test("field ids survive the redesign (contracts other tests and scripts rely on)", () => {
-  for (const id of ["defaults-model", "ad-queue", "ad-reasoning", "ad-rview", "ad-usage",
+  for (const id of ["defaults-model", "ad-reasoning", "ad-rview", "ad-usage",
     "ad-sub-think", "ad-sub-deleg", "ad-iterations", "ad-concurrent",
     "identity-name", "identity-emoji", "identity-theme", "identity-save", "agent-defaults-save"]) {
     assert.ok(byId(id), `#${id} is missing`);
@@ -170,10 +172,10 @@ test("the persona field is a textarea, name and emoji stay inputs", () => {
 
 test("model menu carries search (11 choices > eight); short menus stay compact", () => {
   assert.ok($("#defaults-model-menu .dd__search"), "a long model menu must offer search");
-  assert.equal($("#ad-queue-menu .dd__search"), null, "a two-choice menu must stay compact");
-  tap(byId("ad-queue-btn"));
-  assert.equal($$("#ad-queue-menu .dd__opt").length, 2, "steer + followup");
-  assert.equal($$("#ad-queue-menu .dd__opt").map((o) => o.querySelector(".dd__opt-label").textContent).join(","), "steer,followup");
+  assert.equal($("#ad-rview-menu .dd__search"), null, "a two-choice menu must stay compact");
+  tap(byId("ad-rview-btn"));
+  assert.equal($$("#ad-rview-menu .dd__opt").length, 2, "on + off");
+  assert.equal($$("#ad-rview-menu .dd__opt").map((o) => o.querySelector(".dd__opt-label").textContent).join(","), "on,off");
   press(document, "Escape");
 });
 
@@ -252,7 +254,6 @@ test("Save defaults writes every documented leaf with the shown values", async (
   const written = new Map(globalThis.__GW_CALLS.filter((c) => c.method === "config.set").map((c) => [c.params.path, c.params.value]));
   const expected = {
     "agents.defaults.maxToolIterations": 12,
-    "agents.defaults.queueMode": "followup",
     "agents.defaults.maxConcurrent": 0,
     "agents.defaults.reasoningEffort": "high",
     "agents.defaults.reasoningView": "on",
