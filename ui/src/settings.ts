@@ -61,8 +61,8 @@ const glyph = (body: string): string =>
 const TAB_META: Record<TabId, { icon: string; desc: string; keywords: string }> = {
   model: {
     icon: glyph('<path d="M12 3.5l2.1 5.4 5.4 2.1-5.4 2.1L12 18.5l-2.1-5.4L4.5 11l5.4-2.1z"/>'),
-    desc: "The model every new chat starts on, and what takes over when it fails.",
-    keywords: "default fallback chat reasoning effort",
+    desc: "Your agent's name and voice, the model every chat starts on, and the limits it runs under.",
+    keywords: "default fallback chat reasoning effort identity persona emoji name voice limits iterations run queue subagent",
   },
   models: {
     icon: glyph('<path d="M12 3.5l8 4.2-8 4.2-8-4.2z"/><path d="M4 12.4l8 4.2 8-4.2"/><path d="M4 16.6l8 4.2 8-4.2"/>'),
@@ -645,12 +645,24 @@ export class Settings {
     // Pure selection: every choice comes from the models checked in the Models
     // tab — no typing refs. The fallback list is ordered and uncapped (10+).
     const options: DdOption[] = (selected as any[]).map((m) => {
-      const raw = String(m.label || m.ref || m.id);
+      // Label first, then the id — never the bare provider ref, which would
+      // name the model "Openrouter".
+      const raw = String(m.label || m.id || m.ref || "");
+      const value = String(m.id ?? m.ref ?? "");
       const provider = String(m.ref ?? m.id ?? "").split("/")[0];
       // Rows sit under a provider header and drop its prefix, so the eye reads
       // the model — the stored id never changes.
-      return { value: String(m.id ?? m.ref ?? ""), label: friendlyModelName(raw, provider), group: provider };
+      return { value, label: friendlyModelName(raw, provider), group: provider, title: value };
     });
+    const byValue = new Map(options.map((o) => [o.value, o]));
+    const providerOf = (v: string): string => byValue.get(v)?.group ?? (v.split("/")[0] || "");
+    const nameOf = (v: string): string => byValue.get(v)?.label ?? (v ? friendlyModelName(v) : "— choose a model —");
+    const ctxOf = (v: string): string => {
+      const hit = (selected as any[]).find((m) => String(m.id ?? m.ref ?? "") === v);
+      const n = Number(hit?.contextWindow ?? 0);
+      if (n <= 0) return "—";
+      return n >= 1_000_000 ? `${Number((n / 1_000_000).toFixed(1))}M` : `${Math.round(n / 1000)}k`;
+    };
 
     const defaultDd = this.#dropdown({
       id: "defaults-model",
@@ -659,14 +671,67 @@ export class Settings {
       placeholder: "— choose a model —",
       options,
     });
+    defaultDd.node.classList.add("dd--hero");
 
-    // Fallbacks are ONE field, not a growing list of selects: chips in
-    // priority order, remove/reorder from the chip, one menu adds the next —
-    // and that menu only offers models not already in the chain.
+    // Fallbacks are ONE field, not a growing list of selects: rows in priority
+    // order, remove/reorder from the row, one menu adds the next — and that
+    // menu only offers models not already in the chain.
     const fallbackValues: string[] = [...(defaults.fallbacks ?? [])];
     const chips = el("div", { class: "fbs" });
     const addWrap = el("div", { class: "fbs__add" });
     const count = el("span", { class: "setsec__count" }, [""]);
+
+    /* ---- the hero: the page's answer, kept in step with the draft ---- */
+    const heroModel = el("strong", { class: "def-hero__model" }, [""]);
+    const heroProv = el("span", {}, [""]);
+    const heroChain = el("div", { class: "def-hero__chain" });
+    const factCtx = el("span", { class: "def-hero__fact-v" }, [""]);
+    const factFb = el("span", { class: "def-hero__fact-v" }, [""]);
+    const heroWarn = el("p", { class: "def-hero__warn", hidden: "" }, []);
+    const heroEmpty = el("p", { class: "def-hero__empty", hidden: "" }, [
+      "No models are switched on yet — open Models, check the ones you want, then come back and pick a default.",
+    ]);
+    const under = el("p", { class: "def-under" }, [""]);
+
+    const sync = (): void => {
+      const current = defaultDd.sel.value;
+      const known = byValue.has(current);
+      heroModel.textContent = current ? nameOf(current) : "— choose a model —";
+      heroProv.textContent = current ? providerOf(current) : "no default yet";
+      factCtx.textContent = current ? ctxOf(current) : "—";
+      factFb.textContent = String(fallbackValues.length);
+      // The raw ref: the one machine value on this page you cannot read off
+      // any control, and the one you would paste into config.json5.
+      under.textContent = current || "nothing chosen yet";
+
+      // A stale default (configured, but no longer switched on) is a real state:
+      // say it rather than rendering a chain that cannot start.
+      const stale = Boolean(current) && !known && options.length > 0;
+      heroWarn.hidden = !stale;
+      heroWarn.textContent = stale ? "This model is not switched on in Models — pick one below." : "";
+      heroEmpty.hidden = options.length > 0;
+
+      heroChain.innerHTML = "";
+      if (options.length === 0) return;
+      if (!current) {
+        heroChain.append(el("span", { class: "def-hero__lead" }, ["No model chosen yet."]));
+        return;
+      }
+      const steps: string[] = [current, ...fallbackValues.filter((v) => v !== current)];
+      steps.slice(0, 4).forEach((v, i) => {
+        if (i > 0) heroChain.append(el("span", { class: "def-hero__more", "aria-hidden": "true" }, ["›"]));
+        heroChain.append(el("span", { class: `def-hero__step${i === 0 ? " is-default" : ""}` }, [
+          el("b", {}, [String(i + 1)]),
+          el("span", { title: v }, [nameOf(v)]),
+        ]));
+      });
+      const hidden = steps.length - 4;
+      if (hidden > 0) heroChain.append(el("span", { class: "def-hero__more" }, [`+${hidden} more`]));
+      if (fallbackValues.filter((v) => v !== current).length === 0) {
+        heroChain.append(el("span", { class: "def-hero__lead" }, ["no fallback behind it"]));
+      }
+    };
+
     const redrawFallbacks = (): void => {
       chips.innerHTML = "";
       fallbackValues.forEach((v, i) => {
@@ -674,6 +739,7 @@ export class Settings {
         const chip = el("div", { class: "fb" }, [
           el("span", { class: "fb__n" }, [String(i + 1)]),
           el("span", { class: "fb__t", title: opt?.title ?? v }, [opt?.label ?? friendlyModelName(v)]),
+          el("span", { class: "fb__p" }, [providerOf(v)]),
         ]);
         const swap = (dir: -1 | 1, name: string): HTMLButtonElement => {
           const b = el("button", { class: "fb__b", type: "button", "aria-label": `${name} ${opt?.label ?? v}` }, [dir < 0 ? "‹" : "›"]) as HTMLButtonElement;
@@ -717,75 +783,161 @@ export class Settings {
         addWrap.append(addDd.node);
       } else {
         addWrap.append(el("p", { class: "hint" }, [
-          options.length ? "Every selected model is already in the chain." : "No models selected yet — check models in the Models tab first.",
+          options.length ? "Every switched-on model is already in the chain." : "No models selected yet — check models in the Models tab first.",
         ]));
       }
       count.textContent = `${fallbackValues.length} configured`;
+      sync();
     };
+    defaultDd.sel.addEventListener("change", sync);
 
-    const save = el("button", { class: "btn pri", type: "button" }, ["Save changes"]);
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const save = el("button", { class: "btn pri", type: "button" }, ["Save model"]);
+    const card = el("div", { class: "card setcard" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Model"]),
+        el("p", { class: "hint" }, [
+          options.length === 0
+            ? "No models selected yet — check models in the Models tab first."
+            : "The model a new chat starts on, and the ladder behind it when a provider fails.",
+        ]),
+      ]),
+      this.#field("Default model", defaultDd.node, {
+        hint: "Used for every new session. Choose from the models switched on in Models; the id under it is what config.json5 stores.",
+      }),
+      under,
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Fallback chain"]),
+          count,
+        ]),
+        el("p", { class: "hint" }, [
+          "Tried in order when a model fails — each gets its own retry budget. Nothing here runs in parallel with the default.",
+        ]),
+        chips,
+        addWrap,
+      ]),
+      el("div", { class: "setfoot" }, [note, save]),
+    ]);
+    const clearDirty = this.#dirtyWatch(card, note);
+
     save.onclick = async () => {
       const fb = fallbackValues.map((v) => v.trim()).filter(Boolean);
-      await this.#setMany([
+      const ok = await this.#setMany([
         ["agents.defaults.model", defaultDd.sel.value],
         ["agents.defaults.fallbacks", fb],
       ], "model saved");
+      if (ok) clearDirty();
     };
 
-    this.#root.append(
-      el("div", { class: "card setcard" }, [
-        el("div", { class: "setcard__head" }, [
-          el("h3", {}, ["Model"]),
-          el("p", { class: "hint" }, [
-            options.length === 0
-              ? "No models selected yet — check models in the Models tab first."
-              : "Every new session starts on the default model; fallbacks take over when it fails.",
-          ]),
-        ]),
-        el("div", { class: "setgrid" }, [
-          el("div", { class: "setfield setfield--wide" }, [
-            el("label", { class: "lbl", for: "defaults-model-btn" }, ["Default model"]),
-            defaultDd.node,
-            el("p", { class: "hint" }, ["Used for every new session. Choose from the models selected in the Models tab."]),
-          ]),
-        ]),
-        el("div", { class: "setsec" }, [
-          el("div", { class: "setsec__head" }, [
-            el("span", { class: "cap" }, ["Fallback models"]),
-            count,
-          ]),
-          el("p", { class: "hint" }, [
-            "Tried in order when a model fails (each gets its own retry budget). Add as many as you like — at least 10 fit.",
-          ]),
-          chips,
-          addWrap,
-        ]),
-        el("div", { class: "setfoot" }, [save]),
-      ]),
-    );
+    // The hero goes first on the page: the answer before the controls.
+    this.#root.append(hero(), card);
     redrawFallbacks();
+
+    function hero(): HTMLElement {
+      return el("div", { class: "def-hero" }, [
+        el("div", { class: "def-hero__main" }, [
+          el("span", { class: "def-hero__label" }, ["Starts on"]),
+          heroModel,
+          el("span", { class: "def-hero__prov" }, [heroProv]),
+          heroWarn,
+          heroEmpty,
+          heroChain,
+        ]),
+        el("div", { class: "def-hero__facts" }, [
+          el("span", { class: "def-hero__fact" }, [el("span", { class: "def-hero__fact-k" }, ["context"]), factCtx]),
+          el("span", { class: "def-hero__fact" }, [el("span", { class: "def-hero__fact-k" }, ["fallbacks"]), factFb]),
+        ]),
+      ]);
+    }
   }
 
   /** Agent identity (P4 #39 — their Personal identity page): name/emoji/theme
    *  shown to channels and injected into the system prompt. */
   #renderAgentIdentity(config: any): void {
     const id = config.agents?.identity ?? {};
-    const mkField = (iid: string, label: string, value: string, placeholder: string) => {
+    const mkField = (iid: string, label: string, value: string, placeholder: string, narrow = false) => {
       const input = el("input", { class: "inp", id: iid, value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
-      return el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), input]);
+      return { input, node: this.#field(label, input, { forId: iid, narrow }) };
     };
+    const nameField = mkField("identity-name", "Name", String(id.name ?? "SuparClaw"), "SuparClaw");
+    const emojiField = mkField("identity-emoji", "Emoji", String(id.emoji ?? "🦀"), "🦀", true);
+
     // The persona is prose — a real textarea, not a one-line input.
-    const mkArea = (iid: string, label: string, value: string, placeholder: string) => {
-      const area = el("textarea", { class: "inp area", id: iid, placeholder, rows: "5", autocomplete: "off", spellcheck: "false" }) as HTMLTextAreaElement;
-      area.value = value;
-      return el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), area]);
+    const area = el("textarea", {
+      class: "inp",
+      id: "identity-theme",
+      placeholder: "a warm, sharp, resourceful personal AI companion…",
+      rows: "4",
+      autocomplete: "off",
+      spellcheck: "false",
+    }) as HTMLTextAreaElement;
+    area.value = String(id.theme ?? "");
+    const voice = this.#field("Voice", area, {
+      forId: "identity-theme",
+      hint: "Written into the system prompt — this is how it talks, not what it knows.",
+    });
+
+    // Identity is the most human thing on this page, so it shows the agent
+    // instead of only naming three fields. The preview is a mirror of the
+    // draft (what Save would commit), and it is decorative: aria-hidden, since
+    // the same words are already in the fields beside it.
+    const avatar = el("div", { class: "def-avatar", "aria-hidden": "true" }, [""]);
+    const previewEmoji = el("span", { class: "def-preview__avatar" }, [""]);
+    const previewWho = el("span", { class: "def-preview__who" }, [""]);
+    const previewQuote = el("p", { class: "def-preview__quote" }, [""]);
+    const preview = el("div", { class: "def-preview", "aria-hidden": "true" }, [
+      previewEmoji,
+      el("div", { class: "def-preview__body" }, [previewWho, previewQuote]),
+    ]);
+
+    /** First visible glyph of the emoji field. Emoji are not one code unit —
+     *  👩🏽‍💻 is a ZWJ sequence — so cut on a grapheme, never on .slice(). */
+    const firstGlyph = (s: string): string => {
+      try {
+        const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+        const first = seg.segment(s)[Symbol.iterator]().next();
+        return first.done ? "" : String(first.value.segment).slice(0, 12);
+      } catch {
+        return Array.from(s).slice(0, 2).join("");
+      }
     };
+    const repaint = (): void => {
+      // Same fallbacks the save handler applies, so the preview never promises
+      // a blank name or emoji that would not be stored.
+      const name = nameField.input.value.trim() || "SuparClaw";
+      const emoji = emojiField.input.value.trim() || "🦀";
+      const theme = area.value.trim();
+      avatar.textContent = firstGlyph(emoji);
+      previewEmoji.textContent = firstGlyph(emoji);
+      previewWho.textContent = name;
+      previewQuote.textContent = theme ? `“${theme}”` : "No voice set — it will introduce itself with the default persona.";
+    };
+
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
     const saveId = el("button", { class: "btn", type: "button", id: "identity-save" }, ["Save identity"]) as HTMLButtonElement;
-    saveId.onclick = () => {
+    const card = el("div", { class: "card setcard agent-identity" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Identity"]),
+        el("p", { class: "hint" }, ["Who the agent says it is, everywhere it speaks."]),
+      ]),
+      el("div", { class: "def-identity" }, [
+        avatar,
+        el("div", { class: "def-identity__fields" }, [
+          el("div", { class: "setgrid" }, [nameField.node, emojiField.node]),
+        ]),
+      ]),
+      voice,
+      preview,
+      el("div", { class: "setfoot" }, [note, saveId]),
+    ]);
+    const clearDirty = this.#dirtyWatch(card, note);
+
+    saveId.onclick = async () => {
       const name = (this.#root.querySelector("#identity-name") as HTMLInputElement).value.trim();
       const emoji = (this.#root.querySelector("#identity-emoji") as HTMLInputElement).value.trim();
       const theme = (this.#root.querySelector("#identity-theme") as HTMLTextAreaElement).value.trim();
-      void this.#setMany(
+      const ok = await this.#setMany(
         [
           ["agents.identity.name", name || "SuparClaw"],
           ["agents.identity.emoji", emoji || "🦀"],
@@ -793,27 +945,35 @@ export class Settings {
         ],
         "identity saved — new sessions greet with it immediately",
       );
+      if (ok) clearDirty();
     };
-    this.#root.append(el("div", { class: "card setcard agent-identity" }, [
-      el("div", { class: "setcard__head" }, [
-        el("h3", {}, ["Agent identity"]),
-        el("p", { class: "hint" }, ["Who the agent says it is, everywhere it speaks."]),
-      ]),
-      el("div", { class: "setgrid" }, [
-        mkField("identity-name", "Name", String(id.name ?? "SuparClaw"), "SuparClaw"),
-        mkField("identity-emoji", "Emoji", String(id.emoji ?? "🦀"), "🦀"),
-      ]),
-      mkArea("identity-theme", "Theme (persona written into the system prompt)", String(id.theme ?? ""), "a warm, sharp, resourceful personal AI companion…"),
-      el("div", { class: "setfoot" }, [saveId]),
-    ]));
+
+    for (const field of [nameField.input, emojiField.input, area]) field.addEventListener("input", repaint);
+
+    this.#root.append(card);
+    repaint();
   }
 
   /** Agent defaults (P4 #39): loop limits, lane caps, subagent budget,
    *  reasoning + usage-visibility defaults — their Agents Defaults page. */
   #renderAgentDefaults(d: any): void {
-    const mkNum = (iid: string, label: string, cur: number, hint?: string) => {
-      const input = el("input", { class: "inp mono", id: iid, value: String(cur), autocomplete: "off" }) as HTMLInputElement;
-      return { input, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), input, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
+    // Labels name the thing; ranges, units and consequences live in the hint
+    // under the control. A label that documents itself is a label nobody reads.
+    const mkNum = (
+      iid: string,
+      label: string,
+      cur: number,
+      hint?: string,
+      mode: "numeric" | "text" = "numeric",
+    ) => {
+      const input = el("input", {
+        class: "inp mono",
+        id: iid,
+        value: String(cur),
+        autocomplete: "off",
+        inputmode: mode === "numeric" ? "numeric" : "text",
+      }) as HTMLInputElement;
+      return { input, node: this.#field(label, input, { forId: iid, hint }) };
     };
     const mkSel = (iid: string, label: string, cur: string, options: [string, string][], hint?: string) => {
       const dd = this.#dropdown({
@@ -823,32 +983,68 @@ export class Settings {
         placeholder: "— choose —",
         options: options.map(([value, lab]) => ({ value, label: lab })),
       });
-      return { sel: dd.sel, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `${iid}-btn` }, [label]), dd.node, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
+      // The trigger is a button, so the visible label is text, not a label[for];
+      // the button itself announces "label: value".
+      return { sel: dd.sel, node: this.#field(label, dd.node, { hint }) };
     };
     const sub = d.subagents ?? {};
-    const iterations = mkNum("ad-iterations", "Max tool iterations (1–40)", Number(d.maxToolIterations ?? 12));
-    const budget = mkNum("ad-budget", "Context budget (chars, min 2000)", Number(d.contextBudgetChars ?? 200000), "history cap when no model window is known; with a model window it scales up to ~70% of it");
-    const concur = mkNum("ad-concurrent", "Max concurrent runs (0 = auto)", Number(d.maxConcurrent ?? 0), "auto = max(8, cpu × 4) — the main-lane formula");
-    const queueSel = mkSel("ad-queue", "Queue mode (legacy)", String(d.queueMode ?? "followup"), [["steer", "steer"], ["followup", "followup"]], "superseded by messages.queue.mode — kept for old configs, the new section wins");
-    const reasoning = mkSel("ad-reasoning", "Reasoning effort (sent to provider)", String(d.reasoningEffort ?? "inherit"), [["inherit", "inherit"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]]);
-    const viewSel = mkSel("ad-rview", "Thinking blocks visible in UI", String(d.reasoningView ?? "on"), [["on", "on"], ["off", "off"]], "blocks are persisted either way — off only hides them from view");
-    const usageSel = mkSel("ad-usage", "Reply usage footer", String(d.usage ?? "tokens"), [["off", "off"], ["tokens", "tokens"], ["full", "full"], ["cost", "cost"]], "cost needs a pricing card per model and degrades to tokens, never a guess");
-    const subConcur = mkNum("ad-sub-concurrent", "Subagent lane cap", Number(sub.maxConcurrent ?? 8), "per-spawning-session child budget + background lane");
-    const subModel = mkNum("ad-sub-model", "Subagent model override (blank = inherit)", NaN);
+    const iterations = mkNum("ad-iterations", "Tool iterations", Number(d.maxToolIterations ?? 12),
+      "1–40. How many tool calls one turn may make.");
+    const budget = mkNum("ad-budget", "Context budget", Number(d.contextBudgetChars ?? 200000),
+      "Characters, minimum 2000. Scales to ~70% of the model window when one is known.");
+    const concur = mkNum("ad-concurrent", "Concurrent runs", Number(d.maxConcurrent ?? 0),
+      "0 = auto (max(8, CPU × 4)).");
+    const queueSel = mkSel("ad-queue", "Legacy queue mode", String(d.queueMode ?? "followup"),
+      [["steer", "steer"], ["followup", "followup"]],
+      "Kept for old configs — superseded by messages.queue.mode, which wins when both are set.");
+    const reasoning = mkSel("ad-reasoning", "Reasoning effort", String(d.reasoningEffort ?? "inherit"),
+      [["inherit", "inherit"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]],
+      "Sent to the provider as-is; inherit follows the model.");
+    const viewSel = mkSel("ad-rview", "Show thinking blocks", String(d.reasoningView ?? "on"),
+      [["on", "on"], ["off", "off"]],
+      "Blocks are stored either way — off only hides them here.");
+    const usageSel = mkSel("ad-usage", "Reply footer", String(d.usage ?? "tokens"),
+      [["off", "off"], ["tokens", "tokens"], ["full", "full"], ["cost", "cost"]],
+      "Cost needs a pricing card per model and degrades to tokens — never a guess.");
+    const subConcur = mkNum("ad-sub-concurrent", "Subagent lane cap", Number(sub.maxConcurrent ?? 8),
+      "Children per spawning session, plus the background lane.");
+    const subModel = mkNum("ad-sub-model", "Subagent model", 0,
+      "Blank inherits the caller's model.", "text");
     subModel.input.value = String(sub.model ?? "");
-    const subDepth = mkNum("ad-sub-depth", "Subagent max depth (1–4)", Number(sub.maxDepth ?? 1), "1 = children cannot spawn children");
-    const subThink = mkSel("ad-sub-think", "Subagent thinking override", String(sub.thinking ?? ""), [["", "inherit caller"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"]]);
-    const subDeleg = mkSel("ad-sub-deleg", "Delegation mode", String(sub.delegationMode ?? "inherit"), [["inherit", "inherit"], ["prefer", "prefer (:main)"], ["suggest", "suggest"]], "prompt guidance only");
+    const subDepth = mkNum("ad-sub-depth", "Subagent depth", Number(sub.maxDepth ?? 1),
+      "1–4. At 1, children cannot spawn children.");
+    const subThink = mkSel("ad-sub-think", "Subagent thinking", String(sub.thinking ?? ""),
+      [["", "inherit caller"], ["off", "off"], ["low", "low"], ["medium", "medium"], ["high", "high"]],
+      "Overrides what the caller chose.");
+    const subDeleg = mkSel("ad-sub-deleg", "Delegation", String(sub.delegationMode ?? "inherit"),
+      [["inherit", "inherit"], ["prefer", "prefer (:main)"], ["suggest", "suggest"]],
+      "It is prompt guidance only — nothing is enforced by it.");
 
-    const sec = (title: string, nodes: HTMLElement[]): HTMLElement =>
-      el("div", { class: "setsec" }, [
-        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, [title])]),
+    const sec = (title: string, nodes: HTMLElement[], note?: string): HTMLElement =>
+      el("div", { class: "def-sec" }, [
+        el("div", { class: "def-sec__head" }, [
+          el("span", { class: "cap" }, [title]),
+          ...(note ? [el("span", { class: "def-sec__note" }, [note])] : []),
+        ]),
         el("div", { class: "setgrid" }, nodes),
       ]);
 
-    const saveD = el("button", { class: "btn", type: "button", id: "agent-defaults-save" }, ["Save defaults"]) as HTMLButtonElement;
-    saveD.onclick = () => {
-      void this.#setMany(
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const saveD = el("button", { class: "btn", type: "button", id: "agent-defaults-save" }, ["Save run limits"]) as HTMLButtonElement;
+    const card = el("div", { class: "card setcard agent-defaults" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Run limits"]),
+        el("p", { class: "hint" }, ["What one turn may do when a session brings no settings of its own."]),
+      ]),
+      sec("Loop & limits", [iterations.node, budget.node, concur.node, queueSel.node]),
+      sec("Reasoning & replies", [reasoning.node, viewSel.node, usageSel.node]),
+      sec("Subagents", [subConcur.node, subModel.node, subDepth.node, subThink.node, subDeleg.node]),
+      el("div", { class: "setfoot" }, [note, saveD]),
+    ]);
+    const clearDirty = this.#dirtyWatch(card, note);
+
+    saveD.onclick = async () => {
+      const ok = await this.#setMany(
         [
           ["agents.defaults.maxToolIterations", Math.max(1, Math.min(40, Number(iterations.input.value) || 12))],
           ["agents.defaults.contextBudgetChars", Math.max(2000, Number(budget.input.value) || 60000)],
@@ -863,20 +1059,12 @@ export class Settings {
           ["agents.defaults.subagents.thinking", subThink.sel.value],
           ["agents.defaults.subagents.delegationMode", subDeleg.sel.value],
         ],
-        "agent defaults saved — applies to new runs immediately",
+        "run limits saved — applies to new runs immediately",
       );
+      if (ok) clearDirty();
     };
 
-    this.#root.append(el("div", { class: "card setcard agent-defaults" }, [
-      el("div", { class: "setcard__head" }, [
-        el("h3", {}, ["Agent defaults"]),
-        el("p", { class: "hint" }, ["Where a session has no setting of its own, it falls back to these."]),
-      ]),
-      sec("Loop & limits", [iterations.node, budget.node, concur.node, queueSel.node]),
-      sec("Reasoning & replies", [reasoning.node, viewSel.node, usageSel.node]),
-      sec("Subagents", [subConcur.node, subModel.node, subDepth.node, subThink.node, subDeleg.node]),
-      el("div", { class: "setfoot" }, [saveD]),
-    ]));
+    this.#root.append(card);
   }
 
   /* ---------------- models ---------------- */
@@ -3980,16 +4168,57 @@ export class Settings {
     }
   }
 
-  async #setMany(pairs: [string, unknown][], message: string): Promise<void> {
+  /** Writes a batch of config leaves. Returns whether every write landed, so a
+   *  caller can keep its "unsaved changes" marker honest — the toast alone
+   *  cannot tell the form what happened. */
+  async #setMany(pairs: [string, unknown][], message: string): Promise<boolean> {
     try {
       for (const [path, value] of pairs) {
         await gateway.request("config.set", { path, value });
       }
       toast(message, "ok");
       this.#onChanged();
+      return true;
     } catch (err) {
       toast((err as Error).message, "err");
+      return false;
     }
+  }
+
+  /** One field on a settings page: short label, the control, then the sentence
+   *  that explains it. `forId` only for real inputs — a dropdown trigger is a
+   *  button and already names itself through aria-label. */
+  #field(
+    labelText: string,
+    control: HTMLElement,
+    opts: { hint?: string; forId?: string; narrow?: boolean } = {},
+  ): HTMLElement {
+    const label = opts.forId
+      ? el("label", { class: "lbl", for: opts.forId }, [labelText])
+      : el("span", { class: "lbl" }, [labelText]);
+    return el("div", { class: `def-field${opts.narrow ? " def-field--narrow" : ""}` }, [
+      label,
+      control,
+      ...(opts.hint ? [el("p", { class: "hint" }, [opts.hint])] : []),
+    ]);
+  }
+
+  /** Watches a card for real edits and reports them through a footer note.
+   *  Dropdown *searches* live inside the card and are not edits, so events from
+   *  a menu are ignored; the hidden store's own change (a pick) is not. */
+  #dirtyWatch(card: HTMLElement, note: HTMLElement): () => void {
+    const mark = (e: Event): void => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.(".dd__menu")) return;
+      note.textContent = "Unsaved changes";
+      note.dataset["dirty"] = "1";
+    };
+    card.addEventListener("input", mark);
+    card.addEventListener("change", mark);
+    return () => {
+      note.textContent = "";
+      delete note.dataset["dirty"];
+    };
   }
 
   #providerForm(name: string | null, providers: Record<string, Provider>, done: () => void): void {

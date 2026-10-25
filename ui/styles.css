@@ -1497,33 +1497,8 @@ textarea:focus-visible {
 .toast--err .toast__dot { background: var(--err); }
 
 /* ---------------------------------------------------------- settings ---- */
-
-.settings {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.settings__head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.settings__head h1 {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -.02em;
-}
-
-.settings__body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  animation: fadeUp .4s cubic-bezier(.2, .7, .2, 1) both;
-}
+/* The settings surface styles itself further down (see the big settings block);
+   only the tab strip lives here now. */
 
 .tabs {
   display: flex;
@@ -2933,46 +2908,60 @@ html[data-theme-mode='dark'] .settings select.inp {
   text-align: center;
 }
 
-/* ------------------------------------------------------- fallback chips ---- */
+/* -------------------------------------------------------- fallback ladder ---- */
+/* A fallback chain is an ordered retry ladder, so it is drawn as rows in
+   sequence — not as tags — with the move controls at the row's edge. */
 
 .settings .fbs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  border-top: 1px solid var(--set-line);
 }
 
 .settings .fb {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto auto;
   align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  min-height: 34px;
-  padding: 3px 5px 3px 7px;
-  border: 1px solid var(--set-line-2);
-  border-radius: 999px;
-  background: var(--set-inset);
+  gap: 10px;
+  min-height: 46px;
+  padding: 5px 0;
 }
+
+.settings .fb + .fb { border-top: 1px solid var(--set-line); }
 
 .settings .fb__n {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--accsoft);
-  color: var(--accent);
-  font-size: 10.5px;
-  font-weight: 700;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--set-line-2);
+  border-radius: 6px;
+  background: var(--set-panel-2);
+  color: var(--ink2);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .settings .fb__t {
   min-width: 0;
   overflow: hidden;
+  font-size: 13.5px;
+  color: var(--ink);
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 13px;
+}
+
+.settings .fb__p {
+  overflow: hidden;
+  max-width: 14ch;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .settings .fb__b {
@@ -2980,38 +2969,56 @@ html[data-theme-mode='dark'] .settings select.inp {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border: 0;
-  border-radius: 50%;
+  border-radius: 7px;
   background: transparent;
   color: var(--ink3);
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
+  transition: background-color .13s ease, color .13s ease;
 }
 
 .settings .fb__b:hover { background: var(--hover); color: var(--ink); }
-.settings .fb__b:disabled { opacity: .3; cursor: default; background: transparent; }
+.settings .fb__b:disabled { opacity: .28; cursor: default; background: transparent; }
 .settings .fb__b--x:hover { color: var(--err); }
 
+.settings .fb__b:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--set-ring);
+}
+
+/* The next slot in the ladder, not a stray button: a dashed full-width row. */
 .settings .fbs__add { display: flex; margin-top: 10px; }
-.settings .fbs__add .dd { width: min(280px, 100%); }
+.settings .fbs__add .dd { width: 100%; }
 
 .settings .fbs__add .dd__btn {
-  min-height: 36px;
+  justify-content: flex-start;
+  min-height: 40px;
   border-style: dashed;
+  border-color: var(--set-line-2);
   background-color: transparent;
   color: var(--ink2);
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings .fbs__add .dd__btn .dd__val.is-empty { color: var(--ink2); }
+
+.settings .fbs__add .dd__btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .settings .fbs__add .dd__menu {
   right: auto;
-  width: min(340px, 90vw);
+  width: min(360px, 100%);
 }
 
 .settings .fbs__empty {
+  padding: 10px 0;
   font-size: 12.5px;
   color: var(--ink3);
 }
@@ -3552,6 +3559,308 @@ html[data-theme-mode='dark'] .settings select.inp {
 .settings__tag.is-ok::before { background: var(--ok); }
 .settings__tag.is-warn::before { background: var(--warn); }
 
+/* --------------------------------------------------------- defaults page ---- */
+/* The Defaults page answers one question before it asks any: what happens when
+   a chat starts? The hero states it, the cards change it. Everything below is
+   scoped to .settings and built from the same tokens as the rest of the surface
+   — no gradients, no second elevation level, hairlines instead of boxes. */
+
+.def-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, .7fr);
+  gap: 0;
+  overflow: hidden;
+  padding: 20px 22px;
+  border: 1px solid var(--set-line);
+  border-radius: var(--set-radius);
+  background: var(--set-panel);
+  box-shadow: var(--set-shadow);
+}
+
+.def-hero__main {
+  min-width: 0;
+  padding-right: 22px;
+}
+
+.def-hero__label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink3);
+}
+
+.def-hero__model {
+  margin-top: 6px;
+  overflow: hidden;
+  font-size: clamp(20px, 2.3vw, 25px);
+  font-weight: 620;
+  line-height: 1.14;
+  letter-spacing: -.022em;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.def-hero__prov {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 7px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink2);
+}
+
+.def-hero__warn {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--warnsoft);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--warn);
+}
+
+/* The chain, as a sequence — steps sit on one line and truncate from the end. */
+.def-hero__chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.def-hero__lead {
+  font-size: 12px;
+  color: var(--ink3);
+}
+
+.def-hero__step {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--set-line);
+  border-radius: 999px;
+  background: var(--set-panel-2);
+  font-size: 12px;
+  color: var(--ink2);
+}
+
+.def-hero__step b {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink3);
+}
+
+.def-hero__step span {
+  overflow: hidden;
+  max-width: 22ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.def-hero__step.is-default {
+  border-color: var(--set-line-2);
+  background: var(--set-inset);
+  color: var(--ink);
+}
+
+.def-hero__more {
+  font-size: 12px;
+  color: var(--ink3);
+}
+
+.def-hero__facts {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding-left: 22px;
+  border-left: 1px solid var(--set-line);
+}
+
+.def-hero__fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  padding: 7px 0;
+  font-size: 12.5px;
+}
+
+.def-hero__fact + .def-hero__fact { border-top: 1px solid var(--set-line); }
+
+.def-hero__fact-k { color: var(--ink3); }
+
+.def-hero__fact-v {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.def-hero__empty {
+  margin: 14px 0 0;
+  max-width: 54ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink2);
+}
+
+/* A field on this page: short label, control, then the sentence that explains it. */
+.def-field {
+  min-width: 0;
+}
+
+.def-field + .def-field { margin-top: 14px; }
+
+.def-field--narrow { max-width: 118px; }
+
+.def-field > .hint { margin-top: 6px; }
+
+.def-under {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink3);
+}
+
+/* A section inside a card: rule above, quiet heading, then fields. The panel
+   head already carries a rule, so the first section must not draw a second. */
+.def-sec {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--set-line);
+}
+
+.setcard__head + .def-sec {
+  margin-top: 4px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* The avatar row and the voice field are one block of content, not two fields. */
+.def-identity + .def-field { margin-top: 16px; }
+
+.def-sec__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.def-sec__note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink3);
+  text-align: right;
+}
+
+/* Identity: the agent gets a face before it gets fields. */
+.def-identity {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.def-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 58px;
+  height: 58px;
+  border: 1px solid var(--set-line-2);
+  border-radius: 14px;
+  background: var(--set-panel-2);
+  font-size: 28px;
+  line-height: 1;
+  user-select: none;
+}
+
+.def-identity > .def-identity__fields {
+  flex: 1;
+  min-width: 0;
+}
+
+.def-identity__fields .setgrid { gap: 14px 16px; }
+
+.def-preview {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--set-line);
+  border-radius: 12px;
+  background: var(--set-inset);
+}
+
+.def-preview__avatar {
+  flex: none;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.def-preview__body { min-width: 0; }
+
+.def-preview__who {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.def-preview__quote {
+  display: -webkit-box;
+  margin: 3px 0 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* The one oversized control on the page. */
+.settings .dd--hero .dd__btn {
+  min-height: 54px;
+  padding: 0 38px 0 14px;
+  border-color: var(--set-line-2);
+  border-radius: 12px;
+  background-color: var(--set-panel);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.settings .dd--hero .dd__btn .dd__val {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* What a save would commit: a quiet line on the left of the commit band. */
+.settings .setfoot__note {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--ink3);
+  transition: color .15s ease;
+}
+
+.settings .setfoot__note[data-dirty="1"] { color: var(--warn); }
+
 /* ------------------------------------------------------- responsive ---- */
 
 @media (max-width: 1100px) {
@@ -3605,6 +3914,31 @@ html[data-theme-mode='dark'] .settings select.inp {
   .settings__search input { font-size: 16px; }
 }
 
+@media (max-width: 720px) {
+  .def-hero {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 18px;
+  }
+
+  .def-hero__main { padding-right: 0; }
+
+  .def-hero__facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 16px;
+    margin-top: 16px;
+    padding: 10px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--set-line);
+  }
+
+  .def-hero__fact { min-height: 26px; padding: 4px 0; }
+
+  .def-hero__fact + .def-hero__fact { border-top: 0; }
+
+  .def-hero__fact:nth-child(n + 3) { border-top: 1px solid var(--set-line); }
+}
+
 @media (max-width: 640px) {
   .settings__back {
     width: 34px;
@@ -3643,9 +3977,35 @@ html[data-theme-mode='dark'] .settings select.inp {
   .settings .prov__row .btn { flex: 1 1 100%; }
 
   .settings .row__value { font-size: 12px; }
+
+  /* Defaults page: the hero leads, the fields follow, nothing side-by-side. */
+  .def-hero__model { font-size: 19px; }
+
+  .def-identity { flex-direction: column; gap: 14px; }
+
+  .def-avatar { width: 52px; height: 52px; font-size: 25px; }
+
+  .def-identity > .def-identity__fields { width: 100%; }
+
+  .def-field--narrow { max-width: none; }
+
+  .settings .fb {
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+    gap: 8px;
+  }
+
+  .settings .fb__p { display: none; }
+
+  .settings .setfoot__note { flex: 1 1 100%; margin-bottom: 8px; }
 }
 
 @media (max-width: 420px) {
+  .def-hero__facts { grid-template-columns: minmax(0, 1fr); }
+
+  .def-hero__fact:nth-child(n + 2) { border-top: 1px solid var(--set-line); }
+
+  .def-hero__step span { max-width: 16ch; }
+
   .settings__fact {
     max-width: 130px;
     padding: 0 8px;
@@ -3670,6 +4030,14 @@ html[data-theme-mode='dark'] .settings select.inp {
     height: 44px;
   }
 
+  .settings .fb { min-height: 52px; }
+
+  .settings .fb__b {
+    width: 40px;
+    height: 40px;
+  }
+
+  .settings .fbs__add .dd__btn { min-height: 48px; }
 }
 
 @media (min-width: 881px) {
