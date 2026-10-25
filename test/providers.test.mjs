@@ -187,3 +187,53 @@ test("testProvider reports both the happy and the unreachable path", async (t) =
   assert.equal(missing.ok, false);
   assert.match(missing.message, /no such provider/);
 });
+
+// --- delete removes the provider's dependents, not just the record ----------
+
+test("removeProvider takes its saved models, fallbacks and auth order with it", () => {
+  const cfg = scratchConfig();
+  const profile = (ref) => ({ ref, label: "", enabled: true, contextWindow: 0, maxTokens: 0, reasoningEffort: "inherit" });
+  cfg.setPath("providers.mock", { baseUrl: "http://x/v1", apiKey: "k", models: ["m1"] });
+  cfg.setPath("providers.other", { baseUrl: "http://y/v1", apiKey: "k", models: ["m2"] });
+  cfg.setPath("models.mock-m1", profile("mock/m1"));
+  cfg.setPath("models.other-m2", profile("other/m2"));
+  // A bare model id has no provider segment: it may belong to anyone, so it stays.
+  cfg.setPath("models.bare", profile("m1"));
+  cfg.setPath("agents.defaults.fallbacks", ["mock/m1", "other/m2"]);
+  cfg.setPath("auth.order", { mock: ["mock:key:1"], other: ["other:key:1"] });
+
+  const removed = removeProvider(cfg, "mock");
+  assert.equal(removed.ok, true);
+  assert.match(removed.message, /removed "mock" — and 1 saved model and 1 fallback/);
+  assert.equal(cfg.current.models["mock-m1"], undefined, "the picker must not keep offering a dead model");
+  assert.ok(cfg.current.models["other-m2"], "another provider's profile is untouched");
+  assert.ok(cfg.current.models["bare"], "a bare-id profile is not ours to delete");
+  assert.deepEqual(cfg.current.agents.defaults.fallbacks, ["other/m2"]);
+  assert.equal(cfg.current.auth.order.mock, undefined);
+  assert.deepEqual(cfg.current.auth.order.other, ["other:key:1"]);
+});
+
+test("renaming a provider brings its saved models, default and fallbacks along", async () => {
+  const cfg = scratchConfig();
+  cfg.setPath("providers.old", { baseUrl: "http://127.0.0.1:9/v1", apiKey: "k", models: ["m1"] });
+  cfg.setPath("models.old-m1", { ref: "old/m1", label: "Mine", enabled: true, contextWindow: 128000, maxTokens: 0, reasoningEffort: "inherit" });
+  cfg.setPath("agents.defaults.model", "old/m1");
+  cfg.setPath("agents.defaults.fallbacks", ["old/m1"]);
+  cfg.setPath("auth.order", { old: ["old:key:1"] });
+
+  const res = await addProvider(cfg, "new", {
+    baseUrl: "http://127.0.0.1:9/v1",
+    apiKey: "k",
+    models: ["m1"],
+    renameFrom: "old",
+  });
+  assert.equal(res.ok, true, res.message);
+  assert.match(res.message, /renamed from "old" — moved 1 saved model, 1 fallback, the default model/);
+  assert.equal(cfg.current.models["old-m1"].ref, "new/m1", "the saved model follows the rename");
+  assert.equal(cfg.current.agents.defaults.model, "new/m1");
+  assert.deepEqual(cfg.current.agents.defaults.fallbacks, ["new/m1"]);
+  assert.deepEqual(cfg.current.auth.order.new, ["old:key:1"], "the auth order moves with the name");
+  assert.equal(cfg.current.auth.order.old, undefined);
+  assert.ok(cfg.current.providers.new, "the new record exists");
+  assert.ok(cfg.current.providers.old, "the old record is the caller's to remove");
+});

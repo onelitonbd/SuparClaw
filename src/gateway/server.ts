@@ -986,6 +986,9 @@ case "sessions.rename": {
             models: Array.isArray(params["models"])
               ? (params["models"] as unknown[]).filter((m): m is string => typeof m === "string")
               : undefined,
+            // A rename has to take the saved models, the default model and the
+            // fallbacks with it — they are all refs that begin with the old name.
+            renameFrom: prev.trim().toLowerCase() !== name.trim().toLowerCase() ? prev : undefined,
           });
           if (!result.ok) {
             send(errFrame(id, "bad_request", result.message));
@@ -996,13 +999,33 @@ case "sessions.rename": {
           return;
         }
         case "providers.remove": {
-          const result = removeProvider(service.configSvc, String(params["name"] ?? ""));
+          const removedName = String(params["name"] ?? "");
+          // Credentials live in the state DB keyed by provider, not in config —
+          // without this they survive the provider and come back, silently, if
+          // it is ever added again. It is opt-in because a *rename* uses this
+          // same call to drop the old record and must not take the keys with it.
+          const purgeAuth = params["purgeAuth"] === true;
+          const creds = purgeAuth ? service.authProfilesView(removedName) : [];
+          const result = removeProvider(service.configSvc, removedName);
           if (!result.ok) {
             send(errFrame(id, "bad_request", result.message));
             return;
           }
+          let droppedCreds = 0;
+          for (const profile of creds) {
+            try {
+              if (service.authRemove(String((profile as { id?: string }).id ?? "")).ok) droppedCreds++;
+            } catch {
+              /* a stale row must not fail the delete */
+            }
+          }
           service.applyConfig();
-          send(okFrame(id, { ok: true, message: result.message, config: redactSecrets(service.config) }));
+          const [head, ...rest] = result.message.split("\n");
+          const message = [
+            droppedCreds ? `${head} — and ${droppedCreds} credential${droppedCreds === 1 ? "" : "s"}` : head,
+            ...rest,
+          ].join("\n");
+          send(okFrame(id, { ok: true, message, config: redactSecrets(service.config) }));
           return;
         }
         case "providers.test": {

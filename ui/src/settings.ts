@@ -326,7 +326,7 @@ export class Settings {
       } else {
         this.#renderModels(providers, configured, models, authProfiles, plugins, modelsWarning);
       }
-    } else if (this.#tab === "providers") this.#renderProviders(providers);
+    } else if (this.#tab === "providers") this.#renderProviders(providers, config, authProfiles);
     else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
     else if (this.#tab === "usage") void this.#renderUsage();
     else if (this.#tab === "skills") this.#renderSkills(skills);
@@ -2026,7 +2026,9 @@ export class Settings {
    *  one-tap device-code sign-in, credential probe, connection test). All
    *  three surface the gateway's own verdict text — no client-side guesses. */
   #providerAuthButtons(name: string): HTMLElement[] {
-    const test = el("button", { class: "btn", type: "button", id: `prov-test-${name}`, title: "providers.test" }, ["Test"]) as HTMLButtonElement;
+    // Every provider card carries the same five buttons, so each one is named
+    // with the provider it acts on — "Test" alone says nothing on card four.
+    const test = el("button", { class: "btn", type: "button", id: `prov-test-${name}`, title: "providers.test", "aria-label": `Test ${name}` }, ["Test"]) as HTMLButtonElement;
     test.onclick = async () => {
       test.disabled = true;
       try {
@@ -2039,7 +2041,7 @@ export class Settings {
       }
     };
 
-    const probe = el("button", { class: "btn", type: "button", id: `prov-probe-${name}`, title: "models.auth.probe" }, ["Probe"]) as HTMLButtonElement;
+    const probe = el("button", { class: "btn", type: "button", id: `prov-probe-${name}`, title: "models.auth.probe", "aria-label": `Probe ${name}` }, ["Probe"]) as HTMLButtonElement;
     probe.onclick = async () => {
       probe.disabled = true;
       try {
@@ -2062,7 +2064,7 @@ export class Settings {
       }
     };
 
-    const signin = el("button", { class: "btn pri", type: "button", id: `prov-signin-${name}`, title: "OAuth device code" }, ["Sign in"]) as HTMLButtonElement;
+    const signin = el("button", { class: "btn pri", type: "button", id: `prov-signin-${name}`, title: "OAuth device code", "aria-label": `Sign in to ${name}` }, ["Sign in"]) as HTMLButtonElement;
     signin.onclick = () => void this.#deviceCodeFlow(name);
     return [signin, probe, test];
   }
@@ -2075,6 +2077,12 @@ export class Settings {
       start = await gateway.request("models.auth.beginDeviceCode", { provider: name });
     } catch (err) {
       toast((err as Error).message, "err");
+      return;
+    }
+    // A provider without a device flow answers ok:false rather than failing the
+    // request — opening the code dialog anyway showed "—" for 90 poll intervals.
+    if (start?.ok === false || start?.error) {
+      toast(String(start.error ?? `device login is not available for ${name}`), "err");
       return;
     }
     const flow = String(start.flow ?? "");
@@ -2124,18 +2132,20 @@ export class Settings {
     statusEl.textContent = "Timed out waiting for the sign-in — try again.";
   }
 
-  #renderProviders(providers: Record<string, Provider>): void {
+  #renderProviders(providers: Record<string, Provider>, config: any, auth: any[] = []): void {
     this.#root.append(el("div", { class: "card setcard" }, [
       el("div", { class: "setcard__head" }, [
         el("h3", {}, ["Providers"]),
         el("p", { class: "hint" }, ["Base URLs and credentials for each endpoint. Test and probe a provider before relying on it."]),
       ]),
     ]));
-    for (const [name, p] of Object.entries(providers)) {
-      const edit = el("button", { class: "btn", type: "button" }, ["Edit"]);
+    // Sorted like every other list in Settings: this is the page where you come
+    // looking for one provider by name, and insertion order gives no hints.
+    for (const [name, p] of Object.entries(providers).sort(([a], [b]) => a.localeCompare(b))) {
+      const edit = el("button", { class: "btn", type: "button", "aria-label": `Edit ${name}` }, ["Edit"]);
       edit.onclick = () => this.#providerForm(name, providers, () => void this.render());
-      const remove = el("button", { class: "btn danger", type: "button" }, ["Remove"]);
-      remove.onclick = () => this.#removeProvider(name, providers, () => void this.render());
+      const remove = el("button", { class: "btn danger", type: "button", "aria-label": `Remove ${name}` }, ["Remove"]);
+      remove.onclick = () => this.#removeProvider(name, providers, config, auth, () => void this.render());
 
       this.#root.append(el("div", { class: "card" }, [
         el("div", { class: "prov" }, [
@@ -4661,7 +4671,14 @@ export class Settings {
             models,
           })) as any;
           if (name && name !== providerName) {
-            await gateway.request("providers.remove", { name });
+            // The refs already follow the new name (the gateway remaps them);
+            // this only drops the old record. If it survives, say so instead of
+            // leaving two providers behind silently.
+            try {
+              await gateway.request("providers.remove", { name });
+            } catch (err) {
+              toast(`renamed, but ${name} could not be removed: ${(err as Error).message}`, "err");
+            }
           }
           toast(String(res.message ?? (name ? `${providerName} updated` : `${providerName} added`)).split("\n")[0] ?? "saved", "ok");
           done();
@@ -4673,16 +4690,42 @@ export class Settings {
     });
   }
 
-  #removeProvider(name: string, providers: Record<string, Provider>, done: () => void): void {
+  /** Remove one provider. The dialog counts what actually goes — including the
+   *  saved models and credentials that only exist because of it — because a
+   *  delete that leaves dead models in the picker is worse than no delete. */
+  #removeProvider(name: string, providers: Record<string, Provider>, config: any, auth: any[], done: () => void): void {
+    const advertised = (providers[name]?.models ?? []).length;
+    const saved = Object.entries((config?.models ?? {}) as Record<string, any>)
+      .filter(([, m]) => String(m?.ref ?? "").startsWith(`${name}/`)).length;
+    const creds = (auth ?? []).filter((p) => String(p?.provider ?? "") === name).length;
+    const def = String(config?.agents?.defaults?.model ?? "");
+    const isDefault = def.startsWith(`${name}/`);
+
+    const lines = [`This removes ${name} and its ${advertised} models.`];
+    if (saved) lines.push(`${saved} saved model${saved === 1 ? "" : "s"} in the system will be removed with it.`);
+    if (creds) lines.push(`${creds} stored credential${creds === 1 ? "" : "s"} for it will be deleted.`);
+    lines.push(
+      isDefault
+        ? `Your default model is ${def} — pick another one after this, or the agent has nothing to run.`
+        : "Sessions that were using one of them will need another model.",
+    );
+
     modal({
       title: "Remove provider?",
-      body: `This removes ${name} and its ${(providers[name]?.models ?? []).length} models. Sessions using them fall back to the default model.`,
+      body: lines.join(" "),
       confirmLabel: "Remove",
       danger: true,
       onConfirm: async () => {
         try {
-          const res = (await gateway.request("providers.remove", { name })) as any;
-          toast(String(res.message ?? `${name} removed`).split("\n")[0] ?? "removed", "ok");
+          // purgeAuth: this is the user saying "remove it", not a rename
+          // dropping the superseded record — the stored keys go with it.
+          const res = (await gateway.request("providers.remove", { name, purgeAuth: true })) as any;
+          // The gateway's message is a report: first line what happened, then any
+          // warning (a default model left pointing at nothing). Splitting at the
+          // first newline used to throw the warning away.
+          const [head, ...rest] = String(res.message ?? `${name} removed`).split("\n").filter(Boolean);
+          toast(head ?? `${name} removed`, "ok");
+          for (const line of rest) toast(line.trim(), "err");
           done();
           this.#onChanged();
         } catch (err) {

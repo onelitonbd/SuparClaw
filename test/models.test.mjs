@@ -236,6 +236,32 @@ test("gateway model pipeline: UI provider parity, strictness, loading, fetch war
   f = await ws.request("models.list");
   assert.ok(!(f.payload.models ?? []).some((m) => m.startsWith("uiprov/")), "removed provider leaves the picker");
 
+  // ── 5b. Remove is a delete, not a hide: the provider's stored credentials go
+  //        too (they live in the state DB, so config alone would not touch
+  //        them — and re-adding the provider used to resurrect them silently).
+  f = await ws.request("models.auth.addKey", { provider: "openrouter", key: "sk-test-1234", method: "api-key" });
+  assert.equal(f.ok, true, `models.auth.addKey: ${JSON.stringify(f)}`);
+  const boundKey = String(f.payload.profile ?? "");
+  f = await ws.request("models.auth.list", { provider: "openrouter" });
+  assert.ok((f.payload.profiles ?? []).some((x) => x.id === boundKey), "the credential is stored");
+
+  f = await ws.request("providers.remove", { name: "openrouter", purgeAuth: true });
+  assert.equal(f.ok, true, `providers.remove purgeAuth: ${JSON.stringify(f)}`);
+  assert.match(String(f.payload.message ?? ""), /credential/, "the delete reports what it removed");
+  f = await ws.request("models.auth.list", { provider: "openrouter" });
+  assert.deepEqual(f.payload.profiles ?? [], [], "the credential does not outlive the provider");
+
+  // ── 5c. A rename drops the old record through the same call, so it must NOT
+  //        take the credentials with it.
+  f = await ws.request("models.auth.addKey", { provider: "openrouter", key: "sk-test-1234", method: "api-key" });
+  const renameKey = String(f.payload.profile ?? "");
+  f = await ws.request("providers.add", { name: "or2", previousName: "openrouter", baseUrl: base, apiKey: "" });
+  assert.equal(f.ok, true, `rename via providers.add: ${JSON.stringify(f)}`);
+  f = await ws.request("providers.remove", { name: "openrouter" });
+  assert.equal(f.ok, true);
+  f = await ws.request("models.auth.list", { provider: "openrouter" });
+  assert.ok((f.payload.profiles ?? []).some((x) => x.id === renameKey), "a rename keeps the stored credential");
+
   // ── 6. failed refresh keeps saved rows and reports a warning
   state.failModels = true;
   f = await ws.request("models.list", { refresh: true });

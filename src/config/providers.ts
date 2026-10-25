@@ -263,11 +263,12 @@ export interface AddResult {
   message: string;
 }
 
-/** Write a provider. When no models are given, discover them from the endpoint. */
+/** Write a provider. When no models are given, discover them from the endpoint.
+ *  `renameFrom` moves everything that pointed at the old name to the new one. */
 export async function addProvider(
   cfg: ConfigService,
   name: string,
-  opts: { baseUrl?: string; apiKey?: string; models?: string[] } = {},
+  opts: { baseUrl?: string; apiKey?: string; models?: string[]; renameFrom?: string } = {},
 ): Promise<AddResult> {
   const clean = name.trim().toLowerCase();
   if (!clean) return { ok: false, message: "provider name is required" };
@@ -305,7 +306,65 @@ export async function addProvider(
   else if (discoverError) parts.push(`no models found (${discoverError}) — add some with: --models <a,b,c>`);
   else parts.push("no models found — add some with: --models <a,b,c>");
   parts.push(`default: /model ${clean}/${models[0] ?? "<model>"}`);
+  if (opts.renameFrom) {
+    const moved = remapProviderRefs(cfg, opts.renameFrom, clean);
+    const what = [
+      moved.models ? `${moved.models} saved model${moved.models === 1 ? "" : "s"}` : "",
+      moved.fallbacks ? `${moved.fallbacks} fallback${moved.fallbacks === 1 ? "" : "s"}` : "",
+      moved.defaultModel ? "the default model" : "",
+    ].filter(Boolean);
+    parts.push(`renamed from "${opts.renameFrom.trim().toLowerCase()}"${what.length ? ` — moved ${what.join(", ")}` : ""}`);
+  }
   return { ok: true, message: parts.join("\n") };
+}
+
+/** Rewrite every reference to a provider whose name just changed: the curated
+ *  model profiles, the default model, the fallbacks and the auth order. A rename
+ *  is only worth anything if what pointed at the old name follows — otherwise it
+ *  strands every saved model on a provider that is about to be removed. */
+export function remapProviderRefs(
+  cfg: ConfigService,
+  from: string,
+  to: string,
+): { models: number; defaultModel: boolean; fallbacks: number } {
+  const src = from.trim().toLowerCase();
+  const dst = to.trim().toLowerCase();
+  const moved = { models: 0, defaultModel: false, fallbacks: 0 };
+  if (!src || !dst || src === dst) return moved;
+  // Only an explicit "<provider>/…" ref is unambiguously ours; a bare model id
+  // may belong to any provider and is left alone.
+  const swap = (ref: unknown): string | null =>
+    typeof ref === "string" && ref.startsWith(`${src}/`) ? `${dst}/${ref.slice(src.length + 1)}` : null;
+
+  const profiles = { ...(cfg.current.models ?? {}) } as Record<string, Record<string, unknown>>;
+  for (const [id, entry] of Object.entries(profiles)) {
+    const ref = swap(entry?.["ref"]);
+    if (ref) {
+      profiles[id] = { ...entry, ref };
+      moved.models++;
+    }
+  }
+  if (moved.models) cfg.setPath("models", profiles);
+
+  const def = swap(cfg.current.agents?.defaults?.model);
+  if (def) {
+    cfg.setPath("agents.defaults.model", def);
+    moved.defaultModel = true;
+  }
+
+  const fallbacks = Array.isArray(cfg.current.agents?.defaults?.fallbacks) ? [...cfg.current.agents.defaults.fallbacks] : [];
+  const mapped = fallbacks.map((f) => swap(f) ?? f);
+  moved.fallbacks = fallbacks.filter((f, i) => mapped[i] !== f).length;
+  if (moved.fallbacks) cfg.setPath("agents.defaults.fallbacks", mapped);
+
+  const order = (cfg.current.auth?.order ?? {}) as Record<string, string[]>;
+  if (order[src]) {
+    const next: Record<string, string[]> = { ...order };
+    next[dst] = [...(next[dst] ?? []), ...(next[src] as string[])];
+    delete next[src];
+    cfg.setPath("auth.order", next);
+  }
+  return moved;
 }
 
 export function removeProvider(cfg: ConfigService, name: string): AddResult {
@@ -317,9 +376,44 @@ export function removeProvider(cfg: ConfigService, name: string): AddResult {
   delete providers[clean];
   const saved = cfg.setPath("providers", providers);
   if (!saved.ok) return { ok: false, message: saved.errors.join("; ") };
+
+  // A curated model profile cannot outlive its provider: the picker would keep
+  // offering a model with no endpoint and /model would still accept it, failing
+  // later, far from the button that caused it. Same for a fallback entry.
+  const profiles = { ...(cfg.current.models ?? {}) } as Record<string, Record<string, unknown>>;
+  let droppedProfiles = 0;
+  for (const [id, entry] of Object.entries(profiles)) {
+    const ref = entry?.["ref"];
+    if (typeof ref === "string" && ref.startsWith(`${clean}/`)) {
+      delete profiles[id];
+      droppedProfiles++;
+    }
+  }
+  if (droppedProfiles) cfg.setPath("models", profiles);
+
+  const fallbacks = Array.isArray(cfg.current.agents?.defaults?.fallbacks) ? cfg.current.agents.defaults.fallbacks : [];
+  const kept = fallbacks.filter((f) => !(typeof f === "string" && f.startsWith(`${clean}/`)));
+  const droppedFallbacks = fallbacks.length - kept.length;
+  if (droppedFallbacks) cfg.setPath("agents.defaults.fallbacks", kept);
+
+  // The auth order is config too, and it is keyed by provider name.
+  const order = (cfg.current.auth?.order ?? {}) as Record<string, string[]>;
+  if (order[clean]) {
+    const next: Record<string, string[]> = { ...order };
+    delete next[clean];
+    cfg.setPath("auth.order", next);
+  }
+
   const stillDefault = cfg.current.agents?.defaults?.model ?? "";
   const note = stillDefault.startsWith(`${clean}/`) ? `\nwarning: default model "${stillDefault}" now points at a removed provider` : "";
-  return { ok: true, message: `removed "${clean}"${note}` };
+  const extra = [
+    droppedProfiles ? `${droppedProfiles} saved model${droppedProfiles === 1 ? "" : "s"}` : "",
+    droppedFallbacks ? `${droppedFallbacks} fallback${droppedFallbacks === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  return {
+    ok: true,
+    message: `removed "${clean}"${extra.length ? ` — and ${extra.join(" and ")}` : ""}${note}`,
+  };
 }
 
 /**
