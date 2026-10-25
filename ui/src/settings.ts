@@ -1,7 +1,7 @@
 // Settings: Defaults, Models, Providers, Skills, Tools, Gateway, Runtime —
 // tabbed, one card per block.
 
-import { el, fuzzy, modal, toast } from "./dom.js";
+import { el, fuzzy, icon, modal, toast } from "./dom.js";
 import { friendlyModelName } from "./model-name.js";
 import { gateway } from "./rpc.js";
 import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./notifications.js";
@@ -47,6 +47,90 @@ const TAB_ALIASES: Record<string, TabId> = {
   system: "system",
 };
 
+/** One line icon per section. Built as trusted markup and inserted through
+ *  icon() — never as an el() string child, where it would show up as text. */
+const glyph = (body: string): string =>
+  `<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+
+/**
+ * Section chrome: the rail icon, the one-line answer to "what is this page for",
+ * and the words someone actually types when looking for it. Kept apart from TABS
+ * so the tab list stays the single source of ids, labels and groups (contracts
+ * other tests and the hash router read).
+ */
+const TAB_META: Record<TabId, { icon: string; desc: string; keywords: string }> = {
+  model: {
+    icon: glyph('<path d="M12 3.5l2.1 5.4 5.4 2.1-5.4 2.1L12 18.5l-2.1-5.4L4.5 11l5.4-2.1z"/>'),
+    desc: "The model every new chat starts on, and what takes over when it fails.",
+    keywords: "default fallback chat reasoning effort",
+  },
+  models: {
+    icon: glyph('<path d="M12 3.5l8 4.2-8 4.2-8-4.2z"/><path d="M4 12.4l8 4.2 8-4.2"/><path d="M4 16.6l8 4.2 8-4.2"/>'),
+    desc: "Only the models you switch on here show up in the app.",
+    keywords: "enable disable catalog check context window",
+  },
+  providers: {
+    icon: glyph('<circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13l8.5-8.5"/><path d="M16.5 7.5l2.5 2.5"/><path d="M14.5 9.5L17 12"/>'),
+    desc: "The endpoint and key behind every model.",
+    keywords: "api key base url endpoint credential auth",
+  },
+  channels: {
+    icon: glyph('<path d="M4.5 5.5h15v10h-9l-6 4.5z"/>'),
+    desc: "Where the agent can reach you, starting with Telegram.",
+    keywords: "telegram bot token chat pairing typing",
+  },
+  usage: {
+    icon: glyph('<path d="M5 20V11"/><path d="M12 20V5"/><path d="M19 20v-6"/>'),
+    desc: "Tokens, runs and cost for the period you pick.",
+    keywords: "cost spend tokens report export daily",
+  },
+  skills: {
+    icon: glyph('<path d="M5 5.5A2.5 2.5 0 0 1 7.5 3H19v15H7.5A2.5 2.5 0 0 0 5 20.5z"/><path d="M9 7.5h6"/>'),
+    desc: "Instruction packs the agent loads when a task calls for them.",
+    keywords: "skill markdown pack install workspace",
+  },
+  tools: {
+    icon: glyph('<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M8 10l2.5 2.5L8 15"/><path d="M13 15h4"/>'),
+    desc: "What the agent may run on this device, and what needs your approval.",
+    keywords: "exec shell approval sandbox code mode media web search policy",
+  },
+  memory: {
+    icon: glyph('<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="M7.5 9.5h9"/><path d="M7.5 13.5h5"/>'),
+    desc: "What the agent remembers, and where those notes live.",
+    keywords: "dream diary memory notes curated sweep",
+  },
+  automations: {
+    icon: glyph('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+    desc: "Cron jobs, hooks and email triggers that run without you.",
+    keywords: "cron schedule hook imap queue webhook",
+  },
+  alerts: {
+    icon: glyph('<path d="M6.5 9.5a5.5 5.5 0 0 1 11 0c0 4.5 2 5.5 2 5.5h-15s2-1 2-5.5z"/><path d="M10 18.5a2 2 0 0 0 4 0"/>'),
+    desc: "Which events buzz your phone, and how to test them.",
+    keywords: "notifications push quiet hours browser permission",
+  },
+  gateway: {
+    icon: glyph('<rect x="3.5" y="5" width="17" height="6" rx="2"/><rect x="3.5" y="13" width="17" height="6" rx="2"/><path d="M7 8h.01M7 16h.01"/>'),
+    desc: "The port, bind and auth the daemon listens on.",
+    keywords: "port bind token host origin control ui http endpoint restart",
+  },
+  runtime: {
+    icon: glyph('<path d="M3 12h4l2.5-6.5 4 13L16.5 12H21"/>'),
+    desc: "Live state of the running daemon.",
+    keywords: "service uptime process restart version daemon",
+  },
+  config: {
+    icon: glyph('<path d="M9.5 4H8a2 2 0 0 0-2 2v3.5L4.5 12 6 14.5V18a2 2 0 0 0 2 2h1.5"/><path d="M14.5 4H16a2 2 0 0 1 2 2v3.5L19.5 12 18 14.5V18a2 2 0 0 1-2 2h-1.5"/>'),
+    desc: "Every setting in the config file, leaf by leaf.",
+    keywords: "raw json5 schema editor advanced all settings",
+  },
+  system: {
+    icon: glyph('<rect x="3.5" y="4.5" width="17" height="11" rx="2"/><path d="M9 20h6"/><path d="M12 15.5V20"/>'),
+    desc: "Diagnostics, updates and backups.",
+    keywords: "doctor security audit update backup secrets restore",
+  },
+};
+
 /** One choice in a custom dropdown: `value` is what gets stored, `label` is
  *  what a human reads, `title` keeps the raw ref on hover, `group` puts a
  *  header over its rows (provider sections in a model menu). */
@@ -67,6 +151,11 @@ export class Settings {
   #menu: HTMLElement | null = null;
   #scrim: HTMLElement | null = null;
   #title: HTMLElement | null = null;
+  #desc: HTMLElement | null = null;
+  #readout: HTMLElement | null = null;
+  #clear: HTMLButtonElement | null = null;
+  #drawerClose: HTMLButtonElement | null = null;
+  #main: HTMLElement | null = null;
   #onChanged: () => void;
   #tab: TabId = "model";
   #hash: string = "";
@@ -85,6 +174,13 @@ export class Settings {
     this.#menu = document.getElementById("settings-menu");
     this.#scrim = document.getElementById("settings-scrim");
     this.#title = document.getElementById("settings-title");
+    this.#desc = document.getElementById("settings-desc");
+    this.#readout = document.getElementById("settings-readout");
+    this.#clear = document.getElementById("settings-search-clear") as HTMLButtonElement | null;
+    this.#drawerClose = document.getElementById("settings-drawer-close") as HTMLButtonElement | null;
+    // The pane that scrolls is above the render root; absent in the small DOM
+    // some render tests build, so every use is guarded.
+    this.#main = this.#root.closest(".settings__main") as HTMLElement | null;
     this.#onChanged = onChanged;
     // main.ts builds a fresh Settings per route change: always rebind so the
     // handlers belong to the live instance (the elements are static).
@@ -98,6 +194,19 @@ export class Settings {
           this.#renderNav();
         }
       };
+    }
+    // The field clears from the keyboard (Escape above) and from the button
+    // phones can see; both leave the open section alone.
+    if (this.#clear) {
+      this.#clear.onclick = () => {
+        if (!this.#search) return;
+        this.#search.value = "";
+        this.#renderNav();
+        this.#search.focus();
+      };
+    }
+    if (this.#drawerClose) {
+      this.#drawerClose.onclick = () => this.#setDrawer(false);
     }
     if (this.#menu) {
       this.#menu.onclick = () => this.#setDrawer(!this.#sidebar?.classList.contains("is-open"));
@@ -128,9 +237,16 @@ export class Settings {
   }
 
   async render(): Promise<void> {
-    // The content pane title follows the open section (Back button + title).
+    // The page head and the readout follow the open section; both are painted
+    // before any data lands so the chrome never looks half-built.
     if (this.#title) this.#title.textContent = TABS.find((t) => t.id === this.#tab)?.label ?? "Settings";
+    if (this.#desc) {
+      const desc = TAB_META[this.#tab]?.desc ?? "";
+      this.#desc.textContent = desc;
+      this.#desc.hidden = !desc;
+    }
     this.#renderNav();
+    this.#renderReadout(null, "", gateway.state);
 
     // The gateway answers over the WebSocket. If it is not connected yet
     // (page just loaded, or reconnecting) every request would reject with
@@ -138,17 +254,15 @@ export class Settings {
     // main.ts call render() again once the socket is up.
     if (gateway.state !== "online") {
       this.#root.innerHTML = "";
-      this.#root.append(el("div", { class: "card" }, [
-        el("div", { class: "row" }, [
-          el("span", { class: "row__label" }, ["Gateway"]),
-          el("span", { class: "row__value", style: "color:var(--warn)" }, [
-            gateway.state === "unauthorized" ? "unauthorized" : "connecting…",
-          ]),
+      this.#root.append(el("div", { class: "settings__waiting", role: "status" }, [
+        el("span", { class: "settings__waiting-dot", "aria-hidden": "true" }),
+        el("h2", {}, [
+          gateway.state === "unauthorized" ? "The gateway rejected this connection" : "Waiting for the gateway",
         ]),
-        el("p", { class: "hint" }, [
+        el("p", {}, [
           gateway.state === "unauthorized"
-            ? "The gateway rejected the connection. Reconnect and this page will reload."
-            : "Waiting for the gateway to answer. This page fills in as soon as it does.",
+            ? "Reconnect and this page fills in as soon as the new session is live."
+            : "Connecting to the daemon now. This page fills in as soon as it answers.",
         ]),
       ]));
       return;
@@ -184,6 +298,9 @@ export class Settings {
     const defaults = config.agents?.defaults ?? {};
     const gw = config.gateway ?? {};
 
+    // Now the readout can say which model and which file, not just "online".
+    this.#renderReadout(config, configPath, gateway.state);
+
     this.#root.innerHTML = "";
     if (this.#tab === "model") {
       // Defaults tab offers the SELECTED models only — the strict filter.
@@ -214,6 +331,10 @@ export class Settings {
     this.#tab = id;
     this.#modelsProvider = null;
     this.#setDrawer(false);
+    // A section change starts at the top of the page (guarded: the render tests
+    // mount #settings-body without the scrolling pane around it).
+    const main = this.#main;
+    if (main && typeof main.scrollTo === "function") main.scrollTo({ top: 0 });
     try {
       const map: Record<string, string> = {
         model: "defaults",
@@ -237,27 +358,95 @@ export class Settings {
   }
 
   #renderNav(): void {
+    const raw = this.#search?.value ?? "";
+    const q = raw.trim().toLowerCase();
+    // One owner for the clear button: whatever changed the query, this runs.
+    if (this.#clear) this.#clear.hidden = !raw;
     if (!this.#nav) return;
-    const q = (this.#search?.value || "").toLowerCase().trim();
     this.#nav.innerHTML = "";
+
+    const matches = (t: (typeof TABS)[number]): boolean => {
+      if (!q) return true;
+      const meta = TAB_META[t.id];
+      return [t.label, t.group ?? "", meta.desc, meta.keywords].join(" ").toLowerCase().includes(q);
+    };
+
     const groups = new Map<string, typeof TABS>();
     for (const t of TABS) {
+      if (!matches(t)) continue;
       const g = t.group || "Other";
-      if (q && !t.label.toLowerCase().includes(q) && !g.toLowerCase().includes(q)) continue;
       if (!groups.has(g)) groups.set(g, []);
-      groups.get(g)!.push(t);
+      (groups.get(g) as (typeof TABS)).push(t);
     }
+
+    if (!groups.size) {
+      this.#nav.append(
+        el("p", { class: "settings__nav-empty" }, [`Nothing matches “${raw.trim()}”.`]),
+        el("p", { class: "settings__nav-empty-hint" }, ["Try a section name like Models, Gateway or Cron."]),
+      );
+      return;
+    }
+
     for (const [g, items] of groups) {
-      const grp = el("div", { class: "settings__group" }, [el("div", { class: "settings__group-label" }, [g])]);
+      const grp = el("div", { class: "settings__group" }, [
+        el("div", { class: "settings__group-label" }, [g]),
+      ]);
       for (const t of items) {
+        const active = t.id === this.#tab;
         const btn = el("button", {
-          class: `settings__nav-item${t.id === this.#tab ? " is-active" : ""}`,
+          class: `settings__nav-item${active ? " is-active" : ""}`,
           type: "button",
-        }, [t.label]);
+          ...(active ? { "aria-current": "page" } : {}),
+        }, [
+          icon(TAB_META[t.id].icon, "settings__nav-icon"),
+          el("span", { class: "settings__nav-label" }, [t.label]),
+        ]);
         btn.onclick = () => this.#setTab(t.id);
         grp.append(btn);
       }
       this.#nav.append(grp);
+    }
+  }
+
+  /**
+   * The bar's live readout: is the daemon up, which model a new chat starts on,
+   * and which file these edits land in. Three facts, rebuilt on every render —
+   * it is the one loud element on the surface, so it has to earn the attention.
+   */
+  #renderReadout(config: any, configPath: string, state: string): void {
+    const host = this.#readout;
+    if (!host) return;
+    host.innerHTML = "";
+
+    const label =
+      state === "online" ? "online" : state === "unauthorized" ? "unauthorized" : state === "offline" ? "offline" : "connecting";
+    const tone = state === "online" ? "is-ok" : state === "offline" ? "is-err" : "is-warn";
+    host.append(
+      el("span", { class: "settings__fact" }, [
+        el("span", { class: `settings__dot ${tone}`, "aria-hidden": "true" }),
+        el("span", { class: "settings__fact-v" }, [label]),
+      ]),
+    );
+
+    const model = String(config?.agents?.defaults?.model ?? "").trim();
+    if (model) {
+      const provider = model.split("/")[0] ?? "";
+      host.append(
+        el("span", { class: "settings__fact settings__fact--model", title: model }, [
+          el("span", { class: "settings__fact-k" }, ["Model"]),
+          el("span", { class: "settings__fact-v mono" }, [friendlyModelName(model, provider)]),
+        ]),
+      );
+    }
+
+    const file = configPath ? configPath.split(/[\\/]/).pop() ?? configPath : "";
+    if (file) {
+      host.append(
+        el("span", { class: "settings__fact settings__fact--config", title: configPath }, [
+          el("span", { class: "settings__fact-k" }, ["Config"]),
+          el("span", { class: "settings__fact-v mono" }, [file]),
+        ]),
+      );
     }
   }
 
@@ -735,7 +924,7 @@ export class Settings {
         e.stopPropagation();
         this.#connectProvider(name, plugins.find((p: any) => p.id === name) ?? null, binding);
       };
-      const card = el("div", { class: "card" }, [
+      const card = el("div", { class: "card prov-card" }, [
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name" }, [name]),
@@ -752,8 +941,8 @@ export class Settings {
                   : "none — connect below",
             ]),
           ]),
-          ...(chips.length ? [el("div", { class: "prov__row", style: "display:flex;gap:6px;flex-wrap:wrap" }, chips)] : []),
-          el("div", { class: "prov__row", style: "display:flex;gap:6px" }, [open, connect]),
+          ...(chips.length ? [el("div", { class: "prov__row" }, chips)] : []),
+          el("div", { class: "prov__row" }, [open, connect]),
         ]),
       ]);
       const go = () => {
@@ -761,7 +950,7 @@ export class Settings {
         void this.render();
       };
       open.onclick = go;
-      (card as HTMLElement).style.cursor = "pointer";
+      card.classList.add("prov-card");
       (card as HTMLElement).onclick = go;
       this.#root.append(card);
     }
@@ -769,8 +958,8 @@ export class Settings {
     // Local services card (their implicit local discovery): lazy scan so the
     // tab never waits on a dead 11434 — results fill in when they arrive.
     const localCard = el("div", { class: "card" }, [
-      el("div", { class: "row__label" }, ["Local services"]),
-      el("p", { class: "hint" }, ["scanning this device for Ollama / LM Studio / vLLM / SGLang / llama.cpp…"]),
+      el("h3", {}, ["Local services"]),
+      el("p", { class: "hint" }, ["Scanning this device for Ollama, LM Studio, vLLM, SGLang and llama.cpp…"]),
     ]);
     this.#root.append(localCard);
     void this.#fillLocalServices(localCard, names);
@@ -781,9 +970,11 @@ export class Settings {
       const rows = fresh.slice(0, 12).map((p: any) => {
         const b = el("button", { class: "btn sm", type: "button" }, ["Connect"]);
         b.onclick = () => this.#connectProvider(p.id, p, "");
-        return el("div", { class: "row" }, [
-          el("span", { class: "row__label" }, [p.id]),
-          el("span", { class: "row__value" }, [p.label]),
+        return el("div", { class: "ledger__row" }, [
+          el("div", { class: "ledger__main" }, [
+            el("div", { class: "ledger__pattern" }, [p.id]),
+            el("div", { class: "ledger__meta" }, [p.label]),
+          ]),
           b,
         ]);
       });
@@ -808,7 +999,7 @@ export class Settings {
     }
     if (!scan?.services || !this.#root.contains(card)) return;
     card.innerHTML = "";
-    card.append(el("div", { class: "row__label" }, ["Local services"]));
+    card.append(el("h3", {}, ["Local services"]));
     const running = scan.services.filter((s: any) => s.running);
     if (running.length === 0 && scan.services.every((s: any) => !s.running)) {
       card.append(el("p", { class: "hint" }, ["no local services running — install Ollama or LM Studio and they'll appear here."]));
@@ -832,17 +1023,19 @@ export class Settings {
           add.disabled = false;
         }
       };
-      card.append(el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, [svc.id]),
-        el("span", { class: "row__value" }, [
-          svc.running
-            ? `running · ${svc.models.length} model(s) · ${svc.api === "ollama" ? "native api" : "openai-compat"}${isConfigured ? " · configured" : ""}`
-            : (svc.error ?? "not running"),
+      card.append(el("div", { class: "ledger__row" }, [
+        el("div", { class: "ledger__main" }, [
+          el("div", { class: "ledger__pattern" }, [svc.id]),
+          el("div", { class: "ledger__meta" }, [
+            svc.running
+              ? `running · ${svc.models.length} model(s) · ${svc.api === "ollama" ? "native api" : "openai-compat"}${isConfigured ? " · configured" : ""}`
+              : (svc.error ?? "not running"),
+          ]),
         ]),
         add,
       ]));
       if (svc.running && svc.models.length) {
-        card.append(el("div", { class: "hint", style: "padding:0 4px 4px" }, [
+        card.append(el("div", { class: "hint" }, [
           svc.models
             .slice(0, 6)
             .map((m: string) => `${m}${svc.hints?.[m]?.contextWindow ? ` (ctx ${Math.round(svc.hints[m].contextWindow / 1000)}k)` : ""}`)
@@ -859,9 +1052,8 @@ export class Settings {
     const chip = el(
       "span",
       {
-        class: "prov__count",
+        class: `chip${p.ok ? "" : " is-err"}`,
         title: `${p.label || p.id}${p.reason ? ` — ${p.reason}` : ""} · fails ${p.failCount}`,
-        style: `cursor:pointer;border:1px solid var(--line);border-radius:999px;padding:2px 8px;${p.ok ? "" : "color:var(--err)"}`,
       },
       [`${state} ${p.id}${p.expires ? ` (${p.expiresIn})` : ""}`],
     );
@@ -941,7 +1133,7 @@ export class Settings {
               const link = el("a", { href: verificationUri, target: "_blank", rel: "noopener" }, [verificationUri]);
               deviceBox.append(
                 el("p", {}, ["1. open ", link]),
-                el("p", { class: "mono", style: "font-size:18px;letter-spacing:2px" }, [String(userCode)]),
+                el("p", { class: "code-display" }, [String(userCode)]),
                 el("p", { class: "hint" }, ["2. enter the code — this window polls until approved or expired."]),
               );
               flowPoll = window.setInterval(async () => {
@@ -1072,7 +1264,7 @@ export class Settings {
           "Checked models are in the system. Click a model to tune its capabilities.",
         ]),
         warning
-          ? el("p", { class: "hint", style: "color:var(--warn)" }, [warning])
+          ? el("p", { class: "hint is-warn" }, [warning])
           : el("span", {}),
       ]));
 
@@ -1090,8 +1282,8 @@ export class Settings {
       const q = this.#modelQuery.trim().toLowerCase();
       const shown = rows.filter((ref) => !q || ref.toLowerCase().includes(q));
       if (shown.length === 0) {
-        list.append(el("div", { class: "row" }, [
-          el("span", { class: "hint" }, [`No models match "${this.#modelQuery.trim()}"`]),
+        list.append(el("p", { class: "hint" }, [
+          `No models match “${this.#modelQuery.trim()}”`,
         ]));
         return;
       }
@@ -1135,16 +1327,15 @@ export class Settings {
         const openTune = () => this.#modelTune(ref, entry, hintCtx, () => void this.render());
         tune.onclick = openTune;
 
-        const name = el("span", { class: "mono", style: "flex:1;cursor:pointer;font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, [
-          tail,
-        ]) as HTMLElement;
-        name.title = ref;
+        // The name opens the tuner, so it is a button — a span with a click
+        // handler would be invisible to the keyboard.
+        const name = el("button", { class: "pickrow__name mono", type: "button", title: ref }, [tail]);
         name.onclick = openTune;
 
-        list.append(el("div", { class: "row", style: "padding:10px 16px" }, [
+        list.append(el("div", { class: "pickrow" }, [
           check,
           name,
-          ctx ? el("span", { class: "row__label", style: "white-space:nowrap" }, [`${Math.round(ctx / 1000)}k`]) : el("span", {}),
+          ctx ? el("span", { class: "pickrow__meta" }, [`${Math.round(ctx / 1000)}k ctx`]) : el("span", {}),
           tune,
         ]));
       }
@@ -1157,13 +1348,11 @@ export class Settings {
     };
 
     this.#root.append(
-      el("div", { class: "card", style: "padding:12px 16px" }, [
-        el("div", { class: "modal__field", style: "margin:0" }, [
-          el("label", { class: "lbl", for: "model-search" }, [`${rows.length} fetched models`]),
-          search,
-        ]),
+      el("div", { class: "card" }, [
+        el("label", { class: "lbl", for: "model-search" }, [`Search ${rows.length} fetched models`]),
+        search,
       ]),
-      el("div", { class: "card", style: "padding:0;overflow:hidden" }, [list]),
+      el("div", { class: "card card--flush" }, [list]),
     );
   }
 
@@ -1205,7 +1394,7 @@ export class Settings {
           ]),
           existing
             ? (() => {
-                const rm = el("button", { class: "btn danger", type: "button", style: "margin-top:8px" }, ["Remove from system"]);
+                const rm = el("button", { class: "btn danger", type: "button" }, ["Remove from system"]);
                 rm.onclick = async () => {
                   try {
                     await gateway.request("models.remove", { id: existing.id });
@@ -1393,13 +1582,14 @@ export class Settings {
 
   #renderSkills(skills: any[]): void {
     const body = el("div", { class: "settings__stack" });
-
-    body.append(el("div", { class: "card" }, [
-      el("div", { class: "row__label" }, ["Skills"]),
+    // One panel for the whole catalog: these are peers of each other, not a
+    // stack of separate things to configure.
+    const card = el("div", { class: "card" }, [
+      el("h3", {}, ["Skills"]),
       el("p", { class: "hint" }, [
         "Instruction packs the agent can load (SKILL.md + frontmatter). The agent can also save new skills itself with the skill_save tool. Workspace entries shadow state and bundled ones of the same name.",
       ]),
-    ]));
+    ]);
 
     for (const s of skills as any[]) {
       const open = el("button", { class: "btn sm", type: "button" }, ["Open"]);
@@ -1411,7 +1601,7 @@ export class Settings {
               title: s.name,
               body: el("div", {}, [
                 el("p", { class: "hint" }, [s.description || "(no description)"]),
-                el("pre", { class: "mono", style: "white-space:pre-wrap;font-size:12px;max-height:50vh;overflow:auto" }, [String(res.body ?? "")]),
+                el("pre", { class: "codeblock" }, [String(res.body ?? "")]),
               ]),
               confirmLabel: "",
             });
@@ -1421,21 +1611,16 @@ export class Settings {
         })();
       };
 
-      const badgeStyle = s.eligible
-        ? "font-size:11px;font-weight:600;color:var(--accent);background:var(--accsoft);padding:2px 8px;border-radius:999px"
-        : "font-size:11px;font-weight:600;color:var(--warn);padding:2px 8px;border-radius:999px";
-      this.#root.append(el("div", { class: "card" }, [
-        el("div", { class: "prov" }, [
-          el("div", { class: "prov__head" }, [
-            el("span", { class: "prov__name mono" }, [s.name]),
-            el("span", { class: "prov__count" }, [s.root]),
-          ]),
-          el("div", { class: "prov__url" }, [s.description || "(no description)"]),
-          el("div", { class: "prov__row" }, [
-            el("span", { class: "sheet__check", style: badgeStyle }, [s.eligible ? "available" : `unavailable${s.reason ? " — " + s.reason : ""}`]),
-            open,
-          ]),
+      const badge = el("span", { class: `settings__tag${s.eligible ? " is-ok" : " is-warn"}` }, [
+        s.eligible ? "available" : `unavailable${s.reason ? ` — ${s.reason}` : ""}`,
+      ]);
+      card.append(el("div", { class: "prov" }, [
+        el("div", { class: "prov__head" }, [
+          el("span", { class: "prov__name mono" }, [s.name]),
+          el("span", { class: "prov__count" }, [s.root]),
         ]),
+        el("div", { class: "prov__url" }, [s.description || "(no description)"]),
+        el("div", { class: "prov__row" }, [badge, open]),
       ]));
     }
 
@@ -1443,8 +1628,10 @@ export class Settings {
     plus.innerHTML = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
     const add = el("button", { class: "btn pri", type: "button" }, [plus, "Add skill"]);
     add.onclick = () => this.#skillForm(() => void this.render());
+    card.append(el("div", { class: "setfoot" }, [add]));
 
-    this.#root.append(body, add);
+    body.append(card);
+    this.#root.append(body);
   }
 
   #skillForm(done: () => void): void {
@@ -1454,7 +1641,6 @@ export class Settings {
     const content = el("textarea", {
       class: "inp mono", id: "f-skill-body", rows: "12",
       placeholder: "The skill instructions in Markdown",
-      style: "min-height:200px;resize:vertical",
       spellcheck: "false",
     }) as HTMLTextAreaElement;
 
@@ -1568,7 +1754,7 @@ export class Settings {
     };
 
     return el("div", { class: "card exec-policy" }, [
-      el("h3", { style: "margin:0 0 8px" }, ["Exec policy"]),
+      el("h3", {}, ["Exec policy"]),
       enabledCb.node, approvalsCb.node,
       this.#cfgField("x-mode", "Policy mode", modeSel, "deny | allowlist | ask | full — blank follows the legacy approvals bool (their unset-is-a-state rule)"),
       this.#cfgField("x-askfb", "Ask fallback (no client connected)", askSel),
@@ -1576,7 +1762,7 @@ export class Settings {
       this.#cfgField("x-sandbox", "Sandbox", sandSel),
       prootCb.node,
       this.#cfgField("x-unattended", "Unattended sources (cron/webhook)", unatSel, "every unattended auto-decision is audited to the log + transcript"),
-      save,
+      el("div", { class: "setfoot" }, [save]),
     ]);
   }
 
@@ -1611,11 +1797,11 @@ export class Settings {
       );
     };
     return el("div", { class: "card" }, [
-      el("h3", { style: "margin:0 0 8px" }, ["Code mode"]),
+      el("h3", {}, ["Code mode"]),
       this.#cfgField("cm-enabled", "Enabled", enSel),
       this.#cfgField("cm-executor", "Executor", exSel),
       timeoutF.node, charsF.node, outF.node, pendF.node, directF.node,
-      save,
+      el("div", { class: "setfoot" }, [save]),
     ]);
   }
 
@@ -1681,14 +1867,14 @@ export class Settings {
     };
 
     return el("div", { class: "card" }, [
-      el("h3", { style: "margin:0 0 8px" }, ["Media understanding"]),
+      el("h3", {}, ["Media understanding"]),
       concF.node,
       imgCb.node, imgModel.node, imgChars.node, imgBytes.node, imgTimeout.node, imgAllCb.node,
       el("div", { class: "usage-h" }, ["Audio"]),
       audCb.node, audModel.node, audBytes.node, audTimeout.node, audLang.node, audEchoCb.node, audFmt.node,
       el("div", { class: "usage-h" }, ["PDF"]),
       pdfCb.node, pdfBytes.node, pdfChars.node, pdfTimeout.node,
-      save,
+      el("div", { class: "setfoot" }, [save]),
     ]);
   }
 
@@ -1698,8 +1884,8 @@ export class Settings {
       st = await gateway.request("web.search.get");
     } catch (err) {
       return el("div", { class: "card" }, [
-        el("div", { class: "row__label" }, ["Web search"]),
-        el("p", { class: "hint", style: "color:var(--warn)" }, [`search config unread: ${(err as Error).message}`]),
+        el("h3", {}, ["Web search"]),
+        el("p", { class: "hint" }, [`Search config unread — ${(err as Error).message}`]),
       ]);
     }
     const IDS = st.providers.map((p: any) => p.id as string);
@@ -1714,12 +1900,15 @@ export class Settings {
       } catch (err) { toast((err as Error).message, "err"); }
     };
 
-    const active = (on: boolean) => (on ? "border-color:var(--accent);color:var(--accent);" : "");
-    const pills = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:8px 0" },
+    const pills = el("div", { class: "seg", role: "group", "aria-label": "Search provider" },
       ["auto", ...IDS].map((id) => {
         const p = st.providers.find((x: any) => x.id === id);
         const ready = id === "auto" ? st.providers.some((x: any) => x.ready) : p?.ready;
-        const b = el("button", { class: "btn sm", type: "button", style: active(configured === id) + (ready ? "" : "opacity:.5") }, [id]) as HTMLButtonElement;
+        const b = el("button", {
+          class: `seg__btn${ready ? "" : " is-off"}`,
+          type: "button",
+          "aria-pressed": configured === id ? "true" : "false",
+        }, [id]) as HTMLButtonElement;
         b.title = id === "auto"
           ? "First ready provider by fixed order"
           : ready ? `${p.configBaseUrl || ""}` : "not ready — set its credentials below";
@@ -1747,7 +1936,7 @@ export class Settings {
           void this.render();
         } catch (err) { toast((err as Error).message, "err"); }
       };
-      credRows.push(el("div", { style: "display:flex;gap:8px;align-items:center;margin:6px 0" }, [inp, save]));
+      credRows.push(el("div", { class: "settings__inline" }, [inp, save]));
     } else if (sel && sel.keyFree) {
       const inp = el("input", { class: "inp mono", value: sel.configBaseUrl || "", placeholder: sel.id === "searxng" ? "https://searx.example.com" : "https://html.duckduckgo.com" }) as HTMLInputElement;
       const save = el("button", { class: "btn sm" }, ["Save URL"]) as HTMLButtonElement;
@@ -1758,10 +1947,10 @@ export class Settings {
           void this.render();
         } catch (err) { toast((err as Error).message, "err"); }
       };
-      credRows.push(el("div", { style: "display:flex;gap:8px;align-items:center;margin:6px 0" }, [inp, save]));
+      credRows.push(el("div", { class: "settings__inline" }, [inp, save]));
     }
 
-    const testOut = el("p", { class: "hint", style: "margin:4px 0 0" }, []);
+    const testOut = el("p", { class: "hint", "aria-live": "polite" }, []);
     const testBtn = el("button", { class: "btn sm" }, ["Test search"]) as HTMLButtonElement;
     testBtn.onclick = async () => {
       testBtn.disabled = true;
@@ -1777,21 +1966,26 @@ export class Settings {
       testBtn.disabled = false;
     };
 
-    return el("div", { class: "card", style: "padding:12px 16px" }, [
-      el("div", { class: "prov__head" }, [
-        el("span", { class: "row__label" }, ["Web search"]),
-        el("span", { class: "prov__count", style: st.enabled ? "" : "color:var(--err)" }, [
-          st.enabled ? `${configured} · cache ${st.cacheTtlMinutes}m` : "disabled",
+    return el("div", { class: "card web-search" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Web search"]),
+        el("p", { class: "hint" }, [
+          "Provider used by the web_search tool. Auto picks the first API-keyed provider found; key-free providers are only used when selected.",
         ]),
       ]),
-      el("label", { class: "lbl", style: "display:flex;align-items:center;gap:6px;margin:6px 0" }, [
-        enableBox, document.createTextNode("enable web_search tool"),
+      el("div", { class: "row" }, [
+        el("div", { class: "row__main" }, [
+          el("span", { class: "row__label" }, ["Enable the web_search tool"]),
+          el("span", { class: "hint" }, [st.enabled ? `${configured} · cache ${st.cacheTtlMinutes}m` : "currently disabled"]),
+        ]),
+        enableBox,
       ]),
-      el("p", { class: "hint" }, ["Provider used by the web_search tool. Auto picks the first API-keyed provider found; key-free providers are only used when selected."]),
-      pills,
-      ...credRows,
-      el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:8px" }, [testBtn]),
-      testOut,
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Provider"])]),
+        pills,
+        ...credRows,
+      ]),
+      el("div", { class: "setfoot" }, [testOut, testBtn]),
     ]);
   }
 
@@ -1803,16 +1997,19 @@ export class Settings {
       st = await gateway.request("approvals.get");
     } catch (err) {
       return el("div", { class: "card" }, [
-        el("div", { class: "row__label" }, ["Exec & approvals"]),
-        el("p", { class: "hint", style: "color:var(--warn)" }, [`policy unread: ${(err as Error).message}`]),
+        el("h3", {}, ["Exec & approvals"]),
+        el("p", { class: "hint" }, [`Policy unread — ${(err as Error).message}`]),
       ]);
     }
     const MODES = ["deny", "allowlist", "ask", "full"] as const;
 
-    const activePill = (active: boolean): string => (active ? "border-color:var(--accent);color:var(--accent);" : "");
-    const pills = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;margin:10px 0" },
+    const pills = el("div", { class: "seg", role: "group", "aria-label": "Exec mode" },
       MODES.map((m) => {
-        const b = el("button", { class: "btn sm", type: "button", style: activePill(st.mode === m) }, [m]) as HTMLButtonElement;
+        const b = el("button", {
+          class: "seg__btn",
+          type: "button",
+          "aria-pressed": st.mode === m ? "true" : "false",
+        }, [m]) as HTMLButtonElement;
         b.onclick = async () => {
           try {
             await gateway.request("approvals.setMode", { mode: m });
@@ -1823,7 +2020,7 @@ export class Settings {
         return b;
       }));
 
-    const fb = el("select", { class: "inp" }, [
+    const fb = el("select", { class: "inp", id: "exec-ask-fallback" }, [
       ...(["deny", "allowlist", "full"] as const).map((v) => {
         const o = el("option", { value: v }, [v]) as HTMLOptionElement;
         if (st.askFallback === v) o.selected = true;
@@ -1848,10 +2045,9 @@ export class Settings {
       } catch (err) { toast((err as Error).message, "err"); }
     };
 
-    const presets = el("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+    const presets = el("div", { class: "settings__inline" },
       (["cautious", "deny-all", "yolo"] as const).map((name) => {
-        const b = el("button", { class: "btn sm", type: "button" }, [name]) as HTMLButtonElement;
-        if (name === "yolo") b.style.color = "var(--warn)";
+        const b = el("button", { class: `btn sm${name === "yolo" ? " is-warn" : ""}`, type: "button" }, [name]) as HTMLButtonElement;
         b.onclick = async () => {
           try {
             const r = await gateway.request("approvals.preset", { name }) as any;
@@ -1875,13 +2071,18 @@ export class Settings {
       const q = this.#execQuery.trim().toLowerCase();
       const shown = entries.filter((e) => !q || String(e.pattern).toLowerCase().includes(q) || String(e.argPattern ?? "").toLowerCase().includes(q));
       if (shown.length === 0) {
-        list.append(el("div", { class: "row", style: "padding:10px 16px" }, [
-          el("span", { class: "hint" }, [entries.length === 0 ? "No allowlist entries — every new command asks." : "No entries match the search."]),
+        list.append(el("p", { class: "hint" }, [
+          entries.length === 0 ? "No allowlist entries — every new command asks." : "No entries match the search.",
         ]));
         return;
       }
       for (const e of shown) {
-        const revoke = el("button", { class: "btn sm danger", type: "button", title: "Revoke entry" }, ["✕"]) as HTMLButtonElement;
+        const revoke = el("button", {
+          class: "ibtn",
+          type: "button",
+          "aria-label": "Revoke entry",
+          title: "Revoke entry",
+        }, ["✕"]) as HTMLButtonElement;
         revoke.onclick = async () => {
           try {
             await gateway.request("approvals.entry.revoke", { id: e.id });
@@ -1889,16 +2090,16 @@ export class Settings {
             void this.render();
           } catch (err) { toast((err as Error).message, "err"); }
         };
-        const kind = e.source === "allow-always"
-          ? el("span", { class: "prov__count", style: "color:var(--warn)" }, ["always"])
-          : el("span", { class: "prov__count" }, ["manual"]);
+        const kind = el("span", { class: `settings__tag${e.source === "allow-always" ? " is-warn" : ""}` }, [
+          e.source === "allow-always" ? "always" : "manual",
+        ]);
         const detail = e.source === "allow-always"
           ? `exact argv · ${String(e.cwd ?? "?").replace(/^\/data\/data\/com\.termux\/files\/home/, "~")} · ${ago(e.lastUsedAt)}`
           : [e.argPattern ? `argv /${e.argPattern}/` : null, e.lastUsedAt ? ago(e.lastUsedAt) : null, e.lastResolvedPath ? e.lastResolvedPath : null].filter(Boolean).join(" · ") || "path/name match";
-        list.append(el("div", { class: "row", style: "padding:8px 16px;gap:8px;cursor:default" }, [
-          el("div", { style: "flex:1;min-width:0" }, [
-            el("div", { class: "mono", style: "font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" }, [String(e.pattern)]),
-            el("div", { class: "prov__url", style: "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" }, [detail]),
+        list.append(el("div", { class: "ledger__row" }, [
+          el("div", { class: "ledger__main" }, [
+            el("div", { class: "ledger__pattern" }, [String(e.pattern)]),
+            el("div", { class: "ledger__meta" }, [detail]),
           ]),
           kind,
           revoke,
@@ -1923,34 +2124,50 @@ export class Settings {
       } catch (err) { toast((err as Error).message, "err"); }
     };
 
-    return el("div", { class: "card", style: "padding:12px 16px" }, [
-      el("div", { class: "prov__head" }, [
-        el("span", { class: "row__label" }, ["Exec & approvals"]),
-        el("span", { class: "prov__count", style: st.enabled ? "" : "color:var(--err)" }, [
-          st.enabled ? `mode ${st.mode} · ${entries.length} entries` : "exec disabled",
+    return el("div", { class: "card exec-approvals" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Exec & approvals"]),
+        el("p", { class: "hint" }, [
+          "How host shell commands get authorized. Allowlist & safe bins run without prompts (argv-literal, no shell); misses follow the mode. Allow always mints an exact-argv grant bound to this directory.",
         ]),
       ]),
-      el("p", { class: "hint" }, [
-        "How host shell commands get authorized. Allowlist & safe bins run without prompts (argv-literal, no shell); misses follow the mode. Allow always mints an exact-argv grant bound to this directory.",
-      ]),
-      el("label", { class: "lbl" }, ["Mode"]), pills,
-      el("div", { style: "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:6px 0 10px" }, [
-        el("div", { style: "display:flex;align-items:center;gap:8px" }, [
-          el("span", { class: "lbl", style: "margin:0" }, ["When nobody's watching"]), fb,
+      el("div", { class: "setgrid" }, [
+        el("div", { class: "setfield" }, [
+          el("span", { class: "lbl" }, ["Mode"]),
+          pills,
         ]),
-        el("label", { class: "lbl", style: "margin:0;display:flex;align-items:center;gap:6px" }, [
-          strictBox, document.createTextNode("strict inline eval"),
+        el("div", { class: "setfield" }, [
+          el("label", { class: "lbl", for: "exec-ask-fallback" }, ["Ask fallback (no surface connected)"]),
+          fb,
+          el("p", { class: "hint" }, ["Every unattended auto-decision is written to the log and the transcript."]),
         ]),
       ]),
-      el("div", { class: "modal__field" }, [el("label", { class: "lbl" }, ["Presets"]), presets]),
-      el("div", { class: "modal__field", style: "margin-top:14px" }, [
-        el("label", { class: "lbl" }, [`Allowlist (${entries.length})`]),
+      el("div", { class: "row" }, [
+        el("div", { class: "row__main" }, [
+          el("span", { class: "row__label" }, ["Never auto-allow inline eval"]),
+          el("span", { class: "hint" }, ["node -e, bash -c and friends always need a real approval."]),
+        ]),
+        strictBox,
+      ]),
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Presets"]),
+        ]),
+        presets,
+      ]),
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Allowlist"]),
+          el("span", { class: "setsec__count" }, [`${entries.length} entries`]),
+        ]),
         search,
+        el("div", { class: "ledger" }, [list]),
       ]),
-      el("div", { class: "card", style: "padding:0;overflow:hidden;margin:8px 0" }, [list]),
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl" }, ["Add manual entry"]),
-        patternInp, argInp, addBtn,
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Add an entry by hand"])]),
+        patternInp,
+        argInp,
+        el("div", { class: "settings__inline" }, [addBtn]),
       ]),
     ]);
   }
@@ -1965,23 +2182,21 @@ export class Settings {
     body.append(await this.#webSearchCard());
 
     body.append(el("div", { class: "card" }, [
-      el("div", { class: "row__label" }, ["Tools"]),
+      el("h3", {}, ["Built-in tools"]),
       el("p", { class: "hint" }, [
-        `${tools.length} built-in tools the agent can call. Read-only: neither the agent nor you can add or remove tools here — they ship with the runtime.`,
+        `${tools.length} tools the agent can call. Read-only: neither the agent nor you can add or remove them here — they ship with the runtime.`,
       ]),
-    ]));
-
-    for (const t of tools as any[]) {
-      this.#root.append(el("div", { class: "card" }, [
+      ...(tools as any[]).map((t) =>
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name mono" }, [t.name]),
-            el("span", { class: "prov__count" }, [t.needsApproval ? "asks approval" : "auto"]),
+            el("span", { class: `settings__tag${t.needsApproval ? " is-warn" : ""}` }, [
+              t.needsApproval ? "asks approval" : "auto",
+            ]),
           ]),
           el("div", { class: "prov__url" }, [t.description || ""]),
-        ]),
-      ]));
-    }
+        ])),
+    ]));
 
     this.#root.append(body);
   }
@@ -2025,7 +2240,7 @@ export class Settings {
     const selectField = (label: string, options: { value: string; label: string }[], value: string, onchange: (v: string) => void) => {
       const sel = el("select", { class: "in" }, options.map((o) => el("option", { value: o.value, ...(o.value === value ? { selected: "" } : {}) }, [o.label])) as Node[]);
       (sel as HTMLSelectElement).onchange = () => onchange((sel as HTMLSelectElement).value);
-      return el("label", { class: "field", style: "gap:2px;min-width:150px" }, [el("span", { class: "cap" }, [label]), sel]);
+      return el("label", { class: "field" }, [el("span", { class: "cap" }, [label]), sel]);
     };
 
     const toolbar = el("div", { class: "usage-toolbar" }, [
@@ -2054,7 +2269,7 @@ export class Settings {
     exJson.onclick = () => this.#usageExport("json");
     const exCsv = el("button", { class: "btn", type: "button", id: "usage-export-csv" }, ["Export CSV (daily)"]) as HTMLButtonElement;
     exCsv.onclick = () => this.#usageExport("csv");
-    toolbar.append(el("span", { style: "flex:1" }), exJson, exCsv);
+    toolbar.append(el("span", { class: "settings__spacer" }), exJson, exCsv);
     body.append(toolbar);
 
     const t = report.total;
@@ -2438,7 +2653,7 @@ export class Settings {
       el("div", { class: "card" }, [
         el("h3", {}, ["Connection"]),
         statusRow,
-        el("div", { class: "row", style: "gap:8px" }, [
+        el("div", { class: "row row--actions" }, [
           connectBtn,
           el("p", { class: "hint" }, ["Applies the saved config right away — no gateway restart needed. `sc channels status` prints the same state."]),
         ]),
@@ -2569,7 +2784,7 @@ export class Settings {
         ]),
       ]),
       el("div", { class: "card" }, [
-        el("h3", { style: "margin:0 0 8px" }, ["Network access"]),
+        el("h3", {}, ["Network access"]),
         el("div", { class: "modal__field" }, [
           el("label", { class: "lbl", for: "gw-hosts" }, ["Allowed hosts (comma)"]),
           hostsInp,
@@ -2582,7 +2797,7 @@ export class Settings {
         ]),
       ]),
       el("div", { class: "card" }, [
-        el("h3", { style: "margin:0 0 8px" }, ["Control UI"]),
+        el("h3", {}, ["Control UI"]),
         el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Serve this web app from the gateway"]), uiCb]),
         el("div", { class: "modal__field" }, [
           el("label", { class: "lbl", for: "gw-basepath" }, ["Base path"]),
@@ -2591,15 +2806,15 @@ export class Settings {
         ]),
       ]),
       el("div", { class: "card" }, [
-        el("h3", { style: "margin:0 0 8px" }, ["OpenAI-compatible HTTP endpoint"]),
+        el("h3", {}, ["OpenAI-compatible HTTP endpoint"]),
         el("div", { class: "row" }, [
           el("span", { class: "row__label" }, ["POST /v1/chat/completions (Bearer = gateway token)"]),
           httpCb,
         ]),
         el("p", { class: "hint" }, ["Off by default — it grants full agent access over plain HTTP (their operator-grade warning)."]),
       ]),
-      save,
-      ...(configPath ? [el("p", { class: "hint", style: "margin-top:8px" }, [`Config: ${configPath}`])] : []),
+      el("div", { class: "settings__actions" }, [save]),
+      ...(configPath ? [el("p", { class: "hint" }, [`Config: ${configPath}`])] : []),
     );
   }
 
@@ -2626,7 +2841,7 @@ export class Settings {
         el("span", { class: "row__value", style }, [value]),
       ]);
     const card = (title: string, rows: HTMLElement[], extra: Node[] = []): HTMLElement =>
-      el("div", { class: "card" }, [el("h3", { style: "margin:0 0 8px" }, [title]), ...rows, ...extra]);
+      el("div", { class: "card" }, [el("h3", {}, [title]), ...rows, ...extra]);
 
     // ----- cron (P4 #35: full editor — their Cron page) -----
     const cronRows: HTMLElement[] = [];
@@ -3135,7 +3350,7 @@ export class Settings {
 
     const stateRow = el("div", { class: "row" }, [
       el("span", { class: "row__label" }, ["Browser permission"]),
-      el("span", { class: "row__value", style: state === "granted" ? "color:var(--ok)" : state === "denied" ? "color:var(--err)" : "" }, [state]),
+      el("span", { class: `row__value${state === "granted" ? " is-ok" : state === "denied" ? " is-err" : ""}` }, [state]),
     ]);
 
     if (!supported()) {
@@ -3196,7 +3411,7 @@ export class Settings {
     this.#root.append(body);
 
     const mkCard = (title: string, kids: Node[]): HTMLElement =>
-      el("div", { class: "card" }, [el("h3", { style: "margin:0 0 8px" }, [title]), ...kids]);
+      el("div", { class: "card" }, [el("h3", {}, [title]), ...kids]);
 
     // ---------- Doctor ----------
     const docBody = el("div", {}, [el("p", { class: "hint" }, ["Probes have not run this session."])]);
@@ -3306,7 +3521,7 @@ export class Settings {
         },
       });
     };
-    body.append(mkCard("Software update", [updStatus, el("div", { class: "row", style: "gap:8px" }, [updBtn, applyBtn])]));
+    body.append(mkCard("Software update", [updStatus, el("div", { class: "row row--actions" }, [updBtn, applyBtn])]));
 
     // ---------- Backup & restore (P4 #42) ----------
     const backupList = el("div", {}, [el("p", { class: "hint" }, ["Archives load on open."])]);
@@ -3447,7 +3662,7 @@ export class Settings {
     );
     body.append(mkCard("Secrets", [
       (providersList.length > 0
-        ? el("div", {}, [el("div", { class: "cap", style: "padding:4px 0" }, ["Configured providers"]), ...providersList])
+        ? el("div", {}, [el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Configured providers"])]), ...providersList])
         : el("p", { class: "hint" }, ["No providers configured yet."])),
       el("p", { class: "hint" }, [
         "Recipes: store raw keys in the environment as ${OPENAI_API_KEY} (channels tab hint) or use a SecretRef — {source: 'env' | 'file' | 'exec', provider, id}. See `sc secrets refs` for the exact shapes + validation patterns.",
@@ -3476,9 +3691,9 @@ export class Settings {
       ["Providers", String(Object.keys(config.providers ?? {}).length)],
     ];
 
-    const list = el("div", { class: "card", style: "padding:0;overflow:hidden" });
+    const list = el("div", { class: "card card--flush" });
     for (const [k, v, style] of rows) {
-      list.append(el("div", { class: "row", style: "padding:14px 16px" }, [
+      list.append(el("div", { class: "row" }, [
         el("span", { class: "row__label" }, [k]),
         el("span", { class: "row__value", style }, [v]),
       ]));
@@ -3537,7 +3752,7 @@ export class Settings {
     const card = el("div", { class: "card" }, [
       el("div", { class: "row" }, [
         el("span", { class: "row__label" }, ["Daemon"]),
-        el("span", { class: "row__value", style: `color:${svc.running ? "var(--ok)" : "var(--err)"}` }, [
+        el("span", { class: `row__value${svc.running ? " is-ok" : " is-err"}` }, [
           svc.running ? "running" : "not running",
         ]),
       ]),
@@ -3621,7 +3836,7 @@ export class Settings {
         : status.enabled === false
           ? "off — no sweep scheduled"
           : `on — next sweep ${fmt(status.nextRunAt)}`;
-    const stateValue = el("span", { class: "row__value", style: status?.scheduleError ? "color:var(--err)" : "" }, [stateLine]);
+    const stateValue = el("span", { class: `row__value${status?.scheduleError ? " is-err" : ""}` }, [stateLine]);
 
     const runBtn = el("button", { class: "btn", type: "button" }, ["Dream now"]);
     const runNote = el("p", { class: "hint" }, [""]);
