@@ -217,6 +217,7 @@ export class Gateway {
       "approvals.entry.add",
       "approvals.entry.revoke",
       "codeMode.get",
+      "media.get",
       "session.execMode",
       "web.search.get",
       "web.search.test",
@@ -549,6 +550,28 @@ export class Gateway {
             executor: raw.executor,
             executorBundled: codeModeExecutorBundled(raw.executor),
             catalog,
+          }));
+          return;
+        }
+        case "media.get": {
+          // What "0" resolves to per capability lives in the engine, so the card
+          // shows the runtime's own numbers instead of a copy that can drift.
+          const { CAPABILITY_DEFAULTS } = await import("../agent/media-understanding.js");
+          const mediaCfg = service.config.tools.media;
+          send(okFrame(id, {
+            defaults: CAPABILITY_DEFAULTS,
+            models: (mediaCfg.models ?? []).map((m, index) => ({
+              index,
+              kind: m.type,
+              label: m.type === "cli"
+                ? `cli:${m.command || "?"}`
+                : [m.provider, m.model].filter(Boolean).join("/") || "provider (auto model)",
+              capabilities: m.capabilities ?? [],
+              // their entry-validation, surfaced instead of silently skipped
+              valid: m.type === "cli"
+                ? Boolean(m.command && m.command.trim() && (m.args ?? []).length > 0)
+                : Boolean(m.provider || m.model),
+            })),
           }));
           return;
         }

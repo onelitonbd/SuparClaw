@@ -67,14 +67,25 @@ test("#38 code mode + media cards cover their config surfaces", () => {
   assert.match(src, /executor_unavailable/);
   assert.match(src, /still go through exec policy and approvals/);
 
-  assert.match(src, /#mediaCard\(config: any\)/);
+  // Media understanding: three whole-object writes became one merged block.
+  assert.match(src, /#mediaCard\(config: any\): Promise<HTMLElement>/);
   assert.match(src, /id: "media-save"/);
-  for (const path of ["tools.media.concurrency", "tools.media.image", "tools.media.audio", "tools.media.pdf"]) {
-    assert.ok(src.includes(`["${path}"`), `missing leaf write ${path}`);
-  }
+  assert.match(src, /gateway\.request\("config\.set", \{ path: "tools\.media", value: block \}\)/);
+  assert.doesNotMatch(src, /\["tools\.media\./, "no leaf writes left for the media block");
+  // each capability spreads what is stored, so a key this page does not render survives
+  assert.match(src, /\.\.\.\(x\.image \?\? \{\}\),/);
+  assert.match(src, /\.\.\.\(x\.audio \?\? \{\}\),/);
+  assert.match(src, /\.\.\.\(x\.pdf \?\? \{\}\),/);
+  assert.match(src, /concurrency,/);
+  assert.match(src, /attachments_all: attachAll/);
   assert.match(src, /"md-aud-echo"/); // transcript echo toggle (their echo surface)
-  assert.match(src, /attachments_all: imgAllCb\.input\.checked/);
-  assert.match(src, /preferredModel/);
+  assert.match(src, /preferredModel: this\.#selValue\(imgModel\)/);
+  assert.match(src, /preferredModel: this\.#selValue\(audModel\)/);
+  // "0 = the runtime default" comes from the engine, and the echo says which
+  assert.match(src, /gateway\.request\("media\.get"\)/);
+  assert.match(src, /default \(\$\{/);
+  // the echo format is only checked while it is reachable
+  assert.match(src, /if \(echoOn && fmt && !fmt\.includes\("\{transcript\}"\)\)/);
 });
 
 test("#39 agent identity + defaults on the Defaults tab", () => {

@@ -3160,76 +3160,414 @@ export class Settings {
     ]);
   }
 
-  /** Media understanding card (P4 #38 — their tools.media): per-capability
-   *  limits + preferred models + transcript echo. Per-capability model refs
-   *  use the configured models list (plain text, e.g. openai/vision-model). */
-  #mediaCard(config: any): HTMLElement {
-    const m = config.tools?.media ?? {};
-    const concF = this.#cfgNum("md-conc", "Concurrency", Number(m.concurrency ?? 2));
-    const img = m.image ?? {};
-    const aud = m.audio ?? {};
-    const pdf = m.pdf ?? {};
-    const imgCb = this.#cfgCheck("md-img-on", "Image understanding", img.enabled !== false);
-    const imgModel = this.#cfgStr("md-img-model", "Preferred image model", String(img.preferredModel ?? ""), "provider/model ref");
-    const imgChars = this.#cfgNum("md-img-chars", "Image max chars", Number(img.maxChars ?? 500));
-    const imgBytes = this.#cfgNum("md-img-bytes", "Image max bytes", Number(img.maxBytes ?? 10485760));
-    const imgTimeout = this.#cfgNum("md-img-timeout", "Image timeout (s)", Number(img.timeoutSeconds ?? 60));
-    const imgAllCb = this.#cfgCheck("md-img-all", "Send ALL attachments to the model", Boolean(img.attachments_all));
-    const audCb = this.#cfgCheck("md-aud-on", "Audio transcription", aud.enabled !== false);
-    const audModel = this.#cfgStr("md-aud-model", "Preferred audio model", String(aud.preferredModel ?? ""), "provider/model ref");
-    const audBytes = this.#cfgNum("md-aud-bytes", "Audio max bytes", Number(aud.maxBytes ?? 20971520));
-    const audTimeout = this.#cfgNum("md-aud-timeout", "Audio timeout (s)", Number(aud.timeoutSeconds ?? 60));
-    const audLang = this.#cfgStr("md-aud-lang", "Audio language", String(aud.language ?? ""), "e.g. en (blank = auto)");
-    const audEchoCb = this.#cfgCheck("md-aud-echo", "Echo transcript to chat", Boolean(aud.echoTranscript));
-    const audFmt = this.#cfgStr("md-aud-fmt", "Echo format", String(aud.echoFormat ?? '📝 "{transcript}"'), "use {transcript}");
-    const pdfCb = this.#cfgCheck("md-pdf-on", "PDF understanding", pdf.enabled !== false);
-    const pdfBytes = this.#cfgNum("md-pdf-bytes", "PDF max bytes", Number(pdf.maxBytes ?? 10485760));
-    const pdfChars = this.#cfgNum("md-pdf-chars", "PDF max chars", Number(pdf.maxChars ?? 4000));
-    const pdfTimeout = this.#cfgNum("md-pdf-timeout", "PDF timeout (s)", Number(pdf.timeoutSeconds ?? 60));
+  /** Media understanding card (P4 #38 — their tools.media): images, voice notes
+   *  and PDFs are turned into text before the model sees them.
+   *
+   *  Three questions the old card could not answer, and this one has to: what
+   *  handles each capability (the page never showed the model ladder), what a
+   *  limit of 0 actually means (the runtime reads it as "the default"), and
+   *  whether the audio echo format is even reachable (it is only read when the
+   *  echo is on). */
+  async #mediaCard(config: any): Promise<HTMLElement> {
+    const x = config.tools?.media ?? {};
+    let rt: any = null;
+    let rtError = "";
+    try {
+      // The capability defaults live in the engine; copying them here is how a
+      // "0 = 500 chars" hint becomes a lie the first time they change.
+      rt = await gateway.request("media.get");
+    } catch (err) {
+      rtError = (err as Error).message;
+    }
+    const defaults: Record<string, { maxBytes?: number; maxChars?: number | null; timeoutSeconds?: number }> =
+      (rt?.defaults ?? {}) as Record<string, any>;
+    const ladder: { label: string; capabilities: string[]; valid: boolean }[] = Array.isArray(rt?.models)
+      ? rt.models.map((m: any) => ({
+          label: String(m.label ?? ""),
+          capabilities: Array.isArray(m.capabilities) ? m.capabilities.map(String) : [],
+          valid: m.valid !== false,
+        }))
+      : (Array.isArray(x.models) ? x.models : []).map((m: any) => ({
+          label: m?.type === "cli" ? `cli:${m.command || "?"}` : [m.provider, m.model].filter(Boolean).join("/") || "provider (auto model)",
+          capabilities: Array.isArray(m?.capabilities) ? m.capabilities.map(String) : [],
+          valid: true,
+        }));
 
-    const save = el("button", { class: "btn", type: "button", id: "media-save" }, ["Save"]) as HTMLButtonElement;
-    save.onclick = () => {
-      void this.#setMany(
-        [
-          ["tools.media.concurrency", Math.max(1, Number(concF.input.value) || 2)],
-          ["tools.media.image", {
-            enabled: imgCb.input.checked,
-            preferredModel: imgModel.input.value.trim(),
-            prompt: String(img.prompt ?? ""),
-            maxChars: Math.max(0, Number(imgChars.input.value) || 500),
-            maxBytes: Math.max(0, Number(imgBytes.input.value) || 10485760),
-            timeoutSeconds: Math.max(0, Number(imgTimeout.input.value) || 60),
-            attachments_all: imgAllCb.input.checked,
-          }],
-          ["tools.media.audio", {
-            enabled: audCb.input.checked,
-            preferredModel: audModel.input.value.trim(),
-            maxBytes: Math.max(0, Number(audBytes.input.value) || 20971520),
-            timeoutSeconds: Math.max(0, Number(audTimeout.input.value) || 60),
-            language: audLang.input.value.trim(),
-            echoTranscript: audEchoCb.input.checked,
-            echoFormat: audFmt.input.value.trim() || '📝 "{transcript}"',
-          }],
-          ["tools.media.pdf", {
-            enabled: pdfCb.input.checked,
-            maxBytes: Math.max(0, Number(pdfBytes.input.value) || 10485760),
-            maxChars: Math.max(0, Number(pdfChars.input.value) || 4000),
-            timeoutSeconds: Math.max(0, Number(pdfTimeout.input.value) || 60),
-          }],
-        ],
-        "media understanding saved",
-      );
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const mark = (): void => this.#dirtyMark(note);
+    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
+
+    /* ---- draft ---- */
+
+    let imgOn = x.image?.enabled !== false;
+    let audOn = x.audio?.enabled !== false;
+    let pdfOn = x.pdf?.enabled !== false;
+    let echoOn = Boolean(x.audio?.echoTranscript);
+    let attachAll = Boolean(x.image?.attachments_all);
+
+    const statusTag = el("span", { class: "settings__tag" });
+    const statusNote = el("span", { class: "setcard__status-note", "aria-live": "polite" });
+    // Group counts follow the draft too, so a toggle is answered everywhere it matters.
+    const capCount = { image: el("span", { class: "setsec__count" }), audio: el("span", { class: "setsec__count" }), pdf: el("span", { class: "setsec__count" }) };
+    const allCount = el("span", { class: "setsec__count" });
+    const onList = (): string[] => [
+      ...(imgOn ? ["images"] : []), ...(audOn ? ["voice notes"] : []), ...(pdfOn ? ["PDFs"] : []),
+    ];
+    const offList = (): string[] => [
+      ...(!imgOn ? ["images"] : []), ...(!audOn ? ["voice notes"] : []), ...(!pdfOn ? ["PDFs"] : []),
+    ];
+    const syncStatus = (): void => {
+      const on = onList();
+      statusTag.textContent = `${on.length} of 3 on`;
+      statusTag.className = `settings__tag${on.length > 0 ? " is-ok" : " is-warn"}`;
+      const off = offList();
+      statusNote.textContent = on.length === 0
+        ? "Nothing is turned into text: an attachment reaches the model as a file path only."
+        : off.length === 0
+          ? "Images, voice notes and PDFs are turned into text before the model sees them."
+          : `Not processed: ${off.join(", ")}.`;
+      capCount.image.textContent = imgOn ? "on" : "off";
+      capCount.audio.textContent = audOn ? "on" : "off";
+      capCount.pdf.textContent = pdfOn ? "on" : "off";
+      allCount.textContent = on.length === 3 ? "all on" : `${on.length} of 3 on`;
     };
 
-    return el("div", { class: "card" }, [
-      el("h3", {}, ["Media understanding"]),
-      concF.node,
-      imgCb.node, imgModel.node, imgChars.node, imgBytes.node, imgTimeout.node, imgAllCb.node,
-      el("div", { class: "usage-h" }, ["Audio"]),
-      audCb.node, audModel.node, audBytes.node, audTimeout.node, audLang.node, audEchoCb.node, audFmt.node,
-      el("div", { class: "usage-h" }, ["PDF"]),
-      pdfCb.node, pdfBytes.node, pdfChars.node, pdfTimeout.node,
-      el("div", { class: "setfoot" }, [save]),
+    /* ---- numbers: 0 is the runtime's "use the default", and it is shown ---- */
+
+    const fmtBytes = (n: number): string =>
+      n >= 1048576 ? `${Math.round((n / 1048576) * 10) / 10} MB` : `${Math.round((n / 1024) * 10) / 10} KB`;
+    const echoFor = (n: number, kind: "chars" | "bytes" | "seconds" | "count", def: number | null | undefined): string => {
+      if (kind === "count") return Number.isFinite(n) && n >= 1 ? `${n} at a time` : "";
+      if (n === 0) {
+        if (def === null || def === undefined) return `default`;
+        return `default (${kind === "bytes" ? fmtBytes(def) : kind === "seconds" ? `${def} s` : `${def} chars`})`;
+      }
+      if (kind === "bytes") return fmtBytes(n);
+      if (kind === "seconds") return `${n} s`;
+      return `${n} chars`;
+    };
+    interface NumField { input: HTMLInputElement; echo: HTMLElement; node: HTMLElement; }
+    const makeNum = (id: string, label: string, cur: number, kind: "chars" | "bytes" | "seconds" | "count", capKey: string | null, key: string | null, hint: string): NumField => {
+      const input = el("input", {
+        class: "inp mono", id, inputmode: "numeric", autocomplete: "off", spellcheck: "false",
+        value: String(Number.isFinite(Number(cur)) ? Number(cur) : 0),
+      }) as HTMLInputElement;
+      const echo = el("span", { class: "setcard__echo", "aria-live": "polite" }, []);
+      const sync = (): void => {
+        const n = Number(input.value.trim());
+        const def = capKey && key ? (defaults[capKey]?.[key as "maxBytes" | "maxChars" | "timeoutSeconds"] ?? null) : null;
+        echo.textContent = Number.isFinite(n) && n >= 0 ? echoFor(n, kind, def) : "";
+      };
+      input.oninput = () => { sync(); mark(); };
+      sync();
+      return {
+        input,
+        echo,
+        node: el("div", { class: "setfield" }, [
+          el("label", { class: "lbl", for: id }, [label]),
+          el("div", { class: "settings__inline" }, [input, echo]),
+          el("p", { class: "hint" }, [hint]),
+        ]),
+      };
+    };
+
+    const nConc = makeNum("md-conc", "Attachments at once", Number(x.concurrency ?? 2), "count", null, null,
+      "How many attachments are processed in parallel. At least 1.");
+    const nImgChars = makeNum("md-img-chars", "Max description chars", Number(x.image?.maxChars ?? 500), "chars", "image", "maxChars",
+      "0 = the default. A longer description is cut at this many characters.");
+    const nImgBytes = makeNum("md-img-bytes", "Max image bytes", Number(x.image?.maxBytes ?? 10485760), "bytes", "image", "maxBytes",
+      "0 = the default. A bigger file is skipped, not downscaled.");
+    const nImgTimeout = makeNum("md-img-timeout", "Image timeout (s)", Number(x.image?.timeoutSeconds ?? 60), "seconds", "image", "timeoutSeconds",
+      "0 = the default. Per attachment.");
+    const nAudBytes = makeNum("md-aud-bytes", "Max audio bytes", Number(x.audio?.maxBytes ?? 20971520), "bytes", "audio", "maxBytes",
+      "0 = the default. A bigger file is skipped.");
+    const nAudTimeout = makeNum("md-aud-timeout", "Transcription timeout (s)", Number(x.audio?.timeoutSeconds ?? 60), "seconds", "audio", "timeoutSeconds",
+      "0 = the default. Per voice note.");
+    const nPdfBytes = makeNum("md-pdf-bytes", "Max PDF bytes", Number(x.pdf?.maxBytes ?? 10485760), "bytes", "pdf", "maxBytes",
+      "0 = the default. A bigger file is skipped.");
+    const nPdfChars = makeNum("md-pdf-chars", "Max extracted chars", Number(x.pdf?.maxChars ?? 4000), "chars", "pdf", "maxChars",
+      "0 = the default. Text past this is dropped.");
+    const nPdfTimeout = makeNum("md-pdf-timeout", "PDF timeout (s)", Number(x.pdf?.timeoutSeconds ?? 60), "seconds", "pdf", "timeoutSeconds",
+      "0 = the default. Per file.");
+
+    /* ---- per-capability controls ---- */
+
+    const row = (id: string, label: string, hint: string, checked: boolean, onToggle: (v: boolean) => void): HTMLElement => {
+      const cb = el("input", { type: "checkbox", id }) as HTMLInputElement;
+      cb.checked = checked;
+      cb.onchange = () => { onToggle(cb.checked); syncStatus(); mark(); };
+      return el("div", { class: "row" }, [
+        el("div", { class: "row__main" }, [
+          el("label", { class: "row__label", for: id }, [label]),
+          el("span", { class: "hint" }, [hint]),
+        ]),
+        cb,
+      ]);
+    };
+
+    const lane = (cap: "image" | "audio" | "pdf"): string => {
+      const mine = ladder.filter((m) => m.capabilities.includes(cap));
+      if (mine.length > 0) {
+        const bad = mine.some((m) => !m.valid);
+        return `tries ${mine.map((m) => m.label).join(" → ")}${bad ? " — incomplete entries are skipped" : ""}`;
+      }
+      if (cap === "image") return "no media model is configured, so the model that answers also describes the image";
+      if (cap === "audio") return "no media model is configured: a provider key first (groq, openai, xai, deepgram, google, elevenlabs, mistral), then whisper-cli or whisper on PATH";
+      return "PDF text is extracted locally — no model needed";
+    };
+
+    const modelSelect = (id: string, cap: "image" | "audio", cur: string): HTMLSelectElement => {
+      const opts: [string, string][] = [["", "auto (first that works)"]];
+      for (const m of ladder) {
+        if (!m.capabilities.includes(cap)) continue;
+        opts.push([m.label, m.valid ? m.label : `${m.label} (incomplete — skipped)`]);
+      }
+      // A hand-written value is kept and labelled, never silently dropped.
+      if (cur && !opts.some(([v]) => v === cur)) opts.push([cur, `${cur} — not in the ladder`]);
+      const sel = this.#cfgSel(id, cur, opts);
+      sel.onchange = () => { mark(); };
+      return sel;
+    };
+    const imgModel = modelSelect("md-img-model", "image", String(x.image?.preferredModel ?? ""));
+    const audModel = modelSelect("md-aud-model", "audio", String(x.audio?.preferredModel ?? ""));
+
+    const imgPrompt = el("input", {
+      class: "inp", id: "md-img-prompt", autocomplete: "off", spellcheck: "false",
+      value: String(x.image?.prompt ?? ""),
+      placeholder: "Describe the image in <= 500 chars.",
+    }) as HTMLInputElement;
+    imgPrompt.oninput = mark;
+
+    const attachSeg = el("div", { class: "seg", role: "group", "aria-label": "How many images per turn" });
+    const attachBtns = new Map<string, HTMLButtonElement>();
+    for (const opt of [
+      { mode: "first", id: "md-img-first", label: "first image only", title: "One image per turn — the runtime's default." },
+      { mode: "all", id: "md-img-all", label: "up to 10", title: "Every image in the turn, capped at 10 by the runtime." },
+    ]) {
+      const b = el("button", {
+        class: "seg__btn", type: "button", id: opt.id, title: opt.title,
+        "aria-pressed": String((attachAll ? "all" : "first") === opt.mode),
+      }, [opt.label]) as HTMLButtonElement;
+      b.onclick = () => {
+        attachAll = opt.mode === "all";
+        for (const [mode, btn] of attachBtns) btn.setAttribute("aria-pressed", String((attachAll ? "all" : "first") === mode));
+        mark();
+      };
+      attachBtns.set(opt.mode, b);
+      attachSeg.append(b);
+    }
+
+    const audLang = el("input", {
+      class: "inp mono", id: "md-aud-lang", autocomplete: "off", spellcheck: "false",
+      value: String(x.audio?.language ?? ""), placeholder: "blank = detect",
+    }) as HTMLInputElement;
+    audLang.oninput = mark;
+
+    const echoCb = el("input", { type: "checkbox", id: "md-aud-echo" }) as HTMLInputElement;
+    echoCb.checked = echoOn;
+    const audFmt = el("input", {
+      class: "inp mono", id: "md-aud-fmt", autocomplete: "off", spellcheck: "false",
+      value: String(x.audio?.echoFormat ?? ""), placeholder: '📝 "{transcript}"',
+    }) as HTMLInputElement;
+    audFmt.oninput = mark;
+    const fmtField = el("div", { class: "setfield" }, [
+      el("label", { class: "lbl", for: "md-aud-fmt" }, ["Echo format"]),
+      audFmt,
+      el("p", { class: "hint" }, ['Must contain {transcript}, or every note is answered with the same fixed text. Blank = the shipped default 📝 "{transcript}".']),
+    ]);
+    const syncEcho = (): void => {
+      audFmt.disabled = !echoOn;
+      fmtField.classList.toggle("is-off", !echoOn);
+    };
+    echoCb.onchange = () => { echoOn = echoCb.checked; syncEcho(); syncStatus(); mark(); };
+
+    /* ---- groups ---- */
+
+    const capSection = (title: string, cap: "image" | "audio" | "pdf", children: HTMLElement[]): HTMLElement =>
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, [title]),
+          capCount[cap],
+        ]),
+        ...children,
+        el("p", { class: "hint" }, [`Handled by: ${lane(cap)}.`]),
+      ]);
+
+    const allSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["All capabilities"]),
+        allCount,
+      ]),
+      nConc.node,
+    ]);
+
+    const imageSection = capSection("Images", "image", [
+      row("md-img-on", "Describe images", "Turn each image into a description before the model sees the turn.", imgOn, (v) => { imgOn = v; }),
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: "md-img-model" }, ["Preferred model"]),
+        imgModel,
+        el("p", { class: "hint" }, ["Only orders the media ladder above. On the automatic lane it is ignored — the reply model describes the image."]),
+      ]),
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: "md-img-prompt" }, ["Description prompt"]),
+        imgPrompt,
+        el("p", { class: "hint" }, ["Blank = the runtime default, `Describe the image in <= 500 chars.`"]),
+      ]),
+      el("div", { class: "setgrid" }, [nImgChars.node, nImgBytes.node, nImgTimeout.node]),
+      el("div", { class: "setfield" }, [
+        el("span", { class: "cap" }, ["Images per turn"]),
+        attachSeg,
+      ]),
+    ]);
+
+    const audioSection = capSection("Voice notes & audio", "audio", [
+      row("md-aud-on", "Transcribe audio", "Voice notes, audio files and voice messages become text first.", audOn, (v) => { audOn = v; }),
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: "md-aud-model" }, ["Preferred model"]),
+        audModel,
+        el("p", { class: "hint" }, ["On the automatic lane this is the transcription model (default gpt-4o-mini-transcribe); with a media ladder it pulls that entry first."]),
+      ]),
+      el("div", { class: "setgrid" }, [nAudBytes.node, nAudTimeout.node]),
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: "md-aud-lang" }, ["Language"]),
+        audLang,
+        el("p", { class: "hint" }, ["Blank lets the transcriber detect it. A code like `en` or `bn` skips detection."]),
+      ]),
+      el("div", { class: "row" }, [
+        el("div", { class: "row__main" }, [
+          el("label", { class: "row__label", for: "md-aud-echo" }, ["Echo the transcript into the chat"]),
+          el("span", { class: "hint" }, ["Posts the transcript back as a message, so you can see what was heard."]),
+        ]),
+        echoCb,
+      ]),
+      fmtField,
+    ]);
+
+    const pdfSection = capSection("PDFs", "pdf", [
+      row("md-pdf-on", "Read PDFs", "Text is extracted from each PDF and attached to the turn.", pdfOn, (v) => { pdfOn = v; }),
+      el("div", { class: "setgrid" }, [nPdfChars.node, nPdfBytes.node, nPdfTimeout.node]),
+    ]);
+
+    /* ---- save: one write for the whole block ---- */
+
+    const save = el("button", { class: "btn pri", type: "button", id: "media-save" }, ["Save media"]) as HTMLButtonElement;
+    let saving = false;
+    save.onclick = async () => {
+      if (saving) return;
+      problem.textContent = "";
+      problem.setAttribute("hidden", "");
+      const fields: NumField[] = [nConc, nImgChars, nImgBytes, nImgTimeout, nAudBytes, nAudTimeout, nPdfBytes, nPdfChars, nPdfTimeout];
+      for (const f of fields) f.input.removeAttribute("aria-invalid");
+      audFmt.removeAttribute("aria-invalid");
+      const bad: { input: HTMLInputElement; msg: string }[] = [];
+      const readInt = (f: NumField, label: string, min: number): number => {
+        const raw = f.input.value.trim();
+        const n = Number(raw);
+        if (raw === "" || !Number.isInteger(n) || n < min) {
+          f.input.setAttribute("aria-invalid", "true");
+          bad.push({
+            input: f.input,
+            msg: raw === ""
+              ? `${label} needs a number (0 means the default)`
+              : `${label} must be a whole number from ${min}`,
+          });
+          return 0;
+        }
+        return n;
+      };
+      const concurrency = readInt(nConc, "attachments at once", 1);
+      const imgChars = readInt(nImgChars, "image max chars", 0);
+      const imgBytes = readInt(nImgBytes, "image max bytes", 0);
+      const imgTimeout = readInt(nImgTimeout, "image timeout", 0);
+      const audBytes = readInt(nAudBytes, "audio max bytes", 0);
+      const audTimeout = readInt(nAudTimeout, "transcription timeout", 0);
+      const pdfBytes = readInt(nPdfBytes, "pdf max bytes", 0);
+      const pdfChars = readInt(nPdfChars, "pdf max chars", 0);
+      const pdfTimeout = readInt(nPdfTimeout, "pdf timeout", 0);
+      const fmt = audFmt.value.trim();
+      // Only validated while it is reachable: with the echo off the runtime never
+      // reads the format, so blocking the save for it would be noise.
+      if (echoOn && fmt && !fmt.includes("{transcript}")) {
+        audFmt.setAttribute("aria-invalid", "true");
+        bad.push({ input: audFmt, msg: "the echo format needs {transcript}" });
+      }
+      if (bad.length > 0) {
+        problem.textContent = `Not saved — ${bad.map((b) => b.msg).join("; ")}.`;
+        problem.removeAttribute("hidden");
+        bad[0]?.input.focus();
+        return;
+      }
+      // Merged, not rebuilt: a key this page does not render (or one the schema
+      // grows later) survives a save.
+      const block: Record<string, unknown> = {
+        ...structuredClone(x),
+        concurrency,
+        image: {
+          ...(x.image ?? {}),
+          enabled: imgOn,
+          preferredModel: this.#selValue(imgModel),
+          prompt: imgPrompt.value.trim(),
+          maxChars: imgChars,
+          maxBytes: imgBytes,
+          timeoutSeconds: imgTimeout,
+          attachments_all: attachAll,
+        },
+        audio: {
+          ...(x.audio ?? {}),
+          enabled: audOn,
+          preferredModel: this.#selValue(audModel),
+          maxBytes: audBytes,
+          timeoutSeconds: audTimeout,
+          language: audLang.value.trim(),
+          echoTranscript: echoOn,
+          echoFormat: fmt,
+        },
+        pdf: {
+          ...(x.pdf ?? {}),
+          enabled: pdfOn,
+          maxBytes: pdfBytes,
+          maxChars: pdfChars,
+          timeoutSeconds: pdfTimeout,
+        },
+      };
+      saving = true;
+      save.disabled = true;
+      save.textContent = "Saving…";
+      try {
+        await gateway.request("config.set", { path: "tools.media", value: block });
+        clearDirty();
+        toast("media understanding saved — applies to the next turn", "ok");
+        this.#onChanged();
+        void this.render();
+      } catch (err) {
+        problem.textContent = `not saved — ${(err as Error).message}`;
+        problem.removeAttribute("hidden");
+        toast(`not saved — ${(err as Error).message}`, "err");
+      } finally {
+        saving = false;
+        save.disabled = false;
+        save.textContent = "Save media";
+      }
+    };
+
+    /* ---- assembly ---- */
+
+    const policyZone = el("div", { class: "media__policy" }, [allSection, imageSection, audioSection, pdfSection]);
+    const clearDirty = this.#dirtyWatch(policyZone, note);
+    syncEcho();
+    syncStatus();
+
+    return el("div", { class: "card media-card" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Media understanding"]),
+        el("p", { class: "hint" }, [
+          "Attachments are turned into text before the model sees the turn. Each capability can be switched off on its own; off means the file reaches the model as a path only.",
+        ]),
+      ]),
+      el("div", { class: "setcard__status" }, [statusTag, statusNote]),
+      ...(rtError ? [el("p", { class: "hint" }, [`Defaults and the media ladder could not be read — ${rtError}. Numbers below still save; 0 still means the default.`])] : []),
+      policyZone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
     ]);
   }
 
@@ -3349,7 +3687,7 @@ export class Settings {
 
     body.append(await this.#execCard(config));
     body.append(await this.#codeModeCard(config, tools));
-    body.append(this.#mediaCard(config));
+    body.append(await this.#mediaCard(config));
     body.append(await this.#webSearchCard());
 
     body.append(el("div", { class: "card" }, [
