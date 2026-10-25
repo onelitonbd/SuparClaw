@@ -89,6 +89,8 @@ export interface LoopDeps {
   llm?: LlmClient;
   /** Sub-agent control surface for the session family of tools. */
   subagents?: SubagentCtl;
+  /** Re-arm scheduled jobs after a cron tool changed the store. */
+  cronChanged?: () => void | Promise<void>;
   /**
    * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
    * immediately and side-generate no UI. When a human must decide, the
@@ -596,6 +598,7 @@ export class AgentLoop {
         model: runProfile.id || undefined,
         thinking: this.#reasoningFor(input, session, runProfile),
         subagents: this.deps.subagents,
+        cronChanged: this.deps.cronChanged,
         // ask_user (P2 #8): main-session-only, exactly like their gate.
         askUser: isMain && this.deps.askUser ? (qs) => this.deps.askUser!(sessionKey, qs) : undefined,
         // P3 #22: the pdf tool's analysis hop rides THIS run's llm client

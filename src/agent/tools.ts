@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, appendFileSync, statSync, renameSync, existsSync } from "node:fs";
 import { join, resolve, relative, dirname, extname } from "node:path";
 import type { SuparClawConfig } from "../config/schema.js";
-import type { Store } from "../state/db.js";
+import type { Store, JobRow } from "../state/db.js";
 import type { Logger } from "../util/log.js";
 import { todayStamp } from "./workspace.js";
 import { searchMemoryFiles, rankTranscriptHits } from "./memory-search.js";
@@ -37,6 +37,9 @@ export interface ToolContext {
   llmText?: (messages: { role: "system" | "user"; content: string }[], opts?: { model?: string; timeoutMs?: number }) => Promise<string>;
   /** Set by sessions_yield when this turn should end waiting for children. */
   yieldArmed?: boolean;
+  /** Re-arm scheduled jobs after a cron tool changed the store (the service
+   *  wires this to its scheduler; without it a new job waits for a restart). */
+  cronChanged?: () => void | Promise<void>;
   /** The model this run is using (profile id). A spawned child inherits it when
    *  neither the tool argument nor agents.defaults.subagents.model names one. */
   model?: string;
@@ -100,6 +103,38 @@ export function safePath(workspace: string, p: string): string {
 }
 
 const MAX_READ = 60_000;
+
+// ---- cron tool helpers -----------------------------------------------------
+
+/** Same id derivation as `sc cron add` and the gateway's cron.upsert. */
+const cronIdOf = (name: string): string => name.replace(/\W+/g, "-").toLowerCase();
+
+/** croner parse + next run. Throws on an invalid expression or timezone. */
+async function cronNext(schedule: string, tz: string | null): Promise<Date | null> {
+  const { Cron } = await import("croner");
+  return new Cron(schedule, { paused: true, timezone: tz ?? undefined }).nextRun() ?? null;
+}
+
+/** "schedule: … (zone) · next … · enabled" — the line every cron reply carries. */
+function cronWhen(job: Pick<JobRow, "schedule" | "tz" | "enabled">, next: Date | null, bad = false): string {
+  const zone = job.tz ? ` (${job.tz})` : " (cron.timezone)";
+  const when = bad ? "invalid schedule" : next ? `next ${next.toISOString()}` : "no next run";
+  return `schedule: ${job.schedule}${zone} · ${when} · ${job.enabled ? "enabled" : "paused"}`;
+}
+
+/** "announce → telegram:123" | "cron.delivery default". */
+function cronDelivery(job: Pick<JobRow, "delivery_mode" | "delivery_to">): string {
+  if (!job.delivery_mode) return "cron.delivery default";
+  return job.delivery_to ? `${job.delivery_mode} → ${job.delivery_to}` : job.delivery_mode;
+}
+
+/** Where "tell me here" points: the Telegram chat that asked, else its session. */
+function announceTargetFor(ctx: ToolContext): string {
+  const key = ctx.sessionKey ?? "";
+  const tg = /^telegram:(\d+)/.exec(key);
+  if (tg) return `telegram:${tg[1]}`;
+  return key ? `session:${key}` : "";
+}
 
 /** Termux bash first, then ordinary shells — exec must work off-phone too. */
 function findShell(): string {
@@ -464,10 +499,239 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     },
   );
 
+  // ---- automation (cron) ---------------------------------------------------
+  // The scheduler lives outside the loop (gateway cron.* + `sc cron`), so until
+  // these existed the agent's only honest answer to "remind me at 8" was "I
+  // cannot schedule that" — and the task landed in a daily note instead. Same
+  // rows, same croner validation, same id derivation as the CLI — plus
+  // ctx.cronChanged so a job created in chat arms immediately, not at the next
+  // restart.
+  tools.push(
+    {
+      name: "cron_list",
+      description:
+        "List the scheduled jobs: id, name, schedule, timezone, delivery target, next run and the last run. Call this before changing or deleting anything — the ids here are what cron_update and cron_remove take.",
+      parameters: { type: "object", properties: {} },
+      async run(_args, ctx) {
+        const jobs = ctx.store.listJobs();
+        if (jobs.length === 0) return "no scheduled jobs yet — create one with cron_add";
+        const runs = ctx.store.lastJobRuns(50);
+        const blocks: string[] = [];
+        for (const job of jobs) {
+          let next: Date | null = null;
+          let bad = false;
+          try {
+            next = await cronNext(job.schedule, job.tz || null);
+          } catch {
+            bad = true;
+          }
+          const last = runs.find((r) => r.job_id === job.id);
+          blocks.push(
+            [
+              `${job.id} — ${job.name}`,
+              `  ${cronWhen(job, next, bad)}`,
+              `  delivery: ${cronDelivery(job)} · session ${job.session_key}`,
+              last
+                ? `  last run: ${new Date(last.started_at).toISOString()} · ${last.status}`
+                : "  last run: never",
+              `  prompt: ${job.prompt.replace(/\s+/g, " ").slice(0, 240)}`,
+            ].join("\n"),
+          );
+        }
+        return `${jobs.length} scheduled job${jobs.length === 1 ? "" : "s"}\n\n${blocks.join("\n\n")}`;
+      },
+    },
+    {
+      name: "cron_add",
+      description:
+        "Schedule a job that wakes you at a cron time and runs a prompt. Use this for any reminder, recurring check or \"every day at X\" request — scheduling is yours, so never answer that you cannot set one. " +
+        "The job runs in its own fresh session: write the prompt as a self-contained instruction, naming the people, files and exactly what to send. " +
+        "schedule is a five-field cron expression interpreted in tz (an IANA zone such as Asia/Dhaka), or an ISO datetime like 2026-10-27T08:00:00 for a one-shot. " +
+        "Always pass tz when the user gives a wall-clock time. " +
+        "With no delivery argument the result is announced back to the chat you are in, unless the operator configured a global cron.delivery.mode; pass delivery=\"none\" for a silent run.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: str("Short human name; also the job id (letters, numbers, dashes)"),
+          schedule: str("Five-field cron expression in tz, or an ISO datetime for a one-shot"),
+          prompt: str("Self-contained instruction the job runs — it sees nothing from this conversation"),
+          tz: str("IANA timezone for the schedule, e.g. Asia/Dhaka (default: cron.timezone / host zone)"),
+          delivery: {
+            type: "string",
+            enum: ["none", "announce", "webhook"],
+            description: "Where the finished result goes; default announces it back to this chat",
+          },
+          to: str("Target: telegram:<chatId> or session:<key> for announce, https://… for webhook"),
+        },
+        required: ["name", "schedule", "prompt"],
+      },
+      async run(args, ctx) {
+        const name = String(args["name"] ?? "").trim();
+        const schedule = String(args["schedule"] ?? "").trim();
+        const prompt = String(args["prompt"] ?? "").trim();
+        if (!name || !schedule || !prompt) return "error: name, schedule and prompt are required";
+        const id = cronIdOf(name);
+        if (!id.replace(/-/g, "")) return "error: name needs at least one letter or number";
+        if (ctx.store.getJob(id)) {
+          return `error: a job with id "${id}" already exists — call cron_update to change it, or pick a different name`;
+        }
+        const tz = args["tz"] ? String(args["tz"]).trim() : null;
+        const asked = args["delivery"] ? String(args["delivery"]) : "";
+        if (asked && !["none", "announce", "webhook"].includes(asked)) {
+          return "error: delivery must be none | announce | webhook";
+        }
+        let to = args["to"] ? String(args["to"]).trim() : "";
+        if (asked === "webhook" && !to) return "error: delivery webhook needs to=<url>";
+        let next: Date | null = null;
+        try {
+          next = await cronNext(schedule, tz);
+        } catch (err) {
+          return `error: invalid schedule or timezone: ${(err as Error).message}`;
+        }
+        // Delivery: an explicit choice wins; otherwise inherit the operator's
+        // global default; and when that default delivers nothing, announce back
+        // to this chat — a reminder filed in a transcript nobody opens is the
+        // failure this whole task is about.
+        let mode: string | null = asked || null;
+        if (!mode && ctx.config.cron.delivery.mode === "none") {
+          mode = "announce";
+          to = to || announceTargetFor(ctx);
+        }
+        if (mode === "announce" && !to) to = announceTargetFor(ctx);
+        const row = ctx.store.upsertJob({
+          id,
+          name,
+          schedule,
+          prompt,
+          session_key: `cron:${id}`,
+          enabled: 1,
+          tz,
+          delivery_mode: mode,
+          delivery_to: to || null,
+          delivery_suppress_empty: 1,
+        });
+        await ctx.cronChanged?.();
+        ctx.log?.info(`cron: agent created job ${row.id} (${row.schedule}${tz ? `, ${tz}` : ""})`);
+        const lines = [
+          `created cron job ${row.id}`,
+          `  ${cronWhen(row, next)}`,
+          `  delivery: ${cronDelivery(row)}`,
+          `  session: ${row.session_key} — every run starts fresh, so this prompt is all it will see`,
+          `  prompt: ${prompt.replace(/\s+/g, " ")}`,
+        ];
+        if (!ctx.config.cron.enabled) {
+          lines.push("warning: cron is disabled in config (cron.enabled=false) — the job is saved but will not fire until it is enabled");
+        }
+        return lines.join("\n");
+      },
+    },
+    {
+      name: "cron_update",
+      description:
+        "Change a scheduled job — rename it, retime it, rewrite its prompt, retarget its delivery, or pause/resume it. Only the fields you pass change, and the id stays the same so the job's session and transcript keep working. Pass tz=\"\" to fall back to the configured cron.timezone.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: str("Job id from cron_list"),
+          name: str("New display name"),
+          schedule: str("New five-field cron expression or ISO datetime"),
+          prompt: str("New self-contained instruction"),
+          tz: str("New IANA timezone; empty string clears it back to cron.timezone"),
+          delivery: {
+            type: "string",
+            enum: ["none", "announce", "webhook"],
+            description: "New delivery mode",
+          },
+          to: str("New target: telegram:<chatId>, session:<key> or https://…"),
+          enabled: { type: "boolean", description: "false pauses the job, true resumes it" },
+        },
+        required: ["id"],
+      },
+      async run(args, ctx) {
+        const id = String(args["id"] ?? "").trim();
+        if (!id) return "error: id is required — call cron_list for the ids";
+        const existing = ctx.store.getJob(id);
+        if (!existing) return `error: no job with id "${id}" — call cron_list for the ids`;
+        const name = args["name"] === undefined ? existing.name : String(args["name"]).trim();
+        if (!name) return "error: name cannot be empty";
+        const schedule = args["schedule"] === undefined ? existing.schedule : String(args["schedule"]).trim();
+        const prompt = args["prompt"] === undefined ? existing.prompt : String(args["prompt"]).trim();
+        if (!schedule || !prompt) return "error: schedule and prompt cannot be empty";
+        // A cleared zone is "" (falsy everywhere it is read); upsertJob cannot
+        // write null over an existing value, which is why this is not `null`.
+        const tz = args["tz"] === undefined ? existing.tz : String(args["tz"]).trim() || "";
+        const asked = args["delivery"] === undefined ? undefined : String(args["delivery"]);
+        if (asked !== undefined && asked && !["none", "announce", "webhook"].includes(asked)) {
+          return "error: delivery must be none | announce | webhook";
+        }
+        const mode = asked === undefined ? existing.delivery_mode : asked || null;
+        const to =
+          args["to"] === undefined ? existing.delivery_to : String(args["to"]).trim() || null;
+        if (mode === "webhook" && !to) return "error: delivery webhook needs to=<url>";
+        const enabled =
+          args["enabled"] === undefined ? existing.enabled : args["enabled"] ? 1 : 0;
+        let next: Date | null = null;
+        try {
+          next = await cronNext(schedule, tz || null);
+        } catch (err) {
+          return `error: invalid schedule or timezone: ${(err as Error).message}`;
+        }
+        const row = ctx.store.upsertJob({
+          id: existing.id,
+          name,
+          schedule,
+          prompt,
+          session_key: existing.session_key,
+          enabled,
+          tz,
+          delivery_mode: mode,
+          delivery_to: to,
+          delivery_suppress_empty: existing.delivery_suppress_empty,
+        });
+        await ctx.cronChanged?.();
+        ctx.log?.info(`cron: agent updated job ${row.id}`);
+        const changed: string[] = [];
+        if (name !== existing.name) changed.push(`name → ${name}`);
+        if (schedule !== existing.schedule) changed.push(`schedule → ${schedule}`);
+        if (prompt !== existing.prompt) changed.push("prompt");
+        if ((tz || "") !== (existing.tz || "")) changed.push(`tz → ${tz || "cron.timezone"}`);
+        if ((mode || "") !== (existing.delivery_mode || "")) changed.push(`delivery → ${mode ?? "default"}`);
+        if ((to || "") !== (existing.delivery_to || "")) changed.push(`to → ${to ?? "none"}`);
+        if (enabled !== existing.enabled) changed.push(enabled ? "resumed" : "paused");
+        return [
+          `updated ${row.id}${changed.length ? ` — ${changed.join(", ")}` : " — nothing changed"}`,
+          `  ${cronWhen(row, next)}`,
+          `  delivery: ${cronDelivery(row)}`,
+        ].join("\n");
+      },
+    },
+    {
+      name: "cron_remove",
+      description:
+        "Delete a scheduled job for good. Its previous runs stay in the job's session transcript; the schedule itself is gone. Get the id from cron_list.",
+      parameters: {
+        type: "object",
+        properties: { id: str("Job id from cron_list") },
+        required: ["id"],
+      },
+      async run(args, ctx) {
+        const id = String(args["id"] ?? "").trim();
+        if (!id) return "error: id is required — call cron_list for the ids";
+        const existing = ctx.store.getJob(id);
+        if (!existing) return `error: no job with id "${id}" — call cron_list for the ids`;
+        ctx.store.deleteJob(id);
+        await ctx.cronChanged?.();
+        ctx.log?.info(`cron: agent removed job ${id}`);
+        return `removed "${existing.name}" (${id}) — its previous runs stay in the transcript of ${existing.session_key}`;
+      },
+    },
+  );
+
   if (config.tools.exec.enabled) {
     tools.push({
       name: "exec",
-      description: "Run a shell command inside the workspace. Requires user approval. Disabled by default.",
+      description:
+        "Run a shell command. On by default and approved automatically in the default policy; if the operator set an approval mode, a declined call comes back as an error — report it, never pretend it ran.",
       parameters: {
         type: "object",
         properties: { command: str("Command line to run"), timeoutMs: int("Timeout in ms") },

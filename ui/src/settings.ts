@@ -2347,8 +2347,8 @@ export class Settings {
     const MODE_TEXT: Record<string, string> = {
       deny: "Refuses every shell command.",
       allowlist: "Runs only allowlisted commands and safe bins; everything else is refused.",
-      ask: "Anything not on the allowlist asks you first. This is the default.",
-      full: "Runs anything without asking. Only on a machine you would hand a shell to.",
+      ask: "Anything not on the allowlist asks you first.",
+      full: "Runs anything without asking. Only on a machine you would hand a shell to. This is the default.",
     };
 
     /* ---- draft: every policy control stages here, Save applies the lot ---- */

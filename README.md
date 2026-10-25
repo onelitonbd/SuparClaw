@@ -71,7 +71,7 @@ rejects a reference that does not resolve against the configured providers
 | `sc status` | subsystem readiness + effective config — probes the **running** gateway when one is up (`live: true`), offline view otherwise |
 | `sc config get\|set\|path` | read and write `~/.suparclaw/config.json5` |
 | `sc pair approve <id>` | allow a Telegram user to DM the bot |
-| `sc cron add\|list\|remove` | scheduled prompts |
+| `sc cron add\|list\|remove` | scheduled prompts (the agent schedules too: `cron_add`, `cron_list`, `cron_update`, `cron_remove`) |
 | `sc service install\|status\|uninstall` | termux-services integration |
 
 Web UI: `http://127.0.0.1:18790/` while `sc gateway` runs (dark/light, same design tokens
@@ -138,7 +138,9 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
   device's own browser is exempt only on loopback (`auth.loopbackBypass`).
 - **Secrets never travel on the wire** — `config.get` returns sentinels
   (`__redacted__:…`), `config.set` maps them back to the stored values.
-- **exec is off by default** and gated by per-call approval when enabled.
+- **exec is on by default, approved without a prompt** — an agent that has to ask before
+  every command cannot act on its own. Tighten it with `sc approvals mode ask` (prompt
+  per command) or `allowlist` (safe bins only); `sc security audit` reports the mode.
 
 Run `sc security audit` after any config change.
 

@@ -110,7 +110,8 @@ graph weight, not Node itself.
    `MEMORY.md`, `memory/*.md`) + skills snapshot (truncation budgets).
 5. Model call: OpenAI-compatible first (covers most local/remote providers); streaming; retries with
    backoff; model fallback chain; idle watchdog; separate quick `agent.wait` timeout (30s, wait-only).
-6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec needs approval.
+6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec follows
+   `tools.exec.mode` (default `full` — no prompt).
 7. Stream events → channel adapter renders (Telegram typing indicator, message edits optional).
 8. Persist transcript + usage; emit `final`. `NO_REPLY` = intentional silence (copy semantics).
 
@@ -123,9 +124,13 @@ graph weight, not Node itself.
 
 ### 4.4 Tools (MVP set)
 
-`fs.read/write/list` (workspace-scoped by default), `exec` (off by default; approval-gated),
+`fs.read/write/list` (workspace-scoped by default), `exec` (on by default in mode `full`;
+`sc approvals mode` gates it),
 `web.fetch`, `web.search` (DuckDuckGo HTML), `memory.journal` + `memory.search` (SQLite FTS),
-`time`. Tools run in-process — no subprocess per call (except `exec` itself, inherently).
+`time`, and the automation family `cron_list/add/update/remove` — the same `jobs` rows the
+gateway's `cron.*` and `sc cron` write, so the agent can schedule its own work and re-arm it
+through the scheduler. Tools run in-process — no subprocess per call (except `exec` itself,
+inherently).
 
 ### 4.5 Skills
 
@@ -280,7 +285,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | **M1** | Gateway daemon (WS protocol, state DB, logs, service) | Daemon survives 24 h on phone; reconnect works; idle RSS < 120 MB |
 | **M2** | Agent core + `sc chat` | Streaming reply in terminal; transcript persisted; turn overhead < 150 ms; compaction at threshold |
 | **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn |
-| **M4** | Tools + skills + memory | fs/web/memory tools work; exec off by default + approval flow; 5 bundled skills; FTS recall |
+| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full) with an opt-in approval flow; 5 bundled skills; FTS recall |
 | **M5** | Cron + hooks + polish | Scheduled job fires after reboot-era restarts; hot config reload; backup command; all §6 targets met |
 
 ---

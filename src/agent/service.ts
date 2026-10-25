@@ -261,6 +261,9 @@ export class Service {
       llm,
       requestApproval: (callId, tool, args, ctx) => this.requestApproval(callId, tool, args, ctx),
       askUser: (sessionKey, questions) => this.#askUser(sessionKey, questions),
+      // A job the agent creates mid-turn must arm before the turn's reply lands,
+      // not at the next daemon restart (same reason cron.list reconciles).
+      cronChanged: () => this.cronReconcile(),
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are

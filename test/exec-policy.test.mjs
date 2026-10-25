@@ -299,7 +299,7 @@ test("CLI: approvals get/mode/list/allow/revoke/preset round trip", async () => 
 
   const get0 = await runCli(home, ["approvals", "get", "--json"]);
   const body0 = parseJsonBlock(get0.out);
-  assert.equal(body0.mode, "ask", "default mode");
+  assert.equal(body0.mode, "full", "approved by default; sc approvals mode takes it back");
   assert.equal(body0.entries.length, 0);
 
   assert.equal((await runCli(home, ["approvals", "mode", "allowlist"])).code, 0);

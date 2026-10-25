@@ -140,11 +140,13 @@ test("tool registry respects config policy", () => {
   const names = buildRegistry(config).map((t) => t.name);
   assert.ok(names.includes("fs_read"));
   assert.ok(names.includes("memory_append"));
-  assert.ok(!names.includes("exec"), "exec stays off until explicitly enabled");
-
-  config.tools.exec.enabled = true;
+  assert.ok(names.includes("exec"), "exec ships enabled — the agent acts on its own");
   const execTool = buildRegistry(config).find((t) => t.name === "exec");
-  assert.ok(execTool?.needsApproval, "exec requires approval");
+  assert.ok(execTool?.needsApproval, "the gate is still there for stricter modes");
+
+  config.tools.exec.enabled = false;
+  assert.ok(!buildRegistry(config).some((t) => t.name === "exec"), "the switch still disables it");
+  config.tools.exec.enabled = true;
 
   config.tools.fs = false;
   assert.ok(!buildRegistry(config).some((t) => t.name === "fs_read"));

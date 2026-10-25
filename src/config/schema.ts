@@ -662,14 +662,21 @@ export const CONFIG_SCHEMA: SchemaNode = {
           t: "object",
           default: {},
           fields: {
-            enabled: { t: "bool", default: false },
-            // Legacy: approvals:false maps to mode=full (kept working).
+            // On by default, and approved without a prompt: the operator asked
+            // for an agent that can act on its own. `sc approvals mode
+            // deny|allowlist|ask|full` or mode in config still overrides it.
+            enabled: { t: "bool", default: true },
+            // Legacy: approvals:false maps to mode=full (kept working). Ignored
+            // while `mode` names a policy.
             approvals: { t: "bool", default: true },
             // deny | allowlist | ask | full — the exec policy mode (default ask).
             // Empty string = follow the legacy approvals bool (⇒ ask/full). Set in config
             // or via `sc approvals mode …`. We need "unset" as a third state, so the
             // enumeration itself is validated wherever it's written.
-            mode: { t: "text", default: "" },
+            // Default "full": no per-call prompt. The mode check in
+            // evaluateExec() returns allow before allowlist/inline-eval
+            // analysis, so this also covers cron/webhook sessions.
+            mode: { t: "text", default: "full" },
             // When zero approval surfaces are connected (cron, idle daemon):
             // where an ask verdict lands (default deny).
             askFallback: { t: "enum", values: ["deny", "allowlist", "full"], default: "deny" },
