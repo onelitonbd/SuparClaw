@@ -400,13 +400,23 @@ export class Settings {
       dd.classList.remove("dd--up");
       menu.hidden = false;
       btn.setAttribute("aria-expanded", "true");
-      // Flip upward only when the menu would spill past the pane it lives in
-      // (the settings pane scrolls itself; the window is not the constraint).
+      // Flip upward only when the menu would spill past whatever clips it
+      // (the settings pane and a modal body both scroll on their own).
       const r = btn.getBoundingClientRect();
-      const pane = dd.closest(".settings__main") as HTMLElement | null;
-      const bounds = pane ? pane.getBoundingClientRect() : { top: 0, bottom: window.innerHeight ?? 0 };
+      let clipTop = 0;
+      let clipBottom = window.innerHeight ?? 0;
+      let n: HTMLElement | null = dd.parentElement;
+      while (n) {
+        if (n.scrollHeight > n.clientHeight) {
+          const br = n.getBoundingClientRect();
+          clipTop = Math.max(clipTop, br.top);
+          clipBottom = Math.min(clipBottom, br.bottom);
+          break;
+        }
+        n = n.parentElement;
+      }
       const h = menu.offsetHeight ?? 0;
-      if (r.bottom + h + 8 > bounds.bottom && r.top - h - 8 >= bounds.top) dd.classList.add("dd--up");
+      if (r.bottom + h + 8 > clipBottom && r.top - h - 8 >= clipTop) dd.classList.add("dd--up");
       dd.classList.add("is-open");
       openDds.add(close);
       document.addEventListener("keydown", onKey, true);
@@ -695,12 +705,14 @@ export class Settings {
     plugins: any[] = [],
   ): void {
     const selected = new Set(configured.filter((m) => m.enabled).map((m) => m.ref));
-    const body = el("div", { class: "settings__body" });
+    const body = el("div", { class: "settings__stack" });
 
-    body.append(el("div", { class: "card" }, [
-      el("div", { class: "row__label" }, ["Models"]),
-      el("p", { class: "hint" }, [
-        "Pick which models are in the system. Click a provider to see the models fetched from it — only checked models appear in the model picker and everywhere else. Connect signs a provider in via an auth profile (API key or OAuth device code).",
+    this.#root.append(el("div", { class: "card setcard" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Models"]),
+        el("p", { class: "hint" }, [
+          "Pick which models are in the system. Click a provider to see the models fetched from it — only checked models appear in the model picker and everywhere else. Connect signs a provider in via an auth profile (API key or OAuth device code).",
+        ]),
       ]),
     ]));
 
@@ -751,7 +763,7 @@ export class Settings {
       open.onclick = go;
       (card as HTMLElement).style.cursor = "pointer";
       (card as HTMLElement).onclick = go;
-      body.append(card);
+      this.#root.append(card);
     }
 
     // Local services card (their implicit local discovery): lazy scan so the
@@ -760,7 +772,7 @@ export class Settings {
       el("div", { class: "row__label" }, ["Local services"]),
       el("p", { class: "hint" }, ["scanning this device for Ollama / LM Studio / vLLM / SGLang / llama.cpp…"]),
     ]);
-    body.append(localCard);
+    this.#root.append(localCard);
     void this.#fillLocalServices(localCard, names);
 
     // Their Settings → Models → Connect provider: plugins not yet configured.
@@ -775,14 +787,15 @@ export class Settings {
           b,
         ]);
       });
-      body.append(el("div", { class: "card" }, [
-        el("div", { class: "row__label" }, ["Connect provider"]),
+      this.#root.append(el("div", { class: "card setcard" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Connect provider"]),
         el("p", { class: "hint" }, ["Provider plugins with declared auth flows — the same entry point as the CLI (`sc models auth login`)."]),
-        ...rows,
-      ]));
+      ]),
+      ...rows,
+    ]));
     }
 
-    this.#root.append(body);
   }
 
   /** Local services discovery rows: state dot, models with ctx hints, Add. */
@@ -877,11 +890,14 @@ export class Settings {
    * default), OAuth device-code offered when the plugin declares one. */
   #connectProvider(name: string, plugin: any | null, currentBinding: string): void {
     const methods: string[] = plugin?.authMethods?.length ? plugin.authMethods : ["api-key", "token"];
-    const methodSel = el("select", { class: "inp", id: "auth-method" }) as HTMLSelectElement;
-    for (const m of methods) {
-      const opt = el("option", { value: m }, [m === "device-code" ? "device code (OAuth — approve in a browser)" : m.replace("-", " ")]) as HTMLOptionElement;
-      methodSel.append(opt);
-    }
+    const methodDd = this.#dropdown({
+      id: "auth-method",
+      value: methods[0] ?? "",
+      label: "Method",
+      placeholder: "— choose —",
+      options: methods.map((m) => ({ value: m, label: m === "device-code" ? "device code (OAuth — approve in a browser)" : m.replace("-", " ") })),
+    });
+    const methodSel = methodDd.sel;
     const keyInp = el("input", { class: "inp mono", id: "auth-key", type: "password", placeholder: "paste the credential", autocomplete: "off" }) as HTMLInputElement;
     const keyRow = el("div", { class: "modal__field" }, [
       el("label", { class: "lbl", for: "auth-key" }, [plugin?.env ? `key (env ${plugin.env} also exists)` : "key / token"]),
@@ -964,8 +980,8 @@ export class Settings {
         }
         body.append(
           el("div", { class: "modal__field" }, [
-            el("label", { class: "lbl", for: "auth-method" }, ["Method"]),
-            methodSel,
+            el("label", { class: "lbl", for: "auth-method-btn" }, ["Method"]),
+            methodDd.node,
             el("p", { class: "hint" }, [
               plugin?.label ?? name,
               currentBinding ? ` · currently bound to ${currentBinding}` : "",
@@ -1046,8 +1062,7 @@ export class Settings {
       value: this.#modelQuery,
     }) as HTMLInputElement;
 
-    const head = el("div", { class: "settings__body" }, [
-      el("div", { class: "card" }, [
+    this.#root.append(el("div", { class: "card" }, [
         el("div", { class: "prov__head" }, [
           el("span", { class: "prov__name" }, [provider]),
           el("div", { class: "prov__row" }, [back, refresh]),
@@ -1059,14 +1074,12 @@ export class Settings {
         warning
           ? el("p", { class: "hint", style: "color:var(--warn)" }, [warning])
           : el("span", {}),
-      ]),
-    ]);
+      ]));
 
     if (rows.length === 0) {
-      head.append(el("div", { class: "card" }, [
+      this.#root.append(el("div", { class: "card" }, [
         el("p", { class: "hint" }, ["No models fetched from this provider yet — try Refresh."]),
       ]));
-      this.#root.append(head);
       return;
     }
 
@@ -1143,7 +1156,7 @@ export class Settings {
       renderRows();
     };
 
-    head.append(
+    this.#root.append(
       el("div", { class: "card", style: "padding:12px 16px" }, [
         el("div", { class: "modal__field", style: "margin:0" }, [
           el("label", { class: "lbl", for: "model-search" }, [`${rows.length} fetched models`]),
@@ -1152,8 +1165,6 @@ export class Settings {
       ]),
       el("div", { class: "card", style: "padding:0;overflow:hidden" }, [list]),
     );
-
-    this.#root.append(head);
   }
 
   /** Capabilities popup for one fetched model. Save also selects it. */
@@ -1171,12 +1182,14 @@ export class Settings {
     const maxF = field("maxTokens", "Max output tokens (0 = provider default)", existing?.maxTokens ? String(existing.maxTokens) : "0", "0", "number");
     const tempF = field("temperature", "Temperature (blank = provider default)", typeof existing?.temperature === "number" ? String(existing.temperature) : "", "0.7", "number");
 
-    const effortSel = el("select", { class: "inp", id: "f-effort" }) as HTMLSelectElement;
-    for (const v of ["inherit", "off", "low", "medium", "high", "xhigh", "max"]) {
-      const opt = el("option", { value: v }, [v]) as HTMLOptionElement;
-      if ((existing?.reasoningEffort ?? "inherit") === v) opt.selected = true;
-      effortSel.append(opt);
-    }
+    const effortDd = this.#dropdown({
+      id: "f-effort",
+      value: existing?.reasoningEffort ?? "inherit",
+      label: "Default thinking",
+      placeholder: "— choose —",
+      options: ["inherit", "off", "low", "medium", "high", "xhigh", "max"].map((v) => ({ value: v, label: v })),
+    });
+    const effortSel = effortDd.sel;
 
     modal({
       title: ref,
@@ -1186,8 +1199,8 @@ export class Settings {
         body.append(
           labelF.wrap, ctxF.wrap, maxF.wrap, tempF.wrap,
           el("div", { class: "modal__field" }, [
-            el("label", { class: "lbl", for: "f-effort" }, ["Default thinking"]),
-            effortSel,
+            el("label", { class: "lbl", for: "f-effort-btn" }, ["Default thinking"]),
+            effortDd.node,
             el("p", { class: "hint" }, ["Per-model default; a session thinking choice still overrides it."]),
           ]),
           existing
@@ -1337,14 +1350,19 @@ export class Settings {
   }
 
   #renderProviders(providers: Record<string, Provider>): void {
-    const body = el("div", { class: "settings__body" });
+    this.#root.append(el("div", { class: "card setcard" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Providers"]),
+        el("p", { class: "hint" }, ["Base URLs and credentials for each endpoint. Test and probe a provider before relying on it."]),
+      ]),
+    ]));
     for (const [name, p] of Object.entries(providers)) {
       const edit = el("button", { class: "btn", type: "button" }, ["Edit"]);
       edit.onclick = () => this.#providerForm(name, providers, () => void this.render());
       const remove = el("button", { class: "btn danger", type: "button" }, ["Remove"]);
       remove.onclick = () => this.#removeProvider(name, providers, () => void this.render());
 
-      body.append(el("div", { class: "card" }, [
+      this.#root.append(el("div", { class: "card" }, [
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name" }, [name]),
@@ -1362,13 +1380,19 @@ export class Settings {
     const add = el("button", { class: "btn pri", type: "button" }, [plus, "Add provider"]);
     add.onclick = () => this.#providerForm(null, providers, () => void this.render());
 
-    this.#root.append(body, add);
+    this.#root.append(el("div", { class: "card setcard" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Add a provider"]),
+        el("p", { class: "hint" }, ["Custom endpoint: base URL + API key (or sign in via a provider plugin above)."]),
+      ]),
+      el("div", { class: "setfoot" }, [add]),
+    ]));
   }
 
   /* ---------------- skills ---------------- */
 
   #renderSkills(skills: any[]): void {
-    const body = el("div", { class: "settings__body" });
+    const body = el("div", { class: "settings__stack" });
 
     body.append(el("div", { class: "card" }, [
       el("div", { class: "row__label" }, ["Skills"]),
@@ -1400,7 +1424,7 @@ export class Settings {
       const badgeStyle = s.eligible
         ? "font-size:11px;font-weight:600;color:var(--accent);background:var(--accsoft);padding:2px 8px;border-radius:999px"
         : "font-size:11px;font-weight:600;color:var(--warn);padding:2px 8px;border-radius:999px";
-      body.append(el("div", { class: "card" }, [
+      this.#root.append(el("div", { class: "card" }, [
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name mono" }, [s.name]),
@@ -1932,7 +1956,7 @@ export class Settings {
   }
 
   async #renderTools(tools: any[], config: any = {}): Promise<void> {
-    const body = el("div", { class: "settings__body" });
+    const body = el("div", { class: "settings__stack" });
 
     body.append(await this.#execApprovalsCard());
     body.append(this.#execPolicyCard(config));
@@ -1948,7 +1972,7 @@ export class Settings {
     ]));
 
     for (const t of tools as any[]) {
-      body.append(el("div", { class: "card" }, [
+      this.#root.append(el("div", { class: "card" }, [
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name mono" }, [t.name]),
@@ -1975,7 +1999,7 @@ export class Settings {
   #usageReport: any = null;
 
   async #renderUsage(): Promise<void> {
-    const body = el("div", { class: "settings__body" });
+    const body = el("div", { class: "settings__stack" });
     this.#root.innerHTML = "";
     this.#root.append(body);
     body.append(el("div", { class: "hint" }, ["Loading usage report…"]));
@@ -3167,7 +3191,7 @@ export class Settings {
    *  Backup + Secrets pages, one System tab at our scale) ---------------- */
 
   async #renderSystem(config: any): Promise<void> {
-    const body = el("div", { class: "settings__body" });
+    const body = el("div", { class: "settings__stack" });
     this.#root.innerHTML = "";
     this.#root.append(body);
 
@@ -3558,7 +3582,7 @@ export class Settings {
       logPre,
     ]);
 
-    return el("div", { class: "settings__body" }, [card, logsDetails]);
+    return el("div", { class: "settings__stack" }, [card, logsDetails]);
   }
 
   /* ---------------- memory (OpenClaw's Dreams tab, adapted) ---------------- */
@@ -3575,7 +3599,7 @@ export class Settings {
       toast(`could not load memory: ${(err as Error).message}`, "err");
     }
 
-    const body = el("div", { class: "settings__body" });
+    const body = el("div", { class: "settings__stack" });
     const fmt = (ms: number | null | undefined): string =>
       ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never";
     const counts = status?.counts ?? { memoryLines: 0, dailyNotes: 0, diaryEntries: 0 };
@@ -3685,7 +3709,7 @@ export class Settings {
       }
       entries.reverse();
     }
-    const diaryList = el("div", { class: "settings__body" });
+    const diaryList = el("div", { class: "settings__stack" });
     if (entries.length === 0) {
       diaryList.append(el("p", { class: "hint" }, ["No diary entries yet — press Dream now, or wait for the schedule."]));
     }

@@ -1974,6 +1974,16 @@ textarea:focus-visible {
   max-width: 840px;
 }
 
+/* Stacked cards inside a tab (Models, Providers, Skills, …). The outer
+   #settings-body already carries the padding + max-width, so this wrapper
+   only adds vertical rhythm — no double padding, no double animation. */
+.settings__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
 /* ---- Defaults page: card sections, custom dropdowns, fallback chips ---- */
 
 .setcard__head {
@@ -2287,4 +2297,27 @@ textarea:focus-visible {
   .settings__sidebar {
     transition: none;
   }
+}
+
+/* ---- Models / Providers pages: mobile focus (tap targets, wrapping) ---- */
+
+.prov__head { flex-wrap: wrap; }
+.prov__count { margin-left: auto; }
+.prov__row { flex-wrap: wrap; }
+.prov__row .btn { flex: 1 1 120px; min-width: 0; }
+
+/* Coarse pointers: bigger tap targets for the small buttons. */
+@media (pointer: coarse) {
+  .btn.sm { height: 40px; padding: 0 14px; }
+  .prov__row .btn { min-height: 44px; }
+}
+
+/* Phones: stack provider actions and make them full-width. */
+@media (max-width: 640px) {
+  .prov__head { gap: 6px; }
+  .prov__row .btn { flex: 1 1 100%; }
+  .setfoot .btn { flex: 1 1 100%; }
+  .setfoot { flex-wrap: wrap; }
+  .card { padding: 14px; }
+  .settings__body, .settings__stack { gap: 12px; }
 }
