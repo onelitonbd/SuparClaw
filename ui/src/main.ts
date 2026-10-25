@@ -901,7 +901,15 @@ function renderModelMenu(): void {
     const short = r.provider !== "default" && r.label.startsWith(r.provider + "/")
       ? r.label.slice(r.provider.length + 1)
       : r.label;
-    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, [short]);
+    // Human-friendly display: drop hyphens/underscores and capitalise the
+    // first letter of each word (gemini-3.1-flash-lite -> Gemini 3.1 Flash Lite).
+    const friendly = short
+      .replace(/[-_]+/g, " ")
+      .split(" ")
+      .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+      .join(" ")
+      .trim();
+    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, [friendly || short]);
     row.title = r.label;
     if (r.value === currentModel) {
       row.append(el("span", { class: "model-menu__check" }, ["✓"]));
