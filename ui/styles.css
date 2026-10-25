@@ -992,6 +992,7 @@ textarea:focus-visible {
 }
 
 .model-menu__group {
+  flex: none;
   padding: 8px 10px 4px;
   font-size: 11px;
   text-transform: uppercase;
@@ -1000,6 +1001,7 @@ textarea:focus-visible {
 }
 
 .model-menu__row {
+  flex: none;
   display: flex;
   align-items: center;
   height: 32px;
@@ -1021,6 +1023,14 @@ textarea:focus-visible {
   color: var(--ink);
 }
 
+.model-menu__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .model-menu__row.is-current {
   background: var(--accsoft);
   color: var(--ink);
@@ -1028,7 +1038,8 @@ textarea:focus-visible {
 }
 
 .model-menu__check {
-  margin-left: auto;
+  flex: none;
+  margin-left: 8px;
   color: var(--accent);
 }
 

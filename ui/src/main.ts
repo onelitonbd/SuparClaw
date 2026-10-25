@@ -910,7 +910,8 @@ function renderModelMenu(): void {
       .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
       .join(" ")
       .trim();
-    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, [friendly || short]);
+    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, []);
+    row.append(el("span", { class: "model-menu__label" }, [friendly || short]));
     row.title = r.label;
     if (r.value === currentModel) {
       row.append(el("span", { class: "model-menu__check" }, ["✓"]));
