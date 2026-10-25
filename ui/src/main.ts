@@ -898,14 +898,15 @@ function renderModelMenu(): void {
     }
     // The group header already names the provider, so drop a redundant
     // "provider/" prefix from the row label to keep long ids readable.
-    const short = r.provider !== "default" && r.label.startsWith(r.provider + "/")
-      ? r.label.slice(r.provider.length + 1)
+    const provPrefix = r.provider + "/";
+    const short = r.provider !== "default" && r.label.toLowerCase().startsWith(provPrefix.toLowerCase())
+      ? r.label.slice(provPrefix.length)
       : r.label;
     // Human-friendly display: drop hyphens/underscores and capitalise the
     // first letter of each word (gemini-3.1-flash-lite -> Gemini 3.1 Flash Lite).
     const friendly = short
-      .replace(/[-_]+/g, " ")
-      .split(" ")
+      .replace(/[\/:_-]+/g, " ")
+      .split(/\s+/)
       .map((w) => (w.length ? w.charAt(0).toUpperCase() + w.slice(1) : w))
       .join(" ")
       .trim();
