@@ -1,30 +1,41 @@
-<!-- Settings interior (OpenClaw layout): dedicated sidebar + content pane.
-     Loaded lazily into #settings-view from ui/src/main.ts so index.html
-     stays light. -->
+<!-- Settings interior loaded lazily into #settings-view by ui/src/main.ts. -->
 <div class="settings">
   <div class="settings__topbar">
     <button class="ibtn settings__menu-btn" id="settings-menu" type="button" aria-label="Settings menu" aria-expanded="false" aria-controls="settings-sidebar">
       <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
     </button>
-    <span class="settings__topbar-brand">Settings</span>
-    <button class="settings__back" id="settings-back" type="button" style="margin-left:auto">
+    <div class="settings__topbar-lockup">
+      <span class="settings__brand-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2.2-6L13 18l2.2-6H21"/></svg>
+      </span>
+      <span class="settings__topbar-brand">
+        <span class="settings__topbar-name">SuparClaw</span>
+        <span class="settings__brand-divider" aria-hidden="true">/</span>
+        <span class="settings__topbar-context">Settings</span>
+      </span>
+    </div>
+    <button class="settings__back" id="settings-back" type="button">
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
       Back to app
     </button>
   </div>
+
   <div class="settings__panes">
     <aside class="settings__sidebar" id="settings-sidebar">
-      <div class="settings__brand">Settings</div>
-      <div class="settings__search">
+      <label class="settings__search" for="settings-search">
+        <svg class="settings__search-icon" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></svg>
         <input id="settings-search" type="search" placeholder="Search settings…" aria-label="Search settings" autocomplete="off" spellcheck="false" />
-      </div>
+      </label>
       <nav class="settings__nav" id="settings-nav" aria-label="Settings sections"></nav>
     </aside>
     <button class="settings__scrim" id="settings-scrim" type="button" aria-label="Close settings menu" hidden></button>
     <main class="settings__main">
-      <div class="settings__pagehead">
-        <h1 id="settings-title">Settings</h1>
-      </div>
+      <header class="settings__pagehead">
+        <div class="settings__pagehead-inner">
+          <h1 id="settings-title">Settings</h1>
+          <p class="settings__description" id="settings-description">Tune how your gateway and agent work.</p>
+        </div>
+      </header>
       <div class="settings__body" id="settings-body"></div>
     </main>
   </div>

@@ -110,6 +110,7 @@ const page = parseHTML(`<!doctype html><html><body>
   <button id="settings-menu"></button>
   <div id="settings-scrim" hidden></div>
   <span id="settings-title"></span>
+  <p id="settings-description"></p>
   <main id="settings-body"></main>
 </body></html>`);
 globalThis.document = page.document;
@@ -140,6 +141,38 @@ const fire = (node, type, props = {}) => {
 };
 const tap = (node) => fire(node, "click");
 const press = (node, key) => fire(node, "keydown", { key });
+
+test("Settings navigation has section context, decorative icons, and one active page", () => {
+  const buttons = [...document.querySelectorAll("#settings-nav .settings__nav-item")];
+  assert.equal(buttons.length, 14, "all existing destinations remain visible");
+  assert.equal(byId("settings-title").textContent, "Defaults");
+  assert.equal(byId("settings-description").textContent, "Set the model and agent behavior used for new conversations.");
+
+  const active = buttons.filter((button) => button.getAttribute("aria-current") === "page");
+  assert.equal(active.length, 1, "exactly one destination is announced as current");
+  assert.equal(active[0].querySelector(".settings__nav-label").textContent, "Defaults");
+  for (const button of buttons) {
+    const svg = button.querySelector(".settings__nav-icon svg");
+    assert.ok(svg, `${button.textContent.trim()} has an icon`);
+    assert.equal(svg.getAttribute("aria-hidden"), "true", "navigation labels provide the accessible names");
+  }
+});
+
+test("Settings search announces no matches and Escape restores the navigation", () => {
+  const search = byId("settings-search");
+  search.value = "no-such-settings-section-xyz";
+  fire(search, "input");
+
+  assert.equal(document.querySelectorAll("#settings-nav .settings__nav-item").length, 0);
+  const empty = document.querySelector("#settings-nav .settings__empty");
+  assert.ok(empty, "the empty state is visible");
+  assert.equal(empty.getAttribute("role"), "status", "screen readers receive the result update");
+  assert.equal(empty.textContent, "No sections match “no-such-settings-section-xyz”.");
+
+  press(search, "Escape");
+  assert.equal(search.value, "", "Escape clears the search field");
+  assert.equal(document.querySelectorAll("#settings-nav .settings__nav-item").length, 14);
+});
 
 test("Defaults page renders: no visible native <select>, every value store hidden", () => {
   const selects = $$("select");

@@ -1,7 +1,6 @@
-// Settings: Defaults, Models, Providers, Skills, Tools, Gateway, Runtime —
-// tabbed, one card per block.
+// Settings sections share the dedicated two-pane control-center shell.
 
-import { el, fuzzy, modal, toast } from "./dom.js";
+import { el, fuzzy, icon, modal, toast } from "./dom.js";
 import { friendlyModelName } from "./model-name.js";
 import { gateway } from "./rpc.js";
 import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./notifications.js";
@@ -10,22 +9,40 @@ type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: 
 
 type TabId = "model" | "models" | "providers" | "channels" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
 
-const TABS: { id: TabId; label: string; group?: string }[] = [
-  { id: "model", label: "Defaults", group: "Chat" },
-  { id: "models", label: "Models", group: "Chat" },
-  { id: "providers", label: "Providers", group: "Chat" },
-  { id: "channels", label: "Channels", group: "Integrations" },
-  { id: "usage", label: "Usage", group: "Monitoring" },
-  { id: "skills", label: "Skills", group: "Agent" },
-  { id: "tools", label: "Tools", group: "Agent" },
-  { id: "memory", label: "Memory", group: "Agent" },
-  { id: "automations", label: "Automations", group: "Agent" },
-  { id: "alerts", label: "Alerts", group: "System" },
-  { id: "gateway", label: "Gateway", group: "System" },
-  { id: "runtime", label: "Runtime", group: "System" },
-  { id: "config", label: "All settings", group: "Advanced" },
-  { id: "system", label: "System", group: "Advanced" },
+const TABS: { id: TabId; label: string; group?: string; description: string }[] = [
+  { id: "model", label: "Defaults", group: "Chat", description: "Set the model and agent behavior used for new conversations." },
+  { id: "models", label: "Models", group: "Chat", description: "Choose which models are available to your agent." },
+  { id: "providers", label: "Providers", group: "Chat", description: "Connect model providers and manage their credentials." },
+  { id: "channels", label: "Channels", group: "Integrations", description: "Choose where your agent can receive messages and send replies." },
+  { id: "usage", label: "Usage", group: "Monitoring", description: "Review token usage, costs, and model activity." },
+  { id: "skills", label: "Skills", group: "Agent", description: "Browse the instruction packs your agent can use." },
+  { id: "tools", label: "Tools", group: "Agent", description: "Control what your agent can run and when it needs approval." },
+  { id: "memory", label: "Memory", group: "Agent", description: "Manage what your agent keeps between conversations." },
+  { id: "automations", label: "Automations", group: "Agent", description: "Schedule recurring work and review its activity." },
+  { id: "alerts", label: "Alerts", group: "System", description: "Choose which events can notify this browser." },
+  { id: "gateway", label: "Gateway", group: "System", description: "Configure the gateway port, access rules, and web surface." },
+  { id: "runtime", label: "Runtime", group: "System", description: "Check the service and the capabilities it exposes." },
+  { id: "config", label: "All settings", group: "Advanced", description: "Inspect and edit the full configuration." },
+  { id: "system", label: "System", group: "Advanced", description: "Run health checks, review audit results, and manage backups." },
 ];
+
+/** Static, decorative line icons: labels remain visible and provide names. */
+const NAV_ICONS: Record<TabId, string> = {
+  model: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></svg>',
+  models: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>',
+  providers: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7V4m8 3V4M6 7h12v5a6 6 0 0 1-12 0V7Z"/><path d="M12 18v2m-4 0h8"/></svg>',
+  channels: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H6l-3 2v-5.5A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8 11h8m-8 3h5"/></svg>',
+  usage: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5m0 14h16"/><path d="M8 15v-4m4 4V7m4 8v-6m4 6V9"/></svg>',
+  skills: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 1 4 17.5Z"/><path d="M4 17.5A2.5 2.5 0 0 1 6.5 15H20M8 7h8m-8 4h6"/></svg>',
+  tools: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a4 4 0 0 0-5 5L4 17l3 3 5.5-5.5a4 4 0 0 0 5-5l-2.5 2.5-3-3Z"/></svg>',
+  memory: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4a3 3 0 0 0-5 2 3.5 3.5 0 0 0 .3 6.9A3.5 3.5 0 0 0 8 19h8a3.5 3.5 0 0 0 3.7-6.1A3.5 3.5 0 0 0 20 11a3 3 0 0 0-3-3 3 3 0 0 0-5-2 3 3 0 0 0-3-2Z"/><path d="M12 7v10m-3-7 3 2 3-2"/></svg>',
+  automations: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2m4-9 1.5-1.5M5 5 3.5 3.5"/></svg>',
+  alerts: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9m-8 12h4"/></svg>',
+  gateway: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01m4-10h4m-4 10h4"/></svg>',
+  runtime: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>',
+  config: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3m8-16h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="m10 8-3 4 3 4m4-8 3 4-3 4"/></svg>',
+  system: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></svg>',
+};
 
 const TAB_ALIASES: Record<string, TabId> = {
   defaults: "model",
@@ -67,6 +84,7 @@ export class Settings {
   #menu: HTMLElement | null = null;
   #scrim: HTMLElement | null = null;
   #title: HTMLElement | null = null;
+  #description: HTMLElement | null = null;
   #onChanged: () => void;
   #tab: TabId = "model";
   #hash: string = "";
@@ -85,6 +103,7 @@ export class Settings {
     this.#menu = document.getElementById("settings-menu");
     this.#scrim = document.getElementById("settings-scrim");
     this.#title = document.getElementById("settings-title");
+    this.#description = document.getElementById("settings-description");
     this.#onChanged = onChanged;
     // main.ts builds a fresh Settings per route change: always rebind so the
     // handlers belong to the live instance (the elements are static).
@@ -128,8 +147,10 @@ export class Settings {
   }
 
   async render(): Promise<void> {
-    // The content pane title follows the open section (Back button + title).
-    if (this.#title) this.#title.textContent = TABS.find((t) => t.id === this.#tab)?.label ?? "Settings";
+    // The page header is stable even while the Gateway is reconnecting.
+    const tab = TABS.find((t) => t.id === this.#tab);
+    if (this.#title) this.#title.textContent = tab?.label ?? "Settings";
+    if (this.#description) this.#description.textContent = tab?.description ?? "Configure your gateway and agent.";
     this.#renderNav();
 
     // The gateway answers over the WebSocket. If it is not connected yet
@@ -238,7 +259,8 @@ export class Settings {
 
   #renderNav(): void {
     if (!this.#nav) return;
-    const q = (this.#search?.value || "").toLowerCase().trim();
+    const query = (this.#search?.value || "").trim();
+    const q = query.toLowerCase();
     this.#nav.innerHTML = "";
     const groups = new Map<string, typeof TABS>();
     for (const t of TABS) {
@@ -247,13 +269,24 @@ export class Settings {
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g)!.push(t);
     }
+    if (groups.size === 0) {
+      this.#nav.append(el("div", { class: "settings__empty", role: "status" }, [
+        `No sections match “${query}”.`,
+      ]));
+      return;
+    }
     for (const [g, items] of groups) {
       const grp = el("div", { class: "settings__group" }, [el("div", { class: "settings__group-label" }, [g])]);
       for (const t of items) {
+        const active = t.id === this.#tab;
         const btn = el("button", {
-          class: `settings__nav-item${t.id === this.#tab ? " is-active" : ""}`,
+          class: `settings__nav-item${active ? " is-active" : ""}`,
           type: "button",
-        }, [t.label]);
+          "aria-current": active ? "page" : undefined,
+        }, [
+          icon(NAV_ICONS[t.id], "settings__nav-icon"),
+          el("span", { class: "settings__nav-label" }, [t.label]),
+        ]);
         btn.onclick = () => this.#setTab(t.id);
         grp.append(btn);
       }
@@ -735,7 +768,7 @@ export class Settings {
         e.stopPropagation();
         this.#connectProvider(name, plugins.find((p: any) => p.id === name) ?? null, binding);
       };
-      const card = el("div", { class: "card" }, [
+      const card = el("div", { class: "card settings__provider-row" }, [
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name" }, [name]),
@@ -1163,7 +1196,7 @@ export class Settings {
           search,
         ]),
       ]),
-      el("div", { class: "card", style: "padding:0;overflow:hidden" }, [list]),
+      el("div", { class: "card settings__contained", style: "padding:0;overflow:hidden" }, [list]),
     );
   }
 
@@ -3476,7 +3509,7 @@ export class Settings {
       ["Providers", String(Object.keys(config.providers ?? {}).length)],
     ];
 
-    const list = el("div", { class: "card", style: "padding:0;overflow:hidden" });
+    const list = el("div", { class: "card settings__contained", style: "padding:0;overflow:hidden" });
     for (const [k, v, style] of rows) {
       list.append(el("div", { class: "row", style: "padding:14px 16px" }, [
         el("span", { class: "row__label" }, [k]),
