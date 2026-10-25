@@ -2276,13 +2276,6 @@ export class Settings {
   /* ---------------- tools: web search ---------------- */
 
   /** Small field/cell builders shared by the tools config cards (P4 #38). */
-  #cfgSel(id: string, cur: string, options: [string, string][]): HTMLSelectElement {
-    const sel = el("select", { class: "in", id }) as HTMLSelectElement;
-    for (const [v, label] of options) {
-      sel.append(el("option", { value: v, ...(cur === v ? { selected: "" } : {}) }, [label]));
-    }
-    return sel;
-  }
   #cfgField(id: string, label: string, input: HTMLInputElement | HTMLSelectElement, hint?: string): HTMLElement {
     return el("div", { class: "modal__field" }, [
       el("label", { class: "lbl", for: id }, [label]),
@@ -2429,18 +2422,30 @@ export class Settings {
       strictCb,
     ]);
 
-    const askSel = this.#cfgSel("exec-ask-fallback", String(x.askFallback ?? "deny"), [
-      ["deny", "refuse it — and say so (default)"],
-      ["allowlist", "run it only if it is a safe bin"],
-      ["full", "run it anyway"],
-    ]);
-    askSel.onchange = mark;
-    const unatSel = this.#cfgSel("exec-unattended", String(x.unattended ?? "deny"), [
-      ["deny", "refuse it — and say so (default)"],
-      ["allowlist", "run it only if it is a safe bin"],
-      ["all", "run anything"],
-    ]);
-    unatSel.onchange = mark;
+    const askDd = this.#dropdown({
+      id: "exec-ask-fallback",
+      value: String(x.askFallback ?? "deny"),
+      label: "Fallback for an unseen prompt",
+      placeholder: "choose…",
+      options: [
+        { value: "deny", label: "refuse it — and say so (default)" },
+        { value: "allowlist", label: "run it only if it is a safe bin" },
+        { value: "full", label: "run it anyway" },
+      ],
+    });
+    const unatDd = this.#dropdown({
+      id: "exec-unattended",
+      value: String(x.unattended ?? "deny"),
+      label: "Runs with nobody watching",
+      placeholder: "choose…",
+      options: [
+        { value: "deny", label: "refuse it — and say so (default)" },
+        { value: "allowlist", label: "run it only if it is a safe bin" },
+        { value: "all", label: "run anything" },
+      ],
+    });
+    askDd.sel.addEventListener("change", mark);
+    unatDd.sel.addEventListener("change", mark);
 
     const timeoutInp = el("input", {
       class: "inp mono", id: "exec-timeout", inputmode: "numeric", autocomplete: "off", spellcheck: "false",
@@ -2545,14 +2550,14 @@ export class Settings {
         enabled: enabledCb.checked,
         approvals: legacyCb.checked,
         mode: /^(deny|allowlist|ask|full)$/.test(chosen) ? chosen : "",
-        askFallback: this.#selValue(askSel),
+        askFallback: this.#selValue(askDd.sel),
         strictInlineEval: strictCb.checked,
         safeBins: [...bins],
         safeBinTrustedDirs: dirsInp.value.split(",").map((v) => v.trim()).filter(Boolean),
         timeoutMs: Math.round(timeoutMs),
         sandbox,
         sandboxProot: prootCb.checked,
-        unattended: this.#selValue(unatSel),
+        unattended: this.#selValue(unatDd.sel),
       };
       saving = true;
       save.disabled = true;
@@ -2706,17 +2711,17 @@ export class Settings {
         el("span", { class: "cap" }, ["Start from"]),
         (() => {
           const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-cautious", title: "ask + refuse when nobody can answer" }, ["Cautious"]);
-          b.onclick = () => { pickMode("ask"); this.#setSelValue(askSel, "deny"); mark(); };
+          b.onclick = () => { pickMode("ask"); askDd.set("deny"); mark(); };
           return b;
         })(),
         (() => {
           const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-deny", title: "deny + refuse" }, ["Deny all"]);
-          b.onclick = () => { pickMode("deny"); this.#setSelValue(askSel, "deny"); mark(); };
+          b.onclick = () => { pickMode("deny"); askDd.set("deny"); mark(); };
           return b;
         })(),
         (() => {
           const b = el("button", { class: "btn sm is-warn", type: "button", id: "exec-preset-yolo", title: "full + run even unattended" }, ["YOLO"]);
-          b.onclick = () => { pickMode("full"); this.#setSelValue(askSel, "full"); this.#setSelValue(unatSel, "all"); mark(); };
+          b.onclick = () => { pickMode("full"); askDd.set("full"); unatDd.set("all"); mark(); };
           return b;
         })(),
       ]),
@@ -2728,9 +2733,9 @@ export class Settings {
         el("span", { class: "cap" }, ["When nobody can answer"]),
         el("span", { class: "setsec__count" }, ["2 rules"]),
       ]),
-      this.#setField("exec-ask-fallback", "If a prompt cannot be shown (no UI connected)", askSel),
-      this.#setField("exec-unattended", "Runs with nobody watching (cron jobs, webhooks)", unatSel,
-        "every unattended auto-decision is audited — it is written to the log and the session transcript"),
+      this.#setField("exec-ask-fallback", "If a prompt cannot be shown (no UI connected)", askDd.node, undefined, null),
+      this.#setField("exec-unattended", "Runs with nobody watching (cron jobs, webhooks)", unatDd.node,
+        "every unattended auto-decision is audited — it is written to the log and the session transcript", null),
     ]);
 
     const limitsSection = el("div", { class: "setsec" }, [
@@ -2740,11 +2745,11 @@ export class Settings {
       ]),
       el("div", { class: "setfield" }, [
         el("label", { class: "lbl", for: "exec-timeout" }, ["Timeout per command (ms)"]),
-        el("div", { class: "settings__inline" }, [timeoutInp, timeoutEcho]),
+        el("div", { class: "setline" }, [timeoutInp, timeoutEcho]),
         el("p", { class: "hint" }, ["1000–600000. A safety cap only — a hung command cannot block a session forever."]),
       ]),
       el("div", { class: "setfield" }, [
-        el("span", { class: "cap" }, ["Sandbox"]),
+        el("span", { class: "lbl" }, ["Sandbox"]),
         sandboxSeg,
         el("p", { class: "hint" }, ["Strict scrubs the environment, caps the process tree with prlimit, and — with the jail below — binds only the workspace read-write."]),
       ]),
@@ -2785,7 +2790,7 @@ export class Settings {
             search,
             list,
             el("div", { class: "exec__add" }, [
-              el("span", { class: "cap" }, ["Add a grant by hand"]),
+              el("span", { class: "lbl" }, ["Add a grant by hand"]),
               el("div", { class: "settings__inline" }, [patternInp, argInp, addBtn]),
               addProblem,
               el("p", { class: "hint" }, ["A bare name matches only commands found on PATH; a path or glob matches the resolved binary. The argv regex applies to the arguments after the binary."]),
@@ -2986,7 +2991,7 @@ export class Settings {
       input.oninput = () => { syncEchoes(); mark(); };
       return { input, echo, node: el("div", { class: "setfield" }, [
         el("label", { class: "lbl", for: id }, [label]),
-        el("div", { class: "settings__inline" }, [input, echo]),
+        el("div", { class: "setline" }, [input, echo]),
         el("p", { class: "hint" }, [hint]),
       ]) };
     };
@@ -3111,12 +3116,12 @@ export class Settings {
       ]),
       modeGroup,
       el("div", { class: "setfield" }, [
-        el("span", { class: "cap" }, ["auto means these model families"]),
+        el("span", { class: "lbl" }, ["auto means these model families"]),
         families,
         el("p", { class: "hint" }, ["Matched against the default model on the Defaults tab; anything else waits until you pick “always”."]),
       ]),
       el("div", { class: "setfield" }, [
-        el("span", { class: "cap" }, ["Executor"]),
+        el("span", { class: "lbl" }, ["Executor"]),
         executorSeg,
         el("p", { class: "hint" }, ["node is the only executor bundled here. quickjs is accepted by the schema and listed for parity, but a cell that asks for it stops with executor_unavailable rather than falling back."]),
       ]),
@@ -3269,7 +3274,7 @@ export class Settings {
         echo,
         node: el("div", { class: "setfield" }, [
           el("label", { class: "lbl", for: id }, [label]),
-          el("div", { class: "settings__inline" }, [input, echo]),
+        el("div", { class: "setline" }, [input, echo]),
           el("p", { class: "hint" }, [hint]),
         ]),
       };
@@ -3321,20 +3326,26 @@ export class Settings {
       return "PDF text is extracted locally — no model needed";
     };
 
-    const modelSelect = (id: string, cap: "image" | "audio", cur: string): HTMLSelectElement => {
-      const opts: [string, string][] = [["", "auto (first that works)"]];
+    const modelSelect = (id: string, label: string, cap: "image" | "audio", cur: string): Dd => {
+      const options: DdOption[] = [{ value: "", label: "auto (first that works)" }];
       for (const m of ladder) {
         if (!m.capabilities.includes(cap)) continue;
-        opts.push([m.label, m.valid ? m.label : `${m.label} (incomplete — skipped)`]);
+        options.push({
+          value: m.label,
+          label: m.valid ? m.label : `${m.label} (incomplete — skipped)`,
+          title: m.label,
+        });
       }
       // A hand-written value is kept and labelled, never silently dropped.
-      if (cur && !opts.some(([v]) => v === cur)) opts.push([cur, `${cur} — not in the ladder`]);
-      const sel = this.#cfgSel(id, cur, opts);
-      sel.onchange = () => { mark(); };
-      return sel;
+      if (cur && !options.some((o) => o.value === cur)) {
+        options.push({ value: cur, label: `${cur} — not in the ladder`, title: cur });
+      }
+      const dd = this.#dropdown({ id, value: cur, label, placeholder: "— choose a model —", options });
+      dd.sel.addEventListener("change", mark);
+      return dd;
     };
-    const imgModel = modelSelect("md-img-model", "image", String(x.image?.preferredModel ?? ""));
-    const audModel = modelSelect("md-aud-model", "audio", String(x.audio?.preferredModel ?? ""));
+    const imgModel = modelSelect("md-img-model", "Preferred image model", "image", String(x.image?.preferredModel ?? ""));
+    const audModel = modelSelect("md-aud-model", "Preferred audio model", "audio", String(x.audio?.preferredModel ?? ""));
 
     const imgPrompt = el("input", {
       class: "inp", id: "md-img-prompt", autocomplete: "off", spellcheck: "false",
@@ -3408,11 +3419,8 @@ export class Settings {
 
     const imageSection = capSection("Images", "image", [
       row("md-img-on", "Describe images", "Turn each image into a description before the model sees the turn.", imgOn, (v) => { imgOn = v; }),
-      el("div", { class: "setfield" }, [
-        el("label", { class: "lbl", for: "md-img-model" }, ["Preferred model"]),
-        imgModel,
-        el("p", { class: "hint" }, ["Only orders the media ladder above. On the automatic lane it is ignored — the reply model describes the image."]),
-      ]),
+      this.#setField("md-img-model", "Preferred model", imgModel.node,
+        "Only orders the media ladder above. On the automatic lane it is ignored — the reply model describes the image.", null),
       el("div", { class: "setfield" }, [
         el("label", { class: "lbl", for: "md-img-prompt" }, ["Description prompt"]),
         imgPrompt,
@@ -3420,18 +3428,15 @@ export class Settings {
       ]),
       el("div", { class: "setgrid" }, [nImgChars.node, nImgBytes.node, nImgTimeout.node]),
       el("div", { class: "setfield" }, [
-        el("span", { class: "cap" }, ["Images per turn"]),
+        el("span", { class: "lbl" }, ["Images per turn"]),
         attachSeg,
       ]),
     ]);
 
     const audioSection = capSection("Voice notes & audio", "audio", [
       row("md-aud-on", "Transcribe audio", "Voice notes, audio files and voice messages become text first.", audOn, (v) => { audOn = v; }),
-      el("div", { class: "setfield" }, [
-        el("label", { class: "lbl", for: "md-aud-model" }, ["Preferred model"]),
-        audModel,
-        el("p", { class: "hint" }, ["On the automatic lane this is the transcription model (default gpt-4o-mini-transcribe); with a media ladder it pulls that entry first."]),
-      ]),
+      this.#setField("md-aud-model", "Preferred model", audModel.node,
+        "On the automatic lane this is the transcription model (default gpt-4o-mini-transcribe); with a media ladder it pulls that entry first.", null),
       el("div", { class: "setgrid" }, [nAudBytes.node, nAudTimeout.node]),
       el("div", { class: "setfield" }, [
         el("label", { class: "lbl", for: "md-aud-lang" }, ["Language"]),
@@ -3510,7 +3515,7 @@ export class Settings {
         image: {
           ...(x.image ?? {}),
           enabled: imgOn,
-          preferredModel: this.#selValue(imgModel),
+          preferredModel: this.#selValue(imgModel.sel),
           prompt: imgPrompt.value.trim(),
           maxChars: imgChars,
           maxBytes: imgBytes,
@@ -3520,7 +3525,7 @@ export class Settings {
         audio: {
           ...(x.audio ?? {}),
           enabled: audOn,
-          preferredModel: this.#selValue(audModel),
+          preferredModel: this.#selValue(audModel.sel),
           maxBytes: audBytes,
           timeoutSeconds: audTimeout,
           language: audLang.value.trim(),
@@ -3757,7 +3762,7 @@ export class Settings {
         echo: echoEl,
         node: el("div", { class: "setfield" }, [
           el("label", { class: "lbl", for: id }, [label]),
-          el("div", { class: "settings__inline" }, [input, echoEl]),
+          el("div", { class: "setline" }, [input, echoEl]),
           el("p", { class: "hint" }, [hint]),
         ]),
       };
@@ -3875,6 +3880,10 @@ export class Settings {
         ]),
         providerSeg,
         el("p", { class: "hint" }, ["A not-ready provider can still be chosen — you may be about to paste its key — but an explicit choice never falls back."]),
+        // The test acts on the saved config, so it belongs beside the choice it
+        // exercises — not in the commit band with Save.
+        el("div", { class: "settings__inline" }, [testBtn]),
+        testOut,
       ]),
       el("div", { class: "setsec" }, [
         el("div", { class: "setsec__head" }, [
@@ -3906,7 +3915,7 @@ export class Settings {
       el("div", { class: "setcard__status" }, [statusTag, statusNote]),
       ...(stError ? [el("p", { class: "hint" }, [`Provider list could not be read — ${stError}. Everything below still saves.`])] : []),
       policyZone,
-      el("div", { class: "setfoot" }, [note, problem, testOut, testBtn, save]),
+      el("div", { class: "setfoot" }, [note, problem, save]),
     ]);
   }
 
@@ -3951,7 +3960,7 @@ export class Settings {
               t.needsApproval ? "asks approval" : "no approval",
             ]),
           ]),
-          el("div", { class: "prov__url" }, [t.description || ""]),
+          el("div", { class: "tool__desc" }, [t.description || ""]),
         ])),
       el("div", { class: "setfoot" }, [
         el("span", { class: "setfoot__note" }, ["Read-only inventory — nothing on this card changes the config."]),
@@ -5966,9 +5975,11 @@ export class Settings {
 
   /** A field inside a settings card: label, control, explanatory sentence.
    *  `#cfgField` is the modal idiom (`modal__field`); a card wants `setfield`. */
-  #setField(id: string, label: string, input: HTMLElement, hint?: string): HTMLElement {
+  #setField(id: string, label: string, input: HTMLElement, hint?: string, forId: string | null = id): HTMLElement {
     return el("div", { class: "setfield" }, [
-      el("label", { class: "lbl", for: id }, [label]),
+      // A `for` label only when the control it names can take focus. A dropdown
+      // is a button next to a `display: none` store; its own aria-label names it.
+      forId ? el("label", { class: "lbl", for: forId }, [label]) : el("span", { class: "lbl" }, [label]),
       input,
       ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
     ]);
@@ -5979,10 +5990,6 @@ export class Settings {
   #selValue(sel: HTMLSelectElement): string {
     const os = [...sel.querySelectorAll("option")];
     return (os.find((o) => o.selected) ?? os[0])?.value ?? "";
-  }
-
-  #setSelValue(sel: HTMLSelectElement, value: string): void {
-    for (const o of [...sel.querySelectorAll("option")]) o.selected = o.value === value;
   }
 
   /** One field on a settings page: short label, the control, then the sentence

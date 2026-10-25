@@ -258,7 +258,10 @@ test("the test button acts against the saved config and writes nothing", async (
   assert.equal(call.params.provider, "brave", "the saved provider, not the unsaved draft");
   assert.equal(sets().length, 0);
   assert.match(byId("ws-test-out").textContent, /✓ brave · 2 result\(s\) in 42ms/);
-  assert.match($(".web-search .setfoot").textContent, /Test saved settings/);
+  // It belongs beside the provider it exercises, not in the commit band.
+  assert.match($(".web-search .setsec").textContent, /Test saved settings/);
+  assert.doesNotMatch($(".web-search .setfoot").textContent, /Test saved settings/);
+  assert.equal($$(".web-search .setfoot > *").length, 3, "note, error line, save");
 });
 
 test("a failing test says so instead of going blank", async () => {

@@ -140,7 +140,22 @@ const opts = (sel) => [...sel.querySelectorAll("option")];
 // linkedom does not implement HTMLSelectElement.value; both the page and these
 // tests go through the options so the same code path is measured.
 const selValue = (id) => (opts(byId(id)).find((o) => o.selected) ?? opts(byId(id))[0])?.value ?? "";
-const setSel = (id, value) => { for (const o of opts(byId(id))) o.selected = o.value === value; };
+// The page's own menu: open the button, click the row whose label starts with
+// the text. #dropdown keeps one menu open at a time, so the search is global.
+const pick = async (id, label) => {
+  fire(byId(`${id}-btn`), "click");
+  await settle();
+  const opt = $$(".dd__menu:not([hidden]) .dd__opt").find((o) => (o.textContent ?? "").trim().startsWith(label));
+  assert.ok(opt, `menu for ${id} offers "${label}"`);
+  fire(opt, "click");
+  await settle();
+};
+const menuLabels = (id) => {
+  fire(byId(`${id}-btn`), "click");
+  const labels = $$(".dd__menu:not([hidden]) .dd__opt").map((o) => (o.textContent ?? "").replace("✓", "").trim());
+  fire(byId(`${id}-btn`), "click");
+  return labels;
+};
 
 const open = async ({ cfg, approvals, failApprovals, failSet } = {}) => {
   globalThis.__GW_CALLS = [];
@@ -364,7 +379,7 @@ test("presets fill the draft and do not save", async () => {
   assert.ok(byId("exec-mode-deny").checked);
   assert.equal($(".setcard__status .settings__tag").textContent, "mode deny");
   assert.equal(selValue("exec-unattended"), "all", "a preset only touches what it names");
-  setSel("exec-unattended", "deny");
+  await pick("exec-unattended", "refuse it");
 });
 
 test("switching exec off says nothing below it applies", async () => {

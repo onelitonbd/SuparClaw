@@ -2407,10 +2407,44 @@ html[data-theme-mode='dark'] .modal {
 
 .settings .setgrid .modal__field { margin-top: 0; }
 
-.settings .setfield { min-width: 0; }
+/* Card fields carry the rhythm the modal idiom already had: one gap between
+   fields, none at the top of a group, none inside a grid (it has its own). */
+.settings .setfield {
+  min-width: 0;
+  margin-top: 14px;
+}
+
+.settings .setfield:first-child { margin-top: 0; }
+/* A section head already carries 10px under it: the first field adds none. */
+.settings .setsec__head + .setfield { margin-top: 0; }
+.settings .setgrid > .setfield { margin-top: 0; }
 .settings .setfield > .hint { margin-top: 6px; }
 
+/* A field that is present but inert (the echo format with the echo off). */
+.settings .setfield.is-off { opacity: .55; }
+
 .settings .setfield--wide { grid-column: 1 / -1; }
+
+/* A number and its unit on one line: the field is sized to the digits, the
+   echo never wraps, and the pair reads as one value. */
+.settings .setline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings .setline > .inp {
+  width: 11ch;
+  min-width: 88px;
+  max-width: 140px;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 14px;
+  text-align: right;
+}
+
+.settings .setline > .setcard__echo { white-space: nowrap; }
 
 /* -------------------------------------------------------------- controls ---- */
 
@@ -2580,12 +2614,19 @@ html[data-theme-mode='dark'] .settings select.inp {
 }
 
 /* Rows: the label/control list that replaces stacks of naked fields. */
+/* The label over its hint, not beside it: two inline boxes in a plain block
+   run together ("Never auto-allow inline evalnode -e, …"). */
 .settings .row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
   flex: 1 1 240px;
 }
 
-.settings .row__main > .hint { margin-top: 3px; }
+.settings .row__main > .row__label { flex: 0 0 auto; }
+
+.settings .row__main > .hint { margin-top: 0; }
 .settings .row {
   display: flex;
   align-items: center;
@@ -3378,6 +3419,15 @@ html[data-theme-mode='dark'] .settings select.inp {
   color: var(--ink3);
 }
 
+/* A tool's description is prose, not a URL: same muted size as a hint, but
+   not monospace and never word-broken mid-word. */
+.settings .tool__desc {
+  margin-top: 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink3);
+}
+
 .settings .prov__url,
 .settings .prov__key {
   font-family: var(--mono);
@@ -3499,6 +3549,14 @@ html[data-theme-mode='dark'] .settings select.inp {
   align-items: center;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* A text field in an inline row shares the row instead of claiming 100% of it
+   (the grant form used to stack: pattern, argv, then the button). */
+.settings .settings__inline > .inp {
+  flex: 1 1 220px;
+  width: auto;
+  min-width: 0;
 }
 
 /* The allowlist ledger: one row per grant, hairline separated, revoke on the

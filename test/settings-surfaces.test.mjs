@@ -79,8 +79,10 @@ test("#38 code mode + media cards cover their config surfaces", () => {
   assert.match(src, /concurrency,/);
   assert.match(src, /attachments_all: attachAll/);
   assert.match(src, /"md-aud-echo"/); // transcript echo toggle (their echo surface)
-  assert.match(src, /preferredModel: this\.#selValue\(imgModel\)/);
-  assert.match(src, /preferredModel: this\.#selValue\(audModel\)/);
+  assert.match(src, /preferredModel: this\.#selValue\(imgModel\.sel\)/);
+  assert.match(src, /preferredModel: this\.#selValue\(audModel\.sel\)/);
+  // the model pickers are this app's menu, not a platform select
+  assert.match(src, /this\.#dropdown\(\{ id, value: cur, label, placeholder: "— choose a model —", options \}\)/);
   // "0 = the runtime default" comes from the engine, and the echo says which
   assert.match(src, /gateway\.request\("media\.get"\)/);
   assert.match(src, /default \(\$\{/);

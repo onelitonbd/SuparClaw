@@ -154,7 +154,20 @@ const tag = () => $(".media-card .setcard__status .settings__tag").textContent;
 const statusNote = () => $(".media-card .setcard__status-note").textContent;
 const opts = (id) => [...byId(id).querySelectorAll("option")];
 const selValue = (id) => (opts(id).find((o) => o.selected) ?? opts(id)[0])?.value ?? "";
-const setSel = (id, value) => { for (const o of opts(id)) o.selected = o.value === value; fire(byId(id), "change"); };
+const pick = async (id, label) => {
+  fire(byId(`${id}-btn`), "click");
+  await settle();
+  const opt = $$(".dd__menu:not([hidden]) .dd__opt").find((o) => (o.textContent ?? "").replace("✓", "").trim().startsWith(label));
+  assert.ok(opt, `menu for ${id} offers "${label}"`);
+  fire(opt, "click");
+  await settle();
+};
+const menuLabels = (id) => {
+  fire(byId(`${id}-btn`), "click");
+  const labels = $$(".dd__menu:not([hidden]) .dd__opt").map((o) => (o.textContent ?? "").replace("✓", "").trim());
+  fire(byId(`${id}-btn`), "click");
+  return labels;
+};
 const type = async (id, value) => {
   const node = byId(id);
   node.value = value;
@@ -273,21 +286,30 @@ test("the echo format is inert until the echo is on, and then it must carry {tra
   assert.equal(byId("md-aud-fmt").getAttribute("aria-invalid"), "true");
 });
 
-test("a preferred model is picked from the ladder, and an unmatched stored value is kept labelled", () => {
-  const img = opts("md-img-model").map((o) => o.textContent);
-  assert.deepEqual(img, ["auto (first that works)", "openai/gpt-4o-mini"]);
-  const aud = opts("md-aud-model").map((o) => o.textContent);
-  assert.deepEqual(aud, ["auto (first that works)", "cli:whisper-cli", "hand/written — not in the ladder"]);
-  assert.equal(selValue("md-aud-model"), "hand/written");
+test("a preferred model is picked from this app's menu, and a stored value outside the ladder is kept", () => {
+  // The menu is the truth: it is what the reader opens.
+  assert.deepEqual(menuLabels("md-img-model"), ["auto (first that works)", "openai/gpt-4o-mini"]);
+  assert.deepEqual(menuLabels("md-aud-model"), [
+    "auto (first that works)", "cli:whisper-cli", "hand/written — not in the ladder",
+  ]);
+  assert.equal(selValue("md-aud-model"), "hand/written", "the stored value is still what is selected");
+  assert.match($("#md-aud-model-btn .dd__val").textContent, /hand\/written/);
+});
+
+test("the model menus are the app's dropdowns, not platform selects", () => {
+  for (const id of ["md-img-model", "md-aud-model"]) {
+    assert.ok(byId(id).classList.contains("dd__store"), `${id} is a hidden store`);
+    assert.equal(byId(`${id}-btn`).getAttribute("aria-haspopup"), "listbox");
+    assert.equal(byId(`${id}-btn`).getAttribute("aria-expanded"), "false");
+    assert.match(byId(`${id}-btn`).getAttribute("aria-label"), /^Preferred (image|audio) model: /);
+  }
 });
 
 test("picking auto writes an empty preference, not a word", async () => {
-  setSel("md-img-model", "openai/gpt-4o-mini");
-  await settle();
+  await pick("md-img-model", "openai/gpt-4o-mini");
   await click("media-save");
   assert.equal(sets().at(-1).params.value.image.preferredModel, "openai/gpt-4o-mini");
-  setSel("md-img-model", "");
-  await settle();
+  await pick("md-img-model", "auto");
   await click("media-save");
   assert.equal(sets().at(-1).params.value.image.preferredModel, "");
 });
@@ -331,8 +353,7 @@ test("capability toggles are written as booleans", async () => {
 
 test("a select or toggle marks the draft, and the marker clears on save", async () => {
   assert.equal(noteText(), "");
-  setSel("md-aud-model", "cli:whisper-cli");
-  await settle();
+  await pick("md-aud-model", "cli:whisper-cli");
   assert.equal(noteText(), "Unsaved changes");
   await click("media-save");
   assert.equal(noteText(), "");
