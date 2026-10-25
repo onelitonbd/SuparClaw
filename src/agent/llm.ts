@@ -556,6 +556,13 @@ interface StreamOptions {
    * and "off" omit the field (custom endpoints reject an explicit off).
    */
   reasoning?: string;
+  /**
+   * Per-model tuning keyed by the wire ref, so a fallback attempt runs on its own
+   * temperature / output cap / thinking level instead of inheriting the primary
+   * model's. `maxTokens: 0` means "the provider's default" — omit the field —
+   * because inheriting a big model's cap onto a small one is a hard 400.
+   */
+  tuning?: Record<string, { temperature?: number; maxTokens?: number; reasoning?: string }>;
 }
 
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
@@ -680,7 +687,7 @@ export class LlmClient {
     // calling — raw tool JSON leaks into text). Same retry/fallback ladder,
     // NDJSON wire instead of SSE.
     if (resolved.api === "ollama") {
-      yield* this.#ollamaStreamOnce(resolved, opts, profileId);
+      yield* this.#ollamaStreamOnce(resolved, opts, profileId, opts.tuning?.[modelRef]);
       return;
     }
     // Gemini/Vertex tool rounds need their functionCall parts signed (real
@@ -694,9 +701,13 @@ export class LlmClient {
       stream_options: { include_usage: true },
     };
     if (opts.tools?.length) body["tools"] = opts.tools;
-    if (opts.temperature !== undefined) body["temperature"] = opts.temperature;
-    if (opts.maxTokens !== undefined) body["max_tokens"] = opts.maxTokens;
-    const effort = opts.reasoning;
+    const tune = opts.tuning?.[modelRef];
+    const temperature = tune?.temperature !== undefined ? tune.temperature : opts.temperature;
+    // 0 (or absent) after a profile said so = the provider's default: omit.
+    const maxTokens = tune?.maxTokens !== undefined ? (tune.maxTokens || undefined) : opts.maxTokens;
+    if (temperature !== undefined) body["temperature"] = temperature;
+    if (maxTokens !== undefined) body["max_tokens"] = maxTokens;
+    const effort = tune?.reasoning ?? opts.reasoning;
     if (effort && effort !== "inherit" && effort !== "off") body["reasoning_effort"] = effort;
     if (signToolCalls && this.#googleExt) {
       // Gemini's OpenAI-compat extension: ask for thought summaries explicitly.
@@ -970,6 +981,7 @@ export class LlmClient {
     resolved: ResolvedModel,
     opts: StreamOptions,
     profileId: string | undefined,
+    tune?: { temperature?: number; maxTokens?: number; reasoning?: string },
   ): AsyncGenerator<StreamEvent> {
     const body: Record<string, unknown> = {
       model: resolved.model,
@@ -978,8 +990,10 @@ export class LlmClient {
     };
     if (opts.tools?.length) body["tools"] = opts.tools;
     const options: Record<string, unknown> = {};
-    if (opts.temperature !== undefined) options["temperature"] = opts.temperature;
-    if (opts.maxTokens !== undefined) options["num_predict"] = opts.maxTokens;
+    const temperature = tune?.temperature !== undefined ? tune.temperature : opts.temperature;
+    const maxTokens = tune?.maxTokens !== undefined ? (tune.maxTokens || undefined) : opts.maxTokens;
+    if (temperature !== undefined) options["temperature"] = temperature;
+    if (maxTokens !== undefined) options["num_predict"] = maxTokens;
     if (Object.keys(options).length > 0) body["options"] = options;
     // Thinking models: an explicit "off" silences thinking entirely; anything
     // else enables it when the model supports thinking (their capability rule

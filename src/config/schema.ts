@@ -204,8 +204,17 @@ export const CONFIG_SCHEMA: SchemaNode = {
             id: { t: "string", default: "main" },
             model: { t: "string", default: "" },
             fallbacks: { t: "array", of: { t: "string" }, default: [] },
-            maxToolIterations: { t: "int", min: 1, max: 40, default: 12 },
-            contextBudgetChars: { t: "int", min: 2000, default: 200000 },
+            // No upper bound on purpose: how many tool rounds a task needs is a
+            // property of the task, not a number we can guess. Runaway turns are
+            // stopped by content (ToolLoopDetector + the loop-guard pass), never
+            // by a count.
+            maxToolIterations: { t: "int", min: 1, default: 12 },
+            // Legacy fallback only. The history budget is derived from the
+            // model's context window (Settings → Models → Tune) — see
+            // src/agent/context-budget.ts. This value is used only when no model
+            // in the chain declares a window; `hidden` keeps it out of the
+            // All-settings form so it cannot look like a live knob.
+            contextBudgetChars: { t: "int", min: 2000, default: 200000, hidden: true },
             // Legacy alias — superseded by messages.queue.mode. Kept so old
             // configs still validate; the new section wins when both exist.
             queueMode: { t: "enum", values: ["steer", "followup"], default: "followup" },

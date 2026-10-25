@@ -61,7 +61,9 @@ test("#38 code mode + media cards cover their config surfaces", () => {
 
 test("#39 agent identity + defaults on the Defaults tab", () => {
   assert.match(src, /this\.#renderAgentIdentity\(config\);/);
-  assert.match(src, /this\.#renderAgentDefaults\(defaults\);/);
+  // The card now also receives the enabled profiles, so its caption can say which
+  // model's window the history budget came from.
+  assert.match(src, /this\.#renderAgentDefaults\(defaults, configured\.filter\(\(m\) => m\.enabled\)\);/);
   // identity (their Personal identity page)
   assert.match(src, /id: "identity-save"/);
   assert.match(src, /id: iid, value, placeholder/);
@@ -70,9 +72,16 @@ test("#39 agent identity + defaults on the Defaults tab", () => {
   }
   // defaults — every named key from the row
   assert.match(src, /id: "agent-defaults-save"/);
+  // The context budget is no longer written from here: the window is per model
+  // (Models → Tune) and the budget is derived from it. Nothing on this page may
+  // offer a second knob that could disagree with the model.
+  assert.ok(!src.includes("ad-budget"), "the context budget field is gone");
+  assert.ok(src.includes("Models → Tune"), "the card says where the window is set");
+  assert.ok(!src.includes('["agents.defaults.contextBudgetChars"'), "and it writes no budget leaf");
+  assert.match(src, /No ceiling/); // iterations: no 1-40 rating any more
+  assert.ok(!src.includes("Math.min(40,"), "the 40-round clamp is gone");
   for (const path of [
     "agents.defaults.maxToolIterations",
-    "agents.defaults.contextBudgetChars",
     "agents.defaults.queueMode",
     "agents.defaults.maxConcurrent",
     "agents.defaults.reasoningEffort",

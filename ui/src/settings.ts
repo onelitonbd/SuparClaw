@@ -307,7 +307,7 @@ export class Settings {
       // Defaults tab offers the SELECTED models only — the strict filter.
       this.#renderModel(defaults, configured.filter((m) => m.enabled), modelsWarning);
       this.#renderAgentIdentity(config);
-      this.#renderAgentDefaults(defaults);
+      this.#renderAgentDefaults(defaults, configured.filter((m) => m.enabled));
     } else if (this.#tab === "models") {
       if (this.#modelsProvider) {
         this.#renderProviderModels(this.#modelsProvider, providers, configured, models, details, modelsWarning);
@@ -1090,8 +1090,13 @@ export class Settings {
   }
 
   /** Agent defaults (P4 #39): loop limits, lane caps, subagent budget,
-   *  reasoning + usage-visibility defaults — their Agents Defaults page. */
-  #renderAgentDefaults(d: any): void {
+   *  reasoning + usage-visibility defaults — their Agents Defaults page.
+   *
+   *  There is no context-budget field: the history budget is derived from the
+   *  model's declared context window (Settings → Models → Tune), so the card
+   *  states where the number comes from instead of pretending the user can set
+   *  it here. `selected` is the enabled model profiles, used only for that line. */
+  #renderAgentDefaults(d: any, selected: any[] = []): void {
     // Labels name the thing; ranges, units and consequences live in the hint
     // under the control. A label that documents itself is a label nobody reads.
     const mkNum = (
@@ -1124,9 +1129,7 @@ export class Settings {
     };
     const sub = d.subagents ?? {};
     const iterations = mkNum("ad-iterations", "Tool iterations", Number(d.maxToolIterations ?? 12),
-      "1–40. How many tool calls one turn may make.");
-    const budget = mkNum("ad-budget", "Context budget", Number(d.contextBudgetChars ?? 200000),
-      "Characters, minimum 2000. Scales to ~70% of the model window when one is known.");
+      "No ceiling — one turn keeps working until it answers. The loop guard still stops a repeat.");
     const concur = mkNum("ad-concurrent", "Concurrent runs", Number(d.maxConcurrent ?? 0),
       "0 = auto (max(8, CPU × 4)).");
     const queueSel = mkSel("ad-queue", "Legacy queue mode", String(d.queueMode ?? "followup"),
@@ -1155,6 +1158,35 @@ export class Settings {
       [["inherit", "inherit"], ["prefer", "prefer (:main)"], ["suggest", "suggest"]],
       "It is prompt guidance only — nothing is enforced by it.");
 
+    // Where the history budget comes from, in the same numbers the runtime uses.
+    // ui/src cannot import server code, so these three constants are repeated from
+    // src/agent/context-budget.ts (test/context-budget.test.mjs asserts they agree).
+    const CHARS_PER_TOKEN = 4;
+    const WINDOW_SHARE = 0.7;
+    const MAX_HISTORY_CHARS = 400_000;
+    const budgetLine = (): HTMLElement => {
+      const current = String(d.model ?? "");
+      const hit = (selected as any[]).find((m) => String(m.id ?? m.ref ?? "") === current);
+      const window = Number(hit?.contextWindow ?? 0);
+      if (window > 0) {
+        const raw = Math.round(window * CHARS_PER_TOKEN * WINDOW_SHARE);
+        const chars = Math.max(8000, Math.min(raw, MAX_HISTORY_CHARS));
+        const fmt = (n: number): string => (n >= 1_000_000 ? `${Number((n / 1_000_000).toFixed(1))}M` : `${Math.round(n / 1000)}k`);
+        const label = String(hit?.label || hit?.id || hit?.ref || current);
+        // Say which number is the cap when it binds, or the arithmetic reads wrong
+        // (a 200k window "should" be 560k characters, not 400k).
+        const amount = raw > MAX_HISTORY_CHARS
+          ? `${fmt(raw)} characters would fit (capped at ${fmt(MAX_HISTORY_CHARS)})`
+          : `about ${fmt(chars)} characters fit`;
+        return el("p", { class: "hint" }, [
+          `History follows the model: ${friendlyModelName(label, String(hit?.ref ?? "").split("/")[0] || "")} declares a ${fmt(window)} window, so ${amount} and compaction starts before that. Change it per model in Models → Tune.`,
+        ]);
+      }
+      return el("p", { class: "hint" }, [
+        "No context window is set for the model this session starts on, so history falls back to 200,000 characters. Give the model a window in Models → Tune and this follows it — and it can never exceed the window.",
+      ]);
+    };
+
     const sec = (title: string, nodes: HTMLElement[], note?: string): HTMLElement =>
       el("div", { class: "def-sec" }, [
         el("div", { class: "def-sec__head" }, [
@@ -1171,7 +1203,11 @@ export class Settings {
         el("h3", {}, ["Run limits"]),
         el("p", { class: "hint" }, ["What one turn may do when a session brings no settings of its own."]),
       ]),
-      sec("Loop & limits", [iterations.node, budget.node, concur.node, queueSel.node]),
+      el("div", { class: "def-sec" }, [
+        el("div", { class: "def-sec__head" }, [el("span", { class: "cap" }, ["Loop & limits"])]),
+        el("div", { class: "setgrid" }, [iterations.node, concur.node, queueSel.node]),
+        budgetLine(),
+      ]),
       sec("Reasoning & replies", [reasoning.node, viewSel.node, usageSel.node]),
       sec("Subagents", [subConcur.node, subModel.node, subDepth.node, subThink.node, subDeleg.node]),
       el("div", { class: "setfoot" }, [note, saveD]),
@@ -1181,8 +1217,7 @@ export class Settings {
     saveD.onclick = async () => {
       const ok = await this.#setMany(
         [
-          ["agents.defaults.maxToolIterations", Math.max(1, Math.min(40, Number(iterations.input.value) || 12))],
-          ["agents.defaults.contextBudgetChars", Math.max(2000, Number(budget.input.value) || 60000)],
+          ["agents.defaults.maxToolIterations", Math.max(1, Math.trunc(Number(iterations.input.value)) || 12)],
           ["agents.defaults.queueMode", queueSel.sel.value],
           ["agents.defaults.maxConcurrent", Math.max(0, Number(concur.input.value) || 0)],
           ["agents.defaults.reasoningEffort", reasoning.sel.value],
@@ -1691,6 +1726,12 @@ export class Settings {
     };
     const labelF = field("label", "Label (optional)", existing?.label ?? "", ref.split("/").slice(1).join("/"));
     const ctxF = field("contextWindow", "Context window (tokens)", String(existing?.contextWindow || hintCtx || ""), "auto-detect");
+    // This is the only place a context window is entered, and it is the number the
+    // history budget and the compaction trigger are derived from — say so here
+    // rather than in a Settings page that no longer has a field of its own.
+    ctxF.wrap.append(el("p", { class: "hint" }, [
+      "Drives the history budget (about 70% of it, in characters) and when compaction starts. Blank = auto-detect from the provider.",
+    ]));
     const maxF = field("maxTokens", "Max output tokens (0 = provider default)", existing?.maxTokens ? String(existing.maxTokens) : "0", "0", "number");
     const tempF = field("temperature", "Temperature (blank = provider default)", typeof existing?.temperature === "number" ? String(existing.temperature) : "", "0.7", "number");
 

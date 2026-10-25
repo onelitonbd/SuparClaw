@@ -7,6 +7,18 @@ export { Editor } from "./tui/editor.js";
 export { parseKeys } from "./tui/keys.js";
 export { parseConfig, validate, applyDefaults, emptyConfig, CONFIG_SCHEMA, modelProfiles, modelProfile, execModeOf, type ExecMode, type ExecAskFallback } from "./config/schema.js";
 export { parseFrontmatter, discoverSkills, matchSkills, skillsCatalog, writeSkill, skillSlug, readSkillBody } from "./agent/skills.js";
+export {
+  CHARS_PER_TOKEN,
+  WINDOW_SHARE,
+  MAX_HISTORY_CHARS,
+  MIN_HISTORY_CHARS,
+  FALLBACK_HISTORY_CHARS,
+  modelContextWindow,
+  historyBudget,
+  fallbackTuning,
+  type HistoryBudget,
+  type ModelTuning,
+} from "./agent/context-budget.js";
 export { Store } from "./state/db.js";
 export {
   tokenize,

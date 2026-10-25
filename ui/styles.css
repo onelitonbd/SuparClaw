@@ -3762,6 +3762,12 @@ html[data-theme-mode='dark'] .settings select.inp {
   margin-bottom: 12px;
 }
 
+/* The derived-budget line under a section grid: a fact, not a field. */
+.def-sec > .hint {
+  margin: 10px 0 0;
+  max-width: 62ch;
+}
+
 .def-sec__note {
   margin: 0;
   font-size: 12px;

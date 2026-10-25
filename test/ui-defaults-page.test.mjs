@@ -153,7 +153,7 @@ test("Defaults page renders: no visible native <select>, every value store hidde
 
 test("field ids survive the redesign (contracts other tests and scripts rely on)", () => {
   for (const id of ["defaults-model", "ad-queue", "ad-reasoning", "ad-rview", "ad-usage",
-    "ad-sub-think", "ad-sub-deleg", "ad-iterations", "ad-budget", "ad-concurrent",
+    "ad-sub-think", "ad-sub-deleg", "ad-iterations", "ad-concurrent",
     "identity-name", "identity-emoji", "identity-theme", "identity-save", "agent-defaults-save"]) {
     assert.ok(byId(id), `#${id} is missing`);
   }
@@ -252,7 +252,6 @@ test("Save defaults writes every documented leaf with the shown values", async (
   const written = new Map(globalThis.__GW_CALLS.filter((c) => c.method === "config.set").map((c) => [c.params.path, c.params.value]));
   const expected = {
     "agents.defaults.maxToolIterations": 12,
-    "agents.defaults.contextBudgetChars": 60000,
     "agents.defaults.queueMode": "followup",
     "agents.defaults.maxConcurrent": 0,
     "agents.defaults.reasoningEffort": "high",
@@ -268,6 +267,33 @@ test("Save defaults writes every documented leaf with the shown values", async (
     assert.ok(written.has(path), `never wrote ${path}`);
     assert.deepEqual(written.get(path), value, `wrong value for ${path}`);
   }
+});
+
+test("the context budget is derived from the model, not typed in here", () => {
+  // The Models tab owns the window; this card must not offer a second, conflicting
+  // knob — an older one could even exceed the model window (see context-budget.ts).
+  assert.equal(byId("ad-budget"), null, "no context budget field on the page");
+  const captions = $$(".agent-defaults .def-sec > .hint").map((n) => n.textContent);
+  assert.ok(captions.length >= 1, "the card says where the budget comes from");
+  const caption = captions.join(" ");
+  assert.match(caption, /Models → Tune/, "it points at the only place the window is set");
+  const enabled = MODELS.find((m) => m.id === CONFIG.config.agents.defaults.model);
+  assert.ok(!enabled || enabled.enabled !== false);
+});
+
+test("tool iterations have no ceiling — a long task is not cut off at 40", async () => {
+  globalThis.__GW_CALLS = [];
+  byId("ad-iterations").value = "500";
+  tap(byId("agent-defaults-save"));
+  await new Promise((r) => setTimeout(r, 0));
+  const written = new Map(globalThis.__GW_CALLS.filter((c) => c.method === "config.set").map((c) => [c.params.path, c.params.value]));
+  assert.equal(written.get("agents.defaults.maxToolIterations"), 500, "500 is accepted, not clamped to 40");
+  byId("ad-iterations").value = "0";
+  tap(byId("agent-defaults-save"));
+  await new Promise((r) => setTimeout(r, 0));
+  const floor = new Map(globalThis.__GW_CALLS.filter((c) => c.method === "config.set").map((c) => [c.params.path, c.params.value]));
+  assert.equal(floor.get("agents.defaults.maxToolIterations"), 12, "0 falls back to the default, never to 0 turns");
+  byId("ad-iterations").value = "12";
 });
 
 test("Save identity writes name, emoji and the textarea's prose", async () => {

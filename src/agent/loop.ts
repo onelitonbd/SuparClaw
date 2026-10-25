@@ -7,6 +7,7 @@ import { loadWorkspaceContext, todayStamp } from "./workspace.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
 import { buildRegistry, toolsToSchema, type SubagentCtl, type ToolContext, type ToolSpec } from "./tools.js";
 import { LlmClient, isVisionUnsupportedError, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
+import { historyBudget, fallbackTuning } from "./context-budget.js";
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
 import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
@@ -654,6 +655,10 @@ export class AgentLoop {
         const fallbackRefs = (this.deps.config.agents.defaults.fallbacks ?? [])
           .map((f) => modelProfile(this.deps.config, f).ref)
           .filter((r): r is string => Boolean(r) && r !== profile.ref);
+        // Per-model tuning for every model in the chain: a fallback attempt must
+        // run on ITS temperature/cap/effort, not the primary's (and a 0 cap on a
+        // fallback must omit max_tokens rather than inherit a bigger model's).
+        const tuning = fallbackTuning(this.deps.config, [profile.ref, ...fallbackRefs]);
         try {
           for await (const event of this.llm.stream({
             messages,
@@ -661,6 +666,7 @@ export class AgentLoop {
             signal: controller.signal,
             model: profile.ref || undefined,
             fallbacks: fallbackRefs,
+            tuning,
             temperature: profile.temperature,
             maxTokens: profile.maxTokens,
             reasoning:
@@ -959,48 +965,17 @@ export class AgentLoop {
   /** Guard against concurrent sweeps on one session (auto-trigger + /compact + overflow). */
   #compactBusy = new Map<string, Promise<string | null>>();
 
-  /** Resolve the active model's context window in tokens (0 = unknown), by
-   *  looking up the configured model profile whose ref matches the default. */
-  #activeModelContextWindow(): number {
-    const config = this.deps.config;
-    const modelRef = (config.agents?.defaults?.model ?? "").trim();
-    const models = config.models ?? {};
-    if (modelRef && (models[modelRef]?.contextWindow ?? 0) > 0) {
-      return models[modelRef]!.contextWindow;
-    }
-    for (const p of Object.values(models)) {
-      if (p?.ref === modelRef && (p?.contextWindow ?? 0) > 0) return p!.contextWindow;
-    }
-    for (const fb of config.agents?.defaults?.fallbacks ?? []) {
-      if ((models[fb]?.contextWindow ?? 0) > 0) return models[fb]!.contextWindow;
-      for (const p of Object.values(models)) {
-        if (p?.ref === fb && (p?.contextWindow ?? 0) > 0) return p!.contextWindow;
-      }
-    }
-    return 0;
-  }
-
   async #buildMessagesWithCompaction(
     sessionId: string,
     sessionKey: string,
     input: RunInput,
     isMain: boolean,
   ): Promise<ChatMessage[]> {
-    const configuredBudget = this.deps.config.agents.defaults.contextBudgetChars;
-    // Model-aware budget: when the active model's context window is known,
-    // scale the history budget to ~70% of it (chars ≈ tokens×4) so we actually
-    // use the window instead of capping at a tiny fixed number. Never shrink
-    // below an explicitly lowered budget; fall back to a sane default when the
-    // window is unknown (and lift the legacy 60k default to the new 200k).
-    const modelWindow = this.#activeModelContextWindow();
-    let budget = configuredBudget;
-    if (modelWindow > 0) {
-      const autoBudget = Math.min(Math.round(modelWindow * 4 * 0.7), 400000);
-      const floor = configuredBudget === 60000 ? 200000 : configuredBudget;
-      budget = Math.max(floor, autoBudget);
-    } else if (configuredBudget === 60000) {
-      budget = 200000;
-    }
+    // How much history this run may carry is derived, not configured: the window
+    // belongs to the model the run actually asked for (Settings → Models → Tune),
+    // and a window is a ceiling — the old `max(storedChars, window)` let a stored
+    // 400k budget overflow a 32k model. See src/agent/context-budget.ts.
+    const budget = historyBudget(this.deps.config, input.model ?? "").chars;
     // Compaction frontier: anything at or below `upto` exists only as the
     // summary; rows above it stay verbatim. Auto-sweep when the un-compacted
     // older share outgrows its slice of the budget (their near-limit trigger
