@@ -5779,114 +5779,271 @@ export class Settings {
   /* ---------------- memory (OpenClaw's Dreams tab, adapted) ---------------- */
 
   async #renderMemory(): Promise<void> {
-    let status: any = null;
-    let diary: any = null;
-    try {
-      [status, diary] = await Promise.all([
-        gateway.request("dream.status"),
-        gateway.request("dream.diary"),
-      ]);
-    } catch (err) {
-      toast(`could not load memory: ${(err as Error).message}`, "err");
-    }
-
-    const body = el("div", { class: "settings__stack" });
-    const fmt = (ms: number | null | undefined): string =>
-      ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never";
-    const counts = status?.counts ?? { memoryLines: 0, dailyNotes: 0, diaryEntries: 0 };
-
-    // Card 1 — dreaming controls. The nightly sweep now runs three phases
-    // (light stage → REM themes → deep gate+consolidate) and reports its
-    // verdict, staged backlog and rejected-by-category counts here.
-    const enabled = el("input", { type: "checkbox", id: "mem-dream-enabled" }) as HTMLInputElement;
-    enabled.checked = status ? status.enabled !== false : true;
-    const schedule = el("input", {
-      class: "inp mono", id: "mem-dream-schedule",
-      value: String(status?.schedule ?? "0 3 * * *"), placeholder: "0 3 * * *",
-    });
-
-    const stateLine = !status
-      ? "could not reach the gateway"
-      : status.scheduleError
-        ? status.scheduleError
-        : status.enabled === false
-          ? "off — no sweep scheduled"
-          : `on — next sweep ${fmt(status.nextRunAt)}`;
-    const stateValue = el("span", { class: `row__value${status?.scheduleError ? " is-err" : ""}` }, [stateLine]);
-
-    const runBtn = el("button", { class: "btn", type: "button" }, ["Dream now"]);
-    const runNote = el("p", { class: "hint" }, [""]);
-    runNote.style.display = "none";
-    runBtn.onclick = async () => {
-      runBtn.disabled = true;
-      runBtn.textContent = "Dreaming…";
-      runNote.style.display = "";
-      runNote.textContent = "Sweeping the daily notes into MEMORY.md — a real sweep can take a minute or two.";
+    // Three independent reads. A failure in one must not blank the page, and the
+    // stored schedule has to survive the status call failing — otherwise the field
+    // would silently re-default to 0 3 and a save would overwrite the real value.
+    let loadErr = "";
+    const grab = async (method: string): Promise<any> => {
       try {
-        const res: any = await gateway.request("dream.run");
-        toast("dream sweep done", "ok");
-        // Re-render so counts, diary and next-run all refresh.
-        await this.render();
-        toast(`deep sleep: ${String(res?.text ?? "nothing new").slice(0, 120)}`, "ok");
+        return await gateway.request(method);
       } catch (err) {
-        toast((err as Error).message, "err");
-        runBtn.disabled = false;
-        runBtn.textContent = "Dream now";
-        runNote.textContent = "";
-        runNote.style.display = "none";
+        loadErr ||= (err as Error).message;
+        return null;
+      }
+    };
+    const [status, diary, cfgRes] = await Promise.all([
+      grab("dream.status"),
+      grab("dream.diary"),
+      grab("config.get"),
+    ]);
+    if (!status && loadErr) toast(`could not load memory: ${loadErr}`, "err");
+
+    const dreamCfg: any = ((cfgRes?.config ?? null)?.memory?.dreaming ?? {}) as any;
+    const counts = status?.counts ?? {
+      memoryLines: 0, dailyNotes: 0, diaryEntries: 0, staged: 0, promotedToday: 0,
+    };
+    const when = (ms?: number | null): string =>
+      ms ? new Date(ms).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never";
+    // "in 3 h" / "3 h ago": the status line leads with the distance and keeps the
+    // exact timestamp in the same sentence, so a reader gets both at a glance.
+    const rel = (ms?: number | null): string => {
+      if (!ms) return "never";
+      const mins = Math.round((ms - Date.now()) / 60000);
+      const abs = Math.abs(mins);
+      if (abs < 1) return mins >= 0 ? "in under a minute" : "under a minute ago";
+      const span = abs < 60 ? `${abs} min` : abs < 1440 ? `${Math.round(abs / 60)} h` : `${Math.round(abs / 1440)} d`;
+      return mins > 0 ? `in ${span}` : `${span} ago`;
+    };
+
+    /* ---- state ---- */
+
+    const scheduleError = String(status?.scheduleError ?? "");
+    const schedValue = String(status?.schedule ?? dreamCfg.schedule ?? "0 3 * * *");
+    let enabled = status ? status.enabled !== false : dreamCfg.enabled !== false;
+
+    const stateTag = el("span", {
+      class: `settings__tag${!status ? "" : scheduleError ? " is-warn" : enabled ? " is-ok" : ""}`,
+    }, [!status ? "unknown" : scheduleError ? "invalid schedule" : enabled ? "on" : "off"]);
+    const stateNote = el("span", { class: "setcard__status-note" }, [
+      !status
+        ? `Could not read the sweep state${loadErr ? ` — ${loadErr}` : ""}.`
+        : scheduleError
+          ? scheduleError
+          : enabled
+            ? status?.nextRunAt
+              ? `Next sweep ${rel(status.nextRunAt)} — ${when(status.nextRunAt)}.`
+              : "No next sweep could be computed for this schedule."
+            : "No sweep is scheduled. Dream now still runs one on demand.",
+    ]);
+
+    // The engine's rejection categories, in words. An unknown key is de-hyphenated
+    // rather than dropped: a new verdict must stay readable, and the raw object
+    // ({"deduped":1}) must never reach the page.
+    const rejectWords: Record<string, string> = {
+      deduped: "already in memory",
+      "secret-masked": "looked like a secret",
+      "below-score": "below the score gate",
+      "few-signals": "too few signals",
+      "stale-source": "the source changed",
+    };
+    const rejectionBits = Object.entries((status?.lastRejected ?? {}) as Record<string, number>)
+      .filter(([, n]) => Number(n) > 0)
+      .map(([k, n]) => `${n} ${rejectWords[k] ?? k.replace(/-/g, " ")}`);
+
+    /* ---- controls ---- */
+
+    const enabledCb = el("input", { type: "checkbox", id: "mem-dream-enabled" }) as HTMLInputElement;
+    enabledCb.checked = enabled;
+
+    const schedule = el("input", {
+      class: "inp mono",
+      id: "mem-dream-schedule",
+      value: schedValue,
+      placeholder: "0 3 * * *",
+      autocomplete: "off",
+      spellcheck: "false",
+    }) as HTMLInputElement;
+
+    const schedErr = el("p", { class: "hint hint--err", id: "mem-dream-sched-err" }, []);
+    schedErr.setAttribute("hidden", "");
+
+    const syncStatus = (): void => {
+      stateTag.textContent = !status ? "unknown" : scheduleError ? "invalid schedule" : enabled ? "on" : "off";
+      stateTag.className = `settings__tag${!status ? "" : scheduleError ? " is-warn" : enabled ? " is-ok" : ""}`;
+      stateNote.textContent = !status
+        ? `Could not read the sweep state${loadErr ? ` — ${loadErr}` : ""}.`
+        : scheduleError
+          ? scheduleError
+          : enabled
+            ? status?.nextRunAt
+              ? `Next sweep ${rel(status.nextRunAt)} — ${when(status.nextRunAt)}.`
+              : "No next sweep could be computed for this schedule."
+            : "No sweep is scheduled. Dream now still runs one on demand.";
+    };
+    enabledCb.onchange = () => { enabled = enabledCb.checked; syncStatus(); };
+
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    const save = el("button", { class: "btn pri", type: "button", id: "mem-dream-save" }, ["Save dreaming"]) as HTMLButtonElement;
+    save.onclick = async () => {
+      const raw = schedule.value.trim();
+      const parts = raw.split(/\s+/).filter(Boolean);
+      // croner takes 5, 6 or 7 parts, or an @nickname — refusing @daily here would
+      // be a new bug in the name of validation. A blank field is a real refusal,
+      // not a silent substitution of the default.
+      const ok = /^@[a-z]+$/i.test(raw) || (parts.length >= 5 && parts.length <= 7);
+      if (!ok) {
+        const msg = raw
+          ? "Not a cron schedule — 5 fields, e.g. 0 3 * * *."
+          : "A schedule is required — 0 3 * * * runs the sweep at 03:00.";
+        schedErr.textContent = msg;
+        schedErr.removeAttribute("hidden");
+        schedule.setAttribute("aria-invalid", "true");
+        problem.textContent = raw ? "Not saved — the schedule is not a cron expression." : "Not saved — the schedule is empty.";
+        problem.removeAttribute("hidden");
+        schedule.focus();
+        return;
+      }
+      // One write for the whole block, merged over what is stored, so a failure
+      // cannot leave enabled written and schedule not.
+      const block = { ...structuredClone(dreamCfg), enabled: enabledCb.checked, schedule: raw };
+      save.disabled = true;
+      save.textContent = "Saving…";
+      try {
+        await gateway.request("config.set", { path: "memory.dreaming", value: block });
+        note.textContent = "";
+        delete note.dataset["dirty"];
+        schedErr.setAttribute("hidden", "");
+        schedule.removeAttribute("aria-invalid");
+        problem.setAttribute("hidden", "");
+        toast("dreaming saved — the next sweep follows the new schedule", "ok");
+        this.#onChanged();
+        // Re-armed by the config hot-reload: re-render for the new next run.
+        void this.render();
+      } catch (err) {
+        problem.textContent = `not saved — ${(err as Error).message}`;
+        problem.removeAttribute("hidden");
+        toast(`not saved — ${(err as Error).message}`, "err");
+      } finally {
+        save.disabled = false;
+        save.textContent = "Save dreaming";
       }
     };
 
-    const save = el("button", { class: "btn pri", type: "button" }, ["Save"]);
-    save.onclick = async () => {
-      await this.#setMany([
-        ["memory.dreaming.enabled", enabled.checked],
-        ["memory.dreaming.schedule", schedule.value.trim() || "0 3 * * *"],
-      ], "dreaming saved");
-      // Re-armed by the config hot-reload — re-render to show the new next run.
-      await this.render();
+    schedule.addEventListener("input", () => {
+      if (schedErr.hasAttribute("hidden")) return;
+      schedErr.setAttribute("hidden", "");
+      schedule.removeAttribute("aria-invalid");
+      problem.setAttribute("hidden", "");
+    });
+
+    const runBtn = el("button", { class: "btn", type: "button", id: "mem-dream-run" }, ["Dream now"]) as HTMLButtonElement;
+    // The note belongs to the button, not to the commit band: it reports what this
+    // click is doing, and it is announced when it appears.
+    const runNote = el("p", { class: "hint", "aria-live": "polite" }, []);
+    runNote.setAttribute("hidden", "");
+    runBtn.onclick = async () => {
+      runBtn.disabled = true;
+      runBtn.textContent = "Dreaming…";
+      runNote.removeAttribute("hidden");
+      runNote.textContent = "Sweeping the daily notes into MEMORY.md — a large day can take a minute or two.";
+      try {
+        const res: any = await gateway.request("dream.run");
+        const first = String(res?.text ?? "nothing new").split("\n")[0] ?? "";
+        toast(`dream sweep done — ${first.slice(0, 120)}`, "ok");
+        // Re-render so the counts, the diary and the next run all refresh.
+        await this.render();
+      } catch (err) {
+        runBtn.disabled = false;
+        runBtn.textContent = "Dream now";
+        runNote.textContent = `sweep failed — ${(err as Error).message}`;
+        toast((err as Error).message, "err");
+      }
     };
 
-    body.append(el("div", { class: "card" }, [
+    /* ---- what it keeps: a number per place, one line of explanation each ---- */
+
+    const fact = (label: string, value: string, hint: string): HTMLElement =>
       el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Dreaming"]),
-        stateValue,
-      ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Last sweep"]),
-        el("span", { class: "row__value" }, [status?.lastVerdict ? `${fmt(status?.lastDreamAt)} — ${String(status.lastVerdict).slice(0, 80)}` : fmt(status?.lastDreamAt)]),
-      ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Counts"]),
-        el("span", { class: "row__value" }, [`${counts.memoryLines} curated lines · ${counts.dailyNotes} daily notes · ${counts.diaryEntries} diary entries`]),
-      ]),
-      el("div", { class: "row" }, [
-        el("span", { class: "row__label" }, ["Phases"]),
-        el("span", { class: "row__value" }, [
-          `${counts.staged ?? 0} staged · ${counts.promotedToday ?? 0} promoted today` +
-            (status?.lastRejected && Object.keys(status.lastRejected).length
-              ? ` · last rejected {${Object.entries(status.lastRejected).map(([k, v]: [string, unknown]) => `${k}:${v}`).join(", ")}}`
-              : ""),
+        el("div", { class: "row__main" }, [
+          el("span", { class: "row__label" }, [label]),
+          el("span", { class: "hint" }, [hint]),
+        ]),
+        el("span", { class: "row__value" }, [value]),
+      ]);
+
+    const lastBits = [
+      String(status?.lastVerdict ?? "").trim(),
+      counts.staged ? `${counts.staged} staged` : "",
+      rejectionBits.length ? `rejected ${rejectionBits.join(", ")}` : "",
+    ].filter(Boolean);
+
+    const policyZone = el("div", { class: "memory__policy" }, [
+      fact(
+        "Last sweep",
+        status?.lastDreamAt ? rel(status.lastDreamAt) : "never",
+        lastBits.length
+          ? lastBits.join(" · ")
+          : "No sweep has run yet — press Dream now, or wait for the schedule.",
+      ),
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Sweep"]),
+          el("span", { class: "setsec__count" }, ["2 settings"]),
+        ]),
+        el("div", { class: "row" }, [
+          el("div", { class: "row__main" }, [
+            el("label", { class: "row__label", for: "mem-dream-enabled" }, ["Dream on a schedule"]),
+            el("span", { class: "hint" }, ["Runs the sweep on the schedule below. Off: nothing runs on its own, but Dream now still works."]),
+          ]),
+          enabledCb,
+        ]),
+        el("div", { class: "setfield" }, [
+          el("label", { class: "lbl", for: "mem-dream-schedule" }, ["Schedule (cron)"]),
+          schedule,
+          el("p", { class: "hint" }, ["5 fields, server time. The default is 0 3 * * * — 03:00 every night. This job never appears in Automations."]),
+          el("p", { class: "hint" }, ["The same switch and schedule also appear on the Automations tab — one setting with two editors, so either page shows what the other wrote."]),
+          schedErr,
         ]),
       ]),
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl", for: "mem-dream-schedule" }, ["Schedule (cron)"]),
-        schedule,
-        el("p", { class: "hint" }, ["5 fields, server time. Default 0 4 * * * runs the sweep nightly at 04:00. It never appears in your cron jobs."]),
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["What it keeps"]),
+          el("span", { class: "setsec__count" }, ["3 places"]),
+        ]),
+        fact(
+          "Curated memory",
+          `${counts.memoryLines} ${counts.memoryLines === 1 ? "line" : "lines"}`,
+          "MEMORY.md — the durable facts the sweep promotes. The memory tools edit it too.",
+        ),
+        fact(
+          "Daily notes",
+          `${counts.dailyNotes} ${counts.dailyNotes === 1 ? "file" : "files"}`,
+          "One file per day under memory/. The sweep reads them and never edits them.",
+        ),
+        fact(
+          "Dream diary",
+          `${counts.diaryEntries} ${counts.diaryEntries === 1 ? "entry" : "entries"}`,
+          "DREAMS.md — one entry per sweep, for you to read. It is never fed back into memory.",
+        ),
       ]),
-      el("div", { class: "modal__field" }, [
-        el("label", { class: "lbl", for: "mem-dream-enabled" }, ["Enabled"]),
-        enabled,
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Run a sweep now"]),
+          el("span", { class: "setsec__count" }, ["1 action"]),
+        ]),
+        el("p", { class: "hint" }, ["Uses the saved settings above, and runs even when the schedule is off."]),
+        el("div", { class: "settings__inline" }, [runBtn]),
+        runNote,
       ]),
-      el("div", { class: "modal__foot" }, [save, runBtn]),
-      runNote,
-      el("p", { class: "hint" }, [
-        "The sweep is read-only on your daily notes: it only edits MEMORY.md and appends to DREAMS.md. An empty sweep records nothing new — by design.",
-      ]),
-    ]));
+    ]);
+    const clearDirty = this.#dirtyWatch(policyZone, note);
+    syncStatus();
 
-    // Card 2 — the dream diary (Deep Sleep entries, newest first). Humans-only:
-    // the diary never feeds back into memory (OpenClaw's rule).
+    /* ---- the diary: entries inside the card, newest first ---- */
+
     const entries: { date: string; body: string }[] = [];
     const content = String(diary?.dreams ?? "");
     if (content.trim()) {
@@ -5898,37 +6055,85 @@ export class Settings {
           body: (nl === -1 ? "" : p.slice(nl + 1)).trim(),
         });
       }
-      entries.reverse();
+      // Sort by date rather than trusting the file's order: the file is append-only
+      // today, but a hand-edited or merged DREAMS.md must still read newest first.
+      entries.sort((a, b) => b.date.localeCompare(a.date));
     }
-    const diaryList = el("div", { class: "settings__stack" });
-    if (entries.length === 0) {
-      diaryList.append(el("p", { class: "hint" }, ["No diary entries yet — press Dream now, or wait for the schedule."]));
+    const shown = entries.slice(0, 30);
+    const lines = (body: string): number => body.split("\n").filter((l) => l.trim()).length;
+    const diaryBody = el("div", { class: "diary-list" });
+    if (diary === null) {
+      diaryBody.append(el("p", { class: "hint" }, [`Could not read the diary${loadErr ? ` — ${loadErr}` : ""}.`]));
+    } else if (shown.length === 0) {
+      diaryBody.append(el("p", { class: "hint" }, ["No entries yet — press Dream now, or wait for the schedule."]));
     }
-    for (const e of entries.slice(0, 30)) {
-      diaryList.append(el("details", { class: "card diary" }, [
+    for (const e of shown) {
+      diaryBody.append(el("details", { class: "diary__entry" }, [
         el("summary", {}, [
           el("span", { class: "row__label" }, [`Deep Sleep — ${e.date}`]),
-          el("span", { class: "row__value" }, [`${e.body.split("\n").filter((l) => l.trim()).length} lines`]),
+          el("span", { class: "row__value" }, [`${lines(e.body)} ${lines(e.body) === 1 ? "line" : "lines"}`]),
         ]),
         el("pre", { class: "diary__body" }, [e.body || "nothing new"]),
       ]));
     }
-    body.append(el("div", { class: "card" }, [
-      el("div", { class: "row__label" }, ["Dream diary"]),
-      el("p", { class: "hint" }, [
-        `${counts.diaryEntries} entries in ${diary?.dreamsPath ?? "DREAMS.md"}. For human reading — never promoted back into memory.`,
-      ]),
-    ]), diaryList);
 
-    // Card 3 — the curated MEMORY.md the sweep (and memory tools) maintain.
-    body.append(el("details", { class: "card diary" }, [
-      el("summary", {}, [
-        el("span", { class: "row__label" }, ["Curated memory (MEMORY.md)"]),
-        el("span", { class: "row__value" }, [`${counts.memoryLines} lines`]),
-      ]),
-      el("pre", { class: "diary__body" }, [String(diary?.memory ?? "").trim() || "(empty — the sweep promotes durable facts here)"]),
-    ]));
+    const diaryCount = diary === null ? "unavailable" : `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`;
+    const diaryNote = diary === null
+      ? "The diary file could not be read."
+      : [
+        String(diary.dreamsPath ?? "DREAMS.md"),
+        entries.length > shown.length ? `showing the ${shown.length} most recent` : "",
+      ].filter(Boolean).join(" · ");
 
+    const memoryText = String(diary?.memory ?? "").trim();
+
+    const body = el("div", { class: "settings__stack" }, [
+      el("div", { class: "card memory-dream" }, [
+        el("div", { class: "setcard__head" }, [
+          el("h3", {}, ["Dreaming"]),
+          el("p", { class: "hint" }, [
+            "A nightly sweep that folds the day's notes into MEMORY.md — light stage, themes, then consolidation.",
+          ]),
+        ]),
+        el("div", { class: "setcard__status" }, [stateTag, stateNote]),
+        policyZone,
+        el("div", { class: "setfoot" }, [note, problem, save]),
+      ]),
+      el("div", { class: "card memory-diary" }, [
+        el("div", { class: "setcard__head" }, [
+          el("h3", {}, ["Dream diary"]),
+          el("p", { class: "hint" }, [
+            "One entry per sweep, newest first. Written for you to read — it is never fed back into memory.",
+          ]),
+        ]),
+        el("div", { class: "setcard__status" }, [
+          el("span", { class: "settings__tag" }, [diaryCount]),
+          el("span", { class: "setcard__status-note" }, [diaryNote]),
+        ]),
+        diaryBody,
+      ]),
+      el("div", { class: "card memory-curated" }, [
+        el("div", { class: "setcard__head" }, [
+          el("h3", {}, ["Curated memory"]),
+          el("p", { class: "hint" }, [
+            "MEMORY.md — what the sweep promotes and what the agent reads at the start of a turn. Read-only here: edit it with the memory tools or in the file.",
+          ]),
+        ]),
+        el("div", { class: "setcard__status" }, [
+          el("span", { class: "settings__tag" }, [
+            counts.memoryLines === 1 ? "1 line" : `${counts.memoryLines} lines`,
+          ]),
+          el("span", { class: "setcard__status-note" }, [String(diary?.memoryPath ?? "MEMORY.md")]),
+        ]),
+        el("pre", { class: "diary__body" }, [
+          diary === null
+            ? "Could not read MEMORY.md."
+            : memoryText || "(empty — the sweep promotes durable facts here)",
+        ]),
+      ]),
+    ]);
+
+    clearDirty();
     this.#root.append(body);
   }
 
