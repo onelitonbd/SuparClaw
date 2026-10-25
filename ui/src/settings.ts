@@ -4695,109 +4695,462 @@ export class Settings {
     );
   }
 
-  /** Gateway tab (P4 #40 — their Gateway page): the full surface, not just
-   *  port + auth.mode — bind/net access, allowed hosts/origins, Control-UI
-   *  serving, the OpenAI HTTP endpoint toggle, and the loaded config path. */
+  /** Gateway tab (their Gateway page): how the daemon listens, who may connect,
+   *  and which surfaces it serves.
+   *
+   *  One card, five sections, one commit — every setting here shapes the same
+   *  thing and a restart applies all of it at once, so five footers would only
+   *  mean five saves for one restart. The status strip describes the *saved*
+   *  listener and follows the draft: the exposure of a control is the reason to
+   *  show it at the moment it is chosen. */
   #renderGateway(gw: any, configPath = ""): void {
-    const port = el("input", {
-      class: "inp mono", id: "gw-port", value: String(gw.port ?? 18790), inputmode: "numeric", autocomplete: "off",
+    const savedPort = String(gw.port ?? 18790);
+    const savedBind = String(gw.bind ?? "loopback") === "lan" ? "lan" : "loopback";
+    const savedMode = String(gw.auth?.mode ?? "token") === "none" ? "none" : "token";
+    const rawToken = String(gw.auth?.token ?? "");
+    // config.get masks the token as `__redacted__:••••wxyz`; the tail is the only
+    // part the page is allowed to know, and the field stays write-only.
+    const tokenTail = rawToken.startsWith("__redacted__:")
+      ? rawToken.slice("__redacted__:".length).replace(/^•+/, "")
+      : rawToken.slice(-4);
+
+    const strip = this.#statusStrip();
+    /** What the band says when there is nothing to report. It comes back after a
+     *  save, because #commit blanks the note and an empty band says nothing. */
+    const RESTING = "Every change is written to the config file at once; port and bind wait for a restart.";
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, [RESTING]);
+    const problem = el("p", { class: "hint hint--err" }, []);
+    problem.setAttribute("hidden", "");
+
+    /* ---- controls ---- */
+
+    const portIn = el("input", {
+      class: "inp mono",
+      id: "gw-port",
+      value: savedPort,
+      inputmode: "numeric",
+      autocomplete: "off",
+      spellcheck: "false",
     }) as HTMLInputElement;
-    const bindSel = el("select", { class: "in", id: "gw-bind" }) as HTMLSelectElement;
-    for (const [v, lab] of [["loopback", "loopback (local only)"], ["lan", "lan (reachable on the network)"]] as [string, string][]) {
-      bindSel.append(el("option", { value: v, ...(String(gw.bind ?? "loopback") === v ? { selected: "" } : {}) }, [lab]));
-    }
-    const modeSel = el("select", { class: "in", id: "gw-mode" }) as HTMLSelectElement;
-    for (const [v, lab] of [["token", "token"], ["none", "none"]] as [string, string][]) {
-      modeSel.append(el("option", { value: v, ...(String(gw.auth?.mode ?? "token") === v ? { selected: "" } : {}) }, [lab]));
-    }
+    const addrEcho = el("span", { class: "setcard__echo" }, [savedBind === "lan" ? `ws://0.0.0.0:${savedPort}` : `ws://localhost:${savedPort}`]);
+    const portErr = el("p", { class: "hint hint--err" }, []);
+    portErr.setAttribute("hidden", "");
+
+    const bindDd = this.#dropdown({
+      id: "gw-bind",
+      value: savedBind,
+      label: "Bind",
+      placeholder: "loopback",
+      options: [
+        { value: "loopback", label: "loopback — this machine only" },
+        { value: "lan", label: "lan — anywhere on your network" },
+      ],
+    });
+
+    const modeDd = this.#dropdown({
+      id: "gw-mode",
+      value: savedMode,
+      label: "Auth mode",
+      placeholder: "token",
+      options: [
+        { value: "token", label: "token — every client sends the token" },
+        { value: "none", label: "none — anything that reaches the port gets in" },
+      ],
+    });
+    const modeWarn = el("p", { class: "hint is-warn" }, [
+      "Auth is off. Anything that can reach the port can drive the agent; the token below is kept but never checked.",
+    ]);
+    modeWarn.setAttribute("hidden", "");
+
+    const tokenIn = el("input", {
+      class: "inp mono",
+      id: "gw-token-new",
+      type: "password",
+      placeholder: "leave blank to keep the stored one",
+      autocomplete: "off",
+    }) as HTMLInputElement;
+    const tokenEcho = el("span", { class: "setcard__echo" }, [tokenTail ? `stored — ends in ${tokenTail}` : "none stored"]);
+
     const bypassCb = el("input", { type: "checkbox", id: "gw-bypass" }) as HTMLInputElement;
     bypassCb.checked = gw.auth?.loopbackBypass !== false;
-    const tokenNew = el("input", { class: "inp mono", id: "gw-token-new", type: "password", placeholder: "leave blank to keep", autocomplete: "off" }) as HTMLInputElement;
-    const rawToken = String(gw.auth?.token ?? "");
-    const token = el("div", { class: "inp mono" }, [rawToken ? "••••••••" + rawToken.slice(-4) : "Not set"]);
-    const hostsInp = el("input", { class: "inp mono", id: "gw-hosts", value: (gw.allowedHosts ?? []).join(", "), placeholder: "blank = any host", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
-    const originsInp = el("input", { class: "inp mono", id: "gw-origins", value: (gw.allowedOrigins ?? []).join(", "), placeholder: "blank = any origin", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+
+    const hostsIn = el("input", {
+      class: "inp mono",
+      id: "gw-hosts",
+      value: (gw.allowedHosts ?? []).join(", "),
+      placeholder: "blank — loopback and private names only",
+      autocomplete: "off",
+      spellcheck: "false",
+    }) as HTMLInputElement;
+    const hostsEcho = el("span", { class: "setcard__echo" }, [""]);
+
+    const originsIn = el("input", {
+      class: "inp mono",
+      id: "gw-origins",
+      value: (gw.allowedOrigins ?? []).join(", "),
+      placeholder: "blank — same origin only",
+      autocomplete: "off",
+      spellcheck: "false",
+    }) as HTMLInputElement;
+    const originsEcho = el("span", { class: "setcard__echo" }, [""]);
+
     const uiCb = el("input", { type: "checkbox", id: "gw-cui" }) as HTMLInputElement;
     uiCb.checked = gw.controlUi?.enabled !== false;
-    const basePathInp = el("input", { class: "inp mono", id: "gw-basepath", value: String(gw.controlUi?.basePath ?? ""), placeholder: "e.g. /ui (blank = root)", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const baseIn = el("input", {
+      class: "inp mono",
+      id: "gw-basepath",
+      value: String(gw.controlUi?.basePath ?? ""),
+      placeholder: "blank — served at the root",
+      autocomplete: "off",
+      spellcheck: "false",
+    }) as HTMLInputElement;
+    const baseEcho = el("span", { class: "setcard__echo" }, [""]);
+    const baseErr = el("p", { class: "hint hint--err" }, []);
+    baseErr.setAttribute("hidden", "");
+
     const httpCb = el("input", { type: "checkbox", id: "gw-openai" }) as HTMLInputElement;
     httpCb.checked = Boolean(gw.http?.endpoints?.chatCompletions?.enabled);
+    const httpWarn = el("p", { class: "hint is-warn" }, [
+      "The endpoint answers 503 until a token is set; it never serves anonymous requests.",
+    ]);
+    httpWarn.setAttribute("hidden", "");
 
-    const save = el("button", { class: "btn pri", type: "button", id: "gateway-save" }, ["Save and restart gateway"]) as HTMLButtonElement;
-    save.onclick = async () => {
-      const pairs: [string, unknown][] = [
-        ["gateway.port", Number(port.value) || (gw.port ?? 18790)],
-        ["gateway.bind", bindSel.value],
-        ["gateway.auth.mode", /^(token|none)$/.test(modeSel.value) ? modeSel.value : "token"],
-        ["gateway.auth.loopbackBypass", bypassCb.checked],
-        ["gateway.allowedHosts", hostsInp.value.split(",").map((x) => x.trim()).filter(Boolean)],
-        ["gateway.allowedOrigins", originsInp.value.split(",").map((x) => x.trim()).filter(Boolean)],
-        ["gateway.controlUi.enabled", uiCb.checked],
-        ["gateway.controlUi.basePath", basePathInp.value.trim()],
-        ["gateway.http.endpoints.chatCompletions.enabled", httpCb.checked],
-      ];
-      if (tokenNew.value.trim()) pairs.push(["gateway.auth.token", tokenNew.value.trim()]);
-      await this.#setMany(pairs, "gateway saved — reconnecting");
-      location.reload();
+    /* ---- derived, live ---- */
+
+    const list = (raw: string): string[] => raw.split(",").map((s) => s.trim()).filter(Boolean);
+    /** A Host entry is a bare name with an optional port — `hostnameOf()` strips
+     *  the port and lowercases, so a scheme or a path here could never match. */
+    const okHost = (h: string): boolean =>
+      /^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?(:\d{1,5})?$/.test(h) || /^\[[0-9a-fA-F:]+\](:\d{1,5})?$/.test(h);
+    /** An origin must parse as a URL — `originAllowed()` silently skips the ones
+     *  that do not, so a scheme-less entry would just never match. */
+    const okOrigin = (o: string): boolean => {
+      try {
+        const u = new URL(o);
+        return u.protocol === "http:" || u.protocol === "https:";
+      } catch {
+        return false;
+      }
+    };
+    /** The port the page is talking about — the saved one while the field holds
+     *  something that is not a port yet, so the address never reads `:abc`. */
+    const shownPort = (): string => {
+      const raw = portIn.value.trim();
+      return /^\d{1,5}$/.test(raw) ? raw : savedPort;
+    };
+    const currentBind = (): "loopback" | "lan" => (this.#selValue(bindDd.sel) === "lan" ? "lan" : "loopback");
+    const currentMode = (): "token" | "none" => (this.#selValue(modeDd.sel) === "none" ? "none" : "token");
+
+    const syncStatus = (): void => {
+      const p = shownPort();
+      // Auth off is its own warning, written once under the mode control; the
+      // strip states the exposure and stops there rather than repeating it.
+      const noAuth = currentMode() === "none";
+      if (currentBind() === "lan") {
+        strip.set(
+          "network",
+          "is-warn",
+          noAuth
+            ? `0.0.0.0:${p} — reachable from your network, and auth is off.`
+            : `0.0.0.0:${p} — reachable from your network; clients still send the token.`,
+        );
+        return;
+      }
+      strip.set(
+        "local only",
+        noAuth ? "is-warn" : "is-ok",
+        noAuth
+          ? `127.0.0.1:${p} — this machine only, but auth is off.`
+          : `127.0.0.1:${p} — this machine only; every client sends the token.`,
+      );
     };
 
-    this.#root.append(
-      el("div", { class: "card" }, [
-        el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: "gw-port" }, ["Port"]), port]),
-        el("div", { class: "modal__field" }, [
-          el("label", { class: "lbl", for: "gw-bind" }, ["Bind"]),
-          bindSel,
-          el("p", { class: "hint" }, ["lan exposes the WebSocket + Control UI on your network — pair it with the token."]),
-        ]),
-        el("div", { class: "modal__field" }, [
-          el("span", { class: "lbl" }, ["Auth token"]),
-          token,
-          tokenNew,
-          el("p", { class: "hint" }, ["Clients send this token when they connect; blank keeps the stored one."]),
-        ]),
-        el("div", { class: "modal__field" }, [
-          el("label", { class: "lbl", for: "gw-mode" }, ["Auth mode"]),
-          modeSel,
-          el("p", { class: "hint" }, ["token requires a secret; none allows any local client."]),
-        ]),
-        el("div", { class: "row" }, [
-          el("span", { class: "row__label" }, ["Loopback bypass (no token needed from localhost)"]),
-          bypassCb,
-        ]),
-      ]),
-      el("div", { class: "card" }, [
-        el("h3", {}, ["Network access"]),
-        el("div", { class: "modal__field" }, [
-          el("label", { class: "lbl", for: "gw-hosts" }, ["Allowed hosts (comma)"]),
-          hostsInp,
-          el("p", { class: "hint" }, ["Reject connections with an unlisted Host header."]),
-        ]),
-        el("div", { class: "modal__field" }, [
-          el("label", { class: "lbl", for: "gw-origins" }, ["Allowed origins (comma)"]),
-          originsInp,
-          el("p", { class: "hint" }, ["Reject WebSocket upgrades from browsers outside the list — their CSRF guard."]),
-        ]),
-      ]),
-      el("div", { class: "card" }, [
-        el("h3", {}, ["Control UI"]),
-        el("div", { class: "row" }, [el("span", { class: "row__label" }, ["Serve this web app from the gateway"]), uiCb]),
-        el("div", { class: "modal__field" }, [
-          el("label", { class: "lbl", for: "gw-basepath" }, ["Base path"]),
-          basePathInp,
-          el("p", { class: "hint" }, ["Mount the UI under a prefix (their controlUi.basePath) for reverse-proxy setups."]),
-        ]),
-      ]),
-      el("div", { class: "card" }, [
-        el("h3", {}, ["OpenAI-compatible HTTP endpoint"]),
-        el("div", { class: "row" }, [
-          el("span", { class: "row__label" }, ["POST /v1/chat/completions (Bearer = gateway token)"]),
-          httpCb,
-        ]),
-        el("p", { class: "hint" }, ["Off by default — it grants full agent access over plain HTTP (their operator-grade warning)."]),
-      ]),
-      el("div", { class: "settings__actions" }, [save]),
-      ...(configPath ? [el("p", { class: "hint" }, [`Config: ${configPath}`])] : []),
+    const syncAddress = (): void => {
+      addrEcho.textContent = currentBind() === "lan" ? `ws://0.0.0.0:${shownPort()}` : `ws://localhost:${shownPort()}`;
+      syncStatus();
+    };
+
+    const syncEchoes = (): void => {
+      const hosts = list(hostsIn.value);
+      hostsEcho.textContent = hosts.length === 0
+        ? "blank — loopback and private names only"
+        : `${hosts.length} extra ${hosts.length === 1 ? "host" : "hosts"}`;
+      const origins = list(originsIn.value);
+      originsEcho.textContent = origins.length === 0
+        ? "blank — same origin only"
+        : `${origins.length} extra ${origins.length === 1 ? "origin" : "origins"}`;
+      // What the prefix resolves to, so the path is never a guess.
+      const raw = baseIn.value.trim().replace(/\/$/, "");
+      baseEcho.textContent = raw === "" ? "/" : `${raw}/`;
+      syncAddress();
+    };
+
+    const syncWarnings = (): void => {
+      if (currentMode() === "none") modeWarn.removeAttribute("hidden");
+      else modeWarn.setAttribute("hidden", "");
+      const hasToken = Boolean(tokenIn.value.trim()) || Boolean(rawToken);
+      if (httpCb.checked && !hasToken) httpWarn.removeAttribute("hidden");
+      else httpWarn.setAttribute("hidden", "");
+    };
+
+    /* ---- fields (each built before the rule that mirrors it) ---- */
+
+    /** Label, the input at full width, then what the value resolves to. The echo
+     *  is the whole point: it answers "so what does that mean?" without a second
+     *  paragraph of prose. (A <div> wrapper: `.setcard__echo` is a span and a <p>
+     *  would get the user agent's margins.) */
+    const fieldWithEcho = (id: string, label: string, input: HTMLElement, echo: HTMLElement, hint: string): HTMLElement =>
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: id }, [label]),
+        input,
+        el("div", { class: "setecho" }, [echo]),
+        el("p", { class: "hint" }, [hint]),
+      ]);
+
+    const portField = this.#setField(
+      "gw-port",
+      "Port",
+      el("div", { class: "setline" }, [portIn, addrEcho]),
+      "1 to 65535. The daemon claims the port when it starts, so a change waits for a restart.",
     );
+    portField.append(portErr);
+
+    const tokenField = fieldWithEcho(
+      "gw-token-new",
+      "New token",
+      tokenIn,
+      tokenEcho,
+      "Write-only: blank keeps the stored token. A new one applies to the next connection.",
+    );
+
+    const baseField = fieldWithEcho(
+      "gw-basepath",
+      "Base path",
+      baseIn,
+      baseEcho,
+      "Mount the web app under a prefix for a reverse proxy.",
+    );
+    baseField.append(baseErr);
+
+    /** Two controls that cannot act are not allowed to look like they can. The
+     *  token field is deliberately exempt: the HTTP endpoint needs a token even
+     *  when the socket itself asks for none. */
+    const syncAvailability = (): void => {
+      bypassCb.disabled = currentMode() === "none";
+      baseIn.disabled = !uiCb.checked;
+      baseField.className = `setfield${uiCb.checked ? "" : " is-off"}`;
+      syncWarnings();
+    };
+
+    /* ---- sections ---- */
+
+    const listener = this.#section("Listener", "2 settings", [
+      portField,
+      this.#setField(
+        "gw-bind",
+        "Bind",
+        bindDd.node,
+        "A network bind opens the port to every device that can route here. Keep a token set.",
+        null,
+      ),
+    ]);
+
+    const auth = this.#section("Authentication", "3 settings", [
+      this.#setField("gw-mode", "Auth mode", modeDd.node, undefined, null),
+      modeWarn,
+      tokenField,
+      this.#settingRow(
+        "Skip the token for local clients",
+        "Only meaningful with a token: browsers and native clients on this machine then connect without one.",
+        bypassCb,
+        "gw-bypass",
+      ),
+    ]);
+
+    const trust = this.#section("Network trust", "2 settings", [
+      fieldWithEcho(
+        "gw-hosts",
+        "Allowed hosts",
+        hostsIn,
+        hostsEcho,
+        "Comma-separated Host names for a reverse proxy or a public name. Loopback names, private addresses and .local are always accepted.",
+      ),
+      fieldWithEcho(
+        "gw-origins",
+        "Allowed origins",
+        originsIn,
+        originsEcho,
+        "Comma-separated browser origins, e.g. https://ui.example.com. Same-origin requests are always allowed.",
+      ),
+    ]);
+
+    const controlUi = this.#section("Control UI", "2 settings", [
+      this.#settingRow(
+        "Serve the Control UI from this daemon",
+        "Off answers 404 for the web app. This page keeps working until you reload it.",
+        uiCb,
+        "gw-cui",
+      ),
+      baseField,
+    ]);
+
+    const httpApi = this.#section("HTTP API", "1 setting", [
+      this.#settingRow(
+        "OpenAI-compatible API",
+        "POST /v1/chat/completions with the gateway token as Bearer. Off by default — it hands full agent access to anything holding that token.",
+        httpCb,
+        "gw-openai",
+      ),
+      httpWarn,
+    ]);
+
+    const zone = el("div", {}, [listener, auth, trust, controlUi, httpApi]);
+    this.#dirtyWatch(zone, note);
+
+    for (const inp of [portIn, baseIn, hostsIn, originsIn]) {
+      inp.addEventListener("input", () => {
+        // The first keystroke after a refusal clears the mark it left: the fields
+        // are a draft, and an error belongs to the attempt, not to the field.
+        portErr.setAttribute("hidden", "");
+        baseErr.setAttribute("hidden", "");
+        portIn.removeAttribute("aria-invalid");
+        baseIn.removeAttribute("aria-invalid");
+        hostsIn.removeAttribute("aria-invalid");
+        originsIn.removeAttribute("aria-invalid");
+        problem.setAttribute("hidden", "");
+        syncEchoes();
+      });
+    }
+    bindDd.sel.addEventListener("change", () => {
+      syncAddress();
+      syncWarnings();
+    });
+    modeDd.sel.addEventListener("change", () => {
+      syncAvailability();
+      syncStatus();
+    });
+    uiCb.addEventListener("change", syncAvailability);
+    httpCb.addEventListener("change", syncWarnings);
+    tokenIn.addEventListener("input", syncWarnings);
+
+    /* ---- commit ---- */
+
+    const save = el("button", { class: "btn pri", type: "button", id: "gateway-save" }, ["Save gateway"]) as HTMLButtonElement;
+    save.onclick = async () => {
+      const portRaw = portIn.value.trim();
+      if (!/^\d+$/.test(portRaw) || Number(portRaw) < 1 || Number(portRaw) > 65535) {
+        portErr.textContent = "The port has to be a whole number from 1 to 65535.";
+        portErr.removeAttribute("hidden");
+        portIn.setAttribute("aria-invalid", "true");
+        portIn.focus();
+        problem.textContent = "Not saved — the port is not a number from 1 to 65535.";
+        problem.removeAttribute("hidden");
+        return;
+      }
+      // The prefix is mounted by string slicing, so it has to start at the root;
+      // one trailing slash is normalised away (the echo shows the result).
+      const baseRaw = baseIn.value.trim().replace(/\/$/, "");
+      if (baseRaw && !baseRaw.startsWith("/")) {
+        baseErr.textContent = "Start the path with a slash — /ui, not ui.";
+        baseErr.removeAttribute("hidden");
+        baseIn.setAttribute("aria-invalid", "true");
+        baseIn.focus();
+        problem.textContent = "Not saved — the base path has to start with a slash.";
+        problem.removeAttribute("hidden");
+        return;
+      }
+      const hosts = list(hostsIn.value);
+      const badHost = hosts.find((h) => !okHost(h));
+      if (badHost) {
+        hostsIn.setAttribute("aria-invalid", "true");
+        hostsIn.focus();
+        problem.textContent = `Not saved — "${badHost}" is not a host name; use a bare name like gw.example.com.`;
+        problem.removeAttribute("hidden");
+        return;
+      }
+      const origins = list(originsIn.value);
+      const badOrigin = origins.find((o) => !okOrigin(o));
+      if (badOrigin) {
+        originsIn.setAttribute("aria-invalid", "true");
+        originsIn.focus();
+        problem.textContent = `Not saved — "${badOrigin}" is not an origin; put https:// in front.`;
+        problem.removeAttribute("hidden");
+        return;
+      }
+
+      const port = Number(portRaw);
+      const bind = currentBind();
+      const pairs: [string, unknown][] = [
+        ["gateway.port", port],
+        ["gateway.bind", bind],
+        ["gateway.auth.mode", currentMode()],
+        ["gateway.auth.loopbackBypass", bypassCb.checked],
+        ["gateway.allowedHosts", hosts],
+        ["gateway.allowedOrigins", origins],
+        ["gateway.controlUi.enabled", uiCb.checked],
+        ["gateway.controlUi.basePath", baseRaw],
+        ["gateway.http.endpoints.chatCompletions.enabled", httpCb.checked],
+      ];
+      // Write-only: an untouched field keeps whatever is stored.
+      if (tokenIn.value.trim()) pairs.push(["gateway.auth.token", tokenIn.value.trim()]);
+
+      // Only the socket address waits for a restart (http.listen runs once at
+      // startup); auth, trust, controlUi and the HTTP API are read per request.
+      const listenerMoved = port !== Number(savedPort) || bind !== savedBind;
+      save.disabled = true;
+      save.textContent = "Saving…";
+      const ok = await this.#commit(
+        pairs,
+        note,
+        problem,
+        listenerMoved ? "gateway saved — the listener changes when the daemon restarts" : "gateway saved",
+      );
+      save.disabled = false;
+      save.textContent = "Save gateway";
+      if (!ok) return;
+      if (tokenIn.value.trim()) {
+        tokenEcho.textContent = `stored — ends in ${tokenIn.value.trim().slice(-4)}`;
+        tokenIn.value = "";
+      }
+      // No re-render: every field already holds what was written, and a re-render
+      // would wipe the sentence that says the new address is not live yet.
+      note.textContent = listenerMoved
+        ? "Saved. The daemon still serves the old address until it restarts."
+        : RESTING;
+      syncWarnings();
+      syncStatus();
+    };
+
+    /* ---- assembly ---- */
+
+    const card = el("div", { class: "card gw-card" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Gateway"]),
+        el("p", { class: "hint" }, ["How the daemon listens, who may connect, and which surfaces it serves."]),
+      ]),
+      strip.node,
+      ...(configPath
+        ? [this.#factRow("Config file", configPath, "Every change here is written to this file.")]
+        : []),
+      zone,
+      el("div", { class: "setfoot" }, [note, problem, save]),
+    ]);
+
+    // The restart lives on Runtime — one owner, with its own supervisor caveat.
+    // This page points at it the way Automations points at Memory.
+    const openRuntime = el("button", { class: "btn sm", type: "button", id: "gw-open-runtime" }, ["Open Runtime"]) as HTMLButtonElement;
+    openRuntime.onclick = () => this.#setTab("runtime");
+
+    this.#root.append(el("div", { class: "settings__stack" }, [
+      card,
+      el("div", { class: "settings__inline gw-pointer" }, [
+        el("p", { class: "hint" }, ["Port and bind are read when the daemon starts; Runtime has the restart."]),
+        openRuntime,
+      ]),
+    ]));
+
+    syncAvailability();
+    syncEchoes();
   }
 
 

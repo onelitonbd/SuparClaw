@@ -152,7 +152,9 @@ test("#39 agent identity + defaults on the Defaults tab", () => {
 test("#40 gateway tab: full surface incl. bind, hosts/origins, controlUi, openai endpoint, config path", () => {
   assert.match(src, /#renderGateway\(gw: any, configPath = ""\)/);
   assert.match(src, /configPath = String\(\(cfg as any\)\.path \?\? ""\)/);
-  assert.match(src, /Config: \$\{configPath\}`/);
+  // The file is a labelled fact row now, not a `Config: /path` line after the actions.
+  assert.match(src, /#factRow\("Config file", configPath,/);
+  assert.ok(!src.includes("Config: ${configPath}"), "the stray path line is gone");
   assert.match(src, /id: "gw-bind"/);
   assert.match(src, /id: "gw-hosts"/);
   assert.match(src, /id: "gw-origins"/);
@@ -174,14 +176,22 @@ test("#40 gateway tab: full surface incl. bind, hosts/origins, controlUi, openai
   ]) {
     assert.ok(src.includes(`["${path}"`), `missing leaf write ${path}`);
   }
-  // token stays write-only; auth mode stays a constrained enum
-  assert.match(src, /if \(tokenNew\.value\.trim\(\)\) pairs\.push\(\["gateway\.auth\.token"/);
-  assert.match(src, /\/\^\(token\|none\)\$\//);
-  // their operator-grade warning for the HTTP endpoint
-  assert.match(src, /grants full agent access over plain HTTP/);
+  // Token stays write-only; the two enums are read through #selValue and coerced,
+  // so a garbage store can never reach the config file.
+  assert.match(src, /if \(tokenIn\.value\.trim\(\)\) pairs\.push\(\["gateway\.auth\.token"/);
+  assert.match(src, /const currentBind = \(\): "loopback" \| "lan" =>/);
+  assert.match(src, /const currentMode = \(\): "token" \| "none" =>/);
+  // Both choices are our own dropdown, never the browser's.
+  assert.match(src, /id: "gw-bind",\s*\n\s*value: savedBind/);
+  assert.match(src, /id: "gw-mode",\s*\n\s*value: savedMode/);
+  // The operator warning for the HTTP endpoint, in words rather than a repo key.
+  assert.match(src, /hands full agent access to anything holding that token/);
   // loopback bypass + base path hints
-  assert.match(src, /no token needed from localhost/);
-  assert.match(src, /their controlUi\.basePath/);
+  assert.match(src, /Skip the token for local clients/);
+  assert.match(src, /Mount the web app under a prefix for a reverse proxy\./);
+  // A save never reloads the page: that hid a refused write.
+  const region = src.slice(src.indexOf("#renderGateway(gw: any"), src.indexOf("/* ---------------- automations"));
+  assert.ok(!/location\.reload/.test(region), "no reload on save");
 });
 
 test("#42 models tab: one panel of rows, and every action it used to offer", () => {
