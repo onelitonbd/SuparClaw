@@ -3,6 +3,7 @@
 import { Chat } from "./chat.js";
 import { el, esc, fmtTime, modal, toast, fuzzy } from "./dom.js";
 import { friendlyModelName } from "./model-name.js";
+import { groupSessions, sessionRow, searchView, type SessionRow } from "./sessions.js";
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
 import { onGatewayEvent } from "./notifications.js";
@@ -296,15 +297,29 @@ async function refresh(): Promise<void> {
 $("sessions-prune").addEventListener("click", async () => {
   try {
     const report = (await gateway.request("sessions.cleanup", { dryRun: true })) as any;
-    const total = Number(report.archivedAge ?? 0) + Number(report.archivedCap ?? 0) + Number(report.deletedCapArchives ?? 0);
-    if (total === 0) { toast("nothing to prune", "info"); return; }
-    const ok = window.confirm(
-      `Retention policy would archive ${report.archivedAge + report.archivedCap} session(s) and delete ${report.deletedCapArchives} archived session(s). Apply now?`,
-    );
-    if (!ok) return;
-    const done = (await gateway.request("sessions.cleanup", { enforce: true })) as any;
-    toast(`pruned: ${done.archivedAge + done.archivedCap} archived, ${done.deletedCapArchives} deleted`, "ok");
-    await refresh();
+    const archive = Number(report.archivedAge ?? 0) + Number(report.archivedCap ?? 0);
+    const del = Number(report.deletedCapArchives ?? 0);
+    if (archive + del === 0) { toast("nothing to prune", "info"); return; }
+    modal({
+      title: "Prune sessions?",
+      body: el("div", {}, [
+        el("p", {}, [
+          `The retention policy would archive ${archive} ${archive === 1 ? "session" : "sessions"} and delete ${del} archived ${del === 1 ? "session" : "sessions"}.`,
+        ]),
+        el("p", { class: "hint" }, ["Archived sessions stay readable; deleted ones are gone for good."]),
+      ]),
+      confirmLabel: "Prune",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const done = (await gateway.request("sessions.cleanup", { enforce: true })) as any;
+          toast(`pruned: ${done.archivedAge + done.archivedCap} archived, ${done.deletedCapArchives} deleted`, "ok");
+          await refresh();
+        } catch (err) {
+          toast(`prune failed: ${(err as Error).message}`, "err");
+        }
+      },
+    });
   } catch (err) {
     toast(`prune failed: ${(err as Error).message}`, "err");
   }
@@ -499,7 +514,7 @@ async function refreshQueueDepth(): Promise<void> {
 
 // Cache of the plain drawer list so session search can restore it (Esc /
 // clear) without another round trip.
-interface SessionListRow { key: string; last_msg_at?: number; title?: string; name?: string | null; archived?: number; }
+type SessionListRow = SessionRow;
 let lastSessionList: SessionListRow[] = [];
 
 /** Session row menu (P4 #33 — their session menu): rename, export, archive,
@@ -567,8 +582,20 @@ async function setSessionArchived(key: string, archived: boolean): Promise<void>
   }
 }
 
-async function deleteSession(key: string): Promise<void> {
-  if (!window.confirm(`Delete session "${key}" and all its messages? This cannot be undone.`)) return;
+function deleteSession(key: string): void {
+  modal({
+    title: "Delete session?",
+    body: el("div", {}, [
+      el("p", {}, [`${key} and its messages are removed from this device.`]),
+      el("p", { class: "hint" }, ["This cannot be undone."]),
+    ]),
+    confirmLabel: "Delete",
+    danger: true,
+    onConfirm: () => removeSession(key),
+  });
+}
+
+async function removeSession(key: string): Promise<void> {
   try {
     const res = (await gateway.request("sessions.delete", { sessionKey: key })) as { deleted: boolean; messages: number };
     toast(res.deleted ? `deleted session + ${res.messages} message(s)` : "session not found", res.deleted ? "ok" : "err");
@@ -585,46 +612,35 @@ async function deleteSession(key: string): Promise<void> {
   }
 }
 
+/** The count in the head and the summary in the footer — both read from the
+ *  same list that was just drawn, so they cannot disagree with it. */
+function syncSidebarCounts(rows: SessionRow[]): void {
+  const archived = rows.filter((r) => Number(r.archived ?? 0) === 1).length;
+  $("sessions-count").textContent = rows.length > 0 ? String(rows.length) : "";
+  $("sessions-foot").textContent = rows.length === 0
+    ? "No sessions yet"
+    : `${rows.length} ${rows.length === 1 ? "session" : "sessions"}${archived > 0 ? ` · ${archived} archived` : ""}`;
+}
+
 function renderSessions(list: SessionListRow[]): void {
   lastSessionList = list;
   closeSessionMenu();
   const host = $("sessions");
   host.innerHTML = "";
-  if (list.length === 0) list = [{ key: sessionKey }];
-  const seen = new Set<string>();
-  // Archived rows sink to a dimmed group (their archived-group parity).
-  const ordered = [
-    ...list.filter((s) => Number(s.archived ?? 0) !== 1),
-    ...list.filter((s) => Number(s.archived ?? 0) === 1),
-  ];
-  let archivedHeaderShown = false;
-  for (const s of ordered) {
-    if (seen.has(s.key)) continue;
-    seen.add(s.key);
-    const archived = Number(s.archived ?? 0) === 1;
-    if (archived && !archivedHeaderShown) {
-      archivedHeaderShown = true;
-      host.append(el("div", { class: "sessions__group" }, ["Archived"]));
+  // A gateway that has not answered yet still has the session on screen.
+  const rows = list.length === 0 ? [{ key: sessionKey }] : list;
+  for (const group of groupSessions(rows)) {
+    host.append(el("div", { class: "sessions__group" }, [group.label]));
+    for (const s of group.rows) {
+      host.append(sessionRow(s, {
+        active: s.key === sessionKey,
+        busy: busy && s.key === sessionKey,
+        onOpen: () => void switchSession(s.key),
+        onMenu: (x, y) => openSessionMenu(s, x, y),
+      }));
     }
-    const kebab = el("button", { class: "session__kebab", type: "button", "aria-label": `Menu for ${s.key}` }, ["⋯"]);
-    kebab.onclick = (e) => { e.stopPropagation(); openSessionMenu(s, (e as MouseEvent).clientX, (e as MouseEvent).clientY); };
-    const btn = el("button", {
-      class: `session${s.key === sessionKey ? " is-active" : ""}${archived ? " session--archived" : ""}`,
-      type: "button",
-    }, [
-      el("span", { class: "session__text" }, [
-        el("span", { class: "session__title" }, [s.name || s.title || s.key]),
-        el("span", { class: "session__meta" }, [
-          archived ? "archived" : s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
-        ]),
-      ]),
-      busy && s.key === sessionKey ? el("span", { class: "dot dot--live" }) : null,
-      kebab,
-    ].filter(Boolean) as Node[]);
-    btn.onclick = () => void switchSession(s.key);
-    btn.oncontextmenu = (e) => { e.preventDefault(); openSessionMenu(s, e.clientX, e.clientY); };
-    host.append(btn);
   }
+  syncSidebarCounts(rows);
 }
 
 async function switchSession(key: string): Promise<void> {
@@ -637,7 +653,7 @@ async function switchSession(key: string): Promise<void> {
   localStorage.setItem("sc.session", key);
   $("session-title").textContent = key;
   try { location.hash = "#/chat/" + encodeURIComponent(key); } catch { location.hash = "#/chat/" + key; }
-  closeDrawer();
+  if (!sideQuery?.matches) closeDrawer();
   await loadHistory();
   void refresh();
 }
@@ -700,28 +716,15 @@ async function loadHistory(anchorMid?: number): Promise<void> {
 // the drawer never downloads a roster to search.
 let searchSeq = 0;
 
-function snippetNodes(snippet: string): (Node | string)[] {
-  // Server marks hits with « »; escape everything else, promote marks to <mark>.
-  const out: (Node | string)[] = [];
-  let rest = snippet;
-  for (;;) {
-    const open = rest.indexOf("«");
-    const close = open < 0 ? -1 : rest.indexOf("»", open);
-    if (open < 0 || close < 0) { out.push(rest); break; }
-    out.push(rest.slice(0, open));
-    out.push(el("mark", {}, [rest.slice(open + 1, close)]));
-    rest = rest.slice(close + 1);
-  }
-  return out;
-}
-
 async function openSearchHit(sessionKeyHit: string, messageId?: number): Promise<void> {
   if (sessionKeyHit !== sessionKey) {
     sessionKey = sessionKeyHit;
     localStorage.setItem("sc.session", sessionKeyHit);
     $("session-title").textContent = sessionKeyHit;
   }
-  closeDrawer();
+  // A column on a laptop stays open across a session switch; the phone overlay
+  // gets out of the way.
+  if (!sideQuery?.matches) closeDrawer();
   await loadHistory(messageId);
   void refresh();
 }
@@ -729,47 +732,17 @@ async function openSearchHit(sessionKeyHit: string, messageId?: number): Promise
 function renderSessionSearch(q: string, result: { titleHits?: any[]; messageHits?: any[] }): void {
   const host = $("sessions");
   host.innerHTML = "";
-  const titleHits = result.titleHits ?? [];
-  const messageHits = result.messageHits ?? [];
-  host.append(el("div", { class: "srccap" }, [
-    `${titleHits.length} sessions · ${messageHits.length} messages`,
-    el("button", { class: "srccap__clear", type: "button" }, ["clear"]),
-  ]));
-  host.querySelector(".srccap__clear")?.addEventListener("click", () => {
+  const clear = (): void => {
     const input = $("sessions-search") as HTMLInputElement;
     input.value = "";
     input.dispatchEvent(new Event("input"));
     input.focus();
-  });
-  for (const h of titleHits) {
-    const btn = el("button", { class: "session searchrow", type: "button" }, [
-      el("span", { class: "session__text" }, [
-        el("span", { class: "session__title" }, [h.title || h.sessionKey]),
-        el("span", { class: "session__meta" }, [
-          `${h.sessionKey}${h.lastMsgAt ? ` · ${fmtTime(h.lastMsgAt)}` : ""}`,
-        ]),
-      ]),
-    ]);
-    btn.onclick = () => void openSearchHit(String(h.sessionKey));
-    host.append(btn);
-  }
-  for (const h of messageHits) {
-    const btn = el("button", { class: "session searchrow searchrow--msg", type: "button" }, [
-      el("span", { class: "session__text" }, [
-        el("span", { class: "session__title" }, [h.title || h.sessionKey]),
-        el("span", { class: "session__meta" }, [
-          `${h.role}${h.createdAt ? ` · ${fmtTime(h.createdAt)}` : ""}`,
-        ]),
-        el("span", { class: "searchrow__snippet" }, snippetNodes(String(h.snippet ?? ""))),
-      ]),
-    ]);
-    const mid = Number(h.messageId);
-    btn.onclick = () => void openSearchHit(String(h.sessionKey), Number.isFinite(mid) ? mid : undefined);
-    host.append(btn);
-  }
-  if (titleHits.length + messageHits.length === 0) {
-    host.append(el("div", { class: "srccap" }, [`no matches for “${q}”`]));
-  }
+  };
+  host.append(...searchView(q, result, {
+    openSession: (key) => void openSearchHit(key),
+    openHit: (key, mid) => void openSearchHit(key, mid),
+    clear,
+  }));
 }
 
 function initSessionSearch(): void {
@@ -794,8 +767,13 @@ function initSessionSearch(): void {
   };
   input.onkeydown = (e) => {
     if (e.key === "Escape") {
-      input.value = "";
-      input.dispatchEvent(new Event("input"));
+      if (input.value !== "") {
+        // Clear first; the drawer stays. With the field already empty the
+        // document handler closes the panel.
+        input.value = "";
+        input.dispatchEvent(new Event("input"));
+        e.stopPropagation();
+      }
       input.blur();
     } else if (e.key === "Enter") {
       e.preventDefault();
@@ -847,24 +825,65 @@ function newSession(): void {
 /* ---------------- drawer ---------------- */
 
 const drawerOverlay = $("drawer-overlay");
+// The app's one wide breakpoint (styles.css turns the Settings drawer into a
+// column there too). Above it this sidebar is a column, below it an overlay.
+const sideQuery = typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 881px)") : null;
 
-function openDrawer(): void {
-  drawerOverlay.hidden = false;
-  $("drawer-btn").classList.add("is-on");
-  $("drawer-btn").setAttribute("aria-expanded", "true");
+/** A column the user closed stays closed: only "closed" is stored, so the
+ *  default on a first visit is open. */
+function sidebarPref(): boolean {
+  return localStorage.getItem("sc.sidebar") !== "closed";
 }
 
-function closeDrawer(): void {
+function openDrawer(persist = false): void {
+  drawerOverlay.hidden = false;
+  document.documentElement.dataset.side = "open";
+  $("drawer-btn").classList.add("is-on");
+  $("drawer-btn").setAttribute("aria-expanded", "true");
+  if (persist) localStorage.setItem("sc.sidebar", "open");
+}
+
+function closeDrawer(persist = false): void {
+  const wasOpen = !drawerOverlay.hidden;
+  const active = document.activeElement as Node | null;
+  const hadFocus = Boolean(active && drawerOverlay.contains?.(active));
   drawerOverlay.hidden = true;
   $("drawer-btn").classList.remove("is-on");
   $("drawer-btn").setAttribute("aria-expanded", "false");
+  if (persist) {
+    localStorage.setItem("sc.sidebar", "closed");
+    document.documentElement.dataset.side = "closed";
+  }
+  // Focus goes back to the control that owns the panel — never out of a dialog
+  // that opened on top of it.
+  if (wasOpen && hadFocus && !document.querySelector?.(".overlay:not([hidden]) .modal")) $("drawer-btn").focus();
 }
 
+/** Apply the preference to this width: a column on wide screens, a closed
+ *  overlay on phones. Runs at boot, when the breakpoint is crossed, and when
+ *  chat comes back from Settings. */
+function applySidebar(): void {
+  // `data-side` records the preference (not the current width), so the head
+  // script's first paint and this function always agree.
+  const open = sidebarPref();
+  document.documentElement.dataset.side = open ? "open" : "closed";
+  if (sideQuery?.matches && open) openDrawer();
+  else closeDrawer();
+}
+sideQuery?.addEventListener?.("change", applySidebar);
+
 $("drawer-btn").onclick = () => {
-  if (drawerOverlay.hidden) openDrawer(); else closeDrawer();
+  if (drawerOverlay.hidden) {
+    openDrawer(true);
+    // On a phone the panel covers the thread: move focus into it so Esc and Tab
+    // work without a detour through the rail.
+    if (!sideQuery?.matches) $("drawer").focus();
+  } else {
+    closeDrawer(true);
+  }
 };
-$("drawer-close").onclick = closeDrawer;
-$("drawer-scrim").onclick = closeDrawer;
+$("drawer-close").onclick = () => closeDrawer(true);
+$("drawer-scrim").onclick = () => closeDrawer(true);
 $("new-session").onclick = newSession;
 $("new-chat-btn").onclick = newSession;
 
@@ -1105,6 +1124,7 @@ async function route(): Promise<void> {
     if (chatHash) {
       $("session-title").textContent = sessionKey;
     }
+    applySidebar();
   }
 }
 window.addEventListener("hashchange", route);
@@ -1114,7 +1134,11 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     $("model-btn").click();
   }
-  if (e.key === "Escape" && busy) void gateway.request("chat.abort", { sessionKey });
+  if (e.key !== "Escape") return;
+  // Closest layer first: an open sidebar closes and the run keeps going. Only a
+  // second Escape (sidebar gone) stops a turn.
+  if (!drawerOverlay.hidden) { closeDrawer(true); return; }
+  if (busy) void gateway.request("chat.abort", { sessionKey });
 });
 
 /* ---------------- boot ---------------- */
@@ -1128,5 +1152,6 @@ if (!(location.hash || "").startsWith("#/settings")) {
   }
 }
 route();
+applySidebar();
 gateway.connect();
 void refresh();

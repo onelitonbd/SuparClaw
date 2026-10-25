@@ -62,7 +62,11 @@ test("ui: session row menu (rename/export/archive/delete), archived grouping, ba
   assert.match(main, /item\(archived \? "Unarchive" : "Archive", /);
   assert.match(main, /item\("Delete…", /);
   assert.match(main, /menu__item--danger/); // their destructive-action styling
-  assert.match(main, /window\.confirm\(`Delete session/); // confirmation required
+  // Confirmation is still required — through the app's own dialog, because
+  // native prompt/confirm/alert are banned in this UI (ui/src/dom.ts).
+  assert.match(main, /title: "Delete session\?"/);
+  assert.match(main, /confirmLabel: "Delete",\n    danger: true,/);
+  assert.ok(!main.includes("window.confirm"), "the shell never calls a native dialog");
   // export downloads in the browser AND points at the CLI artifact dir
   assert.match(main, /new Blob\(\[res\.content\]/);
   assert.match(main, /also saved under \$\{res\.dir\}/);
@@ -73,7 +77,8 @@ test("ui: session row menu (rename/export/archive/delete), archived grouping, ba
   // prune: dry-run report → confirm with counts → enforce
   assert.match(main, /sessions\.cleanup", \{ dryRun: true \}/);
   assert.match(main, /sessions\.cleanup", \{ enforce: true \}/);
-  assert.match(main, /window\.confirm\(/);
+  assert.match(main, /title: "Prune sessions\?"/);
+  assert.match(main, /confirmLabel: "Prune",/);
 
   const chat = readFileSync(new URL("../ui/src/chat.ts", import.meta.url), "utf8");
   assert.match(chat, /setArchived\(archived: boolean/);

@@ -15,6 +15,14 @@
   html, body { height: 100%; }
   body { margin: 0; }
 </style>
+<script>
+  // The chat sidebar is a column on wide screens. Apply the remembered choice
+  // before the first paint, so an open-or-collapsed column never flashes the
+  // wrong way while app.js is still loading. The CSS fallback is "open".
+  try {
+    document.documentElement.dataset.side = localStorage.getItem("sc.sidebar") === "closed" ? "closed" : "open";
+  } catch { /* storage blocked: the CSS default stands */ }
+</script>
 </head>
 <body>
 <div class="app" id="app">
@@ -151,26 +159,30 @@
   <!-- Sessions drawer -->
   <div class="overlay" id="drawer-overlay" hidden>
     <button class="overlay__scrim" id="drawer-scrim" type="button" aria-label="Close sessions"></button>
-    <aside class="drawer" id="drawer" aria-label="Sessions">
+    <aside class="drawer" id="drawer" aria-label="Sessions" tabindex="-1">
       <div class="drawer__head">
-        <span>Sessions</span>
-        <button class="ibtn" id="drawer-close" type="button" aria-label="Close sessions">
+        <span class="drawer__title">Sessions</span>
+        <span class="drawer__count" id="sessions-count" aria-live="polite"></span>
+        <button class="ibtn drawer__close" id="drawer-close" type="button" aria-label="Close sessions">
           <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
-      <div class="drawer__sub">
-        <span class="cap">Recent</span>
-        <button class="ibtn" id="sessions-prune" type="button" aria-label="Prune old sessions" title="Prune sessions (archive/delete per retention policy)">
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
-        </button>
-        <button class="ibtn" id="new-session" type="button" aria-label="New session">
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      <div class="drawer__new">
+        <button class="side-new" id="new-session" type="button">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span>New chat</span>
         </button>
       </div>
       <div class="drawer__search">
         <input id="sessions-search" type="search" placeholder="Search sessions…" aria-label="Search sessions and messages" autocomplete="off" spellcheck="false" />
       </div>
       <nav class="drawer__list" id="sessions" aria-label="Session list"></nav>
+      <div class="drawer__foot">
+        <span class="drawer__foot-note" id="sessions-foot"></span>
+        <button class="ibtn drawer__prune" id="sessions-prune" type="button" aria-label="Prune old sessions" title="Prune sessions (archive/delete per retention policy)">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        </button>
+      </div>
     </aside>
   </div>
 
