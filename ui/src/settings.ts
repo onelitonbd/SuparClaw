@@ -2304,61 +2304,519 @@ export class Settings {
     return { input, node: el("div", { class: "row" }, [el("span", { class: "row__label" }, [label]), input]) };
   }
 
-  /** Exec policy (P4 #38 — their tools.exec page): the full safety surface:
-   *  enabled/approvals, ask fallback with nobody-to-ask, safe-bin lists,
-   *  sandbox/Proot, unattended sources, timeout. */
-  #execPolicyCard(config: any): HTMLElement {
+  /** Exec & approvals (P4 #38 — their tools.exec page + their approvals
+   *  ledger). ONE section with ONE draft and ONE atomic write.
+   *
+   *  It used to be two cards, and `mode`, `askFallback` and `strictInlineEval`
+   *  lived in both: instant RPCs in one, staged behind a Save in the other. The
+   *  same setting could be live in one card and stale in the other, presets
+   *  rewrote fields someone was editing, and the "Save" fired eleven separate
+   *  config.set frames so a rejected value left the policy half applied.
+   *
+   *  Grants are the exception: they live in the approvals ledger (sqlite), not
+   *  in config, so adding and revoking stay immediate — there is nothing to
+   *  stage when a decision is remembered the moment you make it. */
+  async #execCard(config: any): Promise<HTMLElement> {
     const x = config.tools?.exec ?? {};
-    const enabledCb = this.#cfgCheck("x-enabled", "Exec enabled", Boolean(x.enabled));
-    const approvalsCb = this.#cfgCheck("x-approvals", "Approvals (legacy bool — blank mode follows this)", x.approvals !== false);
-    const inlineCb = this.#cfgCheck("x-inline", "Never auto-allow inline eval (node -e, bash -c …)", Boolean(x.strictInlineEval));
-    const prootCb = this.#cfgCheck("x-proot", "Proot filesystem jail (strict mode; needs proot binary)", Boolean(x.sandboxProot));
-    const modeSel = this.#cfgSel("x-mode", String(x.mode ?? ""), [
-      ["", "inherit (follow approvals bool)"], ["deny", "deny"], ["allowlist", "allowlist"], ["ask", "ask"], ["full", "full"],
-    ]);
-    const askSel = this.#cfgSel("x-askfb", String(x.askFallback ?? "deny"), [
-      ["deny", "deny"], ["allowlist", "allowlist"], ["full", "full"],
-    ]);
-    const unatSel = this.#cfgSel("x-unattended", String(x.unattended ?? "deny"), [
-      ["deny", "deny — decline loudly (default)"], ["allowlist", "allowlist — safe bins only"], ["all", "all — auto-allow"],
-    ]);
-    const sandSel = this.#cfgSel("x-sandbox", String(x.sandbox ?? "off"), [
-      ["off", "off (plain)"], ["strict", "strict (scrubbed env + prlimit caps)"],
-    ]);
-    const binsF = this.#cfgStr("x-bins", "Safe bins (comma)", (x.safeBins ?? []).join(", "), "cut, uniq, head, tail, tr, wc");
-    const dirsF = this.#cfgStr("x-dirs", "Safe-bin trusted dirs (comma)", (x.safeBinTrustedDirs ?? []).join(", "), "/bin, /usr/bin");
-    const timeoutF = this.#cfgNum("x-timeout", "Timeout per command (ms, 1000–600000)", Number(x.timeoutMs ?? 600000), "safety cap only — a hung command cannot block a session forever");
-
-    const save = el("button", { class: "btn", type: "button", id: "exec-policy-save" }, ["Save"]) as HTMLButtonElement;
-    save.onclick = () => {
-      void this.#setMany(
-        [
-          ["tools.exec.enabled", enabledCb.input.checked],
-          ["tools.exec.approvals", approvalsCb.input.checked],
-          ["tools.exec.mode", /^(deny|allowlist|ask|full)$/.test(modeSel.value) ? modeSel.value : ""],
-          ["tools.exec.askFallback", askSel.value],
-          ["tools.exec.strictInlineEval", inlineCb.input.checked],
-          ["tools.exec.safeBins", binsF.input.value.split(",").map((v) => v.trim()).filter(Boolean)],
-          ["tools.exec.safeBinTrustedDirs", dirsF.input.value.split(",").map((v) => v.trim()).filter(Boolean)],
-          ["tools.exec.timeoutMs", Math.max(1000, Math.min(600000, Number(timeoutF.input.value) || 600000))],
-          ["tools.exec.sandbox", sandSel.value],
-          ["tools.exec.sandboxProot", prootCb.input.checked],
-          ["tools.exec.unattended", unatSel.value],
-        ],
-        "exec policy saved — applies to the next tool call",
-      );
+    let st: any = null;
+    let stError = "";
+    try {
+      st = await gateway.request("approvals.get");
+    } catch (err) {
+      // The policy comes from config, so losing this RPC must not take the
+      // whole section down with it — only the grants list.
+      stError = (err as Error).message;
+    }
+    const entries: any[] = Array.isArray(st?.entries) ? st.entries : [];
+    const effMode = String(st?.mode ?? (x.approvals === false ? "full" : "ask"));
+    const MODE_TEXT: Record<string, string> = {
+      deny: "Refuses every shell command.",
+      allowlist: "Runs only allowlisted commands and safe bins; everything else is refused.",
+      ask: "Anything not on the allowlist asks you first. This is the default.",
+      full: "Runs anything without asking. Only on a machine you would hand a shell to.",
     };
 
-    return el("div", { class: "card exec-policy" }, [
-      el("h3", {}, ["Exec policy"]),
-      enabledCb.node, approvalsCb.node,
-      this.#cfgField("x-mode", "Policy mode", modeSel, "deny | allowlist | ask | full — blank follows the legacy approvals bool (their unset-is-a-state rule)"),
-      this.#cfgField("x-askfb", "Ask fallback (no client connected)", askSel),
-      inlineCb.node, binsF.node, dirsF.node, timeoutF.node,
-      this.#cfgField("x-sandbox", "Sandbox", sandSel),
-      prootCb.node,
-      this.#cfgField("x-unattended", "Unattended sources (cron/webhook)", unatSel, "every unattended auto-decision is audited to the log + transcript"),
-      el("div", { class: "setfoot" }, [save]),
+    /* ---- draft: every policy control stages here, Save applies the lot ---- */
+
+    let modeValue = String(x.mode ?? "");
+    const mark = (): void => this.#dirtyMark(note);
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+
+    const enabledCb = el("input", { type: "checkbox", id: "exec-enabled" }) as HTMLInputElement;
+    enabledCb.checked = Boolean(x.enabled);
+
+    // The status line reads the draft, not the stored config, so it answers
+    // "what happens if I save this?" while the radio is still being moved.
+    const statusTag = el("span", { class: "settings__tag" });
+    const statusNote = el("span", { class: "exec__status-note", "aria-live": "polite" });
+    const enabledHint = el("span", { class: "hint" });
+    const draftMode = (): string => modeValue || (legacyCb.checked ? "ask" : "full");
+    const syncStatus = (): void => {
+      const on = enabledCb.checked;
+      const mode = draftMode();
+      statusTag.textContent = on ? `mode ${mode}` : "exec off";
+      statusTag.className = `settings__tag${on && mode !== "deny" ? " is-ok" : " is-warn"}`;
+      statusNote.textContent = on
+        ? MODE_TEXT[mode] ?? MODE_TEXT["ask"]!
+        : "The agent has no shell tool while this is off.";
+      enabledHint.textContent = on
+        ? "Registered: the agent can ask to run commands on this machine."
+        : "Off: the tool is not registered at all, so nothing below has any effect until you switch it on and save.";
+    };
+    enabledCb.onchange = () => { syncStatus(); mark(); };
+
+    const modeRadios = new Map<string, HTMLInputElement>();
+    const modeGroup = el("div", { class: "exec__modes", role: "radiogroup", "aria-label": "Exec mode" });
+    const modeRowOf = new Map<string, HTMLElement>();
+    const syncMode = (): void => {
+      for (const [value, row] of modeRowOf) row.classList.toggle("is-on", value === modeValue);
+      legacyRow.hidden = modeValue !== "";
+      for (const [value, radio] of modeRadios) radio.checked = value === modeValue;
+    };
+    const pickMode = (value: string): void => {
+      modeValue = value;
+      syncMode();
+      syncStatus();
+    };
+    const MODES: { value: string; label: string; text: string }[] = [
+      { value: "deny", label: "deny", text: MODE_TEXT["deny"]! },
+      { value: "allowlist", label: "allowlist", text: MODE_TEXT["allowlist"]! },
+      { value: "ask", label: "ask", text: MODE_TEXT["ask"]! },
+      { value: "full", label: "full", text: MODE_TEXT["full"]! },
+      { value: "", label: "follow the legacy approvals switch", text: "Legacy: switch on = ask, off = full. Kept so older configs keep working." },
+    ];
+    for (const m of MODES) {
+      const id = `exec-mode-${m.value || "legacy"}`;
+      const radio = el("input", { type: "radio", name: "exec-mode", id, value: m.value, "aria-describedby": `${id}-desc` }) as HTMLInputElement;
+      radio.checked = modeValue === m.value;
+      radio.onchange = () => {
+        if (!radio.checked) return;
+        pickMode(m.value);
+        mark();
+      };
+      modeRadios.set(m.value, radio);
+      const row = el("div", { class: "exec__mode" }, [
+        el("div", { class: "exec__mode-main" }, [
+          el("label", { class: "exec__mode-label", for: id }, [m.label]),
+          el("span", { class: "hint", id: `${id}-desc` }, [m.text]),
+        ]),
+        radio,
+      ]);
+      row.dataset["mode"] = m.value;
+      modeRowOf.set(m.value, row);
+      modeGroup.append(row);
+    }
+
+    const legacyCb = el("input", { type: "checkbox", id: "exec-approvals" }) as HTMLInputElement;
+    legacyCb.checked = x.approvals !== false;
+    legacyCb.onchange = () => { syncStatus(); mark(); };
+    const legacyRow = el("div", { class: "row exec__legacy" }, [
+      el("div", { class: "row__main" }, [
+        el("label", { class: "row__label", for: "exec-approvals" }, ["Legacy approvals switch"]),
+        el("span", { class: "hint" }, ["Only read while the mode above follows it: on = ask, off = full."]),
+      ]),
+      legacyCb,
+    ]);
+
+    const strictCb = el("input", { type: "checkbox", id: "exec-strict-inline" }) as HTMLInputElement;
+    strictCb.checked = Boolean(x.strictInlineEval);
+    strictCb.onchange = mark;
+    const strictRow = el("div", { class: "row" }, [
+      el("div", { class: "row__main" }, [
+        el("label", { class: "row__label", for: "exec-strict-inline" }, ["Never auto-allow inline eval"]),
+        el("span", { class: "hint" }, ["node -e, bash -c, awk, sed, make, xargs and find -exec always need a real approval."]),
+      ]),
+      strictCb,
+    ]);
+
+    const askSel = this.#cfgSel("exec-ask-fallback", String(x.askFallback ?? "deny"), [
+      ["deny", "refuse it — and say so (default)"],
+      ["allowlist", "run it only if it is a safe bin"],
+      ["full", "run it anyway"],
+    ]);
+    askSel.onchange = mark;
+    // Read and write the options rather than `.value`: the same helper then works
+    // for a preset (which has to set a select programmatically) and for the save.
+    const selValue = (sel: HTMLSelectElement): string => {
+      const os = [...sel.querySelectorAll("option")];
+      return (os.find((o) => o.selected) ?? os[0])?.value ?? "";
+    };
+    const setSelValue = (sel: HTMLSelectElement, value: string): void => {
+      for (const o of [...sel.querySelectorAll("option")]) o.selected = o.value === value;
+    };
+    const unatSel = this.#cfgSel("exec-unattended", String(x.unattended ?? "deny"), [
+      ["deny", "refuse it — and say so (default)"],
+      ["allowlist", "run it only if it is a safe bin"],
+      ["all", "run anything"],
+    ]);
+    unatSel.onchange = mark;
+
+    const timeoutInp = el("input", {
+      class: "inp mono", id: "exec-timeout", inputmode: "numeric", autocomplete: "off", spellcheck: "false",
+      value: String(Number(x.timeoutMs ?? 600000)),
+    }) as HTMLInputElement;
+    const timeoutEcho = el("span", { class: "exec__echo", "aria-live": "polite" }, []);
+    const syncEcho = (): void => {
+      const n = Number(timeoutInp.value.trim());
+      timeoutEcho.textContent = Number.isFinite(n) && n >= 1000 ? `≈ ${Math.round((n / 60000) * 10) / 10} min` : "";
+    };
+    timeoutInp.oninput = () => { syncEcho(); mark(); };
+    syncEcho();
+
+    let sandbox = String(x.sandbox ?? "") === "strict" ? "strict" : "off";
+    const sandboxBtns = new Map<string, HTMLButtonElement>();
+    const sandboxSeg = el("div", { class: "seg", role: "group", "aria-label": "Sandbox" });
+    for (const opt of [
+      { value: "off", label: "off", title: "Plain: the command inherits this process's environment." },
+      { value: "strict", label: "strict", title: "strict (scrubbed env + prlimit caps)" },
+    ]) {
+      const b = el("button", { class: "seg__btn", type: "button", "aria-pressed": String(sandbox === opt.value), title: opt.title }, [opt.label]) as HTMLButtonElement;
+      b.onclick = () => {
+        sandbox = opt.value;
+        syncSandbox();
+        mark();
+      };
+      sandboxBtns.set(opt.value, b);
+      sandboxSeg.append(b);
+    }
+    const prootCb = el("input", { type: "checkbox", id: "exec-proot" }) as HTMLInputElement;
+    prootCb.checked = Boolean(x.sandboxProot);
+    prootCb.onchange = mark;
+    const prootRow = el("div", { class: "row" }, [
+      el("div", { class: "row__main" }, [
+        el("label", { class: "row__label", for: "exec-proot" }, ["Proot filesystem jail"]),
+        el("span", { class: "hint" }, ["Needs the strict sandbox and a proot binary (Termux). Ignored otherwise."]),
+      ]),
+      prootCb,
+    ]);
+    function syncSandbox(): void {
+      for (const [value, b] of sandboxBtns) b.setAttribute("aria-pressed", String(sandbox === value));
+      prootCb.disabled = sandbox !== "strict";
+      prootRow.classList.toggle("is-off", sandbox !== "strict");
+    }
+
+    // Only these bins have a stdin-only profile in the evaluator. A name that
+    // is not on this list does nothing at all — which is exactly the trap the
+    // old free-text box set, so the list is the control now.
+    const SAFE_BINS = ["cut", "uniq", "head", "tail", "tr", "wc"];
+    const bins = new Set<string>((Array.isArray(x.safeBins) ? x.safeBins : []).map(String));
+    const binsWrap = el("div", { class: "seg seg--wrap", role: "group", "aria-label": "Safe bins" });
+    const binChip = (bin: string, supported: boolean): HTMLButtonElement => {
+      const b = el("button", {
+        class: `seg__btn${supported ? "" : " is-off"}`,
+        type: "button",
+        id: `exec-bin-${bin}`,
+        "aria-pressed": String(bins.has(bin)),
+        title: supported ? `${bin} may run without asking when its argv is a stdin-only shape` : `${bin} has no stdin-only profile — this name does nothing`,
+      }, [bin]) as HTMLButtonElement;
+      b.onclick = () => {
+        if (bins.has(bin)) bins.delete(bin);
+        else bins.add(bin);
+        b.setAttribute("aria-pressed", String(bins.has(bin)));
+        mark();
+      };
+      return b;
+    };
+    for (const bin of SAFE_BINS) binsWrap.append(binChip(bin, true));
+    for (const bin of [...bins].filter((b) => !SAFE_BINS.includes(b))) binsWrap.append(binChip(bin, false));
+
+    const dirsInp = el("input", {
+      class: "inp mono", id: "exec-trusted-dirs", autocomplete: "off", spellcheck: "false",
+      value: (Array.isArray(x.safeBinTrustedDirs) ? x.safeBinTrustedDirs : []).join(", "),
+      placeholder: "/bin, /usr/bin",
+    }) as HTMLInputElement;
+    dirsInp.oninput = mark;
+
+    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
+    const save = el("button", { class: "btn pri", type: "button", id: "exec-policy-save" }, ["Save policy"]) as HTMLButtonElement;
+    let saving = false;
+    save.onclick = async () => {
+      if (saving) return;
+      problem.textContent = "";
+      problem.setAttribute("hidden", "");
+      timeoutInp.removeAttribute("aria-invalid");
+      const timeoutRaw = timeoutInp.value.trim();
+      const timeoutMs = Number(timeoutRaw);
+      // Refuse, never clamp: silently turning 50 ms into 1000 is how a policy
+      // setting becomes a lie.
+      if (!timeoutRaw || !Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) {
+        timeoutInp.setAttribute("aria-invalid", "true");
+        problem.textContent = "Not saved — the timeout has to be between 1000 and 600000 ms.";
+        problem.removeAttribute("hidden");
+        timeoutInp.focus();
+        return;
+      }
+      const chosen = [...modeRadios.entries()].find(([, radio]) => radio.checked)?.[0] ?? "";
+      // One write for the whole block, merged over what is stored so a key this
+      // page does not render survives a save.
+      const block: Record<string, unknown> = {
+        ...structuredClone(x),
+        enabled: enabledCb.checked,
+        approvals: legacyCb.checked,
+        mode: /^(deny|allowlist|ask|full)$/.test(chosen) ? chosen : "",
+        askFallback: selValue(askSel),
+        strictInlineEval: strictCb.checked,
+        safeBins: [...bins],
+        safeBinTrustedDirs: dirsInp.value.split(",").map((v) => v.trim()).filter(Boolean),
+        timeoutMs: Math.round(timeoutMs),
+        sandbox,
+        sandboxProot: prootCb.checked,
+        unattended: selValue(unatSel),
+      };
+      saving = true;
+      save.disabled = true;
+      save.textContent = "Saving…";
+      try {
+        await gateway.request("config.set", { path: "tools.exec", value: block });
+        clearDirty();
+        toast("exec policy saved — applies to the next tool call", "ok");
+        this.#onChanged();
+        void this.render();
+      } catch (err) {
+        problem.textContent = `not saved — ${(err as Error).message}`;
+        problem.removeAttribute("hidden");
+        toast(`not saved — ${(err as Error).message}`, "err");
+      } finally {
+        saving = false;
+        save.disabled = false;
+        save.textContent = "Save policy";
+      }
+    };
+
+    /* ---- grants: the approvals ledger (immediate, its own RPCs) ---- */
+
+    const ago = (ts?: number): string => {
+      if (!ts) return "never used";
+      const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
+      return m < 1 ? "used <1m ago" : m < 60 ? `used ${m}m ago` : m < 1440 ? `used ${Math.round(m / 60)}h ago` : `used ${Math.round(m / 1440)}d ago`;
+    };
+    const shortDir = (dir: string): string => String(dir || "?").replace(/^\/data\/data\/com\.termux\/files\/home/, "~").replace(/^\/home\/[^/]+/, "~");
+
+    const grantRow = (e: any): HTMLElement => {
+      const always = e.source === "allow-always";
+      const cmd = String(e.lastUsedCommand ?? e.command ?? "");
+      const meta = always
+        ? [`exact command`, `in ${shortDir(e.cwd)}`, ago(e.lastUsedAt)].join(" · ")
+        : [e.argPattern ? `argv /${e.argPattern}/` : "name or path match", ago(e.lastUsedAt), e.lastResolvedPath ? String(e.lastResolvedPath) : null].filter(Boolean).join(" · ");
+      const revoke = el("button", {
+        class: "btn sm danger", type: "button", "aria-label": `Revoke ${e.pattern}`,
+      }, ["Revoke"]) as HTMLButtonElement;
+      let armed = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const disarm = (): void => {
+        armed = false;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        revoke.textContent = "Revoke";
+        revoke.classList.remove("is-warn");
+      };
+      revoke.onclick = async () => {
+        // Revoking a grant is a security decision: one click arms, the second
+        // one acts, and the arm expires on its own.
+        if (!armed) {
+          armed = true;
+          revoke.textContent = "Confirm revoke";
+          revoke.classList.add("is-warn");
+          timer = setTimeout(disarm, 4000);
+          return;
+        }
+        disarm();
+        revoke.disabled = true;
+        try {
+          await gateway.request("approvals.entry.revoke", { id: e.id });
+          toast("grant revoked", "ok");
+          void this.render();
+        } catch (err) {
+          toast((err as Error).message, "err");
+          revoke.disabled = false;
+        }
+      };
+      const main = el("div", { class: "ledger__main" }, [
+        el("div", { class: "ledger__pattern", title: String(e.pattern) }, [String(e.pattern)]),
+        el("div", { class: "ledger__meta" }, [meta]),
+        ...(cmd ? [el("div", { class: "exec__cmd", title: cmd }, [`$ ${cmd}`])] : []),
+      ]);
+      return el("div", { class: "ledger__row" }, [
+        main,
+        el("span", { class: `settings__tag${always ? " is-warn" : ""}` }, [always ? "always" : "manual"]),
+        revoke,
+      ]);
+    };
+
+    const list = el("div", { class: "ledger" });
+    const renderRows = (): void => {
+      list.innerHTML = "";
+      const q = this.#execQuery.trim().toLowerCase();
+      const shown = entries.filter((e) => !q || [e.pattern, e.argPattern, e.lastUsedCommand, e.command]
+        .some((v) => String(v ?? "").toLowerCase().includes(q)));
+      if (shown.length === 0) {
+        list.append(el("p", { class: "hint" }, [
+          entries.length === 0
+            ? effMode === "full"
+              ? "No grants — full mode does not need any; every command already runs."
+              : "No grants yet. Anything that is not a safe bin asks first."
+            : "No grants match the search.",
+        ]));
+        return;
+      }
+      for (const e of shown) list.append(grantRow(e));
+    };
+    renderRows();
+    const search = el("input", {
+      class: "inp", id: "exec-grant-search", placeholder: "Search grants — pattern, command, regex…",
+      value: this.#execQuery, autocomplete: "off", spellcheck: "false",
+    }) as HTMLInputElement;
+    search.oninput = () => {
+      this.#execQuery = search.value;
+      renderRows();
+    };
+
+    const patternInp = el("input", { class: "inp mono", id: "exec-grant-pattern", placeholder: "rg, /opt/homebrew/bin/rg or ~/.local/bin/*", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const argInp = el("input", { class: "inp mono", id: "exec-grant-argv", placeholder: "argv regex (optional), e.g. ^safe\\.py$", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+    const addProblem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
+    const addBtn = el("button", { class: "btn", type: "button", id: "exec-grant-add" }, ["Add grant"]) as HTMLButtonElement;
+    addBtn.onclick = async () => {
+      addProblem.textContent = "";
+      addProblem.setAttribute("hidden", "");
+      if (!patternInp.value.trim()) {
+        addProblem.textContent = "A pattern is required — a binary name, a path, or a glob.";
+        addProblem.removeAttribute("hidden");
+        patternInp.focus();
+        return;
+      }
+      addBtn.disabled = true;
+      try {
+        await gateway.request("approvals.entry.add", {
+          pattern: patternInp.value.trim(),
+          argPattern: argInp.value.trim() || undefined,
+        });
+        patternInp.value = "";
+        argInp.value = "";
+        toast("grant added", "ok");
+        void this.render();
+      } catch (err) {
+        addProblem.textContent = (err as Error).message;
+        addProblem.removeAttribute("hidden");
+      } finally {
+        addBtn.disabled = false;
+      }
+    };
+
+    /* ---- assembly ---- */
+
+    const modeSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["Mode"]),
+        el("span", { class: "setsec__count" }, [`now: ${effMode}`]),
+      ]),
+      modeGroup,
+      legacyRow,
+      el("div", { class: "settings__inline exec__presets" }, [
+        el("span", { class: "cap" }, ["Start from"]),
+        (() => {
+          const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-cautious", title: "ask + refuse when nobody can answer" }, ["Cautious"]);
+          b.onclick = () => { pickMode("ask"); setSelValue(askSel, "deny"); mark(); };
+          return b;
+        })(),
+        (() => {
+          const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-deny", title: "deny + refuse" }, ["Deny all"]);
+          b.onclick = () => { pickMode("deny"); setSelValue(askSel, "deny"); mark(); };
+          return b;
+        })(),
+        (() => {
+          const b = el("button", { class: "btn sm is-warn", type: "button", id: "exec-preset-yolo", title: "full + run even unattended" }, ["YOLO"]);
+          b.onclick = () => { pickMode("full"); setSelValue(askSel, "full"); setSelValue(unatSel, "all"); mark(); };
+          return b;
+        })(),
+      ]),
+      strictRow,
+    ]);
+
+    const fallbackSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["When nobody can answer"])]),
+      this.#cfgField("exec-ask-fallback", "If a prompt cannot be shown (no UI connected)", askSel),
+      this.#cfgField("exec-unattended", "Runs with nobody watching (cron jobs, webhooks)", unatSel,
+        "every unattended auto-decision is audited — it is written to the log and the session transcript"),
+    ]);
+
+    const limitsSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["Limits & sandbox"]),
+        el("span", { class: "setsec__count" }, [`timeout ${Math.round(Number(x.timeoutMs ?? 600000) / 60000)} min`]),
+      ]),
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: "exec-timeout" }, ["Timeout per command (ms)"]),
+        el("div", { class: "settings__inline" }, [timeoutInp, timeoutEcho]),
+        el("p", { class: "hint" }, ["1000–600000. A safety cap only — a hung command cannot block a session forever."]),
+      ]),
+      el("div", { class: "setfield" }, [
+        el("span", { class: "cap" }, ["Sandbox"]),
+        sandboxSeg,
+        el("p", { class: "hint" }, ["Strict scrubs the environment, caps the process tree with prlimit, and — with the jail below — binds only the workspace read-write."]),
+      ]),
+      prootRow,
+    ]);
+
+    const safeBinsSection = el("div", { class: "setsec" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["Safe bins"]),
+        el("span", { class: "setsec__count" }, [`${[...bins].filter((b) => SAFE_BINS.includes(b)).length} of ${SAFE_BINS.length}`]),
+      ]),
+      binsWrap,
+      el("p", { class: "hint" }, ["These run without asking when their arguments are a stdin-only shape (no file operands). Only the six above have a profile — any other name is ignored."]),
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: "exec-trusted-dirs" }, ["Trusted directories (comma separated)"]),
+        dirsInp,
+        el("p", { class: "hint" }, ["A safe bin must resolve inside one of these; /bin and /usr/bin by default."]),
+      ]),
+    ]);
+
+    // Everything above is a draft: one zone, one Save, one write.
+    const policyZone = el("div", { class: "exec__policy" }, [modeSection, fallbackSection, limitsSection, safeBinsSection]);
+    const clearDirty = this.#dirtyWatch(policyZone, note);
+    // Grants live outside the draft zone on purpose: revoking one applies
+    // immediately, so it must never read as an unsaved policy change.
+    syncMode();
+    syncSandbox();
+    syncStatus();
+
+    const grantsSection = el("div", { class: "setsec exec-grants" }, [
+      el("div", { class: "setsec__head" }, [
+        el("span", { class: "cap" }, ["Grants"]),
+        el("span", { class: "setsec__count" }, [`${entries.length} ${entries.length === 1 ? "grant" : "grants"}`]),
+      ]),
+      ...(stError
+        ? [el("p", { class: "hint" }, [`Grants could not be read — ${stError}`])]
+        : [
+            search,
+            list,
+            el("div", { class: "exec__add" }, [
+              el("span", { class: "cap" }, ["Add a grant by hand"]),
+              el("div", { class: "settings__inline" }, [patternInp, argInp, addBtn]),
+              addProblem,
+              el("p", { class: "hint" }, ["A bare name matches only commands found on PATH; a path or glob matches the resolved binary. The argv regex applies to the arguments after the binary."]),
+            ]),
+          ]),
+    ]);
+
+    return el("div", { class: "card exec-card" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Exec & approvals"]),
+        el("p", { class: "hint" }, [
+          "How shell commands get authorized. Allowlisted commands and safe bins run without asking; anything else follows the mode. “Allow always” mints a grant for one exact command in one directory.",
+        ]),
+      ]),
+      el("div", { class: "exec__status" }, [statusTag, statusNote]),
+      el("div", { class: "row exec__enabled" }, [
+        el("div", { class: "row__main" }, [
+          el("label", { class: "row__label", for: "exec-enabled" }, ["Exec tool"]),
+          enabledHint,
+        ]),
+        enabledCb,
+      ]),
+      policyZone,
+      grantsSection,
+      el("div", { class: "setfoot" }, [note, problem, save]),
     ]);
   }
 
@@ -2585,194 +3043,10 @@ export class Settings {
     ]);
   }
 
-  /* ---------------- tools: exec & approvals ---------------- */
-
-  async #execApprovalsCard(): Promise<HTMLElement> {
-    let st: any;
-    try {
-      st = await gateway.request("approvals.get");
-    } catch (err) {
-      return el("div", { class: "card" }, [
-        el("h3", {}, ["Exec & approvals"]),
-        el("p", { class: "hint" }, [`Policy unread — ${(err as Error).message}`]),
-      ]);
-    }
-    const MODES = ["deny", "allowlist", "ask", "full"] as const;
-
-    const pills = el("div", { class: "seg", role: "group", "aria-label": "Exec mode" },
-      MODES.map((m) => {
-        const b = el("button", {
-          class: "seg__btn",
-          type: "button",
-          "aria-pressed": st.mode === m ? "true" : "false",
-        }, [m]) as HTMLButtonElement;
-        b.onclick = async () => {
-          try {
-            await gateway.request("approvals.setMode", { mode: m });
-            toast(`exec mode: ${m}`);
-            void this.render();
-          } catch (err) { toast((err as Error).message, "err"); }
-        };
-        return b;
-      }));
-
-    const fb = el("select", { class: "inp", id: "exec-ask-fallback" }, [
-      ...(["deny", "allowlist", "full"] as const).map((v) => {
-        const o = el("option", { value: v }, [v]) as HTMLOptionElement;
-        if (st.askFallback === v) o.selected = true;
-        return o;
-      }),
-    ]) as HTMLSelectElement;
-    fb.onchange = async () => {
-      try {
-        await gateway.request("approvals.setMode", { mode: st.mode, askFallback: fb.value });
-        toast(`no-surface fallback: ${fb.value}`);
-        void this.render();
-      } catch (err) { toast((err as Error).message, "err"); }
-    };
-
-    const strictBox = el("input", { type: "checkbox" }) as HTMLInputElement;
-    strictBox.checked = st.strictInlineEval === true;
-    strictBox.onchange = async () => {
-      try {
-        await gateway.request("approvals.setMode", { mode: st.mode, strictInlineEval: strictBox.checked });
-        toast(`strict inline eval ${strictBox.checked ? "on" : "off"}`);
-        void this.render();
-      } catch (err) { toast((err as Error).message, "err"); }
-    };
-
-    const presets = el("div", { class: "settings__inline" },
-      (["cautious", "deny-all", "yolo"] as const).map((name) => {
-        const b = el("button", { class: `btn sm${name === "yolo" ? " is-warn" : ""}`, type: "button" }, [name]) as HTMLButtonElement;
-        b.onclick = async () => {
-          try {
-            const r = await gateway.request("approvals.preset", { name }) as any;
-            toast(r.message ?? `preset ${name}`);
-            void this.render();
-          } catch (err) { toast((err as Error).message, "err"); }
-        };
-        return b;
-      }));
-
-    // ---- ledger (live search + compact rows; rule: long lists) ----
-    const entries: any[] = Array.isArray(st.entries) ? st.entries : [];
-    const list = el("div", { class: "list" });
-    const ago = (ts?: number) => {
-      if (!ts) return "never used";
-      const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
-      return m < 1 ? "used <1m ago" : m < 60 ? `used ${m}m ago` : m < 1440 ? `used ${Math.round(m / 60)}h ago` : `used ${Math.round(m / 1440)}d ago`;
-    };
-    const renderRows = (): void => {
-      list.innerHTML = "";
-      const q = this.#execQuery.trim().toLowerCase();
-      const shown = entries.filter((e) => !q || String(e.pattern).toLowerCase().includes(q) || String(e.argPattern ?? "").toLowerCase().includes(q));
-      if (shown.length === 0) {
-        list.append(el("p", { class: "hint" }, [
-          entries.length === 0 ? "No allowlist entries — every new command asks." : "No entries match the search.",
-        ]));
-        return;
-      }
-      for (const e of shown) {
-        const revoke = el("button", {
-          class: "ibtn",
-          type: "button",
-          "aria-label": "Revoke entry",
-          title: "Revoke entry",
-        }, ["✕"]) as HTMLButtonElement;
-        revoke.onclick = async () => {
-          try {
-            await gateway.request("approvals.entry.revoke", { id: e.id });
-            toast("entry revoked");
-            void this.render();
-          } catch (err) { toast((err as Error).message, "err"); }
-        };
-        const kind = el("span", { class: `settings__tag${e.source === "allow-always" ? " is-warn" : ""}` }, [
-          e.source === "allow-always" ? "always" : "manual",
-        ]);
-        const detail = e.source === "allow-always"
-          ? `exact argv · ${String(e.cwd ?? "?").replace(/^\/data\/data\/com\.termux\/files\/home/, "~")} · ${ago(e.lastUsedAt)}`
-          : [e.argPattern ? `argv /${e.argPattern}/` : null, e.lastUsedAt ? ago(e.lastUsedAt) : null, e.lastResolvedPath ? e.lastResolvedPath : null].filter(Boolean).join(" · ") || "path/name match";
-        list.append(el("div", { class: "ledger__row" }, [
-          el("div", { class: "ledger__main" }, [
-            el("div", { class: "ledger__pattern" }, [String(e.pattern)]),
-            el("div", { class: "ledger__meta" }, [detail]),
-          ]),
-          kind,
-          revoke,
-        ]));
-      }
-    };
-    renderRows();
-
-    const search = el("input", { class: "inp", placeholder: "Search entries…", value: this.#execQuery, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
-    search.oninput = () => { this.#execQuery = search.value; renderRows(); };
-
-    const patternInp = el("input", { class: "inp mono", placeholder: "rg or /opt/homebrew/bin/rg or ~/.local/bin/*" }) as HTMLInputElement;
-    const argInp = el("input", { class: "inp mono", placeholder: "argv regex (optional), e.g. ^safe\\.py$" }) as HTMLInputElement;
-    const addBtn = el("button", { class: "btn", type: "button" }, ["+ Add entry"]) as HTMLButtonElement;
-    addBtn.onclick = async () => {
-      try {
-        await gateway.request("approvals.entry.add", { pattern: patternInp.value, argPattern: argInp.value || undefined });
-        toast("allowlist entry added");
-        patternInp.value = "";
-        argInp.value = "";
-        void this.render();
-      } catch (err) { toast((err as Error).message, "err"); }
-    };
-
-    return el("div", { class: "card exec-approvals" }, [
-      el("div", { class: "setcard__head" }, [
-        el("h3", {}, ["Exec & approvals"]),
-        el("p", { class: "hint" }, [
-          "How host shell commands get authorized. Allowlist & safe bins run without prompts (argv-literal, no shell); misses follow the mode. Allow always mints an exact-argv grant bound to this directory.",
-        ]),
-      ]),
-      el("div", { class: "setgrid" }, [
-        el("div", { class: "setfield" }, [
-          el("span", { class: "lbl" }, ["Mode"]),
-          pills,
-        ]),
-        el("div", { class: "setfield" }, [
-          el("label", { class: "lbl", for: "exec-ask-fallback" }, ["Ask fallback (no surface connected)"]),
-          fb,
-          el("p", { class: "hint" }, ["Every unattended auto-decision is written to the log and the transcript."]),
-        ]),
-      ]),
-      el("div", { class: "row" }, [
-        el("div", { class: "row__main" }, [
-          el("span", { class: "row__label" }, ["Never auto-allow inline eval"]),
-          el("span", { class: "hint" }, ["node -e, bash -c and friends always need a real approval."]),
-        ]),
-        strictBox,
-      ]),
-      el("div", { class: "setsec" }, [
-        el("div", { class: "setsec__head" }, [
-          el("span", { class: "cap" }, ["Presets"]),
-        ]),
-        presets,
-      ]),
-      el("div", { class: "setsec" }, [
-        el("div", { class: "setsec__head" }, [
-          el("span", { class: "cap" }, ["Allowlist"]),
-          el("span", { class: "setsec__count" }, [`${entries.length} entries`]),
-        ]),
-        search,
-        el("div", { class: "ledger" }, [list]),
-      ]),
-      el("div", { class: "setsec" }, [
-        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Add an entry by hand"])]),
-        patternInp,
-        argInp,
-        el("div", { class: "settings__inline" }, [addBtn]),
-      ]),
-    ]);
-  }
-
   async #renderTools(tools: any[], config: any = {}): Promise<void> {
     const body = el("div", { class: "settings__stack" });
 
-    body.append(await this.#execApprovalsCard());
-    body.append(this.#execPolicyCard(config));
+    body.append(await this.#execCard(config));
     body.append(this.#codeModeCard(config));
     body.append(this.#mediaCard(config));
     body.append(await this.#webSearchCard());

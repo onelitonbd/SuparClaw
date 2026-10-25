@@ -27,6 +27,8 @@ export interface AllowlistEntry {
   /** Generated entries only authorize inside the approving directory. */
   cwd?: string;
   addedAt?: number;
+  /** Minted grants: the command the operator actually approved. */
+  command?: string;
   lastUsedAt?: number;
   lastUsedCommand?: string;
   lastResolvedPath?: string;
@@ -88,6 +90,9 @@ export function mintAlwaysEntry(
     source: "allow-always",
     addedAt: Date.now(),
     lastResolvedPath: plan.resolvedPath,
+    // Without this the row can only show a path glob and an argv hash, so the
+    // operator cannot tell what they once allowed.
+    command: plan.command.slice(0, 500),
   };
   const bag = doc.agents[AGENT_ID] ?? (doc.agents[AGENT_ID] = { allowlist: [] });
   bag.allowlist.push(entry);
@@ -124,6 +129,29 @@ export function revokeEntry(store: Store, id: string): boolean {
   if (bag.allowlist.length === before) return false;
   saveApprovalsDoc(store, doc);
   return true;
+}
+
+/**
+ * Record that a grant was used. The ledger is the only place an operator can
+ * see which rule is doing the work, so "last used" has to be real: it was
+ * declared in the type and written by nothing, which made every row say
+ * "never used" forever.
+ */
+export function touchEntries(store: Store, ids: string[], command: string): void {
+  const wanted = new Set(ids.filter(Boolean));
+  if (wanted.size === 0) return;
+  const doc = loadApprovalsDoc(store);
+  const bag = doc.agents[AGENT_ID];
+  if (!bag) return;
+  const at = Date.now();
+  let touched = false;
+  for (const entry of bag.allowlist) {
+    if (!wanted.has(entry.id)) continue;
+    entry.lastUsedAt = at;
+    entry.lastUsedCommand = command.slice(0, 500);
+    touched = true;
+  }
+  if (touched) saveApprovalsDoc(store, doc);
 }
 
 // ---------- shell lexing (quote-aware chain splitter + argv tokenizer) ----------

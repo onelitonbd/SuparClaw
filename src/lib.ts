@@ -181,6 +181,7 @@ export {
   mintAlwaysEntry,
   addManualEntry,
   revokeEntry,
+  touchEntries,
   resolveBinary,
   newEntryId,
   unattendedDecision,

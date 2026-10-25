@@ -6,29 +6,39 @@ import { readFileSync } from "node:fs";
 
 const src = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
 
-test("#38 exec & tools settings: policy card covers every tools.exec key", () => {
-  assert.match(src, /#execPolicyCard\(config: any\)/);
+test("#38 exec & tools settings: one exec card owns the whole tools.exec block", () => {
+  // The section used to be two cards over one block, each writing its own
+  // leaves on change. It is now one draft and one write, so the guard is on the
+  // merged block rather than on eleven separate leaf paths.
+  assert.match(src, /#execCard\(config: any\): Promise<HTMLElement>/);
+  assert.doesNotMatch(src, /#execPolicyCard|#execApprovalsCard/, "the two half-cards are gone");
   assert.match(src, /id: "exec-policy-save"/);
-  for (const path of [
-    "tools.exec.enabled",
-    "tools.exec.approvals",
-    "tools.exec.mode",
-    "tools.exec.askFallback",
-    "tools.exec.strictInlineEval",
-    "tools.exec.safeBins",
-    "tools.exec.safeBinTrustedDirs",
-    "tools.exec.timeoutMs",
-    "tools.exec.sandbox",
-    "tools.exec.sandboxProot",
-    "tools.exec.unattended",
+  assert.match(src, /gateway\.request\("config\.set", \{ path: "tools\.exec", value: block \}\)/);
+  assert.doesNotMatch(src, /\["tools\.exec\./, "no leaf writes left for the exec block");
+  // Every key the schema owns is in the one block, plus the stored block spread
+  // so a knob this page does not render survives a save.
+  assert.match(src, /\.\.\.structuredClone\(x\),/);
+  for (const key of [
+    "enabled:", "approvals:", "mode:", "askFallback:", "strictInlineEval:", "safeBins:",
+    "safeBinTrustedDirs:", "timeoutMs:", "sandbox,", "sandboxProot:", "unattended:",
   ]) {
-    assert.ok(src.includes(`["${path}"`), `missing leaf write ${path}`);
+    assert.ok(src.includes(key), `missing merged key ${key}`);
   }
   // their unset-is-a-state rule for exec mode: blank follows the approvals bool
-  assert.match(src, /tools\.exec\.mode", \/\^\(deny\|allowlist\|ask\|full\)\$\//);
-  // sandbox hints
+  assert.match(src, /\/\^\(deny\|allowlist\|ask\|full\)\$\/\.test\(chosen\)/);
+  // Refuse, never clamp — the previous version silently rewrote the number.
+  assert.match(src, /timeoutMs < 1000 \|\| timeoutMs > 600000/);
+  assert.match(src, /between 1000 and 600000 ms/);
+  assert.match(src, /aria-invalid/);
+  // Dependencies stated in the UI, not discovered from a broken run.
   assert.match(src, /strict \(scrubbed env \+ prlimit caps\)/);
+  assert.match(src, /prootCb\.disabled = sandbox !== "strict"/);
   assert.match(src, /unattended auto-decision is audited/);
+  assert.match(src, /Only the six above have a profile/);
+  // Grants are immediate and must not read as an unsaved policy change.
+  assert.match(src, /this\.#dirtyWatch\(policyZone, note\)/);
+  assert.match(src, /approvals\.entry\.revoke/);
+  assert.match(src, /lastUsedCommand/);
   // tools tab gets the config so the cards can render
   assert.match(src, /this\.#tab === "tools"\) await this\.#renderTools\(tools, config\)/);
 });

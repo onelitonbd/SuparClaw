@@ -24,6 +24,7 @@ import {
   type UnattendedMode,
   saveApprovalsDoc,
   mintAlwaysEntry,
+  touchEntries,
   ledgerEntries,
   type ApprovalsDoc,
   type ExecVerdict,
@@ -1416,6 +1417,22 @@ export class Service {
     this.#approvalSurface = fn;
   }
 
+  /** Stamp the ledger entries that authorized a run. "Last used" is the one
+   *  thing an operator needs before revoking a grant, so it has to be written
+   *  (it never was). Deliberately silent: no broadcast, because re-rendering an
+   *  open Settings card mid-edit would throw away the operator's draft. */
+  #stampExecUsage(verdict: ExecVerdict, command: string): void {
+    const ids = verdict.segments
+      .map((seg) => seg.matchedEntryId)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    if (ids.length === 0) return;
+    try {
+      touchEntries(this.store, ids, command);
+    } catch (err) {
+      this.log.warn(`exec ledger stamp failed: ${(err as Error).message}`);
+    }
+  }
+
   private requestApproval(
     callId: string,
     tool: string,
@@ -1453,7 +1470,10 @@ export class Service {
     });
     this.log.info(`exec approval: mode=${verdict.mode} decision=${verdict.decision} reason=${verdict.reason} cmd=${command.slice(0, 120)}`);
 
-    if (verdict.decision === "allow") return Promise.resolve({ approved: true, execVerdict: verdict });
+    if (verdict.decision === "allow") {
+      this.#stampExecUsage(verdict, command);
+      return Promise.resolve({ approved: true, execVerdict: verdict });
+    }
     if (verdict.decision === "deny") return Promise.resolve({ approved: false, execVerdict: verdict });
 
     // Unattended sources (P2 #10): cron/webhook runs never get a surface —
@@ -1466,6 +1486,7 @@ export class Service {
       this.log.info(`unattended exec (${src}, ${sessionKey}): ${decision.audit} ⇒ ${command.slice(0, 120)}`);
       const sess = this.store.getSessionByKey(sessionKey);
       if (sess) this.store.appendMessage(sess.id, "tool", `[${decision.audit}]\n$ ${command.slice(0, 500)}`);
+      if (decision.allowed) this.#stampExecUsage(verdict, command);
       return Promise.resolve({ approved: decision.allowed, execVerdict: verdict });
     }
 
@@ -1487,6 +1508,7 @@ export class Service {
         sessionMode: fb,
       });
       this.log.info(`exec ask with no surface: askFallback=${fb} → ${fbVerdict.decision}`);
+      if (fbVerdict.decision === "allow") this.#stampExecUsage(fbVerdict, command);
       return Promise.resolve({ approved: fbVerdict.decision === "allow", execVerdict: fbVerdict });
     }
 
@@ -1516,6 +1538,7 @@ export class Service {
               this.log.warn(`allow-always mint failed: ${(err as Error).message}`);
             }
           }
+          if (decision !== "deny") this.#stampExecUsage(verdict, command);
           resolve({ approved: decision !== "deny", execVerdict: verdict });
         },
       });
