@@ -424,6 +424,9 @@ export class Chat {
   replaceThread(rows: { role: string; content: string; id?: number; ts?: number }[]): number {
     const live = this.#live;
     const liveText = this.#streamText;
+    // History replacement detaches the old live bubble; release its timer and
+    // scroll listener before rebuilding the transcript and (if needed) the bubble.
+    this.#liveTrace?.destroy();
     this.stack.innerHTML = "";
     this.anchorMap.clear();
     this.#live = null;

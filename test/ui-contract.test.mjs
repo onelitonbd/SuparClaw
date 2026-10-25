@@ -98,7 +98,12 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   assert.equal(healthy.ok, true);
 
   // Static assets the UI needs are served from dist/ui
-  for (const [path, type] of [["/", "text/html"], ["/app.js", "text/javascript"], ["/styles.css", "text/css"]]) {
+  for (const [path, type] of [
+    ["/", "text/html"],
+    ["/app.js", "text/javascript"],
+    ["/styles.css", "text/css"],
+    ["/interior/settings.html", "text/html"],
+  ]) {
     const res = await fetch(`http://127.0.0.1:${port}${path}`);
     assert.equal(res.status, 200, `${path} served`);
     assert.match(res.headers.get("content-type") ?? "", new RegExp(type), `${path} content-type`);
@@ -107,6 +112,16 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   }
   const shell = await fetch(`http://127.0.0.1:${port}/`).then((r) => r.text());
   assert.match(shell, /app\.js/, "index.html references the app bundle");
+  const settingsInterior = await fetch(`http://127.0.0.1:${port}/interior/settings.html`).then((r) => r.text());
+  for (const id of [
+    "settings-menu", "settings-back", "settings-sidebar", "settings-search", "settings-nav",
+    "settings-scrim", "settings-group", "settings-title", "settings-description", "settings-body",
+    "settings-connection", "settings-connection-label",
+  ]) {
+    assert.match(settingsInterior, new RegExp(`id="${id}"`), `Settings interior includes #${id}`);
+  }
+  assert.match(settingsInterior, /aria-describedby="settings-description"/);
+  assert.match(settingsInterior, /role="status" aria-live="polite"/);
 
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   const events = [];

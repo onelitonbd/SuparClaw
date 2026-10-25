@@ -1807,21 +1807,39 @@ textarea:focus-visible {
   55% { box-shadow: 0 0 0 2px var(--accsoft); }
 }
 
-/* ---------------------------------------------------------- settings layout (OpenClaw-style two panes) ---- */
+/* ------------------------------------------------------ settings control surface ---- */
+
+.settings {
+  --settings-rail-bg: #171A22;
+  --settings-rail-text: #F1F0EA;
+  --settings-rail-muted: #ADB3BF;
+  --settings-rail-active: #232939;
+  --settings-rail-hover: #222630;
+  --settings-rail-accent: #AAB8FF;
+  --settings-rail-line: #343843;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
 
 .settings__topbar {
+  position: relative;
+  z-index: 56;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  min-height: 50px;
+  padding: 0 22px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  position: relative;
-  z-index: 56;
+  background: var(--bg);
 }
 
 .settings__topbar-brand {
-  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
   font-weight: 650;
   letter-spacing: -.01em;
 }
@@ -1831,42 +1849,103 @@ textarea:focus-visible {
   min-height: 0;
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .settings__sidebar {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 16px 14px 28px;
-  border-right: 1px solid var(--line);
-  background: var(--panel);
+  padding: 22px 16px 16px;
+  border-right: 1px solid var(--settings-rail-line);
+  background: var(--settings-rail-bg);
+  color: var(--settings-rail-text);
+  scrollbar-color: #4B5260 var(--settings-rail-bg);
+  scrollbar-width: thin;
 }
 
 .settings__brand {
-  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-height: 38px;
+  padding: 0 4px;
+}
+
+.settings__brand-mark {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border: 1px solid #373D4B;
+  border-radius: 10px;
+  background: var(--settings-rail-active);
+  color: var(--settings-rail-accent);
+}
+
+.settings__brand-mark svg { width: 26px; height: 26px; }
+
+.settings__brand-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings__brand-copy strong {
+  color: var(--settings-rail-text);
+  font-size: 15px;
   font-weight: 650;
-  letter-spacing: -.01em;
-  padding: 2px 8px 0;
+  letter-spacing: -.02em;
+  line-height: 1.2;
+}
+
+.settings__brand-copy span {
+  color: var(--settings-rail-muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.settings__search {
+  position: relative;
+  flex: none;
+}
+
+.settings__search-icon {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  color: var(--settings-rail-muted);
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .settings__search input {
+  display: block;
   width: 100%;
-  height: var(--tap);
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--ink);
-  padding: 0 12px;
-  font-size: 13px;
+  height: 44px;
+  padding: 0 12px 0 38px;
+  border: 1px solid var(--settings-rail-line);
+  border-radius: 9px;
+  background: #1E222B;
+  color: var(--settings-rail-text);
+  font-size: 14px;
+}
+
+.settings__search input::placeholder { color: var(--settings-rail-muted); }
+
+.settings__sidebar :focus-visible {
+  outline-color: var(--settings-rail-accent);
 }
 
 .settings__nav {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
 }
 
 .settings__group {
@@ -1876,36 +1955,87 @@ textarea:focus-visible {
 }
 
 .settings__group-label {
+  padding: 0 10px 5px;
+  color: var(--settings-rail-muted);
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ink3);
-  padding: 4px 8px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .settings__nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 10px;
-  border: none;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
   background: transparent;
-  color: var(--ink2);
-  font-size: 13px;
+  color: var(--settings-rail-muted);
+  font-size: 13.5px;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
+  transition: background-color .14s ease, color .14s ease;
 }
 
 .settings__nav-item:hover {
-  background: var(--accsoft);
-  color: var(--ink);
+  background: var(--settings-rail-hover);
+  color: var(--settings-rail-text);
 }
 
 .settings__nav-item.is-active {
-  background: var(--accsoft);
-  color: var(--ink);
+  background: var(--settings-rail-active);
+  color: var(--settings-rail-text);
   font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--settings-rail-accent);
+}
+
+.settings__sidebar-foot {
+  margin-top: auto;
+  padding: 16px 4px 2px;
+  border-top: 1px solid var(--settings-rail-line);
+}
+
+.settings__connection {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+}
+
+.settings__connection-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: #E5AD52;
+}
+
+.settings__connection[data-state="online"] .settings__connection-dot { background: #58CC8A; }
+.settings__connection[data-state="offline"] .settings__connection-dot,
+.settings__connection[data-state="unauthorized"] .settings__connection-dot { background: #F17F75; }
+
+.settings__connection-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings__connection-caption {
+  color: var(--settings-rail-muted);
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.settings__connection-label {
+  color: var(--settings-rail-text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
 }
 
 .settings__scrim {
@@ -1913,75 +2043,125 @@ textarea:focus-visible {
   position: fixed;
   inset: 0;
   z-index: 54;
-  border: none;
+  border: 0;
   padding: 0;
-  background: rgb(0 0 0 / 38%);
+  background: rgb(7 9 13 / 58%);
   cursor: pointer;
 }
 
 .settings__main {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
   overflow-y: auto;
   overscroll-behavior: contain;
+  background: var(--bg);
 }
 
 .settings__pagehead {
   position: sticky;
   top: 0;
   z-index: 2;
+  width: 100%;
+  max-width: 1128px;
+  margin: 0 auto;
+  padding: 28px clamp(20px, 4vw, 44px) 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.settings__pagecopy { min-width: 0; }
+
+.settings__context {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 22px 6px;
-  background: var(--bg);
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--ink3);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.settings__context svg { flex: none; color: var(--ink3); }
+
+.settings__pagehead h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 32px;
+  font-weight: 650;
+  letter-spacing: -.04em;
+  line-height: 1.12;
+}
+
+.settings__description {
+  max-width: 60ch;
+  margin: 8px 0 0;
+  color: var(--ink2);
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .settings__back {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 6px;
-  border: none;
-  border-radius: 6px;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   background: transparent;
   color: var(--ink2);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 550;
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color .14s ease, color .14s ease;
 }
 
 .settings__back:hover {
+  background: var(--hover);
   color: var(--ink);
-  background: var(--accsoft);
 }
 
-.settings__back svg {
-  width: 13px;
-  height: 13px;
-}
-
-.settings__pagehead h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -.02em;
-}
+.settings__back svg { width: 14px; height: 14px; }
 
 .settings__body {
-  padding: 6px 22px 48px;
-  max-width: 840px;
-}
-
-/* Stacked cards inside a tab (Models, Providers, Skills, …). The outer
-   #settings-body already carries the padding + max-width, so this wrapper
-   only adds vertical rhythm — no double padding, no double animation. */
-.settings__stack {
   display: flex;
+  width: 100%;
+  max-width: 1128px;
+  min-width: 0;
+  flex: 1;
   flex-direction: column;
   gap: 16px;
+  margin: 0 auto;
+  padding: 20px clamp(20px, 4vw, 44px) 56px;
+  animation: none;
+}
+
+.settings__body > .card,
+.settings__body > .settings__stack > .card,
+.settings__body .cfg-section {
+  border-color: var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: none;
+}
+
+.settings__body .setcard__head h3 { font-size: 16px; }
+.settings__body .setcard__head .hint { line-height: 1.55; }
+.settings__body .inp,
+.settings__body .dd__btn {
+  border-color: var(--line);
+  border-radius: 9px;
+}
+
+/* Stacked panels inside a tab; spacing carries hierarchy, not shadow. */
+.settings__stack {
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+  gap: 16px;
 }
 
 /* ---- Defaults page: card sections, custom dropdowns, fallback chips ---- */
@@ -2257,46 +2437,61 @@ textarea:focus-visible {
 }
 
 @media (max-width: 880px) {
-  .settings__panes {
-    grid-template-columns: minmax(0, 1fr);
+  .settings__topbar {
+    min-height: calc(56px + env(safe-area-inset-top));
+    padding: max(6px, env(safe-area-inset-top)) 12px 6px;
   }
+
+  .settings__topbar-brand { display: inline-flex; }
+
+  .settings__panes { grid-template-columns: minmax(0, 1fr); }
+
   .settings__sidebar {
     position: fixed;
-    top: 0;
-    left: 0;
+    top: calc(56px + env(safe-area-inset-top));
     bottom: 0;
-    width: min(84vw, 320px);
+    left: 0;
     z-index: 55;
-    border-right: 1px solid var(--line);
-    box-shadow: 12px 0 32px rgb(0 0 0 / 18%);
+    width: min(84vw, 320px);
+    padding-top: 18px;
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
+    border-right: 1px solid var(--settings-rail-line);
+    box-shadow: 12px 0 30px rgb(7 9 13 / 28%);
     transform: translateX(-102%);
     transition: transform .2s ease;
   }
-  .settings__sidebar.is-open {
-    transform: none;
-  }
-  .settings__scrim:not([hidden]) {
-    display: block;
-  }
-  .settings__pagehead {
-    padding: 8px 16px 4px;
-  }
-  .settings__body {
-    padding: 6px 16px 40px;
-  }
+
+  .settings__sidebar.is-open { transform: none; }
+  .settings__scrim { inset: calc(56px + env(safe-area-inset-top)) 0 0; }
+  .settings__scrim:not([hidden]) { display: block; }
+  .settings__pagehead { padding: 24px 20px 18px; }
+  .settings__body { padding: 18px 20px 44px; }
 }
 
 @media (min-width: 881px) {
   .settings__menu-btn,
-  .settings__topbar-brand {
-    display: none;
-  }
+  .settings__topbar-brand { display: none; }
+}
+
+@media (max-width: 640px) {
+  .settings__search input { font-size: 16px; }
+  .settings__pagehead h1 { font-size: 29px; }
+  .settings__body > .card,
+  .settings__body > .settings__stack > .card,
+  .settings__body .cfg-section { padding: 16px; }
+}
+
+@media (pointer: coarse) {
+  .settings__nav-item { min-height: 44px; }
+  .settings__back { min-height: 44px; }
+  .settings__body .btn.sm { min-height: 44px; height: auto; }
+  .settings__body .fb__b { min-width: 44px; min-height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .settings__sidebar {
-    transition: none;
-  }
+  .settings__sidebar,
+  .settings__nav-item,
+  .settings__back { transition: none; }
 }
 
 /* ---- Models / Providers pages: mobile focus (tap targets, wrapping) ---- */

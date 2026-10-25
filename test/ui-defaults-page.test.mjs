@@ -72,7 +72,7 @@ const outDir = mkdtempSync(join(TEST_TMP, "sc-ui-defaults-"));
 const rpcStub = join(outDir, "rpc-stub.mjs");
 writeFileSync(rpcStub, `
 export const gateway = {
-  state: "online",
+  get state() { return globalThis.__GW_STATE ?? "online"; },
   async request(method, params) {
     (globalThis.__GW_CALLS ||= []).push({ method, params });
     if (method === "config.get") return ${JSON.stringify(CONFIG)};
@@ -109,7 +109,12 @@ const page = parseHTML(`<!doctype html><html><body>
   <aside id="settings-sidebar"></aside>
   <button id="settings-menu"></button>
   <div id="settings-scrim" hidden></div>
-  <span id="settings-title"></span>
+  <span id="settings-group"></span>
+  <span id="settings-title" aria-describedby="settings-description"></span>
+  <p id="settings-description"></p>
+  <div id="settings-connection" data-state="connecting" role="status" aria-live="polite">
+    <span id="settings-connection-label"></span>
+  </div>
   <main id="settings-body"></main>
 </body></html>`);
 globalThis.document = page.document;
@@ -288,4 +293,36 @@ test("only one menu is open at a time — opening another closes the first", () 
   tap(byId("ad-rview-btn"));
   assert.equal(opens().length, 1, "the usage menu closed when the view menu opened");
   assert.equal(byId("ad-rview-menu").hasAttribute("hidden"), false);
+});
+
+test("Settings page context and connection status follow the route and Gateway", async () => {
+  assert.equal(byId("settings-title").textContent, "Defaults");
+  assert.equal(byId("settings-group").textContent, "Chat");
+  assert.equal(byId("settings-description").textContent, "Choose the model and behavior used for new agent runs.");
+  assert.equal(byId("settings-title").getAttribute("aria-describedby"), "settings-description");
+
+  for (const [state, label] of [
+    ["online", "Online"],
+    ["connecting", "Connecting…"],
+    ["offline", "Offline"],
+    ["unauthorized", "Unauthorized"],
+  ]) {
+    globalThis.__GW_STATE = state;
+    await settings.render();
+    assert.equal(byId("settings-connection").getAttribute("data-state"), state);
+    assert.equal(byId("settings-connection-label").textContent, label);
+  }
+
+  globalThis.__GW_STATE = "online";
+  settings.setHash("#/settings/models");
+  await settings.render();
+  assert.equal(byId("settings-title").textContent, "Models");
+  assert.equal(byId("settings-group").textContent, "Chat");
+  assert.equal(byId("settings-description").textContent, "Select available models and tune their runtime limits.");
+  const current = [...document.querySelectorAll('.settings__nav-item[aria-current="page"]')];
+  assert.equal(current.length, 1, "exactly one destination is current");
+  assert.equal(current[0].textContent, "Models");
+
+  settings.setHash("#/settings/defaults");
+  await settings.render();
 });

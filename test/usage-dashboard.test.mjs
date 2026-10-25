@@ -53,7 +53,7 @@ test("gateway wires usage.report: runs table + pricing cards + periods + session
 test("ui Usage tab: cards + three aggregate tables + json/csv exports", () => {
   const src = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
   assert.match(src, /\| "channels" \| "usage" \|/);
-  assert.match(src, /\{ id: "usage", label: "Usage", group: "Monitoring" \},/);
+  assert.match(src, /\{ id: "usage", label: "Usage", group: "Monitoring", description: "[^"]+" \},/);
   assert.match(src, /else if \(this\.#tab === "usage"\) void this\.#renderUsage\(\);/);
   assert.match(src, /gateway\.request\("usage\.report"/);
   assert.match(src, /last 7 days/i);

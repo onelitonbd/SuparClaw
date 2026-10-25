@@ -10,21 +10,21 @@ type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: 
 
 type TabId = "model" | "models" | "providers" | "channels" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
 
-const TABS: { id: TabId; label: string; group?: string }[] = [
-  { id: "model", label: "Defaults", group: "Chat" },
-  { id: "models", label: "Models", group: "Chat" },
-  { id: "providers", label: "Providers", group: "Chat" },
-  { id: "channels", label: "Channels", group: "Integrations" },
-  { id: "usage", label: "Usage", group: "Monitoring" },
-  { id: "skills", label: "Skills", group: "Agent" },
-  { id: "tools", label: "Tools", group: "Agent" },
-  { id: "memory", label: "Memory", group: "Agent" },
-  { id: "automations", label: "Automations", group: "Agent" },
-  { id: "alerts", label: "Alerts", group: "System" },
-  { id: "gateway", label: "Gateway", group: "System" },
-  { id: "runtime", label: "Runtime", group: "System" },
-  { id: "config", label: "All settings", group: "Advanced" },
-  { id: "system", label: "System", group: "Advanced" },
+const TABS: { id: TabId; label: string; group: string; description: string }[] = [
+  { id: "model", label: "Defaults", group: "Chat", description: "Choose the model and behavior used for new agent runs." },
+  { id: "models", label: "Models", group: "Chat", description: "Select available models and tune their runtime limits." },
+  { id: "providers", label: "Providers", group: "Chat", description: "Connect model providers and manage their credentials." },
+  { id: "channels", label: "Channels", group: "Integrations", description: "Connect and configure your messaging channels." },
+  { id: "usage", label: "Usage", group: "Monitoring", description: "Review token use, model activity, and reported cost." },
+  { id: "skills", label: "Skills", group: "Agent", description: "Manage reusable workflows available to the agent." },
+  { id: "tools", label: "Tools", group: "Agent", description: "Control built-in tools, approvals, and execution policy." },
+  { id: "memory", label: "Memory", group: "Agent", description: "Choose how the agent stores and retrieves long-term context." },
+  { id: "automations", label: "Automations", group: "Agent", description: "Schedule recurring work and manage Gateway hooks." },
+  { id: "alerts", label: "Alerts", group: "System", description: "Choose which events notify you and test delivery." },
+  { id: "gateway", label: "Gateway", group: "System", description: "Configure Gateway access, origins, and UI serving." },
+  { id: "runtime", label: "Runtime", group: "System", description: "Inspect runtime health, version, and service controls." },
+  { id: "config", label: "All settings", group: "Advanced", description: "Search and edit every configuration value in one place." },
+  { id: "system", label: "System", group: "Advanced", description: "Inspect host details, updates, and diagnostic logs." },
 ];
 
 const TAB_ALIASES: Record<string, TabId> = {
@@ -67,6 +67,10 @@ export class Settings {
   #menu: HTMLElement | null = null;
   #scrim: HTMLElement | null = null;
   #title: HTMLElement | null = null;
+  #group: HTMLElement | null = null;
+  #description: HTMLElement | null = null;
+  #connection: HTMLElement | null = null;
+  #connectionLabel: HTMLElement | null = null;
   #onChanged: () => void;
   #tab: TabId = "model";
   #hash: string = "";
@@ -85,6 +89,10 @@ export class Settings {
     this.#menu = document.getElementById("settings-menu");
     this.#scrim = document.getElementById("settings-scrim");
     this.#title = document.getElementById("settings-title");
+    this.#group = document.getElementById("settings-group");
+    this.#description = document.getElementById("settings-description");
+    this.#connection = document.getElementById("settings-connection");
+    this.#connectionLabel = document.getElementById("settings-connection-label");
     this.#onChanged = onChanged;
     // main.ts builds a fresh Settings per route change: always rebind so the
     // handlers belong to the live instance (the elements are static).
@@ -127,9 +135,31 @@ export class Settings {
     }
   }
 
+  #updatePageContext(): void {
+    const tab = TABS.find((item) => item.id === this.#tab);
+    if (this.#title) this.#title.textContent = tab?.label ?? "Settings";
+    if (this.#group) this.#group.textContent = tab?.group ?? "Settings";
+    if (this.#description) {
+      this.#description.textContent = tab?.description ?? "Configure how your Gateway works.";
+    }
+  }
+
+  #updateConnectionStatus(): void {
+    if (!this.#connection) return;
+    const state = gateway.state;
+    const labels = {
+      online: "Online",
+      connecting: "Connecting…",
+      offline: "Offline",
+      unauthorized: "Unauthorized",
+    } as const;
+    this.#connection.dataset["state"] = state;
+    if (this.#connectionLabel) this.#connectionLabel.textContent = labels[state];
+  }
+
   async render(): Promise<void> {
-    // The content pane title follows the open section (Back button + title).
-    if (this.#title) this.#title.textContent = TABS.find((t) => t.id === this.#tab)?.label ?? "Settings";
+    this.#updatePageContext();
+    this.#updateConnectionStatus();
     this.#renderNav();
 
     // The gateway answers over the WebSocket. If it is not connected yet
@@ -253,6 +283,7 @@ export class Settings {
         const btn = el("button", {
           class: `settings__nav-item${t.id === this.#tab ? " is-active" : ""}`,
           type: "button",
+          ...(t.id === this.#tab ? { "aria-current": "page" } : {}),
         }, [t.label]);
         btn.onclick = () => this.#setTab(t.id);
         grp.append(btn);

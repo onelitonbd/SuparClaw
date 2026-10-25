@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -26,7 +26,10 @@ globalThis.document = domGlobals.document;
 globalThis.HTMLElement = domGlobals.HTMLElement;
 
 const outDir = mkdtempSync(join(TEST_TMP, "sc-ui-render-"));
-const { build } = await import("esbuild");
+const { build, stop } = await import("esbuild");
+after(async () => {
+  await stop(); // the service persists across builds unless explicitly stopped
+});
 await build({
   entryPoints: [
     join(ROOT, "ui/src/dom.ts"),
@@ -167,6 +170,7 @@ test("replaceThread renders history, keeps a live stream, survives a bad row", a
   assert.ok(msgs[1].className.includes("msg--assistant"), "the live bubble is assistant");
   await new Promise((r) => setTimeout(r, 20));
   assert.ok((msgs[1].textContent ?? "").includes("streaming text"), "live text survives the reload");
+  chat.finish(); // close the live trace timer so this test worker can exit
 });
 
 test("reload groups a turn into ONE bubble: thinking → tools → answer (the mobile screenshot bug)", async () => {
@@ -234,6 +238,7 @@ test("live: thinking that arrives before the bubble opens moves inside it", asyn
   assert.match(thought.textContent ?? "", /Early thought\. More\./, "fragments keep accumulating in place");
   assert.ok(turn.querySelector(".agent-trace__item--tool"), "tool card in the same bubble");
   assert.ok(turn.querySelector(".msg__body"), "answer body at the bottom of the bubble");
+  chat.finish(); // close the live trace timer so this test worker can exit
 });
 
 test("loadHistory replaces via replaceThread and never clears before the fetch", () => {
