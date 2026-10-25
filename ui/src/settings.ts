@@ -3148,12 +3148,20 @@ export class Settings {
         ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
       ]);
     };
-    const num = (labelText: string, key: string, cur: number, hint?: string) => {
-      const inp = el("input", { class: "inp mono", id: `ch-${key}`, value: String(cur ?? 0), inputmode: "numeric" });
-      return el("div", { class: "modal__field", "data-ch-key": key, "data-ch-kind": "num" }, [
+    // Numbers carry their schema bounds: the save refuses to send a blank or
+    // out-of-range value instead of letting `Number(x) || 0` turn it into 0 and
+    // bounce off the gateway halfway through the form.
+    const num = (labelText: string, key: string, cur: number, opts: { min: number; max: number; hint?: string }) => {
+      const inp = el("input", {
+        class: "inp mono", id: `ch-${key}`, value: String(cur ?? 0), inputmode: "numeric", autocomplete: "off",
+      }) as HTMLInputElement;
+      return el("div", {
+        class: "modal__field", "data-ch-key": key, "data-ch-kind": "num",
+        "data-ch-min": String(opts.min), "data-ch-max": String(opts.max), "data-ch-label": labelText,
+      }, [
         el("label", { class: "lbl", for: `ch-${key}` }, [labelText]),
         inp,
-        ...(hint ? [el("p", { class: "hint" }, [hint])] : []),
+        ...(opts.hint ? [el("p", { class: "hint" }, [opts.hint])] : []),
       ]);
     };
     const pick = (labelText: string, key: string, cur: string, options: string[], hint?: string) => {
@@ -3179,32 +3187,95 @@ export class Settings {
       class: "inp mono", id: "ch-token", type: "password",
       placeholder: tg.token ? "leave blank to keep current token" : "123456:ABC…",
     }) as HTMLInputElement;
+    const tokenHint = el("p", { class: "hint" }, [
+      tg.token
+        ? `Saved token ends …${String(tg.token).slice(-4)}. Paste a new one, or put \${TELEGRAM_TOKEN} / a SecretRef in config.json5 (see: sc secrets refs).`
+        : "From @BotFather. To keep it out of config.json5 put \${TELEGRAM_TOKEN} or a SecretRef there instead (see: sc secrets refs).",
+    ]);
+    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
+    let saving = false;
 
     const save = el("button", { class: "btn pri", type: "button" }, ["Save channel settings"]);
     save.onclick = async () => {
-      const pairs: [string, unknown][] = [];
+      if (saving) return;
+      // ONE write for the whole block. This used to post one config.set per
+      // control, so a single bad value was rejected halfway and left a channel
+      // that matched neither the page nor the old config — silently.
+      const block: Record<string, unknown> = structuredClone((channels.telegram ?? {}) as Record<string, unknown>);
+      const relOf = (key: string): string => key.replace(/^channels\.telegram\./, "");
+      const bad: { label: string; input: HTMLInputElement }[] = [];
       for (const node of Array.from(this.#root.querySelectorAll<HTMLElement>("[data-ch-key]"))) {
-        const key = node.dataset["chKey"]!;
         const kind = node.dataset["chKind"]!;
+        const rel = relOf(String(node.dataset["chKey"]!));
+        const input = node.querySelector("input, textarea, select") as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+        if (!input) continue;
         if (kind === "bool") {
-          pairs.push([key, (node.querySelector("input") as HTMLInputElement).checked]);
+          setIn(block, rel, (input as HTMLInputElement).checked);
         } else if (kind === "num") {
-          pairs.push([key, Number((node.querySelector("input, textarea") as HTMLInputElement).value) || 0]);
+          input.removeAttribute("aria-invalid");
+          const raw = String(input.value).trim();
+          const n = Number(raw);
+          const min = Number(node.dataset["chMin"]);
+          const max = Number(node.dataset["chMax"]);
+          if (raw === "" || !Number.isFinite(n) || n < min || n > max) {
+            input.setAttribute("aria-invalid", "true");
+            bad.push({ label: String(node.dataset["chLabel"] ?? rel), input: input as HTMLInputElement });
+          } else {
+            setIn(block, rel, Math.round(n));
+          }
         } else if (kind === "list") {
-          pairs.push([key, (node.querySelector("textarea") as HTMLTextAreaElement).value.split("\n").map((v) => v.trim()).filter(Boolean)]);
+          setIn(block, rel, (input as HTMLTextAreaElement).value.split("\n").map((v) => v.trim()).filter(Boolean));
         } else {
-          pairs.push([key, (node.querySelector("select, input") as HTMLInputElement).value.trim()]);
+          setIn(block, rel, String(input.value).trim());
         }
       }
-      if (tokenInp.value.trim()) pairs.push(["channels.telegram.token", tokenInp.value.trim()]);
-      await this.#setMany(pairs, "channel settings saved — telegram reconnects now");
-      tokenInp.value = "";
-      // Authoritative reconnect: config.set now hot-applies the channel, and
-      // the visible outcome tells the user whether it actually connected.
-      const enabledNow = pairs.find(([k]) => k === "channels.telegram.enabled");
-      const wantOn = enabledNow ? Boolean(enabledNow[1]) : Boolean(channels.telegram?.enabled);
-      if (wantOn) connectBtn.click();
-      else void refreshStatus();
+      if (bad.length) {
+        problem.textContent = `Not saved — ${bad.map((b) => b.label.toLowerCase()).join(", ")} ${bad.length === 1 ? "is" : "are"} outside the allowed range.`;
+        problem.removeAttribute("hidden");
+        bad[0]?.input.focus();
+        return;
+      }
+      problem.textContent = "";
+      problem.setAttribute("hidden", "");
+      const typedToken = tokenInp.value.trim();
+      // Blank field = keep the stored token: the redacted sentinel rides along in
+      // the block and config.set resolves it server-side. This is the one
+      // control that is not simply read off the page.
+      if (typedToken) setIn(block, relOf("channels.telegram.token"), typedToken);
+      const wantOn = Boolean(block["enabled"]);
+      saving = true;
+      save.disabled = true;
+      save.textContent = "Saving…";
+      try {
+        await gateway.request("config.set", { path: "channels.telegram", value: block });
+        // Show what was stored (ints), not what was typed.
+        for (const node of Array.from(this.#root.querySelectorAll<HTMLElement>('[data-ch-key][data-ch-kind="num"]'))) {
+          const stored = readIn(block, relOf(String(node.dataset["chKey"]!)));
+          const input = node.querySelector("input") as HTMLInputElement | null;
+          if (input && typeof stored === "number") input.value = String(stored);
+        }
+        if (typedToken) {
+          tokenInp.value = "";
+          tokenInp.placeholder = "leave blank to keep current token";
+          tokenHint.textContent = `Saved token ends …${typedToken.slice(-4)}. Paste a new one, or put \${TELEGRAM_TOKEN} / a SecretRef in config.json5 (see: sc secrets refs).`;
+        }
+        toast(wantOn ? "channel settings saved — telegram reconnects now" : "channel settings saved — telegram is off", "ok");
+        this.#onChanged();
+        // Authoritative reconnect: it returns the real outcome (and diagnoses a
+        // blocked network or a dead proxy) instead of leaving a silent watcher.
+        if (wantOn) connectBtn.click();
+        else void refreshStatus();
+      } catch (err) {
+        // Beside the button as well as in a toast: a toast is gone in a few
+        // seconds, and "was it saved?" must stay answerable.
+        problem.textContent = `not saved — ${(err as Error).message}`;
+        problem.removeAttribute("hidden");
+        toast(`not saved — ${(err as Error).message}`, "err");
+      } finally {
+        saving = false;
+        save.disabled = false;
+        save.textContent = "Save channel settings";
+      }
     };
 
     // Live channel status + one-tap connect (their Settings → Channels card
@@ -3238,7 +3309,8 @@ export class Settings {
       connectBtn.disabled = true;
       try {
         const res = (await gateway.request("channels.telegram.connect")) as { ok: boolean; username?: string; error?: string };
-        if (res.ok) toast(`telegram connected as @${res.username ?? "?"}`, "ok");
+        const handle = String(res.username ?? "").trim();
+        if (res.ok) toast(handle ? `telegram connected as @${handle}` : "telegram connected", "ok");
         else toast(`telegram connect failed: ${res.error ?? "unknown"}`, "err");
       } catch (err) {
         toast((err as Error).message, "err");
@@ -3264,11 +3336,7 @@ export class Settings {
         el("div", { class: "modal__field" }, [
           el("label", { class: "lbl", for: "ch-token" }, ["Bot token"]),
           tokenInp,
-          el("p", { class: "hint" }, [
-            tg.token
-              ? `Saved token ends …${String(tg.token).slice(-4)}. Paste a new one, or put \${TELEGRAM_TOKEN} / a SecretRef in config.json5 (see: sc secrets refs).`
-              : "From @BotFather. To keep it out of config.json5 put \${TELEGRAM_TOKEN} or a SecretRef there instead (see: sc secrets refs).",
-          ]),
+          tokenHint,
         ]),
         (() => {
           const inp = el("input", { class: "inp mono", id: "ch-proxy", value: String(tg.proxy ?? ""), placeholder: "http://127.0.0.1:8080  (empty = direct)" });
@@ -3292,12 +3360,13 @@ export class Settings {
       el("div", { class: "card" }, [
         el("h3", {}, ["Messages"]),
         pick("Draft streaming to Telegram", "channels.telegram.streaming", tg.streaming ?? "off", ["off", "partial", "progress"]),
-        num("Batch window (ms)", "channels.telegram.batchMs", tg.batchMs ?? 0,
-          "Rapid-fire messages are merged before one reply. 0 disables batching."),
+        num("Batch window (ms)", "channels.telegram.batchMs", tg.batchMs ?? 0, {
+          min: 0, max: 5000, hint: "Rapid-fire messages are merged before one reply. 0 disables batching.",
+        }),
         pick("Typing indicator", "channels.telegram.typing.mode", typing.mode ?? "instant", ["instant", "thinking", "message", "never"],
           "instant on receive; thinking on first model output; message only beside replies; never."),
-        num("Typing refresh (seconds)", "channels.telegram.typing.intervalSeconds", typing.intervalSeconds ?? 5),
-        num("Media size cap (MB)", "channels.telegram.mediaMaxMb", tg.mediaMaxMb ?? 10),
+        num("Typing refresh (seconds)", "channels.telegram.typing.intervalSeconds", typing.intervalSeconds ?? 5, { min: 1, max: 30 }),
+        num("Media size cap (MB)", "channels.telegram.mediaMaxMb", tg.mediaMaxMb ?? 10, { min: 1, max: 100 }),
         check("Send photos to the vision model", "channels.telegram.vision", Boolean(tg.vision ?? true),
           "When off, photos are described by media understanding only."),
       ]),
@@ -3305,10 +3374,11 @@ export class Settings {
         el("h3", {}, ["Bot-loop protection"]),
         check("Enable", "channels.telegram.botLoopProtection.enabled", Boolean(blp.enabled ?? true),
           "Drops feedback loops when a partner bot answers every message."),
-        num("Max events per window", "channels.telegram.botLoopProtection.maxEventsPerWindow", blp.maxEventsPerWindow ?? 10),
-        num("Window (seconds)", "channels.telegram.botLoopProtection.windowSeconds", blp.windowSeconds ?? 60),
-        num("Cooldown (seconds)", "channels.telegram.botLoopProtection.cooldownSeconds", blp.cooldownSeconds ?? 300),
+        num("Max events per window", "channels.telegram.botLoopProtection.maxEventsPerWindow", blp.maxEventsPerWindow ?? 10, { min: 1, max: 1000 }),
+        num("Window (seconds)", "channels.telegram.botLoopProtection.windowSeconds", blp.windowSeconds ?? 60, { min: 5, max: 3600 }),
+        num("Cooldown (seconds)", "channels.telegram.botLoopProtection.cooldownSeconds", blp.cooldownSeconds ?? 300, { min: 5, max: 86400 }),
       ]),
+      problem,
       save,
     );
   }
@@ -4738,6 +4808,24 @@ export class Settings {
       },
     });
   }
+}
+
+/** Write a dotted path inside a plain object — "typing.mode" sets
+ *  `{ typing: { mode } }` without replacing the sibling keys. */
+function setIn(target: Record<string, unknown>, path: string, value: unknown): void {
+  const parts = path.split(".");
+  let cur: Record<string, unknown> = target;
+  for (const part of parts.slice(0, -1)) {
+    const next = cur[part];
+    if (!next || typeof next !== "object") cur[part] = {};
+    cur = cur[part] as Record<string, unknown>;
+  }
+  cur[parts[parts.length - 1]!] = value;
+}
+
+/** Read a dotted path back out; `undefined` when any step is missing. */
+function readIn(source: Record<string, unknown>, path: string): unknown {
+  return path.split(".").reduce<unknown>((acc, part) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[part] : undefined), source);
 }
 
 function tile(value: string, label: string): HTMLElement {

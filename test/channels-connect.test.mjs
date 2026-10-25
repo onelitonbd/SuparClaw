@@ -83,3 +83,44 @@ test("ui: Channels tab shows live status + Connect now + reconnect after save", 
   assert.match(src, /telegram reconnects now/);
   assert.match(src, /connectBtn\.click\(\)/);
 });
+
+// The Channels form writes its block in ONE config.set, so the block has to be
+// validated as a unit: a single out-of-range field must leave the stored
+// channel untouched rather than landing a half-saved state.
+test("a channels.telegram block is accepted or rejected whole", async () => {
+  const { ConfigService, createLogger, resolveRedacted, redactSecrets } = await import("../dist/lib.js");
+  const dir = mkdtempSync(join(tmpdir(), "sc-channels-atomic-"));
+  const cfg = new ConfigService(createLogger({ level: "error" }), join(dir, "config.json5"));
+
+  const good = {
+    enabled: true,
+    token: "123456:ABCdef",
+    dmPolicy: "pairing",
+    batchMs: 300,
+    typing: { mode: "instant", intervalSeconds: 6 },
+  };
+  const first = cfg.setPath("channels.telegram", good);
+  assert.equal(first.ok, true, JSON.stringify(first));
+  const before = JSON.stringify(cfg.current.channels.telegram);
+
+  const bad = {
+    ...good,
+    mediaMaxMb: 500, // schema max is 100
+    typing: { mode: "instant", intervalSeconds: 0 }, // schema min is 1
+  };
+  const rejected = cfg.setPath("channels.telegram", bad);
+  assert.equal(rejected.ok, false, "the block is rejected");
+  assert.match(rejected.errors.join(" "), /intervalSeconds|mediaMaxMb/);
+  assert.equal(JSON.stringify(cfg.current.channels.telegram), before, "nothing from the rejected block landed");
+
+  // The one-frame save posts the *redacted* block back (token = sentinel).
+  // config.set resolves sentinels against the stored value at the same path,
+  // recursively — a whole-object write must not store the mask as the token.
+  const sentinelBlock = redactSecrets(cfg.current).channels.telegram;
+  assert.match(sentinelBlock.token, /redacted/i);
+  const resolved = resolveRedacted(cfg.current.channels.telegram, sentinelBlock);
+  assert.equal(resolved.token, "123456:ABCdef", "the sentinel resolves to the stored secret");
+  assert.equal(cfg.setPath("channels.telegram", resolved).ok, true);
+  assert.equal(cfg.current.channels.telegram.token, "123456:ABCdef");
+  assert.equal(cfg.current.channels.telegram.typing.intervalSeconds, 6, "the rest of the block survives the round-trip");
+});
