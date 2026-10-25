@@ -3571,87 +3571,212 @@ export class Settings {
     ]);
   }
 
-  async #webSearchCard(): Promise<HTMLElement> {
-    let st: any;
+  /** Web search card: which provider answers, what it needs, and how much it
+   *  returns.
+   *
+   *  The old card wrote config on every click, showed credentials only for the
+   *  already-selected provider (so configuring Brave meant first switching the
+   *  agent to Brave), could not touch maxResults or the cache TTL, and collapsed
+   *  to a single sentence when the RPC failed. */
+  async #webSearchCard(config: any = {}): Promise<HTMLElement> {
+    const x = config.tools?.web?.search ?? {};
+    let st: any = null;
+    let stError = "";
     try {
       st = await gateway.request("web.search.get");
     } catch (err) {
-      return el("div", { class: "card" }, [
-        el("h3", {}, ["Web search"]),
-        el("p", { class: "hint" }, [`Search config unread — ${(err as Error).message}`]),
-      ]);
+      stError = (err as Error).message;
     }
-    const IDS = st.providers.map((p: any) => p.id as string);
-    const configured = st.provider as string;
-    const enableBox = el("input", { type: "checkbox" }) as HTMLInputElement;
-    enableBox.checked = st.enabled === true;
-    enableBox.onchange = async () => {
-      try {
-        await gateway.request("config.set", { path: "tools.web.search.enabled", value: enableBox.checked });
-        toast(`web search ${enableBox.checked ? "enabled" : "disabled"}`);
-        void this.render();
-      } catch (err) { toast((err as Error).message, "err"); }
+    const providers: { id: string; ready: boolean; keyFree: boolean; hasKey: boolean; configBaseUrl: string }[] =
+      Array.isArray(st?.providers)
+        ? st.providers.map((p: any) => ({
+            id: String(p.id),
+            ready: p.ready === true,
+            keyFree: p.keyFree === true,
+            hasKey: p.hasKey === true,
+            configBaseUrl: String(p.configBaseUrl ?? ""),
+          }))
+        : [];
+    const masks: Record<string, string> = (st?.keyMasks ?? {}) as Record<string, string>;
+    const effective = String(st?.effective ?? "");
+    const candidates: string[] = Array.isArray(st?.autoCandidates) ? st.autoCandidates.map(String) : [];
+    const savedProvider = String(x.provider ?? "");
+
+    /* ---- draft ---- */
+
+    let enabled = x.enabled !== false;
+    let provider = savedProvider;
+    const keys = new Map<string, string>();
+    const urls = new Map<string, string>();
+    for (const p of providers) {
+      if (p.keyFree) urls.set(p.id, String(x[p.id]?.baseUrl ?? ""));
+    }
+
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const mark = (): void => this.#dirtyMark(note);
+    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
+    const statusTag = el("span", { class: "settings__tag" });
+    const statusNote = el("span", { class: "setcard__status-note", "aria-live": "polite" });
+
+    const syncStatus = (): void => {
+      const chosen = provider ? providers.find((p) => p.id === provider) : null;
+      if (!enabled) {
+        statusTag.textContent = "off";
+        statusTag.className = "settings__tag is-warn";
+        statusNote.textContent = "The web_search tool is not offered to the agent at all.";
+        return;
+      }
+      if (provider) {
+        statusTag.textContent = `on · ${provider}`;
+        if (chosen && !chosen.ready) {
+          statusTag.className = "settings__tag is-warn";
+          statusNote.textContent = "An explicit provider wins and never falls back: every search fails until its "
+            + (chosen.keyFree ? "base URL is set." : "key is set.");
+          return;
+        }
+        statusTag.className = "settings__tag is-ok";
+        statusNote.textContent = "Explicit provider — there is no fallback if it starts failing.";
+        return;
+      }
+      statusTag.textContent = effective ? `on · auto → ${effective}` : "on · auto → nothing ready";
+      statusTag.className = `settings__tag${effective ? " is-ok" : " is-warn"}`;
+      statusNote.textContent = candidates.length > 0
+        ? `auto uses the first ready provider in this order: ${candidates.join(" → ")}. DuckDuckGo is only used when chosen.`
+        : "No provider is ready yet: add a key below, or choose searxng and give it a URL.";
     };
 
-    const pills = el("div", { class: "seg", role: "group", "aria-label": "Search provider" },
-      ["auto", ...IDS].map((id) => {
-        const p = st.providers.find((x: any) => x.id === id);
-        const ready = id === "auto" ? st.providers.some((x: any) => x.ready) : p?.ready;
-        const b = el("button", {
-          class: `seg__btn${ready ? "" : " is-off"}`,
-          type: "button",
-          "aria-pressed": configured === id ? "true" : "false",
-        }, [id]) as HTMLButtonElement;
-        b.title = id === "auto"
-          ? "First ready provider by fixed order"
-          : ready ? `${p.configBaseUrl || ""}` : "not ready — set its credentials below";
-        b.onclick = async () => {
-          try {
-            await gateway.request("config.set", { path: "tools.web.search.provider", value: id === "auto" ? "" : id });
-            toast(`search provider: ${id}`);
-            void this.render();
-          } catch (err) { toast((err as Error).message, "err"); }
-        };
-        return b;
-      }));
+    /* ---- provider choice: stages, never writes ---- */
 
-    // credential rows for the currently-selected api-backed provider
-    const sel = configured !== "auto" ? st.providers.find((x: any) => x.id === configured) : null;
-    const credRows: HTMLElement[] = [];
-    if (sel && !sel.keyFree) {
-      const inp = el("input", { class: "inp mono", type: "password", placeholder: `${sel.id.toUpperCase()}_API_KEY env, or paste here`, autocomplete: "off" }) as HTMLInputElement;
-      const save = el("button", { class: "btn sm" }, [sel.hasKey ? "Replace key · " + ((st.keyMasks?.[sel.id] as string) || "set") : "Save key"]) as HTMLButtonElement;
-      save.onclick = async () => {
-        if (!inp.value.trim()) { toast("key is empty", "err"); return; }
-        try {
-          await gateway.request("config.set", { path: `tools.web.search.${sel.id}.apiKey`, value: inp.value.trim() });
-          toast(`${sel.id} key saved`);
-          void this.render();
-        } catch (err) { toast((err as Error).message, "err"); }
+    const providerSeg = el("div", { class: "seg seg--wrap", role: "group", "aria-label": "Search provider" });
+    const providerBtns = new Map<string, HTMLButtonElement>();
+    const providerOptions: { id: string; label: string; ready: boolean; reason: string }[] = [
+      {
+        id: "",
+        label: "auto",
+        ready: Boolean(effective),
+        reason: candidates.length > 0
+          ? `first ready provider: ${candidates.join(" → ")}`
+          : "nothing is ready — auto has nothing to use",
+      },
+      ...providers.map((p) => ({
+        id: p.id,
+        label: p.id,
+        ready: p.ready,
+        reason: p.ready
+          ? "ready"
+          : p.keyFree
+            ? "not ready — needs a base URL"
+            : "not ready — needs an API key (choosing it anyway makes every search fail)",
+      })),
+    ];
+    for (const opt of providerOptions) {
+      const b = el("button", {
+        class: `seg__btn${opt.ready ? "" : " is-off"}`,
+        type: "button",
+        id: opt.id ? `ws-provider-${opt.id}` : "ws-provider-auto",
+        "aria-pressed": String(provider === opt.id),
+        title: opt.reason,
+      }, [opt.label]) as HTMLButtonElement;
+      b.onclick = () => {
+        provider = opt.id;
+        for (const [id, btn] of providerBtns) btn.setAttribute("aria-pressed", String(provider === id));
+        syncStatus();
+        mark();
       };
-      credRows.push(el("div", { class: "settings__inline" }, [inp, save]));
-    } else if (sel && sel.keyFree) {
-      const inp = el("input", { class: "inp mono", value: sel.configBaseUrl || "", placeholder: sel.id === "searxng" ? "https://searx.example.com" : "https://html.duckduckgo.com" }) as HTMLInputElement;
-      const save = el("button", { class: "btn sm" }, ["Save URL"]) as HTMLButtonElement;
-      save.onclick = async () => {
-        try {
-          await gateway.request("config.set", { path: `tools.web.search.${sel.id}.baseUrl`, value: inp.value.trim() });
-          toast(`${sel.id} base URL saved`);
-          void this.render();
-        } catch (err) { toast((err as Error).message, "err"); }
-      };
-      credRows.push(el("div", { class: "settings__inline" }, [inp, save]));
+      providerBtns.set(opt.id, b);
+      providerSeg.append(b);
     }
 
-    const testOut = el("p", { class: "hint", "aria-live": "polite" }, []);
-    const testBtn = el("button", { class: "btn sm" }, ["Test search"]) as HTMLButtonElement;
+    /* ---- credentials: every provider at once ---- */
+
+    const credRows: HTMLElement[] = [];
+    for (const p of providers) {
+      if (p.keyFree) {
+        const input = el("input", {
+          class: "inp mono", id: `ws-url-${p.id}`, autocomplete: "off", spellcheck: "false",
+          value: urls.get(p.id) ?? "",
+          placeholder: p.id === "searxng" ? "https://searx.example.com" : "https://html.duckduckgo.com",
+        }) as HTMLInputElement;
+        input.oninput = () => { urls.set(p.id, input.value); mark(); };
+        credRows.push(el("div", { class: "setfield" }, [
+          el("label", { class: "lbl", for: `ws-url-${p.id}` }, [`${p.id} base URL`]),
+          input,
+          el("p", { class: "hint" }, [
+            p.id === "searxng"
+              ? (p.ready ? "Ready — auto can use it." : "Not ready until a URL is set. auto can use searxng once it is; DuckDuckGo never is.")
+              : "Blank uses the public endpoint. DuckDuckGo is never picked by auto.",
+          ]),
+        ]));
+        continue;
+      }
+      const mask = masks[p.id] ?? "";
+      const fromEnv = p.hasKey && !mask;
+      const state = mask ? `stored · ${mask.replace("__redacted__:", "")}` : fromEnv ? "from the environment" : "no key";
+      const input = el("input", {
+        class: "inp mono", type: "password", id: `ws-key-${p.id}`, autocomplete: "off", spellcheck: "false",
+        placeholder: p.hasKey
+          ? `${state} — leave blank to keep`
+          : `${p.id.toUpperCase()}_API_KEY in the environment, or paste one here`,
+      }) as HTMLInputElement;
+      input.oninput = () => { keys.set(p.id, input.value); mark(); };
+      credRows.push(el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: `ws-key-${p.id}` }, [`${p.id} API key`]),
+        el("div", { class: "settings__inline" }, [
+          input,
+          el("span", { class: `settings__tag${p.ready ? " is-ok" : " is-warn"}` }, [state]),
+        ]),
+        el("p", { class: "hint" }, [
+          fromEnv
+            ? `Read from the environment — nothing is stored in the config file. Typing here stores one and shadows it.`
+            : "Stored in the config file, masked on the wire. Blank keeps whatever is there.",
+        ]),
+      ]));
+    }
+
+    /* ---- limits ---- */
+
+    interface Num { input: HTMLInputElement; echo: HTMLElement; node: HTMLElement; }
+    const num = (id: string, label: string, cur: number, hint: string, echo: (n: number) => string): Num => {
+      const input = el("input", {
+        class: "inp mono", id, inputmode: "numeric", autocomplete: "off", spellcheck: "false", value: String(cur),
+      }) as HTMLInputElement;
+      const echoEl = el("span", { class: "setcard__echo", "aria-live": "polite" }, []);
+      const sync = (): void => {
+        const n = Number(input.value.trim());
+        echoEl.textContent = Number.isFinite(n) ? echo(n) : "";
+      };
+      input.oninput = () => { sync(); mark(); };
+      sync();
+      return {
+        input,
+        echo: echoEl,
+        node: el("div", { class: "setfield" }, [
+          el("label", { class: "lbl", for: id }, [label]),
+          el("div", { class: "settings__inline" }, [input, echoEl]),
+          el("p", { class: "hint" }, [hint]),
+        ]),
+      };
+    };
+    const nMax = num("ws-max", "Results per search", Number(x.maxResults ?? 5),
+      "1–10. What the tool is allowed to return in one call.",
+      (n) => (Number.isInteger(n) && n >= 1 && n <= 10 ? `${n} result${n === 1 ? "" : "s"}` : ""));
+    const nCache = num("ws-cache", "Cache TTL (minutes)", Number(x.cacheTtlMinutes ?? 15),
+      "0–1440. 0 bypasses the cache completely, for both reads and writes.",
+      (n) => (n === 0 ? "cache bypassed" : Number.isInteger(n) && n > 0 ? `${n} min` : ""));
+
+    /* ---- test (immediate: it acts, it does not write) ---- */
+
+    const testOut = el("p", { class: "hint", id: "ws-test-out", "aria-live": "polite" }, []);
+    const testBtn = el("button", { class: "btn sm", type: "button", id: "ws-test" }, ["Test saved settings"]) as HTMLButtonElement;
     testBtn.onclick = async () => {
       testBtn.disabled = true;
       testOut.textContent = "searching…";
       try {
-        const r = await gateway.request("web.search.test", { provider: configured === "auto" ? undefined : configured }) as any;
+        const r = (await gateway.request("web.search.test", {
+          provider: savedProvider || undefined,
+        })) as any;
         testOut.textContent = r.ok
-          ? `✓ ${r.provider} · ${r.count} result(s) in ${r.tookMs}ms — ${r.firstTitles.join(" · ") || "(empty)"}`
+          ? `✓ ${r.provider} · ${r.count} result(s) in ${r.tookMs}ms — ${(r.firstTitles ?? []).join(" · ") || "(no titles)"}`
           : `✗ ${r.message ?? "failed"}`;
       } catch (err) {
         testOut.textContent = `✗ ${(err as Error).message}`;
@@ -3659,26 +3784,121 @@ export class Settings {
       testBtn.disabled = false;
     };
 
+    /* ---- save ---- */
+
+    const save = el("button", { class: "btn pri", type: "button", id: "websearch-save" }, ["Save web search"]) as HTMLButtonElement;
+    let saving = false;
+    save.onclick = async () => {
+      if (saving) return;
+      problem.textContent = "";
+      problem.setAttribute("hidden", "");
+      nMax.input.removeAttribute("aria-invalid");
+      nCache.input.removeAttribute("aria-invalid");
+      const bad: { input: HTMLInputElement; msg: string }[] = [];
+      const readInt = (f: Num, label: string, lo: number, hi: number): number => {
+        const raw = f.input.value.trim();
+        const n = Number(raw);
+        if (raw === "" || !Number.isInteger(n) || n < lo || n > hi) {
+          f.input.setAttribute("aria-invalid", "true");
+          bad.push({ input: f.input, msg: `${label} must be a whole number ${lo}–${hi}` });
+          return lo;
+        }
+        return n;
+      };
+      const maxResults = readInt(nMax, "results per search", 1, 10);
+      const cacheTtlMinutes = readInt(nCache, "cache TTL", 0, 1440);
+      if (bad.length > 0) {
+        problem.textContent = `Not saved — ${bad.map((b) => b.msg).join("; ")}.`;
+        problem.removeAttribute("hidden");
+        bad[0]?.input.focus();
+        return;
+      }
+      const block: Record<string, unknown> = {
+        ...structuredClone(x),
+        enabled,
+        // Empty string is auto, and must stay empty: "auto" is not a backend id.
+        provider,
+        maxResults,
+        cacheTtlMinutes,
+      };
+      for (const p of providers) {
+        if (p.keyFree) {
+          block[p.id] = { ...(x[p.id] ?? {}), baseUrl: (urls.get(p.id) ?? "").trim() };
+          continue;
+        }
+        const typed = (keys.get(p.id) ?? "").trim();
+        block[p.id] = { ...(x[p.id] ?? {}), apiKey: typed || String(x[p.id]?.apiKey ?? "") };
+      }
+      saving = true;
+      save.disabled = true;
+      save.textContent = "Saving…";
+      try {
+        await gateway.request("config.set", { path: "tools.web.search", value: block });
+        clearDirty();
+        toast("web search saved — applies to the next search", "ok");
+        this.#onChanged();
+        void this.render();
+      } catch (err) {
+        problem.textContent = `not saved — ${(err as Error).message}`;
+        problem.removeAttribute("hidden");
+        toast(`not saved — ${(err as Error).message}`, "err");
+      } finally {
+        saving = false;
+        save.disabled = false;
+        save.textContent = "Save web search";
+      }
+    };
+
+    /* ---- assembly ---- */
+
+    const enableCb = el("input", { type: "checkbox", id: "ws-enabled" }) as HTMLInputElement;
+    enableCb.checked = enabled;
+    enableCb.onchange = () => { enabled = enableCb.checked; syncStatus(); mark(); };
+
+    const policyZone = el("div", { class: "ws__policy" }, [
+      el("div", { class: "row" }, [
+        el("div", { class: "row__main" }, [
+          el("label", { class: "row__label", for: "ws-enabled" }, ["Offer the web_search tool"]),
+          el("span", { class: "hint" }, ["When off, the agent has no way to search the web at all."]),
+        ]),
+        enableCb,
+      ]),
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Provider"]),
+          el("span", { class: "setsec__count" }, [provider ? "explicit" : "auto"]),
+        ]),
+        providerSeg,
+        el("p", { class: "hint" }, ["A not-ready provider can still be chosen — you may be about to paste its key — but an explicit choice never falls back."]),
+      ]),
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [
+          el("span", { class: "cap" }, ["Credentials"]),
+          el("span", { class: "setsec__count" }, [`${providers.filter((p) => p.ready).length} ready`]),
+        ]),
+        ...(credRows.length > 0
+          ? credRows
+          : [el("p", { class: "hint" }, ["The provider list could not be read, so there is nothing to configure here right now. The limits below still save."])]),
+      ]),
+      el("div", { class: "setsec" }, [
+        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Limits"])]),
+        el("div", { class: "setgrid" }, [nMax.node, nCache.node]),
+      ]),
+    ]);
+    const clearDirty = this.#dirtyWatch(policyZone, note);
+    syncStatus();
+
     return el("div", { class: "card web-search" }, [
       el("div", { class: "setcard__head" }, [
         el("h3", {}, ["Web search"]),
         el("p", { class: "hint" }, [
-          "Provider used by the web_search tool. Auto picks the first API-keyed provider found; key-free providers are only used when selected.",
+          "Backs the web_search tool. auto picks the first ready provider; an explicit choice is used as-is, with no fallback.",
         ]),
       ]),
-      el("div", { class: "row" }, [
-        el("div", { class: "row__main" }, [
-          el("span", { class: "row__label" }, ["Enable the web_search tool"]),
-          el("span", { class: "hint" }, [st.enabled ? `${configured} · cache ${st.cacheTtlMinutes}m` : "currently disabled"]),
-        ]),
-        enableBox,
-      ]),
-      el("div", { class: "setsec" }, [
-        el("div", { class: "setsec__head" }, [el("span", { class: "cap" }, ["Provider"])]),
-        pills,
-        ...credRows,
-      ]),
-      el("div", { class: "setfoot" }, [testOut, testBtn]),
+      el("div", { class: "setcard__status" }, [statusTag, statusNote]),
+      ...(stError ? [el("p", { class: "hint" }, [`Provider list could not be read — ${stError}. Everything below still saves.`])] : []),
+      policyZone,
+      el("div", { class: "setfoot" }, [note, problem, testOut, testBtn, save]),
     ]);
   }
 
@@ -3688,7 +3908,7 @@ export class Settings {
     body.append(await this.#execCard(config));
     body.append(await this.#codeModeCard(config, tools));
     body.append(await this.#mediaCard(config));
-    body.append(await this.#webSearchCard());
+    body.append(await this.#webSearchCard(config));
 
     body.append(el("div", { class: "card" }, [
       el("h3", {}, ["Built-in tools"]),

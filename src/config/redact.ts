@@ -63,6 +63,13 @@ export function redactSecrets(config: SuparClawConfig): SuparClawConfig {
   for (const provider of Object.values(out.providers)) {
     provider.apiKey = looksLikeBinding(provider.apiKey) ? provider.apiKey : maskSecret(provider.apiKey);
   }
+  // Web-search credentials are secrets on the same terms as provider keys: the
+  // Settings card edits them, so the wire form must carry a sentinel rather than
+  // the key. config.set resolves any sentinel back through resolveRedacted.
+  for (const key of ["brave", "perplexity", "tavily", "kimi"] as const) {
+    const backend = out.tools.web.search[key];
+    backend.apiKey = maskSecret(backend.apiKey);
+  }
   return out;
 }
 

@@ -576,7 +576,7 @@ export class Gateway {
           return;
         }
         case "web.search.get": {
-          const { WEB_SEARCH_BACKENDS } = await import("../agent/web-search.js");
+          const { WEB_SEARCH_BACKENDS, resolveProvider } = await import("../agent/web-search.js");
           const cfgNow = service.config;
           const wsCfg = cfgNow.tools.web.search;
           const mask = (v: string) => (v ? `${v.slice(0, 3)}…${v.slice(-2)}` : "");
@@ -604,6 +604,14 @@ export class Gateway {
                 : (wsCfg.kimi.baseUrl || "(moonshot llm host)")
               ),
             })),
+            // The auto rule belongs to the backend, not the card: "first ready
+            // backend by order, key-free excluded except searxng".
+            effective: resolveProvider(cfgNow).provider?.id ?? "",
+            autoCandidates: WEB_SEARCH_BACKENDS
+              .filter((b) => !b.keyFree || b.id === "searxng")
+              .filter((b) => b.ready(cfgNow))
+              .sort((a, b) => a.order - b.order)
+              .map((b) => b.id),
             keyMasks: {
               brave: mask(wsCfg.brave.apiKey),
               perplexity: mask(wsCfg.perplexity.apiKey),

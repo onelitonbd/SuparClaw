@@ -92,6 +92,17 @@ test("redact: secrets never travel, sentinels write back to stored values", () =
   assert.equal(resolved.openai.apiKey, "sk-1234567890");
   const resolvedToken = resolveRedacted(config.gateway.auth.token, redacted.gateway.auth.token);
   assert.equal(resolvedToken, "tok-abcdef1234");
+  // web-search credentials are secrets on the same terms as provider keys
+  config.tools.web.search.brave.apiKey = "bsa-1234567890";
+  const redactedSearch = redactSecrets(config);
+  assert.ok(isRedacted(redactedSearch.tools.web.search.brave.apiKey), "search key masked on the wire");
+  assert.ok(!JSON.stringify(redactedSearch).includes("bsa-1234567890"), "raw search key absent from wire form");
+  assert.equal(
+    resolveRedacted(config.tools.web.search.brave.apiKey, redactedSearch.tools.web.search.brave.apiKey),
+    "bsa-1234567890",
+    "the sentinel keeps the stored key on write-back",
+  );
+
   // a genuinely new value passes through
   assert.equal(resolveRedacted("old", "sk-new"), "sk-new");
   assert.equal(maskSecret("short"), "__redacted__:");

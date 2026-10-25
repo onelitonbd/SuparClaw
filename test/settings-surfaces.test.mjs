@@ -88,6 +88,20 @@ test("#38 code mode + media cards cover their config surfaces", () => {
   assert.match(src, /if \(echoOn && fmt && !fmt\.includes\("\{transcript\}"\)\)/);
 });
 
+test("#38 web search card: one draft over the whole tools.web.search block", () => {
+  assert.match(src, /#webSearchCard\(config: any = \{\}\): Promise<HTMLElement>/);
+  assert.match(src, /id: "websearch-save"/);
+  assert.match(src, /gateway\.request\("config\.set", \{ path: "tools\.web\.search", value: block \}\)/);
+  // every credential and the provider choice stage in the draft, not on click
+  assert.doesNotMatch(src, /path: `tools\.web\.search\./, "no per-provider leaf writes left");
+  assert.match(src, /providerOptions/);
+  assert.match(src, /autoCandidates/);
+  assert.match(src, /no fallback/);
+  // the two limits the card used to hide
+  assert.match(src, /num\("ws-max", "Results per search"/);
+  assert.match(src, /num\("ws-cache", "Cache TTL \(minutes\)"/);
+});
+
 test("#39 agent identity + defaults on the Defaults tab", () => {
   assert.match(src, /this\.#renderAgentIdentity\(config\);/);
   // The card now also receives the enabled profiles, so its caption can say which
