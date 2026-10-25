@@ -228,23 +228,33 @@ textarea:focus-visible {
 .inp {
   height: var(--tap);
   width: 100%;
-  padding: 0 12px;
+  padding: 0 14px;
   border-radius: var(--r-md);
   border: 1px solid var(--line);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--ink);
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 500;
   transition: 
     border-color var(--duration-normal) ease,
-    box-shadow var(--duration-normal) ease;
+    box-shadow var(--duration-normal) ease,
+    background var(--duration-normal) ease;
 }
 
-.inp::placeholder { color: var(--ink3); }
+.inp::placeholder { 
+  color: var(--ink3);
+  font-weight: 400;
+}
 
 .inp:focus {
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
   outline: none;
+  background: var(--surface);
+}
+
+.inp:hover {
+  border-color: var(--ink3);
 }
 
 .lbl {
@@ -1996,7 +2006,7 @@ textarea:focus-visible {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 16px 14px 28px;
+  padding: 60px 14px 28px;
   border-right: 1px solid var(--line);
   background: var(--surface-1);
   width: 280px;
@@ -2242,6 +2252,44 @@ textarea:focus-visible {
   resize: vertical;
 }
 
+/* Emoji picker grid */
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.emoji-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 1;
+  font-size: 24px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: all var(--duration-fast) ease;
+  padding: 0;
+}
+
+.emoji-btn:hover {
+  background: var(--hover);
+  transform: scale(1.1);
+}
+
+.emoji-btn.is-selected {
+  border-color: var(--accent);
+  background: var(--accsoft);
+}
+
 /* Custom dropdown: the hidden <select> is the value store, the button is the
    control you see, the menu is the list. No caret — the value already says
    what a click changes. */
@@ -2255,18 +2303,47 @@ textarea:focus-visible {
   gap: 8px;
   width: 100%;
   min-height: var(--tap);
-  padding: 0 12px;
+  padding: 0 14px 0 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--ink);
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 500;
   text-align: left;
   cursor: pointer;
+  transition: 
+    border-color var(--duration-normal) ease,
+    box-shadow var(--duration-normal) ease,
+    background var(--duration-normal) ease;
 }
 
-.dd__btn:hover { border-color: var(--ink3); }
-.dd__btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dd__btn:hover { 
+  border-color: var(--ink3);
+  background: var(--hover);
+}
+
+.dd__btn:focus-visible { 
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* Add chevron indicator */
+.dd__btn::after {
+  content: '';
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--ink3);
+  border-bottom: 2px solid var(--ink3);
+  transform: rotate(45deg);
+  transition: transform var(--duration-normal) ease;
+}
+
+.dd.is-open .dd__btn::after {
+  transform: rotate(-135deg);
+}
 
 .dd__val {
   flex: 1;
@@ -2282,7 +2359,7 @@ textarea:focus-visible {
   position: absolute;
   left: 0;
   right: 0;
-  top: calc(100% + 4px);
+  top: calc(100% + 6px);
   z-index: 40;
   display: flex;
   flex-direction: column;
@@ -2299,7 +2376,7 @@ textarea:focus-visible {
 @keyframes dropdownOpen {
   from {
     opacity: 0;
-    transform: translateY(-8px) scaleY(0.95);
+    transform: translateY(-10px) scaleY(0.96);
   }
   to {
     opacity: 1;
@@ -2308,7 +2385,26 @@ textarea:focus-visible {
 }
 
 .dd__menu[hidden] { display: none; }
-.dd--up .dd__menu { top: auto; bottom: calc(100% + 4px); transform-origin: bottom; }
+.dd--up .dd__menu { 
+  top: auto; 
+  bottom: calc(100% + 6px); 
+  transform-origin: bottom;
+}
+
+.dd--up .dd__menu {
+  animation: dropdownOpenUp var(--duration-normal) var(--ease-out);
+}
+
+@keyframes dropdownOpenUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scaleY(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
 
 .dd__search {
   flex: none;
@@ -2337,27 +2433,32 @@ textarea:focus-visible {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  padding: 0 10px;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 12px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--ink);
-  font-size: 13.5px;
+  font-size: 14px;
+  font-weight: 400;
   text-align: left;
   cursor: pointer;
   transition: 
     background var(--duration-fast) ease,
-    transform var(--duration-fast) ease;
+    color var(--duration-fast) ease;
 }
 
 .dd__opt:hover { 
   background: var(--hover);
-  transform: scale(1.01);
+  color: var(--ink);
 }
 
-.dd__opt.is-on { background: var(--accsoft); font-weight: 600; }
+.dd__opt.is-on { 
+  background: var(--accsoft); 
+  color: var(--accent);
+  font-weight: 600;
+}
 
 .dd__opt-label {
   flex: 1;

@@ -581,30 +581,72 @@ export class Settings {
    *  shown to channels and injected into the system prompt. */
   #renderAgentIdentity(config: any): void {
     const id = config.agents?.identity ?? {};
+    
+    // Emoji picker with curated selection
+    const EMOJI_OPTIONS = [
+      "🦀", "", "🤖", "", "🐺", "", "🐯", "🐸",
+      "🦉", "", "🐧", "", "🐉", "", "🤠", "",
+      "🦸", "", "🧛", "", "👻", "", "☠️", "👽",
+      "🤖", "🎃", "😈", "👹", "", "🐒", "", "🐶",
+      "", "🦮", "‍🦺", "", "🐾", "", "🦨", "",
+      "🦦", "🦥", "🐁", "", "🐹", "", "🐇", "️",
+      "🦔", "🦇", "🐻", "🐨", "🐼", "", "🦘", ""
+    ];
+    
     const mkField = (iid: string, label: string, value: string, placeholder: string) => {
       const input = el("input", { class: "inp", id: iid, value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
       return el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), input]);
     };
+    
+    // Emoji picker component
+    const mkEmojiPicker = (iid: string, label: string, currentValue: string) => {
+      const selectedEmoji = currentValue || "🦀";
+      const grid = el("div", { class: "emoji-grid" }, 
+        EMOJI_OPTIONS.map(emoji => {
+          const btn = el("button", { 
+            class: `emoji-btn${emoji === selectedEmoji ? " is-selected" : ""}`,
+            type: "button",
+            "data-emoji": emoji
+          }, [emoji]);
+          btn.onclick = () => {
+            grid.querySelectorAll(".emoji-btn").forEach(b => b.classList.remove("is-selected"));
+            btn.classList.add("is-selected");
+            (grid as any).__selectedEmoji = emoji;
+          };
+          return btn;
+        })
+      );
+      (grid as any).__selectedEmoji = selectedEmoji;
+      
+      return el("div", { class: "modal__field" }, [
+        el("label", { class: "lbl" }, [label]),
+        grid
+      ]);
+    };
+    
     // The persona is prose — a real textarea, not a one-line input.
     const mkArea = (iid: string, label: string, value: string, placeholder: string) => {
       const area = el("textarea", { class: "inp area", id: iid, placeholder, rows: "5", autocomplete: "off", spellcheck: "false" }) as HTMLTextAreaElement;
       area.value = value;
       return el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: iid }, [label]), area]);
     };
+    
     const saveId = el("button", { class: "btn", type: "button", id: "identity-save" }, ["Save identity"]) as HTMLButtonElement;
     saveId.onclick = () => {
       const name = (this.#root.querySelector("#identity-name") as HTMLInputElement).value.trim();
-      const emoji = (this.#root.querySelector("#identity-emoji") as HTMLInputElement).value.trim();
+      const emojiGrid = this.#root.querySelector(".emoji-grid") as HTMLElement;
+      const emoji = (emojiGrid as any).__selectedEmoji || "🦀";
       const theme = (this.#root.querySelector("#identity-theme") as HTMLTextAreaElement).value.trim();
       void this.#setMany(
         [
           ["agents.identity.name", name || "SuparClaw"],
-          ["agents.identity.emoji", emoji || "🦀"],
+          ["agents.identity.emoji", emoji],
           ["agents.identity.theme", theme],
         ],
         "identity saved — new sessions greet with it immediately",
       );
     };
+    
     this.#root.append(el("div", { class: "card setcard agent-identity" }, [
       el("div", { class: "setcard__head" }, [
         el("h3", {}, ["Agent identity"]),
@@ -612,7 +654,7 @@ export class Settings {
       ]),
       el("div", { class: "setgrid" }, [
         mkField("identity-name", "Name", String(id.name ?? "SuparClaw"), "SuparClaw"),
-        mkField("identity-emoji", "Emoji", String(id.emoji ?? "🦀"), "🦀"),
+        mkEmojiPicker("identity-emoji", "Emoji", String(id.emoji ?? "🦀")),
       ]),
       mkArea("identity-theme", "Theme (persona written into the system prompt)", String(id.theme ?? ""), "a warm, sharp, resourceful personal AI companion…"),
       el("div", { class: "setfoot" }, [saveId]),
@@ -637,7 +679,7 @@ export class Settings {
       return { sel: dd.sel, node: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `${iid}-btn` }, [label]), dd.node, ...(hint ? [el("span", { class: "hint" }, [hint])] : [])]) };
     };
     const sub = d.subagents ?? {};
-    const iterations = mkNum("ad-iterations", "Max tool iterations (1–40)", Number(d.maxToolIterations ?? 12));
+    const iterations = mkNum("ad-iterations", "Max tool iterations", Number(d.maxToolIterations ?? 12));
     const budget = mkNum("ad-budget", "Context budget (chars, min 2000)", Number(d.contextBudgetChars ?? 200000), "history cap when no model window is known; with a model window it scales up to ~70% of it");
     const concur = mkNum("ad-concurrent", "Max concurrent runs (0 = auto)", Number(d.maxConcurrent ?? 0), "auto = max(8, cpu × 4) — the main-lane formula");
     const queueSel = mkSel("ad-queue", "Queue mode (legacy)", String(d.queueMode ?? "followup"), [["steer", "steer"], ["followup", "followup"]], "superseded by messages.queue.mode — kept for old configs, the new section wins");
@@ -661,7 +703,7 @@ export class Settings {
     saveD.onclick = () => {
       void this.#setMany(
         [
-          ["agents.defaults.maxToolIterations", Math.max(1, Math.min(40, Number(iterations.input.value) || 12))],
+          ["agents.defaults.maxToolIterations", Number(iterations.input.value) || 12],
           ["agents.defaults.contextBudgetChars", Math.max(2000, Number(budget.input.value) || 60000)],
           ["agents.defaults.queueMode", queueSel.sel.value],
           ["agents.defaults.maxConcurrent", Math.max(0, Number(concur.input.value) || 0)],
@@ -670,7 +712,7 @@ export class Settings {
           ["agents.defaults.usage", usageSel.sel.value],
           ["agents.defaults.subagents.maxConcurrent", Math.max(1, Number(subConcur.input.value) || 8)],
           ["agents.defaults.subagents.model", subModel.input.value.trim()],
-          ["agents.defaults.subagents.maxDepth", Math.max(1, Math.min(4, Number(subDepth.input.value) || 1))],
+          ["agents.defaults.subagents.maxDepth", Math.max(1, Number(subDepth.input.value) || 1)],
           ["agents.defaults.subagents.thinking", subThink.sel.value],
           ["agents.defaults.subagents.delegationMode", subDeleg.sel.value],
         ],
