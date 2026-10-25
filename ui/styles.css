@@ -3285,7 +3285,14 @@ html[data-theme-mode='dark'] .settings select.inp {
   border-top: 1px solid var(--set-line);
 }
 
+.settings .cfg-group__title > .setcard__echo {
+  font-weight: 500;
+}
+
 .settings .cfg-group__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin: 0 0 6px;
   font-size: 11.5px;
   font-weight: 600;
@@ -3309,11 +3316,18 @@ html[data-theme-mode='dark'] .settings select.inp {
   position: sticky;
   bottom: 0;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
   margin-top: 12px;
   padding: 12px 0 6px;
   background: var(--set-canvas);
+  border-top: 1px solid var(--set-line);
+}
+
+.settings .cfg-savebar .hint {
+  margin: 0 auto 0 0;
+  text-align: left;
 }
 
 .settings #cfg-raw-text {

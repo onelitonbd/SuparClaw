@@ -178,6 +178,10 @@ export class Settings {
   #modelQuery = "";
   /** Live search on the exec allowlist ledger (rule: long lists get it). */
   #execQuery = "";
+  /** Non-empty while the All-settings page holds a draft that was never sent.
+   *  render() consults it before painting a different section, so a draft cannot
+   *  be dropped by a nav click or a hash change. */
+  #configDirty: (() => string) | null = null;
 
   constructor(root: HTMLElement, onChanged: () => void) {
     this.#root = root;
@@ -250,6 +254,18 @@ export class Settings {
   }
 
   async render(): Promise<void> {
+    // The All-settings page is rebuilt from the file on every render, so a draft
+    // that was never sent would vanish. Refuse the section change instead: put
+    // the tab back (a hash change already moved the address bar), say why, and
+    // paint the page that owns the draft. setHash() itself never refuses, so the
+    // revert cannot loop.
+    const blocked = this.#configDirty?.() ?? "";
+    if (blocked && this.#tab !== "config") {
+      this.#tab = "config";
+      try { location.hash = "#/settings/config"; } catch { /* the render tests mount without a location */ }
+      toast(blocked, "err");
+    }
+    this.#configDirty = null;
     // The page head and the readout follow the open section; both are painted
     // before any data lands so the chrome never looks half-built.
     if (this.#title) this.#title.textContent = TABS.find((t) => t.id === this.#tab)?.label ?? "Settings";
@@ -4259,30 +4275,472 @@ export class Settings {
    *  key renders from the config.schema descriptors (form mode), plus a raw
    *  JSON5 editor with validation (raw mode). Failed saves show the gateway's
    *  reason and keep the draft — their "Settings not applied" flow. */
+  /** “All settings”: every leaf the config schema knows, editable, in the same
+   *  card/section/field language as the rest of Settings.
+   *
+   *  The page is a *form over the schema*, so three rules keep it honest:
+   *  - what it shows is the value the daemon is using (`config.get` is the
+   *    parsed config, defaults filled in);
+   *  - what it writes is only the rows the user actually changed (a record row
+   *    that was never touched is never re-sent);
+   *  - what it cannot do, it says: a bad number, a bad JSON blob or a rejection
+   *    from the gateway is printed under the row, and the rest of the draft
+   *    stays where it is. */
   async #renderConfigEditor(config: any): Promise<void> {
     let schema: any = null;
+    let schemaErr = "";
     try {
       schema = (await gateway.request("config.schema", {}) as any).schema ?? null;
     } catch (err) {
-      toast(`config.schema unavailable: ${(err as Error).message}`, "err");
+      schemaErr = (err as Error).message;
+      toast(`config.schema unavailable: ${schemaErr}`, "err");
     }
     const REDACTED_PREFIX = "__redacted__:";
     const isRedacted = (v: unknown): v is string => typeof v === "string" && v.startsWith(REDACTED_PREFIX);
 
-    const toolbar = el("div", { class: "cfg-toolbar" });
-    const search = el("input", { class: "inp", id: "cfg-filter", type: "search", placeholder: "Filter settings…", "aria-label": "Filter settings" }) as HTMLInputElement;
-    const formBtn = el("button", { class: "btn cfg-mode is-active", type: "button" }, ["Form"]);
-    const rawBtn = el("button", { class: "btn cfg-mode", type: "button" }, ["Raw"]);
-    toolbar.append(search, formBtn, rawBtn);
+    type Kind = "bool" | "num" | "str" | "text" | "enum" | "list" | "json";
+    type CfgRow = {
+      path: string;
+      el: HTMLElement;
+      control: HTMLElement;
+      error: HTMLElement;
+      initial: unknown;
+      read: () => unknown;
+      write: (value: unknown) => void;
+    };
+    const rows: CfgRow[] = [];
+    const hiddenPaths: string[] = [];
+    const fallbackFor = (node: any): unknown => {
+      if (node?.t === "array") return [];
+      if (node?.t === "record" || node?.t === "object") return {};
+      return node?.default ?? "";
+    };
 
-    const formHost = el("div", { id: "cfg-form" });
-    const rawHost = el("div", { id: "cfg-raw", hidden: "" });
+    /* ---------------- toolbar ---------------- */
+
+    const search = el("input", {
+      class: "inp", id: "cfg-filter", type: "search",
+      placeholder: "Filter settings…", "aria-label": "Filter settings",
+    }) as HTMLInputElement;
+    const countEl = el("span", { class: "setsec__count", "aria-live": "polite" }, [""]);
+    const formBtn = el("button", { class: "btn cfg-mode is-active", type: "button", id: "cfg-mode-form", "aria-pressed": "true" }, ["Form"]) as HTMLButtonElement;
+    const rawBtn = el("button", { class: "btn cfg-mode", type: "button", id: "cfg-mode-raw", "aria-pressed": "false" }, ["Raw"]) as HTMLButtonElement;
+    const toolbar = el("div", { class: "cfg-toolbar" }, [search, countEl, formBtn, rawBtn]);
+
+    const pageHint = el("p", { class: "hint" }, [
+      "These are the values the daemon is using; a key the file leaves out shows its default. Only rows you change are written.",
+    ]);
+    const formHost = el("div", { class: "settings__stack", id: "cfg-form" });
+    const emptyHint = el("p", { class: "hint", id: "cfg-empty", hidden: "" }, [""]);
+    const saveNote = el("p", { class: "hint", id: "cfg-state", "aria-live": "polite" }, ["Everything is saved."]);
+    const discardBtn = el("button", { class: "btn", type: "button", id: "cfg-discard" }, ["Discard"]) as HTMLButtonElement;
+    const saveBtn = el("button", { class: "btn pri", type: "button", id: "cfg-save" }, ["Save changes"]) as HTMLButtonElement;
+    const saveBar = el("div", { class: "cfg-savebar" }, [saveNote, discardBtn, saveBtn]);
+
     const rawBanner = el("div", { class: "cfg-banner", hidden: "" });
-    const rawArea = el("textarea", { class: "inp mono", id: "cfg-raw-text", rows: "22", spellcheck: "false" }) as HTMLTextAreaElement;
-    rawArea.value = JSON.stringify(config, null, 2);
-    const rawSave = el("button", { class: "btn pri", type: "button" }, ["Apply raw config"]);
+    const rawArea = el("textarea", { class: "inp mono", id: "cfg-raw-text", rows: "24", spellcheck: "false", "aria-label": "Raw JSON5 config" }) as HTMLTextAreaElement;
+    const rawSave = el("button", { class: "btn pri", type: "button", id: "cfg-raw-apply" }, ["Apply raw config"]) as HTMLButtonElement;
+    // It restores the document the form would write (which is the file, when the
+    // form is clean). "Reload from file" would be a lie while edits are pending.
+    const rawReload = el("button", { class: "btn", type: "button", id: "cfg-raw-reload" }, ["Reset text"]) as HTMLButtonElement;
+    const rawCard = el("div", { class: "card" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Raw config"]),
+        el("p", { class: "hint" }, [
+          "The whole file as JSON5, including the form's unsaved edits. Applying validates the document first; a rejected document never touches the running config.",
+        ]),
+      ]),
+      rawBanner,
+      rawArea,
+      el("div", { class: "settings__actions" }, [rawReload, rawSave]),
+    ]);
+    const rawHost = el("div", { id: "cfg-raw", hidden: "" }, [rawCard]);
+
+    /* ---------------- row builders ---------------- */
+
+    /** One control's value in, one value out. `read` throws a sentence the row
+     *  prints when the text cannot become the type the schema declares. */
+    const markError = (row: CfgRow, message: string): void => {
+      row.error.textContent = message;
+      row.error.hidden = false;
+      row.control.setAttribute("aria-invalid", "true");
+    };
+    const clearError = (row: CfgRow): void => {
+      row.error.textContent = "";
+      row.error.hidden = true;
+      row.control.removeAttribute("aria-invalid");
+    };
+
+    const attach = (rowEl: HTMLElement, path: string, kind: Kind): void => {
+      rowEl.dataset["cfgPath"] = path;
+      rowEl.dataset["cfgKind"] = kind;
+      // The attribute form is part of the page's contract (tests and the save
+      // walk both target `[data-cfg-kind]`), so set it as well as the dataset.
+      rowEl.setAttribute("data-cfg-kind", kind);
+    };
+
+    const buildLeaf = (path: string, node: any, cur: unknown): HTMLElement => {
+      // The per-leaf id is part of the page's contract: a control is addressable
+      // by the dotted key it writes.
+      const leaf = { id: `cfg-${path}`, label: humanKey(path.split(".").pop() ?? path) };
+      const { id, label } = leaf;
+      const kind: Kind =
+        node.t === "bool" ? "bool"
+        : node.t === "int" || node.t === "float" ? "num"
+        : node.t === "enum" ? "enum"
+        : node.t === "string" ? "str"
+        : node.t === "text" ? "text"
+        : node.t === "array" && node.of?.t === "string" ? "list"
+        : "json";
+      const error = el("p", { class: "hint hint--err", hidden: "" });
+      const redacted = isRedacted(cur);
+
+      if (kind === "bool") {
+        const box = el("input", { type: "checkbox", id }) as HTMLInputElement;
+        const initial = Boolean(cur);
+        box.checked = initial;
+        const rowEl = el("div", { class: "row" }, [
+          el("div", { class: "row__main" }, [
+            el("label", { class: "row__label", for: id }, [label]),
+          ]),
+          box,
+          error,
+        ]);
+        attach(rowEl, path, kind);
+        rows.push({
+          path, el: rowEl, control: box, error, initial,
+          read: () => box.checked,
+          write: (value) => { box.checked = Boolean(value); },
+        });
+        return rowEl;
+      }
+
+      let control: HTMLElement;
+      let initial: unknown;
+      let read: () => unknown;
+      let write: (value: unknown) => void;
+      let hint = "";
+
+      if (kind === "num") {
+        const input = el("input", { class: "inp mono", id, inputmode: "decimal", autocomplete: "off" }) as HTMLInputElement;
+        const start = cur === undefined || cur === null || cur === "" ? "" : String(cur);
+        input.value = start;
+        initial = start === "" ? null : Number(start);
+        const min = typeof node.min === "number" ? node.min : undefined;
+        const max = typeof node.max === "number" ? node.max : undefined;
+        hint = min !== undefined && max !== undefined ? `${min} to ${max}.` : min !== undefined ? `At least ${min}.` : max !== undefined ? `At most ${max}.` : "";
+        read = (): unknown => {
+          const text = input.value.trim();
+          if (text === "") return initial; // a blank field keeps what is stored
+          const n = Number(text);
+          if (!Number.isFinite(n)) throw new Error("Enter a number.");
+          if (min !== undefined && n < min) throw new Error(`Enter a number between ${min} and ${max ?? "…"}.`);
+          if (max !== undefined && n > max) throw new Error(`Enter a number between ${min ?? "…"} and ${max}.`);
+          return n;
+        };
+        write = (value) => { input.value = value === null || value === undefined ? "" : String(value); };
+        control = input;
+      } else if (kind === "enum") {
+        const dd = this.#dropdown({
+          id,
+          value: String(cur ?? node.default ?? ""),
+          label,
+          placeholder: String(node.default ?? "choose one"),
+          options: (node.values ?? []).map((v: string) => ({ value: v, label: humanKey(v) })),
+        });
+        initial = dd.sel.value;
+        read = () => dd.sel.value;
+        write = (value) => { dd.set(String(value ?? "")); };
+        control = dd.node;
+      } else if (kind === "list") {
+        const area = el("textarea", { class: "inp mono", id, rows: "3", spellcheck: "false" }) as HTMLTextAreaElement;
+        const start = Array.isArray(cur) ? cur.map(String) : [];
+        area.value = start.join("\n");
+        initial = start;
+        hint = "One entry per line.";
+        read = () => area.value.split("\n").map((v) => v.trim()).filter(Boolean);
+        write = (value) => { area.value = (Array.isArray(value) ? value.map(String) : []).join("\n"); };
+        control = area;
+      } else if (kind === "json") {
+        const area = el("textarea", { class: "inp mono", id, rows: "3", spellcheck: "false" }) as HTMLTextAreaElement;
+        const start = cur === undefined ? fallbackFor(node) : cur;
+        area.value = JSON.stringify(cur === undefined ? fallbackFor(node) : start, null, 2);
+        initial = JSON.parse(JSON.stringify(start ?? null));
+        hint = "JSON; the whole record is replaced when this row is saved.";
+        read = () => {
+          try {
+            return JSON.parse(area.value);
+          } catch (err) {
+            throw new Error(`Not valid JSON — ${(err as Error).message}.`);
+          }
+        };
+        write = (value) => { area.value = JSON.stringify(value ?? null, null, 2); };
+        control = area;
+      } else if (kind === "text") {
+        const area = el("textarea", { class: "inp mono", id, rows: "3" }) as HTMLTextAreaElement;
+        area.value = redacted ? "" : String(cur ?? "");
+        initial = redacted ? "" : String(cur ?? "");
+        if (redacted) area.setAttribute("placeholder", `${String(cur).slice(REDACTED_PREFIX.length)} — stored; leave blank to keep`);
+        read = () => area.value;
+        write = (value) => { area.value = String(value ?? ""); };
+        control = area;
+      } else {
+        const input = el("input", { class: "inp mono", id, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+        input.value = redacted ? "" : String(cur ?? "");
+        initial = redacted ? "" : String(cur ?? "");
+        if (redacted) input.setAttribute("placeholder", `${String(cur).slice(REDACTED_PREFIX.length)} — stored; leave blank to keep`);
+        read = () => input.value;
+        write = (value) => { input.value = String(value ?? ""); };
+        control = input;
+      }
+
+      const rowEl = this.#setField(id, label, control, hint, kind === "enum" ? null : id);
+      rowEl.append(error);
+      attach(rowEl, path, kind);
+      if (redacted) rowEl.setAttribute("data-cfg-redacted", "1");
+      rows.push({ path, el: rowEl, control, error, initial, read, write });
+      return rowEl;
+    };
+
+    /** Walk one schema node into `into`. Objects become `.cfg-group` boxes with
+     *  the dotted path beside the title, so a row's key is never a guess. */
+    const walk = (node: any, path: string, cur: unknown, into: HTMLElement): void => {
+      if (!node || typeof node !== "object" || node.hidden === true) {
+        if (node?.hidden === true) hiddenPaths.push(path);
+        return;
+      }
+      if (node.t !== "object") {
+        into.append(buildLeaf(path, node, cur));
+        return;
+      }
+      const box = el("div", { class: "cfg-group", "data-cfg-group": path });
+      box.append(el("div", { class: "cfg-group__title" }, [
+        el("span", {}, [humanKey(path.split(".").pop() ?? path)]),
+        el("span", { class: "setcard__echo" }, [path]),
+      ]));
+      const obj = (cur && typeof cur === "object" ? cur : {}) as Record<string, unknown>;
+      for (const [key, child] of Object.entries(node.fields ?? {})) {
+        walk(child, path ? `${path}.${key}` : key, obj[key] ?? (child as any).default, box);
+      }
+      into.append(box);
+    };
+
+    /* ---------------- the form ---------------- */
+
+    if (schema?.fields) {
+      for (const [section, node] of Object.entries(schema.fields)) {
+        const card = el("div", { class: "card cfg-section", "data-cfg-section": section });
+        const head = el("div", { class: "setcard__head" }, [el("h3", {}, [humanKey(section)])]);
+        card.append(head);
+        const before = rows.length;
+        const cur = (config as Record<string, unknown>)?.[section];
+        if ((node as any).t === "object") {
+          for (const [key, child] of Object.entries(((node as any).fields ?? {}) as Record<string, any>)) {
+            walk(child, `${section}.${key}`, (cur as any)?.[key] ?? child.default, card);
+          }
+        } else {
+          walk(node, section, cur, card);
+        }
+        const n = rows.length - before;
+        head.append(el("p", { class: "hint" }, [`${n} setting${n === 1 ? "" : "s"}`]));
+        formHost.append(card);
+      }
+      if (hiddenPaths.length > 0) {
+        formHost.append(el("div", { class: "card cfg-viewonly" }, [
+          el("div", { class: "setcard__head" }, [
+            el("h3", {}, ["Not edited here"]),
+            el("p", { class: "hint" }, [
+              `${hiddenPaths.length} key${hiddenPaths.length === 1 ? " is" : "s are"} stored in the file but marked view-only. Raw shows ${hiddenPaths.length === 1 ? "it" : "them"} as authored.`,
+            ]),
+          ]),
+          el("pre", { class: "diary__body" }, [hiddenPaths.join("\n")]),
+        ]));
+      }
+      formHost.append(emptyHint);
+    } else {
+      formHost.append(el("div", { class: "card" }, [
+        el("div", { class: "setcard__head" }, [
+          el("h3", {}, ["Schema unavailable"]),
+          el("p", { class: "hint" }, [
+            `The config schema could not be read${schemaErr ? ` — ${schemaErr}` : ""}. Raw still edits the file.`,
+          ]),
+        ]),
+      ]));
+      formBtn.disabled = true;
+      search.disabled = true;
+      saveBar.hidden = true;
+      pageHint.hidden = true;
+    }
+
+    /* ---------------- state ---------------- */
+
+    const pendingRows = (): CfgRow[] => rows.filter((row) => {
+      try {
+        return !sameValue(row.read(), row.initial);
+      } catch {
+        return true;
+      }
+    });
+    const draftDocument = (): Record<string, unknown> => {
+      const doc = JSON.parse(JSON.stringify(config ?? {})) as Record<string, unknown>;
+      for (const row of rows) {
+        try {
+          const value = row.read();
+          if (!sameValue(value, row.initial)) setIn(doc, row.path, value);
+        } catch { /* an invalid row keeps its saved value; Raw cannot apply nonsense */ }
+      }
+      return doc;
+    };
+    const serialize = (): string => JSON.stringify(draftDocument(), null, 2);
+    const rawDirty = (): boolean => !rawHost.hidden && rawArea.value !== serialize();
+
+    const updateFooter = (): void => {
+      const pending = pendingRows().length + (rawDirty() ? 1 : 0);
+      saveNote.textContent = pending === 0
+        ? "Everything is saved."
+        : `${pending} change${pending === 1 ? "" : "s"} not saved.`;
+      saveBtn.disabled = pending === 0;
+      discardBtn.disabled = pending === 0;
+      rawReload.disabled = rawArea.value === serialize();
+      const shown = rows.filter((row) => !row.el.hidden).length;
+      countEl.textContent = rows.length === 0 ? ""
+        : search.value.trim() ? `${shown} of ${rows.length} shown`
+        : `${rows.length} settings`;
+    };
+
+    const focusRow = (row: CfgRow): void => {
+      // A row hidden by the filter must be brought back before it is blamed.
+      if (row.el.hidden) {
+        search.value = "";
+        applyFilter();
+      }
+      (row.control.querySelector("input, textarea, select, button") as HTMLElement | null)?.focus?.();
+      row.el.scrollIntoView?.({ block: "center" });
+    };
+
+    /* ---------------- filter (a view, never a gate) ---------------- */
+
+    const applyFilter = (): void => {
+      const q = search.value.trim().toLowerCase();
+      for (const card of Array.from(formHost.querySelectorAll<HTMLElement>(".cfg-section"))) {
+        let visible = 0;
+        for (const row of Array.from(card.querySelectorAll<HTMLElement>("[data-cfg-path]"))) {
+          const hit = !q || (row.dataset["cfgPath"] ?? "").toLowerCase().includes(q);
+          row.hidden = !hit;
+          if (hit) visible += 1;
+        }
+        for (const group of Array.from(card.querySelectorAll<HTMLElement>(".cfg-group"))) {
+          group.hidden = !group.querySelector("[data-cfg-path]:not([hidden])");
+        }
+        card.hidden = visible === 0;
+      }
+      const anyVisible = rows.some((row) => !row.el.hidden);
+      emptyHint.hidden = anyVisible || rows.length === 0;
+      emptyHint.textContent = anyVisible ? "" : `Nothing matches “${search.value.trim()}”.`;
+      updateFooter();
+    };
+    search.addEventListener("input", applyFilter);
+
+    /* ---------------- discard ---------------- */
+
+    discardBtn.onclick = () => {
+      for (const row of rows) {
+        row.write(row.initial);
+        clearError(row);
+      }
+      rawBanner.hidden = true;
+      updateFooter();
+    };
+
+    /* ---------------- save ---------------- */
+
+    saveBtn.onclick = async () => {
+      for (const row of rows) clearError(row);
+      const changed: CfgRow[] = [];
+      for (const row of rows) {
+        try {
+          if (!sameValue(row.read(), row.initial)) changed.push(row);
+        } catch (err) {
+          markError(row, (err as Error).message);
+          focusRow(row);
+          saveNote.textContent = "Nothing was sent — fix the highlighted row first.";
+          return;
+        }
+      }
+      if (changed.length === 0) {
+        toast("no changes", "info");
+        updateFooter();
+        return;
+      }
+      saveBtn.disabled = true;
+      let saved = 0;
+      for (const row of changed) {
+        try {
+          const value = row.read();
+          await gateway.request("config.set", { path: row.path, value });
+          row.initial = value;
+          saved += 1;
+          updateFooter();
+        } catch (err) {
+          markError(row, (err as Error).message);
+          focusRow(row);
+          saveNote.textContent = `${saved} saved, ${changed.length - saved} not saved: ${row.path} — ${(err as Error).message}`;
+          if (saved > 0) this.#onChanged();
+          saveBtn.disabled = false;
+          toast(`${row.path} not saved: ${(err as Error).message}`, "err");
+          return;
+        }
+      }
+      toast(`${saved} setting${saved === 1 ? "" : "s"} saved`, "ok");
+      this.#onChanged();
+      void this.render();
+    };
+
+    /* ---------------- Form ⇄ Raw ---------------- */
+
+    const setMode = (raw: boolean): void => {
+      formHost.hidden = raw;
+      saveBar.hidden = raw;
+      rawHost.hidden = !raw;
+      // The filter and the count describe the form; the page hint describes the
+      // form's diff. Raw brings its own sentence, so they step aside with it.
+      search.hidden = raw;
+      countEl.hidden = raw;
+      pageHint.hidden = raw;
+      formBtn.classList.toggle("is-active", !raw);
+      rawBtn.classList.toggle("is-active", raw);
+      formBtn.setAttribute("aria-pressed", String(!raw));
+      rawBtn.setAttribute("aria-pressed", String(raw));
+      if (raw) {
+        rawArea.value = serialize();
+        rawBanner.hidden = true;
+      }
+      updateFooter();
+    };
+    rawHost.hidden = true;
+    formBtn.onclick = () => {
+      const bad = rows.find((row) => !row.error.hidden);
+      if (bad) {
+        toast("Fix the highlighted row first.", "err");
+        focusRow(bad);
+        return;
+      }
+      if (rawDirty()) {
+        toast("The raw text has unsaved edits — apply or reload it first.", "err");
+        return;
+      }
+      setMode(false);
+    };
+    rawBtn.onclick = () => setMode(true);
+
+    rawReload.onclick = () => {
+      rawArea.value = serialize();
+      rawBanner.hidden = true;
+      updateFooter();
+    };
     rawSave.onclick = async () => {
       rawBanner.hidden = true;
+      rawSave.disabled = true;
       try {
         await gateway.request("config.replace", { text: rawArea.value });
         toast("config applied", "ok");
@@ -4291,155 +4749,30 @@ export class Settings {
       } catch (err) {
         rawBanner.textContent = `Settings not applied: ${(err as Error).message}`;
         rawBanner.hidden = false;
-      }
-    };
-    rawHost.append(
-      el("p", { class: "hint" }, ["JSON5 document. Redacted secrets shown as __redacted__:… keep the stored value; \${ENV_VAR} refs stay as authored. Validation errors never clobber the running config."]),
-      rawBanner, rawArea, rawSave);
-
-    const saveBar = el("div", { class: "cfg-savebar" });
-    formBtn.onclick = () => { formHost.hidden = false; saveBar.hidden = false; rawHost.hidden = true; formBtn.classList.add("is-active"); rawBtn.classList.remove("is-active"); };
-    rawBtn.onclick = () => { formHost.hidden = true; saveBar.hidden = true; rawHost.hidden = false; rawBtn.classList.add("is-active"); formBtn.classList.remove("is-active"); };
-
-    if (!schema?.fields) {
-      formHost.append(el("div", { class: "card" }, [el("p", { class: "hint" }, ["Schema unavailable — use Raw mode."])]));
-      this.#root.append(toolbar, formHost, rawHost);
-      return;
-    }
-
-    type Kind = "bool" | "num" | "str" | "text" | "enum" | "list" | "json";
-    const fieldRow = (labelText: string, path: string, kind: Kind, cur: unknown, extra?: { values?: string[] }): HTMLElement => {
-      let input: HTMLElement;
-      if (kind === "bool") {
-        input = el("input", { type: "checkbox", id: `cfg-${path}` }) as HTMLInputElement;
-        (input as HTMLInputElement).checked = Boolean(cur);
-      } else if (kind === "enum") {
-        const sel = el("select", { class: "inp", id: `cfg-${path}` }) as HTMLSelectElement;
-        for (const opt of extra?.values ?? []) sel.append(el("option", { value: opt, ...(opt === cur ? { selected: "" } : {}) }, [opt]));
-        input = sel;
-      } else if (kind === "text") {
-        input = el("textarea", { class: "inp mono", id: `cfg-${path}`, rows: "3" }) as HTMLTextAreaElement;
-        (input as HTMLTextAreaElement).value = typeof cur === "string" && !isRedacted(cur) ? cur : "";
-      } else if (kind === "list" || kind === "json") {
-        input = el("textarea", { class: "inp mono", id: `cfg-${path}`, rows: "3", spellcheck: "false" }) as HTMLTextAreaElement;
-        (input as HTMLTextAreaElement).value = kind === "list"
-          ? (Array.isArray(cur) ? cur : []).join("\n")
-          : JSON.stringify(cur ?? (kind === "json" ? {} : []), null, 2);
-      } else {
-        const attrs: Record<string, string> = { class: "inp mono", id: `cfg-${path}` };
-        if (kind === "num") attrs["inputmode"] = "decimal";
-        input = el("input", attrs) as HTMLInputElement;
-        if (!(typeof cur === "string" && isRedacted(cur))) (input as HTMLInputElement).value = cur === undefined || cur === null ? "" : String(cur);
-      }
-      const redacted = isRedacted(cur);
-      if (redacted && (kind === "str" || kind === "text")) {
-        (input as HTMLInputElement).setAttribute("placeholder", `${cur.slice(REDACTED_PREFIX.length)} — leave blank to keep`);
-      }
-      const row = el("div", { class: "modal__field", "data-cfg-path": path, "data-cfg-kind": kind, ...(redacted ? { "data-cfg-redacted": "1" } : {}) }, [
-        el("label", { class: "lbl", for: `cfg-${path}` }, [labelText]),
-        input,
-      ]);
-      (row as any).__initial = kind === "bool" ? Boolean(cur) : (input as HTMLInputElement).value ?? "";
-      return row;
-    };
-
-    const renderNode = (node: any, path: string, cur: unknown, into: HTMLElement): void => {
-      if (!node || typeof node !== "object") return;
-      // `hidden` leaves are stored but not edited as text here (the avatar is a
-      // 32,000-character data URL; nobody should meet it in a textbox). The raw
-      // JSON5 editor still shows the file exactly as it is.
-      if (node.hidden === true) return;
-      switch (node.t) {
-        case "bool": into.append(fieldRow(path.split(".").pop() ?? path, path, "bool", cur)); return;
-        case "int": case "float": into.append(fieldRow(path.split(".").pop() ?? path, path, "num", cur)); return;
-        case "string": into.append(fieldRow(path.split(".").pop() ?? path, path, "str", cur)); return;
-        case "text": into.append(fieldRow(path.split(".").pop() ?? path, path, "text", cur)); return;
-        case "enum": into.append(fieldRow(path.split(".").pop() ?? path, path, "enum", cur, { values: node.values })); return;
-        case "array":
-          if (node.of?.t === "string") into.append(fieldRow(path.split(".").pop() ?? path, path, "list", cur));
-          else into.append(fieldRow(path.split(".").pop() ?? path, path, "json", cur ?? []));
-          return;
-        case "record": case "any":
-          into.append(fieldRow(path.split(".").pop() ?? path, path, "json", cur ?? {}));
-          return;
-        case "object": {
-          const box = el("div", { class: "cfg-group", "data-cfg-group": path });
-          box.append(el("h4", { class: "cfg-group__title" }, [path.split(".").pop() ?? path]));
-          const obj = (cur && typeof cur === "object" ? cur : {}) as Record<string, unknown>;
-          for (const [key, child] of Object.entries(node.fields ?? {})) {
-            renderNode(child, path ? `${path}.${key}` : key, obj[key] ?? (child as any).default, box);
-          }
-          into.append(box);
-          return;
-        }
-        default: return;
+      } finally {
+        rawSave.disabled = false;
       }
     };
 
-    const sections: [string, any][] = Object.entries(schema.fields);
-    for (const [name, node] of sections) {
-      const card = el("div", { class: "card cfg-section", "data-cfg-section": name });
-      card.append(el("h3", {}, [name]));
-      const cur = (config as Record<string, unknown>)[name];
-      if ((node as any).t === "object") {
-        for (const [key, child] of Object.entries((node as any).fields ?? {})) {
-          renderNode(child, `${name}.${key}`, (cur as any)?.[key] ?? (child as any).default, card);
-        }
-      } else {
-        renderNode(node, name, cur, card);
-      }
-      formHost.append(card);
-    }
+    // Keystrokes move the footer's count; one delegated listener for 149 rows.
+    formHost.addEventListener("input", updateFooter);
+    formHost.addEventListener("change", updateFooter);
+    rawArea.addEventListener("input", updateFooter);
 
-    search.addEventListener("input", () => {
-      const q = search.value.trim().toLowerCase();
-      for (const card of Array.from(formHost.querySelectorAll<HTMLElement>(".cfg-section"))) {
-        let anyVisible = false;
-        for (const row of Array.from(card.querySelectorAll<HTMLElement>("[data-cfg-path]"))) {
-          const match = !q || (row.dataset["cfgPath"] ?? "").toLowerCase().includes(q);
-          row.hidden = !match;
-          if (match) anyVisible = true;
-        }
-        card.hidden = !anyVisible;
-      }
-    });
+    /* ---------------- assembly ---------------- */
 
-    const saveBtn = el("button", { class: "btn pri", type: "button" }, ["Save changes"]);
-    saveBtn.onclick = async () => {
-      const pairs: [string, unknown][] = [];
-      const errors: string[] = [];
-      for (const row of Array.from(formHost.querySelectorAll<HTMLElement>("[data-cfg-path]"))) {
-        if (row.hidden) continue;
-        const path = row.dataset["cfgPath"]!;
-        const kind = row.dataset["cfgKind"] as Kind;
-        const inputEl = row.querySelector("input, textarea, select") as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
-        const initial = (row as any).__initial;
-        let value: unknown;
-        try {
-          if (kind === "bool") value = (inputEl as HTMLInputElement).checked;
-          else if (kind === "num") value = inputEl.value === "" ? initial : Number(inputEl.value);
-          else if (kind === "list") value = (inputEl as HTMLTextAreaElement).value.split("\n").map((v) => v.trim()).filter(Boolean);
-          else if (kind === "json") value = JSON.parse((inputEl as HTMLTextAreaElement).value);
-          else value = inputEl.value;
-        } catch {
-          errors.push(`${path}: invalid JSON`);
-          continue;
-        }
-        if (row.dataset["cfgRedacted"] === "1" && (value === "" || value === undefined)) continue;
-        if (kind === "bool" ? value !== initial : String(value) !== String(initial) && !(kind === "list" && JSON.stringify(value) === JSON.stringify(initial?.split?.("\n") ?? initial))) {
-          // list inputs compare on text anyway; bool on checked state.
-          if (kind === "list" && (inputEl as HTMLTextAreaElement).value === initial) continue;
-          pairs.push([path, value]);
-        }
-      }
-      if (errors.length > 0) { toast(errors.join("; "), "err"); return; }
-      if (pairs.length === 0) { toast("no changes", "info"); return; }
-      await this.#setMany(pairs, `${pairs.length} setting(s) saved`);
-      void this.render();
+    this.#root.append(el("div", { class: "settings__stack" }, [toolbar, pageHint, formHost, saveBar, rawHost]));
+
+    // A draft that never reached the file blocks a section change (render()
+    // reverts the tab and says so) instead of vanishing on the next render.
+    this.#configDirty = () => {
+      const pending = pendingRows().length;
+      if (pending > 0) return `${pending} unsaved change${pending === 1 ? "" : "s"} — save or discard them first.`;
+      if (rawDirty()) return "The raw text has unsaved edits — apply or reload them first.";
+      return "";
     };
-    saveBar.append(saveBtn);
 
-    this.#root.append(toolbar, formHost, saveBar, rawHost);
+    updateFooter();
   }
 
   /** Channels tab (P4 #31 — their Channels pages, scoped to our one channel):
@@ -7840,6 +8173,40 @@ function setIn(target: Record<string, unknown>, path: string, value: unknown): v
 /** Read a dotted path back out; `undefined` when any step is missing. */
 function readIn(source: Record<string, unknown>, path: string): unknown {
   return path.split(".").reduce<unknown>((acc, part) => (acc && typeof acc === "object" ? (acc as Record<string, unknown>)[part] : undefined), source);
+}
+
+/** A schema key as a human label: `basePath` → "Base path", `apiKey` → "API key",
+ *  `botLoopProtection` → "Bot loop protection". Used for cards, groups and the
+ *  choices of an enum, so the page never prints a camelCase identifier. */
+function humanKey(key: string): string {
+  const acronyms: Record<string, string> = {
+    api: "API", url: "URL", uri: "URI", ui: "UI", http: "HTTP", https: "HTTPS",
+    imap: "IMAP", smtp: "SMTP", pdf: "PDF", id: "ID", ip: "IP", tts: "TTS",
+    stt: "STT", llm: "LLM", dns: "DNS", json: "JSON", ttl: "TTL", ms: "ms",
+  };
+  const proper: Record<string, string> = {
+    openai: "OpenAI", duckduckgo: "DuckDuckGo", searxng: "SearXNG", imap: "IMAP",
+    telegram: "Telegram", github: "GitHub",
+  };
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.toLowerCase());
+  if (words.length === 0) return key;
+  return words
+    .map((w, i) => {
+      if (proper[w]) return proper[w];
+      if (acronyms[w] && w.length <= 4) return acronyms[w];
+      return i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w;
+    })
+    .join(" ");
+}
+
+/** JSON-value equality, which is all the config holds. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** A duration in the shortest honest form: `3d 4h`, `2h 5m`, `5m 4s`, `8s`. */
