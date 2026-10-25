@@ -124,30 +124,6 @@ html[data-theme-mode="dark"] .agent-trace {
   color: var(--muted);
 }
 
-.agent-trace__status-icon--check {
-  color: var(--success);
-  background: var(--success-bg);
-  border-radius: 50%;
-}
-
-.agent-trace__status-icon--alert {
-  color: var(--error);
-  background: var(--error-bg);
-  border-radius: 50%;
-}
-
-.agent-trace__status-icon--shield {
-  color: var(--warning);
-  background: var(--warning-bg);
-  border-radius: 50%;
-}
-
-.agent-trace__status-icon--minus {
-  color: var(--muted);
-  background: var(--surface-2);
-  border-radius: 50%;
-}
-
 .agent-trace__spinner {
   width: 16px;
   height: 16px;
@@ -165,20 +141,25 @@ html[data-theme-mode="dark"] .agent-trace {
 
 .agent-trace__head {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
   flex: 1;
 }
 
 .agent-trace__title {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* State without a badge: the title colour does the work the old tick/cross
+   circle used to do. */
+.agent-trace__title--error { color: var(--error); }
+.agent-trace__title--warning { color: var(--warning); }
 
 .agent-trace__shimmer {
   display: inline-block;
@@ -203,11 +184,13 @@ html[data-theme-mode="dark"] .agent-trace {
 
 .agent-trace__sub {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.agent-trace__sub:empty { display: none; }
 
 .agent-trace__tail {
   margin-left: auto;
@@ -233,9 +216,9 @@ html[data-theme-mode="dark"] .agent-trace {
 .agent-trace__chip {
   width: 22px;
   height: 22px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--surface-2);
   color: var(--muted);
   display: inline-flex;
   align-items: center;

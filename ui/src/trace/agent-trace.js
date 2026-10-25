@@ -1153,6 +1153,12 @@ export class AgentTrace {
     this.el.classList.toggle("agent-trace--expanded", this.expanded);
     this.header.setAttribute("aria-expanded", this.expanded ? "true" : "false");
 
+    // State is carried by the title's own words (and colour), not by a
+    // tick/cross badge sitting in the left slot — only the live spinner
+    // ever renders there.
+    this.titleEl.classList.toggle("agent-trace__title--error", s.status === "error");
+    this.titleEl.classList.toggle("agent-trace__title--warning", s.status === "waiting");
+
     if (s.status === "running") {
       this.#setHeaderIcon("spinner");
       this.titleEl.classList.add("agent-trace__shimmer");
@@ -1161,14 +1167,14 @@ export class AgentTrace {
       this.timerEl.hidden = false;
       this.timerEl.textContent = dur || "0s";
     } else if (s.status === "waiting") {
-      this.#setHeaderIcon("shield");
+      this.#setHeaderIcon(null);
       this.titleEl.classList.remove("agent-trace__shimmer");
       this.titleEl.textContent = "Waiting for your approval";
       this.subEl.textContent = "";
       this.timerEl.hidden = false;
       this.timerEl.textContent = dur;
     } else if (s.status === "done") {
-      this.#setHeaderIcon("check");
+      this.#setHeaderIcon(null);
       this.titleEl.classList.remove("agent-trace__shimmer");
       this.titleEl.textContent = `Worked for ${dur || "0.0s"}`;
       const ops = operationSummary(s);
@@ -1176,14 +1182,14 @@ export class AgentTrace {
       this.timerEl.hidden = true;
       this.#renderChips();
     } else if (s.status === "stopped") {
-      this.#setHeaderIcon("minus");
+      this.#setHeaderIcon(null);
       this.titleEl.classList.remove("agent-trace__shimmer");
       this.titleEl.textContent = `Stopped after ${dur} · ${stepText}`;
       this.subEl.textContent = "";
       this.timerEl.hidden = true;
       this.#renderChips();
     } else {
-      this.#setHeaderIcon("alert");
+      this.#setHeaderIcon(null);
       this.titleEl.classList.remove("agent-trace__shimmer");
       this.titleEl.textContent = "Run failed";
       this.subEl.textContent = stepText;
@@ -1195,6 +1201,12 @@ export class AgentTrace {
 
   #setHeaderIcon(name) {
     this.iconEl.replaceChildren();
+    if (!name) {
+      this.iconEl.hidden = true;
+      this.iconEl.className = "agent-trace__status-icon";
+      return;
+    }
+    this.iconEl.hidden = false;
     this.iconEl.className = `agent-trace__status-icon agent-trace__status-icon--${name}`;
     if (name === "spinner") {
       const sp = this.doc.createElement("span");
@@ -1202,7 +1214,7 @@ export class AgentTrace {
       this.iconEl.appendChild(sp);
       return;
     }
-    const size = name === "check" || name === "alert" || name === "shield" || name === "minus" ? 12 : 16;
+    const size = 16;
     this.iconEl.appendChild(svg(name, size, "", this.doc));
   }
 
