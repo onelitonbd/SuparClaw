@@ -1764,7 +1764,7 @@ export class Settings {
     }) as HTMLInputElement;
 
     this.#root.append(el("div", { class: "card" }, [
-        el("div", { class: "prov__head" }, [
+        el("div", { class: "prov__head models__detailhead" }, [
           el("span", { class: "prov__name" }, [provider]),
           el("div", { class: "prov__row" }, [back, refresh]),
         ]),
@@ -1799,7 +1799,12 @@ export class Settings {
       for (const ref of shown) {
         const entry = byRef.get(ref) as any;
         const on = Boolean(entry?.enabled);
-        const tail = ref.startsWith(`${provider}/`) ? ref.slice(provider.length + 1) : ref;
+        // Google's ids are "google/models/gemini-…", so the segment after the
+        // provider is itself a constant ("models/") on every row — a fifth of the
+        // width a phone can spare for the name. Only the label shortens: the stored
+        // ref, the title and the tuner all keep the exact id.
+        const tail = (ref.startsWith(`${provider}/`) ? ref.slice(provider.length + 1) : ref)
+          .replace(/^models\//, "");
         const hintCtx = details[ref]?.contextWindow as number | undefined;
         const ctx = entry?.contextWindow || hintCtx;
 
@@ -1844,7 +1849,7 @@ export class Settings {
         list.append(el("div", { class: "pickrow" }, [
           check,
           name,
-          ctx ? el("span", { class: "pickrow__meta" }, [`${Math.round(ctx / 1000)}k ctx`]) : el("span", {}),
+          el("span", { class: "pickrow__meta" }, [ctx ? `${Math.round(ctx / 1000)}k ctx` : ""]),
           tune,
         ]));
       }

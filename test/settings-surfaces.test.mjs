@@ -159,3 +159,21 @@ test("#42 models tab: one panel of rows, and every action it used to offer", () 
   // The stale-catalog reason now reaches this tab instead of only the detail page.
   assert.match(src, /#renderModels\(providers, configured, models, authProfiles, plugins, modelsWarning\)/);
 });
+
+test("#43 models list rows keep their padding, and stack on a phone", () => {
+  const css = readFileSync(new URL("../ui/styles.css", import.meta.url), "utf8");
+
+  // The regression this guards: `.pickrow`s sit inside a `.list` wrapper, so a
+  // child combinator never matched and every row ran flush into the next one.
+  assert.ok(css.includes(".settings .card--flush .pickrow {"), "row padding is a descendant rule");
+  assert.ok(css.includes(".settings .card--flush .pickrow + .pickrow {"), "hairline between rows");
+  assert.ok(!css.includes(".card--flush > .pickrow"), "no child-combinator row rules left");
+
+  // Phone: name on its own line, meta + action on the next, 44px action.
+  assert.match(css, /\.settings \.pickrow__name \{ grid-area: name; \}/);
+  assert.match(css, /\.settings \.pickrow > \.btn \{ grid-area: action; min-height: var\(--tap\); \}/);
+
+  // Detail header collapses to one column instead of stacking two buttons beside
+  // a squeezed name.
+  assert.match(css, /\.settings \.models__detailhead \{[^}]*flex-direction: column;/);
+});

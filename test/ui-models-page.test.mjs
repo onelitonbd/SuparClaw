@@ -293,6 +293,45 @@ test("a gateway without local discovery says so instead of scanning forever", as
   assert.ok(!root.textContent.includes("Scanning this device"), "the placeholder is replaced, not left up");
 });
 
+test("detail rows drop the provider's own models/ segment but keep the real id", async () => {
+  const google = {
+    ...BASE,
+    config: {
+      ...BASE.config,
+      config: {
+        ...BASE.config.config,
+        providers: { google: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/", apiKey: "" } },
+      },
+    },
+    models: {
+      models: ["google/models/gemini-3.1-flash-lite", "google/models/gemini-3-pro-image-preview"],
+      configured: [],
+      details: { "google/models/gemini-3.1-flash-lite": { contextWindow: 1_000_000 } },
+      auth: [],
+    },
+  };
+  await render(google);
+  fire(row("google").querySelector(".models__name"), "click");
+  await tick();
+
+  const names = $$(".pickrow__name");
+  // Rows are alphabetical by ref, so compare as a sorted set of labels.
+  assert.deepEqual(names.map((n) => n.textContent).sort(), ["gemini-3-pro-image-preview", "gemini-3.1-flash-lite"]);
+  const flash = names.find((n) => n.textContent === "gemini-3.1-flash-lite");
+  assert.equal(flash.getAttribute("title"), "google/models/gemini-3.1-flash-lite", "the label shortens, the id does not");
+
+  // A meta cell on every row, so the phone grid never shifts for rows without a
+  // known context window.
+  const rows2 = $$(".pickrow");
+  assert.equal(rows2.length, 2);
+  const metaOf = (label) => rows2.find((r) => r.querySelector(".pickrow__name").textContent === label).querySelector(".pickrow__meta");
+  assert.equal(metaOf("gemini-3.1-flash-lite").textContent, "1000k ctx");
+  assert.equal(metaOf("gemini-3-pro-image-preview").textContent, "");
+
+  assert.ok($(".models__detailhead"), "the header has the hook the phone layout styles");
+  assert.ok($$(".pickrow > .btn").every((b) => /Tune|Configure/.test(b.textContent)), "the row action is intact");
+});
+
 test("nothing on the tab relies on inline styles", () => {
   assert.deepEqual($$("[style]").map((n) => n.tagName), []);
 });

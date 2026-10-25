@@ -3673,13 +3673,16 @@ html[data-theme-mode='dark'] .settings select.inp {
   overflow: hidden;
 }
 
-.settings .card--flush > .row,
-.settings .card--flush > .pickrow {
+/* Descendant, not child: the models list wraps its rows in a `.list` for the
+   search filter, so the old child-combinator rules matched nothing and every row
+   ran flush into the next one — no padding, no hairline. */
+.settings .card--flush .row,
+.settings .card--flush .pickrow {
   padding: 11px 16px;
 }
 
-.settings .card--flush > .row + .row,
-.settings .card--flush > .pickrow + .pickrow {
+.settings .card--flush .row + .row,
+.settings .card--flush .pickrow + .pickrow {
   border-top: 1px solid var(--set-line);
 }
 
@@ -3719,6 +3722,42 @@ html[data-theme-mode='dark'] .settings select.inp {
   color: var(--ink3);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* On a phone the four-column row leaves ~24 characters for a model id, so the
+   name and the action get a line each and the switch keeps its own column. */
+@media (max-width: 640px) {
+  .settings .pickrow {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "check name   name"
+      ".     meta   action";
+    row-gap: 8px;
+    padding: 10px 14px;
+  }
+
+  .settings .pickrow > input[type="checkbox"] { grid-area: check; }
+  .settings .pickrow__name { grid-area: name; }
+  .settings .pickrow__meta { grid-area: meta; align-self: center; }
+  .settings .pickrow > .btn { grid-area: action; min-height: var(--tap); }
+
+  /* Name, then its two actions side by side, then the endpoint: one column. */
+  .settings .models__detailhead {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .settings .models__detailhead .prov__row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .settings .models__detailhead .prov__row .btn {
+    min-height: var(--tap);
+    margin: 0;
+  }
 }
 
 /* Status reads as a dot plus plain words, never as a coloured pill. */
