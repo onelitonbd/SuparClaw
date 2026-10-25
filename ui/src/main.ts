@@ -645,6 +645,9 @@ async function loadHistory(anchorMid?: number): Promise<void> {
           id: typeof m.id === "number" ? m.id : undefined,
           role: String(m.role ?? ""),
           content: String(m.content ?? ""),
+          // Real per-message clock: history traces replay on it so a turn
+          // shows an honest "Worked for …" instead of epoch-minus-zero.
+          ts: typeof m.createdAt === "number" && m.createdAt > 0 ? m.createdAt : undefined,
         })),
       );
       if (anchorMid !== undefined) {

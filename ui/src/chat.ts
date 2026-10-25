@@ -421,7 +421,7 @@ export class Chat {
    *  their anchor after a thread reload. Rebuilt on every replaceThread. */
   readonly anchorMap = new Map<number, HTMLElement>();
 
-  replaceThread(rows: { role: string; content: string; id?: number }[]): number {
+  replaceThread(rows: { role: string; content: string; id?: number; ts?: number }[]): number {
     const live = this.#live;
     const liveText = this.#streamText;
     this.stack.innerHTML = "";
@@ -444,25 +444,44 @@ export class Chat {
     // A history turn is a user message plus every assistant-side row that
     // follows it, up to the next user message. Each turn gets its own trace
     // card (thinking → tools → answer), like a completed live run.
+    //
+    // The gateway stamps every row with its real createdAt, so replayed turns
+    // report a real "Worked for …". Rows without one fall back to a small
+    // synthetic clock. The two must never mix inside a thread — closing a
+    // synthetic turn with Date.now() is what produced headers like
+    // "Worked for 29881624m 46s" (epoch minus ~1s).
+    const realClock = rows.every((r) => typeof r.ts === "number" && Number.isFinite(r.ts) && r.ts > 0);
+    const tsOf = (row: { ts?: number }, index: number): number =>
+      realClock && typeof row.ts === "number" ? row.ts : 1000 + index * 100;
+
     let turnTrace: AgentTrace | null = null;
     let turnWrap: HTMLElement | null = null;
+    let turnStart = 0;
+    let turnLast = 0;
+    let promptTs = 0;
     const flushTurn = (): void => {
       if (turnTrace) {
-        turnTrace.push({ type: "run_end", ts: Date.now(), status: "done" });
+        // End the run where the turn's own clock ends — never at Date.now().
+        turnTrace.push({ type: "run_end", ts: Math.max(turnLast, turnStart), status: "done" });
       }
       turnTrace = null;
       turnWrap = null;
+      turnStart = 0;
+      turnLast = 0;
+      promptTs = 0;
     };
 
     for (const [index, row] of rows.entries()) {
       try {
         if (row.role === "user") {
           flushTurn();
+          promptTs = tsOf(row, index);
           this.user(row.content);
           markAnchor(row.id);
           rendered++;
           continue;
         }
+        const ts = tsOf(row, index);
         if (!turnTrace) {
           const runId = `hist-${index}`;
           const wrap = el("div", { class: "msg msg--assistant" });
@@ -471,11 +490,15 @@ export class Chat {
           this.stack.append(wrap);
           turnWrap = wrap;
           turnTrace = new AgentTrace(traceRoot, { scrollRoot: this.#thread, jump: false });
-          turnTrace.push({ type: "run_start", runId, ts: 1000 + index * 100 });
+          // A run starts when its prompt arrived, so the header reports the
+          // real turnaround instead of a zero-length turn.
+          turnStart = Math.min(promptTs || ts, ts);
+          turnLast = ts;
+          turnTrace.push({ type: "run_start", runId, ts: turnStart });
         }
         const t = turnTrace!;
         const wrap = turnWrap!;
-        const ts = 1000 + index * 100;
+        turnLast = Math.max(turnLast, ts);
         if (row.role === "assistant" && row.content) {
           const body = el("div", { class: "msg__body" });
           body.innerHTML = renderMarkdown(row.content);
@@ -508,6 +531,7 @@ export class Chat {
             ts: ts + (duration ?? 60),
             outcome: output.startsWith("error") ? "error" : undefined,
           });
+          turnLast = Math.max(turnLast, ts + (duration ?? 60));
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "error" && row.content) {
@@ -519,6 +543,7 @@ export class Chat {
           t.push({ type: "thinking_start", stepId: id, ts });
           t.push({ type: "thinking_delta", stepId: id, text: row.content });
           t.push({ type: "thinking_end", stepId: id, ts: ts + 10 });
+          turnLast = Math.max(turnLast, ts + 10);
           markAnchor(row.id);
           rendered++;
         }

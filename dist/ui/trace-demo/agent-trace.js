@@ -99,10 +99,29 @@ export function formatDuration(ms) {
   return rest === 0 ? `${m}m` : `${m}m ${rest}s`;
 }
 
+/** A single turn longer than this is a clock bug, not a long run. */
+const MAX_RUN_SPAN = 7 * 24 * 60 * 60 * 1000;
+
+const believable = (span) =>
+  Number.isFinite(span) && span >= 0 && span <= MAX_RUN_SPAN ? formatDuration(span) : "";
+
+/**
+ * Elapsed time for a run. Only a live run ticks against the wall clock: a
+ * finished run whose end never arrived reports "" instead of falling back to
+ * `now() - startedAt`. That fallback is what turned a replayed (synthetic or
+ * epoch) start into "Worked for 29881624m 46s".
+ */
+function elapsed(state) {
+  const live = state.status === "running" || state.status === "waiting";
+  const end = state.endedAt || (live ? now() : null);
+  if (!end) return "";
+  const start = state.startedAt || end;
+  return believable(Number(end) - Number(start));
+}
+
 function fmtCount(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
-
 function humanTool(tool) {
   const t = String(tool || "").replace(/[_-]+/g, " ").trim();
   return t ? t.charAt(0).toUpperCase() + t.slice(1) : "Tool";
@@ -820,10 +839,9 @@ export class AgentTrace {
     btn.setAttribute("aria-expanded", this.itemExpanded.has(item.id) ? "true" : "false");
     const label = this.doc.createElement("span");
     label.className = "agent-trace__label agent-trace__label--muted";
+    const thought = item.endedAt ? believable(Number(item.endedAt) - Number(item.startedAt)) : "";
     label.textContent =
-      item.status === "running"
-        ? "Thinking…"
-        : `Thought for ${formatDuration((item.endedAt || now()) - item.startedAt)}`;
+      item.status === "running" ? "Thinking…" : thought ? `Thought for ${thought}` : "Thought";
     const chev = this.doc.createElement("span");
     chev.className = "agent-trace__chev-sm";
     chev.appendChild(svg("chevron", 14, "", this.doc));
@@ -1146,7 +1164,7 @@ export class AgentTrace {
 
   #updateHeader() {
     const s = this.state;
-    const dur = formatDuration((s.endedAt || now()) - (s.startedAt || now()));
+    const dur = elapsed(s);
     const n = countSteps(s);
     const stepText = `${n} ${n === 1 ? "step" : "steps"}`;
 
@@ -1272,7 +1290,7 @@ export class AgentTrace {
   #finish(wasLive) {
     this.#stopTimer();
     const s = this.state;
-    const dur = formatDuration((s.endedAt || now()) - (s.startedAt || now()));
+    const dur = elapsed(s);
     this.timerEl.textContent = dur;
     if (s.status !== "done") {
       // Interrupted / failed runs stay expanded so the partial trace remains
@@ -1305,7 +1323,7 @@ export class AgentTrace {
       const s = this.state;
       if (!this.#isLive()) return;
       this.timerEl.hidden = false;
-      this.timerEl.textContent = formatDuration((s.endedAt || now()) - (s.startedAt || now()));
+      this.timerEl.textContent = elapsed(s);
       if (s.status === "running") this.titleEl.textContent = this.liveLabel || "Working…";
     };
     tick();
@@ -1324,7 +1342,10 @@ export class AgentTrace {
     if (s.status === "waiting") return "Waiting for your approval";
     if (s.status === "done") {
       const n = countSteps(s);
-      return `Finished after ${formatDuration((s.endedAt || now()) - (s.startedAt || now()))}, ${n} ${n === 1 ? "step" : "steps"}`;
+      const dur = elapsed(s);
+      return dur
+        ? `Finished after ${dur}, ${n} ${n === 1 ? "step" : "steps"}`
+        : `Finished, ${n} ${n === 1 ? "step" : "steps"}`;
     }
     if (s.status === "stopped") return "Run stopped";
     if (s.status === "error") return "Run failed";
