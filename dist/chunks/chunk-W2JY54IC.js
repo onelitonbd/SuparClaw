@@ -1,5 +1,5 @@
 import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
-import{f as h}from"./chunk-547RLRPI.js";import{e as g}from"./chunk-S3U4FQ4A.js";import{a as k}from"./chunk-6FMFH3K6.js";import{d as c,f}from"./chunk-Z5GORADA.js";import{a as l,d as y}from"./chunk-YLPL3IHV.js";var u=y(k(),1);import{readFileSync as S,writeFileSync as b,renameSync as x,copyFileSync as v,existsSync as C}from"node:fs";import{watch as F}from"node:fs";import{dirname as T,basename as $}from"node:path";var P=`// SuparClaw config (JSON5: comments allowed)
+import{f as h}from"./chunk-547RLRPI.js";import{e as g}from"./chunk-S3U4FQ4A.js";import{a as k}from"./chunk-6FMFH3K6.js";import{d as c,f}from"./chunk-52SM7GJ6.js";import{a as l,d as y}from"./chunk-YLPL3IHV.js";var u=y(k(),1);import{readFileSync as S,writeFileSync as b,renameSync as x,copyFileSync as v,existsSync as C}from"node:fs";import{watch as F}from"node:fs";import{dirname as T,basename as $}from"node:path";var P=`// SuparClaw config (JSON5: comments allowed)
 {
   gateway: {
     port: 18790,

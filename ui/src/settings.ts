@@ -2,6 +2,7 @@
 // tabbed, one card per block.
 
 import { el, fuzzy, icon, modal, toast } from "./dom.js";
+import { AVATAR_ACCEPT, isStoredAvatar, prepareAvatar } from "./avatar.js";
 import { friendlyModelName } from "./model-name.js";
 import { gateway } from "./rpc.js";
 import { loadPrefs, savePrefs, permissionState, sendTest, supported } from "./notifications.js";
@@ -852,16 +853,74 @@ export class Settings {
     }
   }
 
-  /** Agent identity (P4 #39 — their Personal identity page): name/emoji/theme
-   *  shown to channels and injected into the system prompt. */
+  /** Agent identity (P4 #39 — their Personal identity page): the face the agent
+   *  wears, the name it answers to, and the voice it speaks in.
+   *
+   *  The icon is a choice between the two marks this product actually has (🦀 crab,
+   *  🦞 claw), not a free-text emoji box: an arbitrary glyph lets the agent look
+   *  like anything, and a text field is the wrong control for a two-value choice.
+   *  #identity-emoji survives as a hidden value store — the same pattern the
+   *  .dd__store selects use — so the save path and every script that reads it keep
+   *  working while the visible surface is a picker.
+   *
+   *  The portrait is picked from any PNG/JPEG/WebP, centre-cropped square and
+   *  shrunk to a bounded data URL (ui/src/avatar.ts) that lives in the config, so
+   *  the face travels with backups and `sc config`. */
   #renderAgentIdentity(config: any): void {
     const id = config.agents?.identity ?? {};
+    const presets: { glyph: string; label: string }[] = [
+      { glyph: "🦀", label: "Crab" },
+      { glyph: "🦞", label: "Claw" },
+    ];
+    const storedEmoji = String(id.emoji ?? "").trim() || "🦀";
+    // null = the stored icon is not one of the presets (an old hand-edited 🐙).
+    // Nothing is rewritten: the tile shows what is stored and says so.
+    let picked: string | null = presets.some((p) => p.glyph === storedEmoji) ? storedEmoji : null;
+    let portrait = isStoredAvatar(id.avatar) ? String(id.avatar) : "";
+    let busy = false;
+
     const mkField = (iid: string, label: string, value: string, placeholder: string, narrow = false) => {
       const input = el("input", { class: "inp", id: iid, value, placeholder, autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
       return { input, node: this.#field(label, input, { forId: iid, narrow }) };
     };
     const nameField = mkField("identity-name", "Name", String(id.name ?? "SuparClaw"), "SuparClaw");
-    const emojiField = mkField("identity-emoji", "Emoji", String(id.emoji ?? "🦀"), "🦀", true);
+
+    // Value stores, not controls: hidden inputs the save path reads.
+    const emojiStore = el("input", { id: "identity-emoji", type: "hidden", value: picked ?? storedEmoji }) as HTMLInputElement;
+    emojiStore.value = picked ?? storedEmoji;
+    const avatarStore = el("input", { id: "identity-avatar", type: "hidden", value: portrait }) as HTMLInputElement;
+    avatarStore.value = portrait;
+
+    // --- the face: a portrait tile with the two photo actions under it ---
+    const tile = el("div", { class: "def-portrait", "aria-hidden": "true" }, []);
+    const addPhoto = el("button", { class: "btn sm def-photo__add", id: "identity-photo-btn", type: "button" }, ["Add photo"]) as HTMLButtonElement;
+    const dropPhoto = el("button", { class: "def-photo__remove", id: "identity-photo-clear", type: "button" }, ["Remove"]) as HTMLButtonElement;
+    const fileInput = el("input", { id: "identity-photo", type: "file", accept: AVATAR_ACCEPT, hidden: "" }) as HTMLInputElement;
+    const face = el("div", { class: "def-face" }, [
+      tile,
+      el("div", { class: "def-photo" }, [addPhoto, dropPhoto, fileInput]),
+    ]);
+
+    // --- the icon picker ---
+    const icons = el("div", { class: "def-icons", role: "group", "aria-label": "Icon" }, []);
+    const tiles = presets.map((p) => {
+      const btn = el("button", { class: "def-icon", type: "button", "aria-pressed": "false" }, [
+        el("span", { class: "def-icon__glyph", "aria-hidden": "true" }, [p.glyph]),
+        el("span", { class: "def-icon__label" }, [p.label]),
+      ]) as HTMLButtonElement;
+      btn.onclick = () => {
+        // Re-picking the current icon is a no-op, so it cannot dirty the card.
+        if (picked === p.glyph) return;
+        picked = p.glyph;
+        emojiStore.value = p.glyph;
+        repaint();
+        this.#dirtyMark(dirtyNote);
+      };
+      icons.append(btn);
+      return btn;
+    });
+    const presetNote = el("p", { class: "def-note", hidden: "" }, []);
+    const iconField = this.#field("Icon", icons);
 
     // The persona is prose — a real textarea, not a one-line input.
     const area = el("textarea", {
@@ -879,20 +938,21 @@ export class Settings {
     });
 
     // Identity is the most human thing on this page, so it shows the agent
-    // instead of only naming three fields. The preview is a mirror of the
-    // draft (what Save would commit), and it is decorative: aria-hidden, since
-    // the same words are already in the fields beside it.
-    const avatar = el("div", { class: "def-avatar", "aria-hidden": "true" }, [""]);
-    const previewEmoji = el("span", { class: "def-preview__avatar" }, [""]);
-    const previewWho = el("span", { class: "def-preview__who" }, [""]);
-    const previewQuote = el("p", { class: "def-preview__quote" }, [""]);
+    // instead of only naming fields. The preview mirrors the draft (what Save
+    // would commit) and is decorative: aria-hidden, since the same words are in
+    // the fields beside it.
+    const previewFace = el("span", { class: "def-preview__face" }, []);
+    const previewWho = el("span", { class: "def-preview__who" }, []);
+    const previewQuote = el("p", { class: "def-preview__quote" }, []);
     const preview = el("div", { class: "def-preview", "aria-hidden": "true" }, [
-      previewEmoji,
+      previewFace,
       el("div", { class: "def-preview__body" }, [previewWho, previewQuote]),
     ]);
 
-    /** First visible glyph of the emoji field. Emoji are not one code unit —
-     *  👩🏽‍💻 is a ZWJ sequence — so cut on a grapheme, never on .slice(). */
+    const status = el("p", { class: "def-photo__status", role: "status" }, []);
+
+    /** First visible glyph of a string. Emoji are not one code unit — 👩🏽‍💻 is a
+     *  ZWJ sequence — so cut on a grapheme, never on .slice(). */
     const firstGlyph = (s: string): string => {
       try {
         const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -902,19 +962,49 @@ export class Settings {
         return Array.from(s).slice(0, 2).join("");
       }
     };
+    const setStatus = (message: string): void => {
+      status.textContent = message;
+      status.hidden = message === "";
+    };
+
     const repaint = (): void => {
-      // Same fallbacks the save handler applies, so the preview never promises
-      // a blank name or emoji that would not be stored.
+      // Same fallbacks the save handler applies, so the preview never promises a
+      // blank name or icon that would not be stored.
       const name = nameField.input.value.trim() || "SuparClaw";
-      const emoji = emojiField.input.value.trim() || "🦀";
+      const glyph = picked ?? (firstGlyph(storedEmoji) || "🦀");
       const theme = area.value.trim();
-      avatar.textContent = firstGlyph(emoji);
-      previewEmoji.textContent = firstGlyph(emoji);
+
+      for (let i = 0; i < presets.length; i += 1) {
+        const on = picked === presets[i]?.glyph;
+        tiles[i]?.setAttribute("aria-pressed", on ? "true" : "false");
+      }
+      presetNote.hidden = picked !== null;
+      presetNote.textContent = picked === null
+        ? `Saved icon ${firstGlyph(storedEmoji)} isn't one of the presets — pick one to replace it.`
+        : "";
+
+      tile.innerHTML = "";
+      tile.append(
+        portrait
+          ? el("img", { class: "def-portrait__img", src: portrait, alt: "", decoding: "async", draggable: "false" })
+          : el("span", { class: "def-portrait__glyph" }, [glyph]),
+      );
+
+      dropPhoto.hidden = !portrait;
+      addPhoto.disabled = busy;
+      addPhoto.textContent = busy ? "Preparing…" : portrait ? "Change photo" : "Add photo";
+
+      previewFace.innerHTML = "";
+      previewFace.append(
+        portrait
+          ? el("img", { class: "def-preview__img", src: portrait, alt: "", decoding: "async" })
+          : el("span", { class: "def-preview__glyph" }, [glyph]),
+      );
       previewWho.textContent = name;
       previewQuote.textContent = theme ? `“${theme}”` : "No voice set — it will introduce itself with the default persona.";
     };
 
-    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const dirtyNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
     const saveId = el("button", { class: "btn", type: "button", id: "identity-save" }, ["Save identity"]) as HTMLButtonElement;
     const card = el("div", { class: "card setcard agent-identity" }, [
       el("div", { class: "setcard__head" }, [
@@ -922,35 +1012,80 @@ export class Settings {
         el("p", { class: "hint" }, ["Who the agent says it is, everywhere it speaks."]),
       ]),
       el("div", { class: "def-identity" }, [
-        avatar,
-        el("div", { class: "def-identity__fields" }, [
-          el("div", { class: "setgrid" }, [nameField.node, emojiField.node]),
+        face,
+        el("div", { class: "def-identity__fields" }, [nameField.node, iconField, presetNote, emojiStore, avatarStore]),
+        el("div", { class: "def-identity__foot" }, [
+          status,
+          el("p", { class: "hint" }, [
+            "PNG, JPEG or WebP · cropped square · kept in your config. The model hears the agent's name and voice; it is never shown this picture.",
+          ]),
         ]),
       ]),
       voice,
       preview,
-      el("div", { class: "setfoot" }, [note, saveId]),
+      el("div", { class: "setfoot" }, [dirtyNote, saveId]),
     ]);
-    const clearDirty = this.#dirtyWatch(card, note);
+    const clearDirty = this.#dirtyWatch(card, dirtyNote);
+
+    addPhoto.onclick = () => {
+      if (!busy) fileInput.click();
+    };
+    dropPhoto.onclick = () => {
+      if (!portrait) return;
+      portrait = "";
+      avatarStore.value = "";
+      setStatus("Photo removed — save to keep that.");
+      repaint();
+      this.#dirtyMark(dirtyNote);
+    };
+    fileInput.onchange = async () => {
+      const file = fileInput.files && fileInput.files[0];
+      // Clearing the input lets the same file be picked twice in a row.
+      fileInput.value = "";
+      if (!file) return;
+      busy = true;
+      setStatus("");
+      repaint();
+      try {
+        const next = await prepareAvatar(file);
+        portrait = next;
+        avatarStore.value = next;
+        setStatus("Photo ready — save to keep it.");
+        this.#dirtyMark(dirtyNote);
+      } catch (err) {
+        const message = (err as Error)?.message || "That picture could not be used.";
+        setStatus(message);
+        toast(message, "err");
+      } finally {
+        busy = false;
+        repaint();
+      }
+    };
 
     saveId.onclick = async () => {
-      const name = (this.#root.querySelector("#identity-name") as HTMLInputElement).value.trim();
-      const emoji = (this.#root.querySelector("#identity-emoji") as HTMLInputElement).value.trim();
-      const theme = (this.#root.querySelector("#identity-theme") as HTMLTextAreaElement).value.trim();
+      const root = this.#root;
+      const name = (root.querySelector("#identity-name") as HTMLInputElement).value.trim();
+      const emoji = (root.querySelector("#identity-emoji") as HTMLInputElement).value.trim();
+      const theme = (root.querySelector("#identity-theme") as HTMLTextAreaElement).value.trim();
+      const avatar = (root.querySelector("#identity-avatar") as HTMLInputElement).value;
       const ok = await this.#setMany(
         [
           ["agents.identity.name", name || "SuparClaw"],
           ["agents.identity.emoji", emoji || "🦀"],
           ["agents.identity.theme", theme],
+          // Never persist a string the renderer would refuse to show.
+          ["agents.identity.avatar", isStoredAvatar(avatar) ? avatar : ""],
         ],
         "identity saved — new sessions greet with it immediately",
       );
       if (ok) clearDirty();
     };
 
-    for (const field of [nameField.input, emojiField.input, area]) field.addEventListener("input", repaint);
+    nameField.input.addEventListener("input", repaint);
+    area.addEventListener("input", repaint);
 
     this.#root.append(card);
+    setStatus("");
     repaint();
   }
 
@@ -2625,6 +2760,10 @@ export class Settings {
 
     const renderNode = (node: any, path: string, cur: unknown, into: HTMLElement): void => {
       if (!node || typeof node !== "object") return;
+      // `hidden` leaves are stored but not edited as text here (the avatar is a
+      // 32,000-character data URL; nobody should meet it in a textbox). The raw
+      // JSON5 editor still shows the file exactly as it is.
+      if (node.hidden === true) return;
       switch (node.t) {
         case "bool": into.append(fieldRow(path.split(".").pop() ?? path, path, "bool", cur)); return;
         case "int": case "float": into.append(fieldRow(path.split(".").pop() ?? path, path, "num", cur)); return;
@@ -4206,12 +4345,21 @@ export class Settings {
   /** Watches a card for real edits and reports them through a footer note.
    *  Dropdown *searches* live inside the card and are not edits, so events from
    *  a menu are ignored; the hidden store's own change (a pick) is not. */
+  /** The single place "there are unsaved edits" is written, so a DOM event and a
+   *  programmatic change (picking an icon, setting a photo) say the same thing. */
+  #dirtyMark(note: HTMLElement): void {
+    note.textContent = "Unsaved changes";
+    note.dataset["dirty"] = "1";
+  }
+
   #dirtyWatch(card: HTMLElement, note: HTMLElement): () => void {
     const mark = (e: Event): void => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest?.(".dd__menu")) return;
-      note.textContent = "Unsaved changes";
-      note.dataset["dirty"] = "1";
+      // Menus own their own state (typing in search is not an edit), and the photo
+      // cluster reports its own outcome: the file input's `change` fires before the
+      // decode finishes, so relying on it would claim an edit for a failed upload.
+      if (t?.closest?.(".dd__menu") || t?.closest?.(".def-photo")) return;
+      this.#dirtyMark(note);
     };
     card.addEventListener("input", mark);
     card.addEventListener("change", mark);

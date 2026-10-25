@@ -5,7 +5,7 @@ const DEFAULT_HEARTBEAT_PROMPT =
   "Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.";
 
 type SchemaKind =
-  | { t: "string"; min?: number }
+  | { t: "string"; min?: number; max?: number }
   | { t: "text" }
   | { t: "int"; min?: number; max?: number }
   | { t: "number" }
@@ -16,8 +16,12 @@ type SchemaKind =
   | { t: "record"; of: SchemaNode }
   | { t: "object"; fields: Record<string, SchemaNode> };
 
-/** Every node may carry a default (filled by applyDefaults) and may be optional. */
-export type SchemaNode = SchemaKind & { default?: unknown; optional?: boolean };
+/** Every node may carry a default (filled by applyDefaults) and may be optional.
+ *
+ *  `hidden` is a presentation hint only: the All-settings form skips hidden leaves
+ *  (a 32,000-character avatar data URL does not belong in a textbox), while
+ *  validate() and applyDefaults() treat the node like any other. */
+export type SchemaNode = SchemaKind & { default?: unknown; optional?: boolean; hidden?: boolean };
 
 type Field = SchemaNode;
 
@@ -34,6 +38,9 @@ export function validate(node: SchemaNode, value: unknown, path = "$"): string[]
       if (typeof value !== "string") return [`${path}: expected string`];
       if (node.min !== undefined && value.length < node.min) {
         return [`${path}: expected at least ${node.min} character(s)`];
+      }
+      if (node.max !== undefined && value.length > node.max) {
+        return [`${path}: must be at most ${node.max} characters`];
       }
       return [];
     }
@@ -182,6 +189,12 @@ export const CONFIG_SCHEMA: SchemaNode = {
               t: "string",
               default: "a warm, sharp, resourceful personal AI companion that lives on the user's own device",
             },
+            // The agent's portrait, as a bounded data URL (`data:image/png;base64,…`).
+            // It lives in the config rather than the state dir so the face travels
+            // with `sc config`, backups and restores; the cap keeps config.json5
+            // small (32 KB of base64 is ~24 KB of pixels — a full 128 px avatar).
+            // `hidden` keeps the All-settings form out of a 32,000-character textbox.
+            avatar: { t: "string", default: "", max: 32000, hidden: true },
           },
         },
         defaults: {
@@ -836,7 +849,7 @@ export interface SuparClawConfig {
     http: { endpoints: { chatCompletions: { enabled: boolean } } };
   };
   agents: {
-    identity: { name: string; emoji: string; theme: string };
+    identity: { name: string; emoji: string; theme: string; avatar: string };
     defaults: {
       id: string;
       model: string;
