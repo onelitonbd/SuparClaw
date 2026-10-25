@@ -2472,6 +2472,19 @@ html[data-theme-mode='dark'] .modal {
 .settings select.in:hover,
 .settings select.inp:hover { border-color: var(--set-line-3); }
 
+/* A rejected number in a popup: the field and the sentence under it say the
+   same thing, in the same colour, and neither is a toast that goes away. */
+.settings .inp[aria-invalid="true"],
+.settings .inp[aria-invalid="true"]:hover { border-color: var(--err); }
+
+.settings .hint--err {
+  margin-top: 12px;
+  color: var(--err);
+}
+
+.settings .hint--err[hidden] { display: none; }
+
+
 .settings .inp:focus-visible,
 .settings select:focus-visible,
 .settings textarea:focus-visible {

@@ -927,10 +927,18 @@ case "sessions.rename": {
                 ? String(params["reasoningEffort"] ?? "inherit")
                 : (prev.reasoningEffort ?? "inherit"),
           };
-          const temp = num("temperature", false);
+          // Temperature has three states, not two: a number stores it, an
+          // explicit null/"" clears it (the tuner sends null for a blank field,
+          // because blank is how you get back to the provider's own default),
+          // and an *absent* parameter keeps what is stored — the row checkbox
+          // and the CLI patch a label or enabled flag without ever touching the
+          // tuning. Presence, not truthiness: 0 is a legal temperature.
+          const tempRaw = params["temperature"];
+          const tempCleared = tempRaw === null || tempRaw === "";
+          const temp = tempCleared ? undefined : num("temperature", false);
           const keepTemp = (prev as { temperature?: number }).temperature;
           if (temp !== undefined) entry["temperature"] = temp;
-          else if (typeof keepTemp === "number") entry["temperature"] = keepTemp;
+          else if (!tempCleared && typeof keepTemp === "number") entry["temperature"] = keepTemp;
           const result = service.configSvc.setPath(`models.${profileId}`, entry);
           if (!result.ok) {
             send(errFrame(id, "bad_request", result.errors[0] ?? "invalid model entry"));

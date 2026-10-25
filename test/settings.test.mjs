@@ -320,6 +320,31 @@ test("gateway: skills + models settings surface over the wire, tools stay read-o
   assert.equal(deepRow.reasoningEffort, "high");
   assert.equal(deepRow.enabled, true);
 
+  // temperature has three states, not two. Absent keeps what is stored (the row
+  // checkbox and the CLI rely on that); an explicit null clears the override, so
+  // a blank field in the tuner really means "back to the provider's default";
+  // and 0 is a temperature, not a missing one.
+  const rowNow = async () =>
+    ((await cli.request("models.list")).payload.configured ?? []).find((m) => m.id === "mock-m1");
+  await cli.request("models.save", { id: "mock-m1", ref: "mock/m1" });
+  assert.equal((await rowNow()).temperature, 0.2, "absent = keep the stored temperature");
+
+  await cli.request("models.save", { id: "mock-m1", ref: "mock/m1", temperature: null });
+  assert.equal((await rowNow()).temperature, undefined, "null clears it");
+  const clearedCfg = await cli.request("config.get");
+  assert.equal(
+    Object.hasOwn(clearedCfg.payload.config.models["mock-m1"], "temperature"),
+    false,
+    "the key is gone from the stored config, not stored as null",
+  );
+
+  await cli.request("models.save", { id: "mock-m1", ref: "mock/m1", temperature: 0 });
+  assert.equal((await rowNow()).temperature, 0, "0 survives: presence, not truthiness");
+
+  // and it can be cleared again by the tuner's next save
+  await cli.request("models.save", { id: "mock-m1", ref: "mock/m1", label: "Mock One", temperature: 0.2 });
+  assert.equal((await rowNow()).temperature, 0.2);
+
   // selection toggle: unchecked = out of the system (strict filter)
   await cli.request("models.save", { ...deepRow, enabled: false });
   const afterToggle = await cli.request("models.list");

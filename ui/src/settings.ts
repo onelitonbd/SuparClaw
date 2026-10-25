@@ -1837,13 +1837,19 @@ export class Settings {
           })();
         };
 
-        const tune = el("button", { class: "btn sm", type: "button" }, [entry ? "Tune" : "Configure"]);
+        // Named, because a page of identical "Tune" buttons says nothing to a
+        // screen reader about which model it is about to open.
+        const tuneLabel = entry ? "Tune" : "Configure";
+        const tune = el("button", { class: "btn sm", type: "button", "aria-label": `${tuneLabel} ${tail}` }, [tuneLabel]);
         const openTune = () => this.#modelTune(ref, entry, hintCtx, () => void this.render());
         tune.onclick = openTune;
 
         // The name opens the tuner, so it is a button — a span with a click
-        // handler would be invisible to the keyboard.
-        const name = el("button", { class: "pickrow__name mono", type: "button", title: ref }, [tail]);
+        // handler would be invisible to the keyboard. A saved label shows here,
+        // otherwise the popup's Label field would look like it did nothing: it
+        // is what the chat model picker calls this model.
+        const label = String(entry?.label ?? "").trim();
+        const name = el("button", { class: label ? "pickrow__name" : "pickrow__name mono", type: "button", title: ref }, [label || tail]);
         name.onclick = openTune;
 
         list.append(el("div", { class: "pickrow" }, [
@@ -1870,9 +1876,16 @@ export class Settings {
     );
   }
 
-  /** Capabilities popup for one fetched model. Save also selects it. */
+  /** Capabilities popup for one fetched model.
+   *
+   *  Two promises it has to keep, because both were once broken here: a blank
+   *  field must really be blank afterwards (temperature is sent as an explicit
+   *  null, which the gateway treats as "delete the override"), and editing a
+   *  model must never change whether it is in the system — only a new model is
+   *  selected on save, which is what "Save & select" says. */
   #modelTune(ref: string, existing: any | null, hintCtx: number | undefined, done: () => void): void {
     let close: () => void = () => {};
+    let saving = false;
     const field = (name: string, label: string, value: string, placeholder: string, type = "text") => {
       const input = el("input", {
         id: `f-${name}`, class: "inp mono", type, value, placeholder,
@@ -1881,15 +1894,20 @@ export class Settings {
       return { input, wrap: el("div", { class: "modal__field" }, [el("label", { class: "lbl", for: `f-${name}` }, [label]), input]) };
     };
     const labelF = field("label", "Label (optional)", existing?.label ?? "", ref.split("/").slice(1).join("/"));
-    const ctxF = field("contextWindow", "Context window (tokens)", String(existing?.contextWindow || hintCtx || ""), "auto-detect");
+    // The field shows what is *stored*. A provider hint is a starting point, not
+    // a saved value: prefilling it on an existing row would silently turn
+    // "unknown" into a number the next time anything else was edited.
+    const storedCtx = typeof existing?.contextWindow === "number" && existing.contextWindow > 0 ? String(existing.contextWindow) : "";
+    const ctxF = field("contextWindow", "Context window (tokens)", storedCtx || (existing ? "" : hintCtx ? String(hintCtx) : ""), "unknown");
     // This is the only place a context window is entered, and it is the number the
     // history budget and the compaction trigger are derived from — say so here
     // rather than in a Settings page that no longer has a field of its own.
     ctxF.wrap.append(el("p", { class: "hint" }, [
-      "Drives the history budget (about 70% of it, in characters) and when compaction starts. Blank = auto-detect from the provider.",
+      "Drives the history budget (about 70% of it, in characters) and when compaction starts. Blank = the provider's published figure when there is one, otherwise unknown.",
     ]));
     const maxF = field("maxTokens", "Max output tokens (0 = provider default)", existing?.maxTokens ? String(existing.maxTokens) : "0", "0", "number");
     const tempF = field("temperature", "Temperature (blank = provider default)", typeof existing?.temperature === "number" ? String(existing.temperature) : "", "0.7", "number");
+    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
 
     const effortDd = this.#dropdown({
       id: "f-effort",
@@ -1899,10 +1917,14 @@ export class Settings {
       options: ["inherit", "off", "low", "medium", "high", "xhigh", "max"].map((v) => ({ value: v, label: v })),
     });
     const effortSel = effortDd.sel;
+    // Editing keeps the row's switch; only a model that is not in the system yet
+    // is added to it. Tune is not a place where models come back from the dead.
+    const willEnable = existing && typeof existing.enabled === "boolean" ? existing.enabled : true;
+    const confirmText = existing ? "Save" : "Save & select";
 
     modal({
       title: ref,
-      confirmLabel: existing ? "Save" : "Save & select",
+      confirmLabel: confirmText,
       render: (body, c) => {
         close = c;
         body.append(
@@ -1912,10 +1934,12 @@ export class Settings {
             effortDd.node,
             el("p", { class: "hint" }, ["Per-model default; a session thinking choice still overrides it."]),
           ]),
+          problem,
           existing
             ? (() => {
                 const rm = el("button", { class: "btn danger", type: "button" }, ["Remove from system"]);
                 rm.onclick = async () => {
+                  if (saving) return;
                   try {
                     await gateway.request("models.remove", { id: existing.id });
                     toast(`${ref} removed`, "ok");
@@ -1931,23 +1955,65 @@ export class Settings {
         );
       },
       onConfirm: async () => {
+        if (saving) return;
+        // Blank means "no override"; anything else has to be a number a provider
+        // can accept. A typo used to become 0 (or the provider's figure) with a
+        // "saved" toast, which is the quietest way to lose what someone typed.
+        const bad: { name: string; input: HTMLInputElement }[] = [];
+        const readNumber = (f: { input: HTMLInputElement }, name: string, whole: boolean): number | null => {
+          const input = f.input;
+          input.removeAttribute("aria-invalid");
+          const raw = input.value.trim();
+          if (raw === "") return null;
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n < 0) {
+            input.setAttribute("aria-invalid", "true");
+            bad.push({ name, input });
+            return null;
+          }
+          return whole ? Math.round(n) : n;
+        };
+        const ctx = readNumber(ctxF, "context window", true);
+        const max = readNumber(maxF, "max output tokens", true);
+        const temp = readNumber(tempF, "temperature", false);
+        if (bad.length) {
+          problem.textContent = `Not saved — ${bad.map((b) => b.name).join(" and ")} must be a number, 0 or more, or blank.`;
+          problem.removeAttribute("hidden");
+          bad[0]?.input.focus();
+          return;
+        }
+        problem.textContent = "";
+        problem.setAttribute("hidden", "");
+
         const payload: Record<string, unknown> = {
           id: existing?.id,
           ref,
           label: labelF.input.value.trim(),
-          contextWindow: Number(ctxF.input.value) || hintCtx || 0,
-          maxTokens: Number(maxF.input.value) || 0,
+          contextWindow: ctx ?? hintCtx ?? 0,
+          maxTokens: max ?? 0,
+          // null, not absent: the gateway reads absent as "keep the last value"
+          // (that is what the row checkbox relies on) and null as "clear it".
+          temperature: temp,
           reasoningEffort: effortSel.value,
-          enabled: true,
+          enabled: willEnable,
         };
-        const temp = tempF.input.value.trim();
-        if (temp !== "" && Number.isFinite(Number(temp))) payload["temperature"] = Number(temp);
+        saving = true;
+        const okBtn = (document.getElementById("modal-foot") as HTMLElement | null)?.querySelector<HTMLButtonElement>(".btn.pri") ?? null;
+        if (okBtn) {
+          okBtn.disabled = true;
+          okBtn.textContent = "Saving…";
+        }
         try {
           await gateway.request("models.save", payload);
-          toast(existing ? "saved" : `${ref} saved & selected`, "ok");
+          toast(existing ? (willEnable ? "saved" : "saved — still switched off") : `${ref} saved & selected`, "ok");
           close();
           done();
         } catch (err) {
+          saving = false;
+          if (okBtn) {
+            okBtn.disabled = false;
+            okBtn.textContent = confirmText;
+          }
           toast((err as Error).message, "err");
         }
       },
