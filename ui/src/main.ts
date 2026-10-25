@@ -42,10 +42,14 @@ async function loadSettingsInterior(): Promise<void> {
   settingsInteriorLoaded = true;
   // The interior DOM is injected now; bind the one delegated handler that
   // lives in main.ts rather than in Settings.
-  $("settings-back").onclick = () => {
+  const closeSettings = () => {
     try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); }
     catch { location.hash = "#/chat/" + sessionKey; }
   };
+  const closeBtnDesktop = document.getElementById("settings-close-desktop");
+  if (closeBtnDesktop) closeBtnDesktop.onclick = closeSettings;
+  const closeBtnMobile = document.getElementById("settings-close-mobile");
+  if (closeBtnMobile) closeBtnMobile.onclick = closeSettings;
 }
 
 /* ---------------- chat ---------------- */
@@ -1072,12 +1076,10 @@ async function route(): Promise<void> {
     try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
     return;
   }
-  $("chat-view").hidden = settingsOpen;
+  // $("chat-view").hidden = settingsOpen;
   $("settings-view").hidden = !settingsOpen;
-  // The top rail is chat-only chrome (session title, new chat, subagents,
-  // gear, theme). Settings is a dedicated page with its own sidebar — drop
-  // the rail so it doesn't bleed into Settings.
-  $("rail").hidden = settingsOpen;
+  // $("rail").hidden = settingsOpen;
+
   $("settings-btn").classList.toggle("is-on", settingsOpen);
   if (settingsOpen) {
     await loadSettingsInterior();
