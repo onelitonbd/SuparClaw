@@ -138,3 +138,24 @@ test("#40 gateway tab: full surface incl. bind, hosts/origins, controlUi, openai
   assert.match(src, /no token needed from localhost/);
   assert.match(src, /their controlUi\.basePath/);
 });
+
+test("#42 models tab: one panel of rows, and every action it used to offer", () => {
+  // A card per provider became one panel of rows, so the summary line and the
+  // rows are built from the same facts and cannot disagree.
+  assert.match(src, /#providerFacts\(/);
+  assert.match(src, /id: "models-summary"/);
+  assert.match(src, /"data-provider": name/);
+  assert.ok(!src.includes("prov-card"), "the card-per-provider layout is gone");
+
+  // The empty state used to be built into a node that was never appended.
+  assert.match(src, /id: "models-empty-providers"/);
+
+  // A redesign may move things; it may not quietly drop an action.
+  for (const rpc of ["models.auth.order", "models.auth.remove", "models.local.scan", "models.local.add"]) {
+    assert.ok(src.includes(rpc), `missing ${rpc}`);
+  }
+  assert.match(src, /#connectProvider\(name: string, plugin: any \| null, currentBinding: string\)/);
+
+  // The stale-catalog reason now reaches this tab instead of only the detail page.
+  assert.match(src, /#renderModels\(providers, configured, models, authProfiles, plugins, modelsWarning\)/);
+});

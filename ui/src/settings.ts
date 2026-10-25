@@ -141,6 +141,18 @@ type DdOption = { value: string; label: string; title?: string; group?: string }
  *  setter (the add-fallback control resets itself through it). */
 type Dd = { sel: HTMLSelectElement; node: HTMLElement; set: (v: string) => void };
 
+/** What one provider row states. Computed once per render so the row and the
+ *  summary line above it can never disagree about what is configured. */
+type ProviderFacts = {
+  url: string;
+  total: number;
+  chosen: number;
+  count: string;
+  profiles: any[];
+  bound: string;
+  state: { text: string; tone: "ok" | "warn" | "err" | "idle" };
+};
+
 /** Close hooks of every open dropdown — Settings shows one menu at a time. */
 const openDds = new Set<() => void>();
 
@@ -312,7 +324,7 @@ export class Settings {
       if (this.#modelsProvider) {
         this.#renderProviderModels(this.#modelsProvider, providers, configured, models, details, modelsWarning);
       } else {
-        this.#renderModels(providers, configured, models, authProfiles, plugins);
+        this.#renderModels(providers, configured, models, authProfiles, plugins, modelsWarning);
       }
     } else if (this.#tab === "providers") this.#renderProviders(providers);
     else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
@@ -1240,132 +1252,275 @@ export class Settings {
   // (strict filter — unmarked models appear nowhere), and clicking a model
   // tunes its capabilities in a popup.
 
+  /** Two letters for a provider. No brand assets ship with the app, so the mark
+   *  comes from the id: "lm-studio" → LS, "openrouter" → OR, "openai" → OI.
+   *
+   *  A single-word id takes its first and last letter, not its first two: the
+   *  obvious "first two" gives openai and openrouter the same mark, which is
+   *  exactly what a monogram is supposed to prevent. */
+  #providerMark(id: string): string {
+    const parts = id.split(/[^a-z0-9]+/i).filter(Boolean);
+    const whole = parts.join("");
+    const letters = parts.length > 1
+      ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`
+      : whole.length > 1
+        ? `${whole[0]}${whole[whole.length - 1]}`
+        : whole;
+    return (letters || "?").toUpperCase();
+  }
+
+  /** The facts one provider row is built from.
+   *
+   *  The count is deliberately two numbers from two sources: the numerator is
+   *  the enabled rows in the config (the truth), the denominator is what the
+   *  provider last advertised. Deriving both from discovery — as this page used
+   *  to — showed "0 of 0 selected" whenever a refresh failed, even with twelve
+   *  models saved and switched on. */
+  #providerFacts(
+    name: string,
+    providers: Record<string, Provider>,
+    configured: any[],
+    discovered: string[],
+    auth: any[],
+  ): ProviderFacts {
+    const prefix = `${name}/`;
+    const total = discovered.filter((ref) => ref.startsWith(prefix)).length;
+    const chosen = (configured as any[]).filter(
+      (m) => String(m?.ref ?? "").startsWith(prefix) && Boolean(m?.enabled),
+    ).length;
+    const bound = String((providers[name] as any)?.apiKey ?? "").trim();
+    const profiles = (auth as any[]).filter((p: any) => p?.provider === name);
+    const profile = bound ? (profiles.find((p: any) => p.id === bound) ?? null) : null;
+    // A saved profile id that no longer exists is a failure worth naming; a
+    // value that is not a profile id is the key itself, sitting in the config.
+    const profileShaped = /^sc_[a-z0-9]+$/i.test(bound);
+    let state: ProviderFacts["state"];
+    if (!bound) state = { text: "no key yet", tone: "idle" };
+    else if (profile) {
+      state = profile.ok
+        ? { text: `${profile.id}${profile.expires ? ` · ${profile.expiresIn}` : ""}`, tone: "ok" }
+        : { text: `${profile.id} · ${profile.reason ?? "not usable"}`, tone: "warn" };
+    } else if (profileShaped) state = { text: "profile missing", tone: "err" };
+    else state = { text: "key in the config", tone: "ok" };
+    if (total === 0 && chosen === 0 && state.tone === "ok") state = { text: "no models fetched yet", tone: state.tone };
+
+    return {
+      url: String((providers[name] as any)?.baseUrl ?? ""),
+      total,
+      chosen,
+      profiles,
+      bound,
+      state,
+      count: total > 0 ? `${chosen} of ${total}` : chosen > 0 ? `${chosen} in the system` : "",
+    };
+  }
+
+  /** One sentence answering "what is in the system?", plus a second only when
+   *  something needs doing. */
+  #modelsSummary(all: ProviderFacts[]): string {
+    if (all.length === 0) return "No models in the system yet.";
+    const total = all.reduce((n, f) => n + f.chosen, 0);
+    const providers = all.length;
+    const sentences = [
+      `${total} ${total === 1 ? "model" : "models"} in the system across ${providers} ${providers === 1 ? "provider" : "providers"}.`,
+    ];
+    const noKey = all.filter((f) => f.state.tone === "idle").length;
+    const broken = all.filter((f) => f.state.tone === "err").length;
+    if (noKey > 0) sentences.push(`${noKey} ${noKey === 1 ? "provider needs" : "providers need"} a key.`);
+    if (broken > 0) sentences.push(`${broken} ${broken === 1 ? "provider has" : "providers have"} a missing auth profile.`);
+    return sentences.join(" ");
+  }
+
+  /** One provider: monogram, name + count, endpoint + auth chips, state + actions.
+   *  The name and Open are real buttons — the old card put an onclick on a div
+   *  around its own buttons, which handed keyboard users half the page. */
+  #providerRow(name: string, facts: ProviderFacts, onOpen: () => void, onConnect: () => void): HTMLElement {
+    const open = el("button", {
+      class: "models__name",
+      type: "button",
+      title: name,
+      "aria-label": `Open ${name}`,
+    }, [name]);
+    open.onclick = onOpen;
+
+    const count = facts.count ? el("span", { class: "models__count" }, [facts.count]) : null;
+    const meta: (Node | string)[] = [];
+    if (facts.url) meta.push(el("span", { class: "models__url" }, [facts.url]));
+    if (facts.profiles.length) {
+      meta.push(el("div", { class: "models__chips" }, facts.profiles.map((p: any) => this.#profileChip(p, name, facts.profiles))));
+    }
+
+    const state = el("span", { class: `models__state models__state--${facts.state.tone}` }, [
+      el("span", { class: `models__dot models__dot--${facts.state.tone}`, "aria-hidden": "true" }),
+      facts.state.text,
+    ]);
+    const openBtn = el("button", {
+      class: "btn sm models__open",
+      type: "button",
+      "aria-label": `Open ${name}`,
+    }, ["Open", el("span", { class: "models__chev", "aria-hidden": "true" }, ["›"])]);
+    openBtn.onclick = onOpen;
+    const authBtn = el("button", {
+      class: "btn sm",
+      type: "button",
+      "aria-label": `${facts.bound ? "Auth" : "Connect"} ${name}`,
+    }, [facts.bound ? "Auth…" : "Connect"]);
+    authBtn.onclick = (e) => {
+      e.stopPropagation();
+      onConnect();
+    };
+
+    return el("li", { class: "models__row", "data-provider": name }, [
+      el("span", { class: "models__mark", "aria-hidden": "true" }, [this.#providerMark(name)]),
+      el("div", { class: "models__main" }, [
+        el("div", { class: "models__head" }, count ? [open, count] : [open]),
+        ...(meta.length ? [el("div", { class: "models__meta" }, meta)] : []),
+      ]),
+      el("div", { class: "models__side" }, [state, el("div", { class: "models__actions" }, [openBtn, authBtn])]),
+    ]);
+  }
+
+  /** Models tab: which providers exist, what each one is doing, and the two ways
+   *  to add another. Two ruled panels of hairline rows — the previous layout was
+   *  one identical card per provider (and one for each way of adding a provider),
+   *  which spent four elevations on three lines of facts each. */
   #renderModels(
     providers: Record<string, Provider>,
     configured: any[],
     discovered: string[],
     auth: any[] = [],
     plugins: any[] = [],
+    warning?: string,
   ): void {
-    const selected = new Set(configured.filter((m) => m.enabled).map((m) => m.ref));
-    const body = el("div", { class: "settings__stack" });
+    const names = Object.keys(providers).sort((a, b) => a.localeCompare(b));
+    const facts = new Map(names.map((name) => [name, this.#providerFacts(name, providers, configured, discovered, auth)]));
 
-    this.#root.append(el("div", { class: "card setcard" }, [
+    const panel = el("div", { class: "card setcard models__panel" }, [
       el("div", { class: "setcard__head" }, [
-        el("h3", {}, ["Models"]),
-        el("p", { class: "hint" }, [
-          "Pick which models are in the system. Click a provider to see the models fetched from it — only checked models appear in the model picker and everywhere else. Connect signs a provider in via an auth profile (API key or OAuth device code).",
+        el("h3", {}, ["In the system"]),
+        el("p", { class: "hint", id: "models-summary" }, [this.#modelsSummary([...facts.values()])]),
+      ]),
+    ]);
+    // The stale-catalog reason used to reach the provider page only, so this tab
+    // showed old numbers with no explanation.
+    if (warning) panel.append(el("p", { class: "hint is-warn models__warn" }, [warning]));
+    if (names.length === 0) {
+      const go = el("button", { class: "btn sm", type: "button", id: "models-empty-providers" }, ["Go to Providers"]);
+      go.onclick = () => this.#setTab("providers");
+      panel.append(el("div", { class: "models__empty" }, [
+        el("p", { class: "hint" }, ["No provider is configured yet. Add one below, or connect a plugin."]),
+        go,
+      ]));
+    } else {
+      const list = el("ul", { class: "models__list" });
+      for (const name of names) {
+        const onOpen = (): void => {
+          this.#modelsProvider = name;
+          void this.render();
+        };
+        const binding = String((providers[name] as any)?.apiKey ?? "");
+        const onConnect = (): void => {
+          this.#connectProvider(name, (plugins as any[]).find((p: any) => p.id === name) ?? null, binding);
+        };
+        list.append(this.#providerRow(name, facts.get(name)!, onOpen, onConnect));
+      }
+      panel.append(list);
+    }
+    this.#root.append(panel);
+
+    // Add a provider: local runtimes on this device and plugins that can sign in.
+    // Both are the same kind of thing (a row with one action), so they share a
+    // panel with one caption each instead of owning a card apiece.
+    const deviceRows = el("div", { class: "ledger" }, [
+      el("div", { class: "ledger__row" }, [
+        el("div", { class: "ledger__main" }, [
+          el("div", { class: "ledger__pattern" }, ["Local services"]),
+          el("div", { class: "ledger__meta" }, ["Scanning this device for Ollama, LM Studio, vLLM, SGLang and llama.cpp…"]),
         ]),
       ]),
-    ]));
-
-    const names = Object.keys(providers);
-    if (names.length === 0) {
-      body.append(el("div", { class: "card" }, [
-        el("p", { class: "hint" }, ["No providers yet — connect one below, or add one in the Providers tab."]),
-      ]));
-    }
-    for (const name of names) {
-      const refs = discovered.filter((r) => r.startsWith(`${name}/`));
-      const chosen = refs.filter((r) => selected.has(r)).length;
-      const open = el("button", { class: "btn sm", type: "button" }, ["Open"]);
-      const mine = auth.filter((p: any) => p.provider === name);
-      const binding = (providers[name] as any)?.apiKey ?? "";
-      const bound = mine.find((p: any) => p.id === binding) ?? null;
-      const chips = mine.slice(0, 6).map((p: any) => this.#profileChip(p, name, mine));
-      const connect = el("button", { class: "btn sm", type: "button" }, [bound ? "Auth…" : "Connect"]);
-      connect.onclick = (e) => {
-        e.stopPropagation();
-        this.#connectProvider(name, plugins.find((p: any) => p.id === name) ?? null, binding);
-      };
-      const card = el("div", { class: "card prov-card" }, [
-        el("div", { class: "prov" }, [
-          el("div", { class: "prov__head" }, [
-            el("span", { class: "prov__name" }, [name]),
-            el("span", { class: "prov__count" }, [`${chosen} of ${refs.length} selected`]),
-          ]),
-          el("div", { class: "prov__url" }, [providers[name]?.baseUrl ?? ""]),
-          el("div", { class: "row" }, [
-            el("span", { class: "row__label" }, ["Auth"]),
-            el("span", { class: "row__value" }, [
-              bound
-                ? `profile ${bound.id} · ${bound.ok ? "ok" : (bound.reason ?? "?")}`
-                : binding
-                  ? "inline key"
-                  : "none — connect below",
-            ]),
-          ]),
-          ...(chips.length ? [el("div", { class: "prov__row" }, chips)] : []),
-          el("div", { class: "prov__row" }, [open, connect]),
-        ]),
-      ]);
-      const go = () => {
-        this.#modelsProvider = name;
-        void this.render();
-      };
-      open.onclick = go;
-      card.classList.add("prov-card");
-      (card as HTMLElement).onclick = go;
-      this.#root.append(card);
-    }
-
-    // Local services card (their implicit local discovery): lazy scan so the
-    // tab never waits on a dead 11434 — results fill in when they arrive.
-    const localCard = el("div", { class: "card" }, [
-      el("h3", {}, ["Local services"]),
-      el("p", { class: "hint" }, ["Scanning this device for Ollama, LM Studio, vLLM, SGLang and llama.cpp…"]),
     ]);
-    this.#root.append(localCard);
-    void this.#fillLocalServices(localCard, names);
-
-    // Their Settings → Models → Connect provider: plugins not yet configured.
-    const fresh = plugins.filter((p: any) => !names.includes(p.id));
+    const groups: HTMLElement[] = [
+      el("div", { class: "models__group" }, [
+        el("div", { class: "cap models__grouphead" }, ["On this device"]),
+        deviceRows,
+      ]),
+    ];
+    const fresh = (plugins as any[]).filter((p: any) => !names.includes(p.id));
     if (fresh.length) {
       const rows = fresh.slice(0, 12).map((p: any) => {
-        const b = el("button", { class: "btn sm", type: "button" }, ["Connect"]);
-        b.onclick = () => this.#connectProvider(p.id, p, "");
+        const connect = el("button", { class: "btn sm", type: "button", "aria-label": `Connect ${p.label || p.id}` }, ["Connect"]);
+        connect.onclick = () => this.#connectProvider(p.id, p, "");
         return el("div", { class: "ledger__row" }, [
           el("div", { class: "ledger__main" }, [
-            el("div", { class: "ledger__pattern" }, [p.id]),
-            el("div", { class: "ledger__meta" }, [p.label]),
+            el("div", { class: "ledger__pattern" }, [String(p.id)]),
+            el("div", { class: "ledger__meta" }, [String(p.label ?? "")]),
           ]),
-          b,
+          connect,
         ]);
       });
-      this.#root.append(el("div", { class: "card setcard" }, [
-      el("div", { class: "setcard__head" }, [
-        el("h3", {}, ["Connect provider"]),
-        el("p", { class: "hint" }, ["Provider plugins with declared auth flows — the same entry point as the CLI (`sc models auth login`)."]),
-      ]),
-      ...rows,
-    ]));
+      groups.push(el("div", { class: "models__group" }, [
+        el("div", { class: "cap models__grouphead" }, ["Provider plugins"]),
+        el("div", { class: "ledger" }, rows),
+      ]));
     }
-
+    const addPanel = el("div", { class: "card setcard models__panel" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Add a provider"]),
+        el("p", { class: "hint" }, ["Sign in to a hosted provider, or use a runtime already running on this device."]),
+      ]),
+      ...groups,
+      el("p", { class: "hint models__foot" }, [
+        "CLI: sc models local --add <service> — Ollama uses the native /api/chat wire (their warning: /v1 compat breaks tool calling).",
+      ]),
+    ]);
+    this.#root.append(addPanel);
+    void this.#fillLocalServices(deviceRows, names);
   }
 
-  /** Local services discovery rows: state dot, models with ctx hints, Add. */
-  async #fillLocalServices(card: HTMLElement, configuredNames: string[]): Promise<void> {
+  /** Local services discovery rows: state, models with ctx hints, Add. Fills the
+   *  ledger passed in (the "On this device" group) instead of owning a card, and
+   *  says plainly when the gateway has no scanner — a thrown request used to
+   *  leave "Scanning…" on screen forever. */
+  async #fillLocalServices(into: HTMLElement, configuredNames: string[]): Promise<void> {
     let scan: any = null;
     try {
       scan = (await gateway.request("models.local.scan", {})) as any;
     } catch {
-      /* older gateway: leave the placeholder as-is */
+      /* older gateway without local discovery */
     }
-    if (!scan?.services || !this.#root.contains(card)) return;
-    card.innerHTML = "";
-    card.append(el("h3", {}, ["Local services"]));
-    const running = scan.services.filter((s: any) => s.running);
-    if (running.length === 0 && scan.services.every((s: any) => !s.running)) {
-      card.append(el("p", { class: "hint" }, ["no local services running — install Ollama or LM Studio and they'll appear here."]));
+    // The tab may have changed while the scan was in the air.
+    if (!this.#root.contains(into)) return;
+    into.innerHTML = "";
+    if (!scan?.services) {
+      into.append(el("div", { class: "ledger__row" }, [
+        el("div", { class: "ledger__main" }, [
+          el("div", { class: "ledger__pattern" }, ["Local discovery"]),
+          el("div", { class: "ledger__meta" }, ["not available in this gateway — connect a provider below, or in the Providers tab."]),
+        ]),
+      ]));
       return;
     }
-    for (const svc of scan.services) {
+    const services = [...(scan.services as any[])].sort(
+      (a, b) => Number(Boolean(b.running)) - Number(Boolean(a.running)) || String(a.id).localeCompare(String(b.id)),
+    );
+    if (services.every((svc) => !svc.running)) {
+      into.append(el("div", { class: "ledger__row" }, [
+        el("div", { class: "ledger__main" }, [
+          el("div", { class: "ledger__pattern" }, ["Nothing running"]),
+          el("div", { class: "ledger__meta" }, ["install Ollama or LM Studio and it appears here — or add a provider in the Providers tab."]),
+        ]),
+      ]));
+      return;
+    }
+    for (const svc of services) {
       const isConfigured = configuredNames.includes(svc.id);
-      const add = el("button", { class: "btn sm", type: "button" }, [
-        !svc.running ? "" : isConfigured ? "↻ re-scan" : "Add",
-      ]);
-      if (!svc.running) (add as HTMLButtonElement).disabled = true;
-      (add as HTMLButtonElement).onclick = async () => {
+      const add = el("button", {
+        class: "btn sm",
+        type: "button",
+        "aria-label": `${isConfigured ? "Re-scan" : "Add"} ${svc.id}`,
+      }, [!svc.running ? "" : isConfigured ? "↻ re-scan" : "Add"]) as HTMLButtonElement;
+      if (!svc.running) add.disabled = true;
+      add.onclick = async () => {
         add.disabled = true;
         try {
           const res: any = await gateway.request("models.local.add", { service: svc.id });
@@ -1377,40 +1532,40 @@ export class Settings {
           add.disabled = false;
         }
       };
-      card.append(el("div", { class: "ledger__row" }, [
+      const models: string[] = Array.isArray(svc.models) ? svc.models : [];
+      const hint = svc.running && models.length
+        ? `${models.slice(0, 6).map((m: string) => `${m}${svc.hints?.[m]?.contextWindow ? ` (ctx ${Math.round(svc.hints[m].contextWindow / 1000)}k)` : ""}`).join(" · ")}${models.length > 6 ? ` · +${models.length - 6} more` : ""}`
+        : "";
+      into.append(el("div", { class: "ledger__row" }, [
         el("div", { class: "ledger__main" }, [
           el("div", { class: "ledger__pattern" }, [svc.id]),
           el("div", { class: "ledger__meta" }, [
             svc.running
-              ? `running · ${svc.models.length} model(s) · ${svc.api === "ollama" ? "native api" : "openai-compat"}${isConfigured ? " · configured" : ""}`
+              ? `running · ${models.length} model${models.length === 1 ? "" : "s"} · ${svc.api === "ollama" ? "native api" : "openai-compat"}${isConfigured ? " · configured" : ""}`
               : (svc.error ?? "not running"),
           ]),
+          ...(hint ? [el("div", { class: "ledger__meta" }, [hint])] : []),
         ]),
         add,
       ]));
-      if (svc.running && svc.models.length) {
-        card.append(el("div", { class: "hint" }, [
-          svc.models
-            .slice(0, 6)
-            .map((m: string) => `${m}${svc.hints?.[m]?.contextWindow ? ` (ctx ${Math.round(svc.hints[m].contextWindow / 1000)}k)` : ""}`)
-            .join("  ·  ") + (svc.models.length > 6 ? `  ·  +${svc.models.length - 6} more` : ""),
-        ]));
-      }
     }
-    card.append(el("p", { class: "hint" }, ["CLI: sc models local --add <service> — Ollama uses the native /api/chat wire (their warning: /v1 compat breaks tool calling)."]));
   }
 
-  /** Profile chip: status dot, expiry, ordering, remove — material never shown. */
+  /** Profile chip: status dot, expiry, ordering, remove — material never shown.
+   *  A button, because clicking it reorders or removes: a span made that
+   *  keyboard-invisible. */
   #profileChip(p: any, provider: string, mine: any[]): HTMLElement {
     const state = p.ok ? "✔" : p.reason === "cooldown" ? "◌" : "✖";
     const chip = el(
-      "span",
+      "button",
       {
         class: `chip${p.ok ? "" : " is-err"}`,
+        type: "button",
         title: `${p.label || p.id}${p.reason ? ` — ${p.reason}` : ""} · fails ${p.failCount}`,
+        "aria-label": `Move ${p.id} up, or remove it`,
       },
       [`${state} ${p.id}${p.expires ? ` (${p.expiresIn})` : ""}`],
-    );
+    ) as HTMLButtonElement;
     chip.onclick = async (e) => {
       e.stopPropagation();
       const idx = mine.findIndex((x: any) => x.id === p.id);

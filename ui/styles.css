@@ -3336,7 +3336,8 @@ html[data-theme-mode='dark'] .settings select.inp {
 .settings .hint.is-warn { color: var(--warn); }
 
 /* Auth profile chip: click cycles order, long-press removes. */
-.settings .chip {
+.settings .chip {  /* now a <button>; these keep its box identical to the old span */
+  line-height: 1.4;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -3469,19 +3470,202 @@ html[data-theme-mode='dark'] .settings select.inp {
   margin-left: auto;
 }
 
-/* A provider panel is one big target: the Open button does the same thing for
-   the keyboard, so the card only mirrors it with a pointer affordance. */
-.settings .prov-card {
+/* ------------------------------------------------------------ models tab ---- */
+
+/* One panel of rows instead of a card per provider. The tab exists to compare
+   providers, and eight identical elevations made that comparison slower — the
+   elevation budget belongs to the group, not to each three-line fact. */
+.settings .models__list {
+  margin: 14px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--set-line);
+  list-style: none;
+}
+
+.settings .models__row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 4px 14px;
+  padding: 13px 0;
+  align-items: start;
+}
+
+.settings .models__row + .models__row { border-top: 1px solid var(--set-line); }
+
+.settings .models__mark {
+  display: grid;
+  grid-row: 1;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--set-line-2);
+  border-radius: var(--set-radius-sm);
+  background: var(--set-inset);
+  color: var(--ink2);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.settings .models__main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings .models__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* A text button, so the name is reachable and the whole row is not a click
+   target wrapped around other buttons. */
+.settings .models__name {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  text-align: left;
+  overflow-wrap: anywhere;
   cursor: pointer;
-  transition: border-color .15s ease, background-color .15s ease;
 }
 
-.settings .prov-card:hover {
-  border-color: var(--set-line-2);
-  background: var(--set-panel-2);
+.settings .models__name:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
-.settings .prov-card .btn { cursor: pointer; }
+.settings .models__count {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink3);
+  white-space: nowrap;
+}
+
+.settings .models__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings .models__url {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink3);
+  overflow-wrap: anywhere;
+}
+
+.settings .models__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings .models__side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.settings .models__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink2);
+  white-space: nowrap;
+}
+
+.settings .models__state--warn { color: var(--warn); }
+.settings .models__state--err { color: var(--err); }
+
+/* Status is a dot and a word, never a pill. Hollow means "nothing set yet". */
+.settings .models__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.settings .models__dot--ok { background: var(--ok); }
+.settings .models__dot--warn { background: var(--warn); }
+.settings .models__dot--err { background: var(--err); }
+
+.settings .models__dot--idle {
+  background: transparent;
+  border: 1.5px solid var(--ink3);
+}
+
+.settings .models__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.settings .models__open { gap: 4px; }
+
+.settings .models__chev {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink3);
+}
+
+.settings .models__open:hover .models__chev { color: var(--ink2); }
+
+.settings .models__empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.settings .models__empty .hint { margin: 0; }
+
+.settings .models__warn { margin: 8px 0 0; }
+
+.settings .models__group { margin-top: 16px; }
+
+.settings .models__grouphead { margin-bottom: 2px; }
+
+.settings .models__foot { margin: 12px 0 0; }
+
+@media (max-width: 720px) {
+  .settings .models__row { grid-template-columns: 36px minmax(0, 1fr); }
+
+  .settings .models__mark {
+    width: 36px;
+    height: 36px;
+    font-size: 12px;
+  }
+
+  /* State and actions move under the name, so a long URL never squeezes the
+     buttons down to a few characters. */
+  .settings .models__side {
+    grid-column: 2;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+  }
+
+  .settings .models__actions { justify-content: flex-start; }
+  .settings .models__actions .btn { min-height: var(--tap); }
+}
 
 /* A panel that is only a list: no padding of its own, hairline between rows. */
 .settings .card--flush {
