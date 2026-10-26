@@ -17,7 +17,7 @@ import {
   testProvider,
 } from "../config/providers.js";
 import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
-import { buildCommandMenu } from "./telegram-menu.js";
+import { buildCommandMenu, staleCommandScopes } from "./telegram-menu.js";
 
 // Telegram channel: grammY long polling, per-chat batching, one editable status
 // draft per turn, DM pairing + group allowlists + mention gating.
@@ -126,6 +126,41 @@ async function proxyBits(proxy: string): Promise<{ dispatcher: unknown; fetch: (
     dispatcher,
     fetch: (input, init) => fetchImpl(input, withNativeSignal(init, dispatcher)),
   };
+}
+
+/**
+ * One Bot API call over plain fetch, honouring the channel's proxy rules.
+ *
+ * `sc telegram commands` needs this because the command list lives on Telegram's
+ * servers: we must read and repair it without starting a channel, and it has to
+ * work the same on a carrier that blocks api.telegram.org. Returns the parsed
+ * response and never throws — callers report `ok: false` with the reason.
+ */
+export async function botApiCall<T = unknown>(
+  token: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  proxy = "",
+): Promise<{ ok: true; result: T } | { ok: false; error: string }> {
+  if (!/^\d+:[\w-]+$/.test(String(token ?? "").trim())) {
+    return { ok: false, error: "that does not look like a bot token (expected <digits>:<secret>)" };
+  }
+  try {
+    type FetchFn = (input: unknown, init?: Record<string, unknown>) => Promise<unknown>;
+    const doFetch: FetchFn = proxy ? ((await proxyBits(proxy)).fetch as FetchFn) : ((fetch as unknown) as FetchFn);
+    // Self-hosted Bot API servers (and offline tests) point this elsewhere.
+    const base = String(process.env["SUPARCLAW_TELEGRAM_API"] ?? "https://api.telegram.org").replace(/\/$/, "");
+    const res = (await doFetch(`${base}/bot${String(token).trim()}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(params),
+    })) as { json: () => Promise<{ ok?: boolean; result?: T; description?: string }> };
+    const body = await res.json();
+    if (!body.ok) return { ok: false, error: body.description ?? `${method} failed` };
+    return { ok: true, result: body.result as T };
+  } catch (err) {
+    return { ok: false, error: describeError(err) };
+  }
 }
 
 /** The proxy a channel uses: explicit config first, then the standard env. */
@@ -628,18 +663,46 @@ export class TelegramChannel {
       skills: this.service.loop.skills,
     });
     try {
-      for (const scope of [
-        { type: "default" as const },
-        { type: "all_private_chats" as const },
-        { type: "all_group_chats" as const },
-      ]) {
-        await bot.api.deleteMyCommands({ scope }).catch(() => {});
+      // Not just `default`: a chat/member scope overrides it, so an old build's
+      // commands can survive in exactly the chat where they were registered.
+      const targets = staleCommandScopes({
+        chatIds: this.#knownChatIds(),
+        userIds: this.service.config.channels.telegram.allowFrom ?? [],
+      });
+      type DeleteArgs = Parameters<typeof bot.api.deleteMyCommands>[0];
+      for (const { scope, language_code } of targets) {
+        // grammY types language_code as a literal union; ours is a runtime string.
+        const args = (language_code ? { scope, language_code } : { scope }) as DeleteArgs;
+        await bot.api.deleteMyCommands(args).catch(() => {});
       }
-      await bot.api.setMyCommands(menu.map((m) => ({ command: m.command, description: m.description })));
-      this.log.info(`telegram: registered ${menu.length} command(s) in the / menu`);
+      await bot.api.setMyCommands(
+        menu.map((m) => ({ command: m.command, description: m.description })),
+        { scope: { type: "default" } },
+      );
+      this.log.info(
+        `telegram: registered ${menu.length} command(s); cleared ${targets.length} scope(s) a previous build could have left`,
+      );
     } catch (err) {
       this.log.warn(`telegram: could not register the / menu: ${(err as Error).message}`);
     }
+  }
+
+  /** Chat ids this device has ever seen — sessions first, then both pairing lists. */
+  #knownChatIds(): string[] {
+    const ids = new Set<string>();
+    try {
+      for (const row of this.service.store.listSessions(500, { includeArchived: true })) {
+        const m = /^telegram:(\d+)/.exec(String((row as { key?: string }).key ?? ""));
+        if (m?.[1]) ids.add(m[1]);
+      }
+    } catch {
+      /* the store may not have a sessions table yet on a fresh install */
+    }
+    const cfg = this.service.config.channels.telegram;
+    for (const id of [...(cfg.allowFrom ?? []), ...(cfg.groupAllowFrom ?? [])]) {
+      if (/^-?\d+$/.test(String(id).trim())) ids.add(String(id).trim());
+    }
+    return [...ids];
   }
 
   async #isFromBot(ctx: Context, fromId: number | undefined): Promise<boolean> {

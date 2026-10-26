@@ -112,10 +112,11 @@ test("Telegram falls through instead of refusing unknown commands", () => {
 
 test("the menu is claimed on start, for every scope a stale list can live in", () => {
   assert.match(TG_SRC, /await this\.#registerCommandMenu\(bot\)/, "start() registers it");
-  assert.match(TG_SRC, /deleteMyCommands\(\{ scope \}\)/, "inherited lists are removed first");
-  for (const scope of ["default", "all_private_chats", "all_group_chats"]) {
-    assert.ok(TG_SRC.includes(`type: "${scope}"`), `${scope} is cleared`);
-  }
-  assert.match(TG_SRC, /setMyCommands\(menu\.map/, "then ours is published");
+  // The scope list is shared with `sc telegram commands`, so the two cannot
+  // drift. Exactness of the list lives in telegram-scopes.test.mjs.
+  assert.match(TG_SRC, /staleCommandScopes\(\{/, "inherited scopes come from the shared helper");
+  assert.match(TG_SRC, /#knownChatIds\(\)/, "and it is fed the chats this device has seen");
+  assert.match(TG_SRC, /deleteMyCommands\(args\)/, "inherited lists are removed first");
+  assert.match(TG_SRC, /setMyCommands\(/, "then ours is published");
   assert.match(TG_SRC, /commandsMenu === false/, "the operator can opt out");
 });

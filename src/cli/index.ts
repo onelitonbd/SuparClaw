@@ -52,6 +52,10 @@ commands:
                         remove the service and/or local data (service = default)
   token [--rotate]      show (or regenerate) the gateway token
   pair <list|approve|revoke>  manage Telegram DM access
+  telegram commands [--show|--replace|--purge] [--token t] [--lang c] [--json]
+                        inspect or repair the bot's / menu — it lives on the
+                        token, so --replace also cleans commands an earlier
+                        install left behind (works without a running gateway)
   cron <list|add|remove>       scheduled prompts
   approvals <get|list|mode|allow|revoke|preset>  exec approval policy + allowlist
   search <query> [--provider id] [--count n] [--json]  one-shot web search probe
@@ -120,6 +124,8 @@ export async function main(argv: string[]): Promise<number> {
       return tokenCmd(rest);
     case "channels":
       return (await import("./channels.js")).cmdChannels(rest);
+    case "telegram":
+      return (await import("./telegram.js")).cmdTelegram(rest);
     case "service":
       return (await import("./service.js")).serviceCmd(rest);
     case "sessions":

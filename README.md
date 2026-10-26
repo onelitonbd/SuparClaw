@@ -89,11 +89,38 @@ Telegram additionally owns `/model`, `/provider`, `/whoami` and `/new`; anything
 through to the shared router (it used to answer "unknown command" instead).
 
 **The `/` menu is stored on the bot token, not in this app.** A token that ran another build
-keeps showing that build's command list until something replaces it, so on every start the
-gateway deletes the default, private-chat and group-chat scopes and re-publishes the catalog
-above from `buildCommandMenu()` — 100 entries is the Bot API cap, ours is ~31 including one
-command per bundled skill. Set `channels.telegram.commandsMenu: false` to keep a menu you
-curate in BotFather instead.
+keeps showing that build's command list until something replaces it. Telegram stores that list
+per **scope**, and a chat scope OVERRIDES the default one — so clearing `default` alone leaves
+an old build's commands visible in exactly the chat where they were registered:
+
+| Scope | Who sees it |
+|---|---|
+| `default` | everyone without a more specific scope — including what BotFather set |
+| `all_private_chats`, `all_group_chats` | every DM / every group |
+| `all_chat_administrators` | admins everywhere |
+| `chat`, `chat_administrators`, `chat_member` (per chat id) | that one chat |
+
+On every start the gateway clears the four wildcard scopes **and** the three chat-scoped ones
+for every chat id this device knows (sessions plus both pairing lists), then publishes the
+catalog above from `buildCommandMenu()` — 100 entries is the Bot API cap, ours is ~31 including
+one command per bundled skill.
+
+The same sweep is available by hand, without a running gateway, because the list lives on
+Telegram's servers:
+
+```
+sc telegram commands                 # what this token holds now, and how it differs from ours
+sc telegram commands --replace       # clear the stale scopes, publish ours
+sc telegram commands --purge         # clear them and publish nothing (BotFather owns the menu)
+sc telegram commands --token <t>     # any bot — including the ones you created and retired
+sc telegram commands --lang bn       # also clear a language-specific list (opt-in)
+sc telegram commands --json          # machine-readable; exits 1 when the token is not ours yet
+```
+
+Two limits worth knowing. A language-specific list cannot be enumerated by the Bot API at all,
+so `--lang` exists for the codes you remember. And a chat scope for a chat this device has never
+seen cannot be targeted — start the bot in that chat once and it becomes a known id. Set
+`channels.telegram.commandsMenu: false` to keep a menu you curate in BotFather instead.
 
 ## How it works
 

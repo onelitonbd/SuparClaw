@@ -53,7 +53,7 @@ export { cmdChannels } from "./cli/channels.js";
 export { runDoctorChecks, type DoctorCheck } from "./cli/doctor.js";
 export { auditSecretsFile, type SecretsAuditResult } from "./cli/secrets.js";
 export { systemUpdateCheck, systemUpdateApply, type UpdateStatus, type UpdateApplyResult } from "./cli/update.js";
-export { splitForTelegram, telegramProxy, probeTelegramApi, describeError } from "./channels/telegram.js";
+export { splitForTelegram, telegramProxy, probeTelegramApi, describeError, botApiCall } from "./channels/telegram.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
 export { Subagents } from "./agent/subagents.js";
@@ -111,7 +111,18 @@ export { createBackup, verifyBackup, restoreBackup, listBackups, backupStamp, BA
 export { resolveSecrets, substituteEnvText, isSecretRef, validateSecretRef, ENV_ID_RE, EXEC_ID_RE, PROVIDER_NAME_RE, type SecretRef } from "./config/secrets.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
 export { telegramSessionKey, TELEGRAM_COMMANDS } from "./channels/telegram.js";
-export { buildCommandMenu, menuName, MENU_LIMIT } from "./channels/telegram-menu.js";
+export {
+  buildCommandMenu,
+  menuName,
+  MENU_LIMIT,
+  staleCommandScopes,
+  menuDrift,
+  parseTelegramArgs,
+  scopeLabel,
+  type CommandScope,
+  type CommandTarget,
+  type TelegramCommandOpts,
+} from "./channels/telegram-menu.js";
 
 /**
  * Where a message arrived from, for the prompt's "Session:" line. OpenClaw

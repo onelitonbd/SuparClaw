@@ -17,15 +17,23 @@ test("telegram createBot resolves Bot from named OR default export (bundle-shape
   assert.match(src, /typeof import\("grammy"\)/); // typing keeps the class generics
 });
 
-test("built dist chunk carries the same fallback (the chunk that produced 'e is not a constructor')", () => {
-  const chunks = readdirSync(new URL("../dist/chunks", import.meta.url).pathname)
+test("the built bundle carries the same fallback (wherever esbuild puts it)", () => {
+  // Asserted across the whole build, not one chunk: the guard and the code that
+  // calls it sit in different chunks whenever the import graph moves (adding
+  // `sc telegram commands` moved them), and the invariant is about the shipped
+  // code, not about esbuild's chunking.
+  const dir = new URL("../dist/chunks", import.meta.url).pathname;
+  const chunks = readdirSync(dir)
     .filter((f) => f.endsWith(".js"))
-    .map((f) => readFileSync(join(new URL("../dist/chunks", import.meta.url).pathname, f), "utf8"));
-  const service = chunks.find((c) => c.includes("telegram failed to start"));
-  assert.ok(service, "service chunk found");
-  assert.match(String(service), /grammy Bot export unavailable/);
-  // the chunk's helper no longer destructures Bot from the raw import object
-  assert.doesNotMatch(String(service), /\{Bot:\w+\}=await import\("\.\/mod-/s);
+    .map((f) => readFileSync(join(dir, f), "utf8"));
+  assert.ok(chunks.length > 0, "chunks were built");
+  const all = [...chunks, readFileSync(new URL("../dist/lib.js", import.meta.url), "utf8")].join("\n");
+
+  assert.match(all, /grammy Bot export unavailable/, "the fallback survived minification");
+  assert.ok(chunks.some((c) => c.includes("telegram failed to start")), "the channel's error path is in the build");
+  // And the helper still does not destructure Bot from the raw import object —
+  // that destructure was the bug (`e is not a constructor`).
+  assert.doesNotMatch(all, /\{Bot:\w+\}=await import\("\/mod-/s);
 });
 
 test("imap fetch failure returns null (never undefined past the null branch)", () => {
