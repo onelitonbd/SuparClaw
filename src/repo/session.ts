@@ -1,0 +1,119 @@
+// Binding a session to a repository (Task 35).
+//
+// One repo per session, fixed once work exists. The binding lives in the
+// session row (kind/repo/base/branch/workspace) so the web bar, the TUI footer,
+// the Telegram draft and the agent's prompt all read the same facts.
+
+import type { Store } from "../state/db.js";
+import type { GithubCreds } from "./github.js";
+import type { RepoManager, PrepareProgress } from "./manager.js";
+
+export interface RepoBinding {
+  kind: "code";
+  repo: string;
+  base: string;
+  branch: string;
+  workspace: string;
+}
+
+export type BindResult =
+  | { ok: true; binding: RepoBinding }
+  | { ok: false; error: string };
+
+export interface BindOptions {
+  store: Store;
+  manager: RepoManager;
+  sessionKey: string;
+  repo: string;
+  base?: string;
+  creds?: GithubCreds | null;
+  onProgress?: (p: PrepareProgress) => void;
+  /** Rebinding is allowed only while the session has no repo yet. */
+  allowRebind?: boolean;
+}
+
+/**
+ * Prepare the worktree and write the binding.
+ *
+ * Refuses to rebind a session that already has a repository: its history now
+ * refers to files in that worktree, and silently pointing it somewhere else
+ * would make yesterday's answers wrong.
+ */
+export async function bindSessionRepo(opts: BindOptions): Promise<BindResult> {
+  const existing = opts.store.getSessionRepo(opts.sessionKey);
+  if (existing && !opts.allowRebind) {
+    if (existing.repo === opts.repo) return { ok: true, binding: { ...existing, kind: "code" } };
+    return {
+      ok: false,
+      error: `This session is working in ${existing.repo}. Start a new session for another repository.`,
+    };
+  }
+  try {
+    const prepared = await opts.manager.prepare({
+      repo: opts.repo,
+      sessionKey: opts.sessionKey,
+      base: opts.base,
+      creds: opts.creds,
+      onProgress: opts.onProgress,
+    });
+    opts.store.setSessionRepo(opts.sessionKey, {
+      kind: "code",
+      repo: opts.repo,
+      base: prepared.base,
+      branch: prepared.branch,
+      workspace: prepared.workspace,
+    });
+    return { ok: true, binding: { kind: "code", repo: opts.repo, base: prepared.base, branch: prepared.branch, workspace: prepared.workspace } };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+/** A plain chat is the absence of a binding — clear it explicitly. */
+export function unbindSessionRepo(store: Store, sessionKey: string): void {
+  store.setSessionRepo(sessionKey, null);
+}
+
+/**
+ * The prompt block for a repo session.
+ *
+ * Three short sections: where you are, how to work here, and the publishing
+ * rule the user chose (only on request). The repo's own AGENTS.md arrives via
+ * the workspace loader, so it is not repeated here.
+ */
+export function repoPromptBlock(opts: {
+  repo: string;
+  base: string;
+  branch: string;
+  workspace: string;
+  files?: number;
+  publishAllowed?: boolean;
+}): string {
+  return [
+    "## Repository",
+    `${opts.repo} · branch ${opts.branch} (from ${opts.base})${opts.files ? ` · ${opts.files.toLocaleString("en-US")} files` : ""}`,
+    `Workspace: ${opts.workspace}`,
+    "",
+    "## How to work here",
+    "Read a file before editing it. Reproduce a bug before fixing it.",
+    "Run the project's checks before saying something works. Say what you verified and what you did not.",
+    "You may keep editing and running things for as long as the work needs.",
+    "",
+    "## Publishing",
+    opts.publishAllowed
+      ? `The user asked for a pull request in this turn. Publish with github_publish to ${opts.branch} → ${opts.base} when the work is ready.`
+      : "Publish only when the user asks in this turn. Never force-push and never push to the base branch. " +
+        "When the work is ready, say how many files changed and that you can open a PR when they ask.",
+  ].join("\n");
+}
+
+/** Does this turn ask for a PR? Used to gate the publish tool (layer 2). */
+export function publishRequested(text: string): boolean {
+  const t = text.toLowerCase();
+  if (/^\/(pr|publish)\b/m.test(t)) return true;
+  return (
+    /\b(open|create|raise|make|send|submit)\b[^.?!\n]{0,40}\b(pr|pull request)\b/.test(t) ||
+    /\b(pr|pull request)\b[^.?!\n]{0,30}\b(please|now|when ready)\b/.test(t) ||
+    /\bpublish (it|this|the (branch|changes|pr))\b/.test(t)
+  );
+}

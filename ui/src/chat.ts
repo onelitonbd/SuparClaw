@@ -553,6 +553,29 @@ export class Chat {
     this.#sendBtn.disabled = archived || this.#input.value.trim().length === 0;
   }
 
+  /**
+   * Task 35: a clone is a background job, but the *session* is not usable until
+   * it lands — the agent would have no workspace. Disable input with copy (not
+   * a spinner over nothing), and restore the ordinary disabled rules after.
+   */
+  setRepoLock(locked: boolean, detail?: string): void {
+    let banner = this.#composer.parentElement?.querySelector<HTMLElement>("#repo-lock-banner") ?? null;
+    if (locked && !banner) {
+      banner = el("div", { class: "archived-banner", id: "repo-lock-banner" }, [
+        el("span", {}, [`Preparing the repository${detail ? ` — ${detail}` : ""}…`]),
+      ]);
+      this.#composer.parentElement!.insertBefore(banner, this.#composer);
+    } else if (!locked && banner) {
+      banner.remove();
+    } else if (locked && banner && detail) {
+      const span = banner.querySelector("span");
+      if (span) span.textContent = `Preparing the repository — ${detail}…`;
+    }
+    this.#input.disabled = locked;
+    this.#attachBtn.disabled = locked;
+    this.#sendBtn.disabled = locked || this.#input.value.trim().length === 0;
+  }
+
   /** Rewind/Edit hands the prompt back: fill the composer, ready to send. */
   setDraft(text: string): void {
     this.#input.value = text;

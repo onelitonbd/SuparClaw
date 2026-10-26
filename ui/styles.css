@@ -4968,3 +4968,173 @@ html[data-theme-mode='dark'] .settings select.inp {
     scroll-behavior: auto !important;
   }
 }
+
+/* ------------------------------------------------ Task 35: GitHub add-on ---- */
+/* The repo bar sits between the rail and the thread: one strip, 32px, never
+   wraps. It is per-session state, so it hides entirely outside a code session. */
+
+.repo-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--ink2);
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: background-color .15s ease;
+}
+.repo-bar:hover { background: var(--hover); }
+.repo-bar[hidden] { display: none; }
+.repo-bar__icon,
+.repo-bar__warn { flex: none; display: inline-flex; color: var(--ink3); }
+.repo-bar__warn { color: var(--warn); }
+.repo-bar__main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.repo-bar__btn {
+  flex: none;
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.repo-bar__btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.repo-bar__btn:disabled { opacity: .45; cursor: default; }
+
+/* Phones: the publish button shrinks to its noun and the branch keeps its space. */
+@media (max-width: 560px) {
+  .repo-bar { padding: 0 8px; gap: 6px; }
+  .repo-bar__btn { padding: 0 8px; font-size: 11px; }
+}
+
+/* The new-session sheet reuses .sheet; the extra bits are the tall rows, the
+   icon/text column and the footer line. */
+.sheet__title { font-size: 15px; font-weight: 650; margin: 0; }
+.sheet__row--tall { min-height: 64px; align-items: flex-start; padding: 12px 10px; gap: 12px; }
+.sheet__row--tall.is-focus,
+.sheet__row--tall:focus-visible { background: var(--hover); outline: none; box-shadow: inset 0 0 0 1px var(--line); }
+.sheet__row.is-focus { background: var(--hover); }
+.sheet__ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+  color: var(--ink2);
+  font-size: 16px;
+}
+.sheet__txt { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; text-align: left; }
+.sheet__txt b { font-size: 14px; font-weight: 600; color: var(--ink); }
+.sheet__sub { font-size: 12px; color: var(--ink3); line-height: 1.35; }
+.sheet__hint { flex: none; font-size: 11px; color: var(--ink3); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+.sheet__foot-line { font-size: 12px; color: var(--ink3); }
+.sheet__foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sheet__rows { display: flex; flex-direction: column; }
+
+.linkbtn {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+.linkbtn:hover { text-decoration: underline; }
+
+/* Connect + publish dialogs */
+.gh { display: flex; flex-direction: column; gap: 10px; }
+.gh__lead { margin: 0; font-size: 13px; color: var(--ink2); }
+.gh__muted { margin: 0; font-size: 12.5px; color: var(--ink3); }
+.gh__h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.gh__card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+.gh__card:hover { border-color: var(--accent); }
+.gh__card-dot { color: var(--ok); font-weight: 700; }
+.gh__txt { display: flex; flex-direction: column; gap: 2px; }
+.gh__or { text-align: center; font-size: 11px; color: var(--ink3); text-transform: uppercase; letter-spacing: .08em; }
+.gh__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gh__code-row { display: flex; align-items: center; gap: 10px; }
+.gh__code {
+  flex: 1;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inline);
+  font-size: 18px;
+  letter-spacing: .16em;
+  text-align: center;
+}
+.gh__link { color: var(--accent); font-size: 12.5px; }
+.gh__progress { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.gh__progress-fill { height: 100%; width: 0; background: var(--accent); transition: width .4s linear; }
+.gh__repos { display: flex; flex-direction: column; max-height: 46vh; overflow-y: auto; }
+.gh__repo,
+.gh__file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+.gh__repo:hover,
+.gh__file:hover { background: var(--hover); }
+.gh__repo .mono,
+.gh__file .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh__repo-ico { flex: none; color: var(--ink3); }
+.gh__files { display: flex; flex-direction: column; max-height: 40vh; overflow-y: auto; }
+.gh__stat { flex: none; font-size: 12px; color: var(--ink3); }
+.gh__diff {
+  max-height: 52vh;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: var(--r-md);
+  background: var(--inline);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.gh__check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.gh__empty { padding: 20px; text-align: center; color: var(--ink3); font-size: 13px; }
+/* Task 35: the sidebar's repo chip — a code session is recognisable before you
+   open it, without a second line of meta. */
+.session__repo {
+  display: inline-block;
+  max-width: 11ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+  color: var(--ink2);
+}

@@ -52,7 +52,8 @@ test("gateway wires usage.report: runs table + pricing cards + periods + session
 
 test("ui Usage tab: cards + three aggregate tables + json/csv exports", () => {
   const src = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
-  assert.match(src, /\| "channels" \| "usage" \|/);
+  // Task 35 inserted "github" between the two: the union still holds both.
+  assert.match(src, /\| "channels" \| "github" \| "usage" \|/);
   assert.match(src, /\{ id: "usage", label: "Usage", group: "Monitoring" \},/);
   assert.match(src, /else if \(this\.#tab === "usage"\) void this\.#renderUsage\(\);/);
   assert.match(src, /gateway\.request\("usage\.report"/);

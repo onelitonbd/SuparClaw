@@ -21,6 +21,16 @@ export interface SessionRow {
   archived_at?: number | null;
   /** archive-age | archive-cap (their archiveReason age-retention/capacity). */
   archive_reason?: string | null;
+  /** Task 35: "chat" (default) or "code" — a code session is bound to a repo. */
+  kind?: string | null;
+  /** The repository this session works in, `owner/name`. */
+  repo?: string | null;
+  /** The branch the session's worktree was cut from (e.g. `main`). */
+  base?: string | null;
+  /** The session's own branch (`sc/<slug>`) — never the base. */
+  branch?: string | null;
+  /** Absolute worktree path; the workspace for this session's tools. */
+  workspace?: string | null;
 }
 
 export interface SubagentRow {
@@ -418,6 +428,13 @@ export class Store {
     if (!sessionCols.has("archived")) db.exec("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
     if (!sessionCols.has("archived_at")) db.exec("ALTER TABLE sessions ADD COLUMN archived_at INTEGER");
     if (!sessionCols.has("archive_reason")) db.exec("ALTER TABLE sessions ADD COLUMN archive_reason TEXT");
+    // GitHub add-on (Task 35): a session can be bound to one repository. The
+    // columns are PRAGMA-guarded like the rest, so an older DB upgrades in place.
+    if (!sessionCols.has("kind")) db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT");
+    if (!sessionCols.has("repo")) db.exec("ALTER TABLE sessions ADD COLUMN repo TEXT");
+    if (!sessionCols.has("base")) db.exec("ALTER TABLE sessions ADD COLUMN base TEXT");
+    if (!sessionCols.has("branch")) db.exec("ALTER TABLE sessions ADD COLUMN branch TEXT");
+    if (!sessionCols.has("workspace")) db.exec("ALTER TABLE sessions ADD COLUMN workspace TEXT");
     return new Store(db, fts);
   }
 
@@ -516,6 +533,40 @@ export class Store {
    * the session when missing — the picker must work on a fresh session that
    * has not sent its first message yet.
    */
+  /**
+   * Bind a session to a repository (Task 35). One repo per session: the row is
+   * the single source of truth, so every surface (bar, footer, prompt, tools)
+   * reads the same facts.
+   */
+  setSessionRepo(
+    key: string,
+    binding: { kind: "chat" | "code"; repo?: string | null; base?: string | null; branch?: string | null; workspace?: string | null } | null,
+  ): void {
+    const row = this.ensureSession(key);
+    if (binding === null) {
+      this.db.prepare("UPDATE sessions SET kind = NULL, repo = NULL, base = NULL, branch = NULL, workspace = NULL WHERE id = ?").run(row.id);
+      return;
+    }
+    this.db
+      .prepare("UPDATE sessions SET kind = ?, repo = ?, base = ?, branch = ?, workspace = ? WHERE id = ?")
+      .run(binding.kind, binding.repo ?? null, binding.base ?? null, binding.branch ?? null, binding.workspace ?? null, row.id);
+  }
+
+  /** The repo binding for a session, or null for an ordinary chat. */
+  getSessionRepo(key: string): { kind: "chat" | "code"; repo: string; base: string; branch: string; workspace: string } | null {
+    const row = this.getSessionByKey(key);
+    if (!row) return null;
+    const r = row as unknown as SessionRow;
+    if (!r.repo || !r.workspace) return null;
+    return {
+      kind: r.kind === "code" ? "code" : "chat",
+      repo: r.repo,
+      base: r.base ?? "main",
+      branch: r.branch ?? "",
+      workspace: r.workspace,
+    };
+  }
+
   setSessionThinking(key: string, thinking: string | null): void {
     const row = this.ensureSession(key);
     this.db.prepare("UPDATE sessions SET thinking = ? WHERE id = ?").run(thinking, row.id);

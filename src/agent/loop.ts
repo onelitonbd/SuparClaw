@@ -4,8 +4,9 @@ import { modelProfile, type SuparClawConfig } from "../config/schema.js";
 import type { Store } from "../state/db.js";
 import type { Logger } from "../util/log.js";
 import { loadWorkspaceContext, todayStamp } from "./workspace.js";
+import { repoPromptBlock } from "../repo/session.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
-import { buildRegistry, toolsToSchema, type SubagentCtl, type ToolContext, type ToolSpec } from "./tools.js";
+import { buildRegistry, toolsToSchema, type RepoCtl, type SubagentCtl, type ToolContext, type ToolSpec } from "./tools.js";
 import { LlmClient, isVisionUnsupportedError, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
 import { historyBudget, fallbackTuning } from "./context-budget.js";
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
@@ -41,6 +42,11 @@ export type RunEvent =
   | { type: "steered"; runId: string; text: string }
   /** A collect batch merged several queued inputs into one turn. */
   | { type: "collect"; runIds: string[] }
+  /**
+   * Repository lifecycle (Task 35): clone/worktree progress, a publish landing.
+   * Every surface renders these — the web bar, the TUI line, the Telegram draft.
+   */
+  | { type: "repo"; phase: "clone" | "worktree" | "done" | "published" | "failed"; pct?: number; detail?: string; url?: string; number?: number; branch?: string }
   | { type: "idle"; sessionKey: string };
 
 export interface RunInput {
@@ -66,7 +72,20 @@ export interface RunInput {
   attachments?: { kind: "image"; dataUri: string; name: string }[];
   /** P3 #26 heartbeat lightContext: skip workspace bootstrap files entirely. */
   lightContext?: boolean;
+  /**
+   * Task 35: this turn's user text asked for a pull request. Set by the surface
+   * that owns the input (the service matches intent, a UI action forces it), so
+   * `github_publish` can refuse a publish nobody asked for.
+   */
+  publishAllowed?: boolean;
   onEvent: (event: RunEvent) => void;
+}
+
+/** Per-run environment the prompt and tools agree on (Task 35). */
+export interface RunEnv {
+  workspace: string;
+  repo: { kind: "chat" | "code"; repo: string; base: string; branch: string; workspace: string } | null;
+  publishAllowed: boolean;
 }
 
 /** A queue entry keeps its identity (runId) so it can be cancelled in place. */
@@ -104,6 +123,8 @@ export interface LoopDeps {
   settings?: SettingsCtl;
   /** This session's effective usage/queue/exec overrides, for the prompt block. */
   selfRuntime?: (sessionKey: string) => SelfRuntime;
+  /** Repo operations for a code session (Task 35): status, diff, publish. */
+  repoCtl?: RepoCtl;
   /**
    * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
    * immediately and side-generate no UI. When a human must decide, the
@@ -211,6 +232,16 @@ export class AgentLoop {
         model: deps.config.agents.defaults.model,
         fallbacks: deps.config.agents.defaults.fallbacks,
       }, (info) => deps.log.warn(`llm retry ${info.model} #${info.attempt}: ${info.error}`));
+  }
+
+  /**
+   * The workspace this session's tools run in (Task 35).
+   *
+   * A session bound to a repository works in its own worktree; everything else
+   * keeps the shared global workspace, so an ordinary chat is untouched.
+   */
+  workspaceFor(sessionKey: string): string {
+    return this.deps.store.getSessionRepo(sessionKey)?.workspace ?? this.workspace;
   }
 
   isBusy(sessionKey: string): boolean {
@@ -576,6 +607,11 @@ export class AgentLoop {
     this.deps.store.appendMessage(session.id, "user", input.text, runId);
     this.deps.store.startRun(session.id, runId);
 
+    // Task 35: a repo session works in its own worktree. Resolved before the
+    // prompt is built so the prompt, the tool context and approvals all agree.
+    const repo = this.deps.store.getSessionRepo(sessionKey);
+    const workspace = repo?.workspace ?? this.workspace;
+
     let answer = "";
     let usage: Record<string, number> | undefined;
     /** Last wire model this run streamed with — stamped on the runs row (P2 #15). */
@@ -583,7 +619,11 @@ export class AgentLoop {
     let finishStatus: "done" | "error" | "aborted" = "done";
     let yieldedWait = false;
     try {
-      let messages = await this.#buildMessages(session.id, sessionKey, input, isMain);
+      let messages = await this.#buildMessages(session.id, sessionKey, input, isMain, {
+        workspace,
+        repo,
+        publishAllowed: input.publishAllowed === true,
+      });
       // Sub-agent tool policy: a child at the nesting cap loses the session
       // family of tools (their default of no delegation inside sub-agents).
       let sessionTools = this.#toolsForSession(sessionKey);
@@ -595,7 +635,12 @@ export class AgentLoop {
         surfaces: this.#surfaceFacts(),
         // A child must not rewrite global settings mid-flight (ask_user's rule).
         settings: isMain ? this.deps.settings : undefined,
-        workspace: this.workspace,
+        workspace,
+        // Task 35: repo facts + the publish gate. The gate is set by the surface
+        // that owns this input, never by the model.
+        repo: repo ? { repo: repo.repo, base: repo.base, branch: repo.branch, workspace: repo.workspace } : null,
+        publishAllowed: input.publishAllowed === true,
+        repoCtl: this.deps.repoCtl,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
         store: this.deps.store,
@@ -878,7 +923,7 @@ export class AgentLoop {
           if (spec.needsApproval && this.deps.requestApproval) {
             const outcome = await this.deps.requestApproval(call.id, call.name, args, {
               sessionKey: session.key,
-              workspace: this.workspace,
+              workspace,
               onPrompt: (info) => onEvent({ type: "approval", callId: call.id, tool: call.name, args, exec: info.exec }),
             });
             // boolean stays supported for bare-bones harnesses / tests
@@ -1051,8 +1096,9 @@ export class AgentLoop {
     sessionKey: string,
     input: RunInput,
     isMain: boolean,
+    env?: RunEnv,
   ): Promise<ChatMessage[]> {
-    return this.#buildMessagesWithCompaction(sessionId, sessionKey, input, isMain);
+    return this.#buildMessagesWithCompaction(sessionId, sessionKey, input, isMain, env);
   }
 
   /** Guard against concurrent sweeps on one session (auto-trigger + /compact + overflow). */
@@ -1063,11 +1109,15 @@ export class AgentLoop {
     sessionKey: string,
     input: RunInput,
     isMain: boolean,
+    env?: RunEnv,
   ): Promise<ChatMessage[]> {
     // How much history this run may carry is derived, not configured: the window
     // belongs to the model the run actually asked for (Settings → Models → Tune),
     // and a window is a ceiling — the old `max(storedChars, window)` let a stored
     // 400k budget overflow a 32k model. See src/agent/context-budget.ts.
+    const workspace = env?.workspace ?? this.workspaceFor(sessionKey);
+    const repo = env ? env.repo : this.deps.store.getSessionRepo(sessionKey);
+    const publishAllowed = env?.publishAllowed === true;
     const budget = historyBudget(this.deps.config, input.model ?? "").chars;
     // Compaction frontier: anything at or below `upto` exists only as the
     // summary; rows above it stay verbatim. Auto-sweep when the un-compacted
@@ -1115,7 +1165,7 @@ export class AgentLoop {
     // The newest user message is already persisted above; drop it from history to avoid duplication.
     if (history.length > 0 && history[history.length - 1]?.role === "user") history.pop();
 
-    const ctx = loadWorkspaceContext(this.workspace, { isMainSession: isMain, lightContext: input.lightContext === true });
+    const ctx = loadWorkspaceContext(workspace, { isMainSession: isMain, lightContext: input.lightContext === true });
     const matched = matchSkills(this.skills, input.text).filter((s) => s.eligible);
     const skillBlocks = matched.map((s) => `# Skill: ${s.name}\n\n${readSkillBody(s)}`);
 
@@ -1192,12 +1242,15 @@ export class AgentLoop {
       `Session: ${sessionKey} (${channelLabel(sessionKey)})`,
       `Where this message came from: ${channelLabel(sessionKey)}. A direct message can be answered privately; in a group or topic chat others can read your reply, so keep it on-topic and mention people by name when needed.`,
       surfacesPromptLine(surfaces, sessionKey),
+      // Task 35: a repo session tells the model where it is, how to work here,
+      // and the publishing rule the user chose.
+      repo ? repoPromptBlock({ ...repo, publishAllowed }) : "",
       // What it is set to, not just what it can do (Task 26). Rebuilt per turn
       // from live config + this session's overrides, so it cannot drift.
       selfPromptLine(
         selfFactsFrom(this.deps.config, {
           sessionKey,
-          workspace: this.workspace,
+          workspace,
           configPath: this.deps.settings?.path ?? "",
           skills: this.skills.filter((s) => s.eligible !== false).length,
           runtime: this.deps.selfRuntime?.(sessionKey),

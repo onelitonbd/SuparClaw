@@ -34,6 +34,10 @@ export const SLASH_CATALOG: { cmd: string; summary: string }[] = [
   { cmd: "/title <text>", summary: "rename the current session (alias /name)" },
   { cmd: "/export-session [name]", summary: "export this chat to HTML in the workspace (alias /export)" },
   { cmd: "/new", summary: "start a fresh session; the current one is kept" },
+  { cmd: "/code <owner/name> [branch]", summary: "work in a repository: bind it, then edit, test and publish" },
+  { cmd: "/repo", summary: "the repository, its branch and what changed" },
+  { cmd: "/diff [path]", summary: "uncommitted changes in this session's repository" },
+  { cmd: "/pr [title]", summary: "publish this session's work as a draft pull request" },
 ];
 
 /**
@@ -48,7 +52,7 @@ export const SHARED_COMMANDS = [
   "help", "commands", "status", "context", "stop", "abort", "queue", "usage",
   "question", "followup", "steer", "tell", "subagents", "tools", "skills",
   "skill", "dream", "compact", "exec", "think", "title", "name", "models",
-  "export-session", "export",
+  "export-session", "export", "code", "repo", "diff", "pr",
 ] as const;
 
 export function slashHelp(): string {

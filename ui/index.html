@@ -55,6 +55,10 @@
 
   <!-- Chat -->
   <section class="view view--chat" id="chat-view">
+    <!-- Task 35: the repo bar. Present in the DOM always, `hidden` outside a code
+         session — a bar that appears and disappears must still be a stable node
+         so its state survives re-renders. -->
+    <div class="repo-bar" id="repo-bar" role="status" aria-live="polite" hidden></div>
     <div class="scroll" id="thread">
       <div class="stack" id="stack"></div>
     </div>
@@ -211,6 +215,19 @@
       <div class="modal__head"><h2 id="modal-title"></h2></div>
       <div class="modal__body" id="modal-body"></div>
       <div class="modal__foot" id="modal-foot"></div>
+    </div>
+  </div>
+
+  <!-- Task 35: the new-session sheet (chat or code → repo picker). Its own
+       overlay rather than the model sheet: a required decision needs a focus
+       trap, which the picker sheet does not have. -->
+  <div class="overlay" id="new-session-overlay" hidden>
+    <button class="overlay__scrim" id="new-session-scrim" type="button" aria-label="Close"></button>
+    <div class="sheet" id="new-session-sheet" role="dialog" aria-modal="true" aria-label="New session">
+      <div class="sheet__grab" aria-hidden="true"></div>
+      <div class="sheet__head"><h2 class="sheet__title" id="new-session-title">New session</h2></div>
+      <div class="sheet__list" id="new-session-list"></div>
+      <div class="sheet__foot" id="new-session-foot"></div>
     </div>
   </div>
 

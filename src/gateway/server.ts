@@ -267,6 +267,19 @@ export class Gateway {
       "sessions.delete",
       "sessions.export",
       "sessions.cleanup",
+      "sessions.create",
+      // Task 35 — the GitHub add-on. Every one of these is redacted: no frame
+      // in this group ever carries a token.
+      "repo.bind",
+      "repo.unbind",
+      "repo.status",
+      "repo.diff",
+      "repo.publish",
+      "github.status",
+      "github.connect",
+      "github.adoptGhCli",
+      "github.disconnect",
+      "github.repos",
       "usage.report",
       "models.list",
       "models.plugins",
@@ -966,6 +979,163 @@ case "sessions.rename": {
             enforce: params["enforce"] === true,
           });
           send(okFrame(id, report));
+          return;
+        }
+        // ---- Task 35: the GitHub add-on ------------------------------------
+        // The token never crosses this boundary: every response below is
+        // built by service methods that return a redacted view only.
+        case "sessions.create": {
+          // The new-session sheet asks chat-or-code first, so create and bind
+          // are one RPC: a coding session either exists bound or does not exist.
+          const key = String(params["sessionKey"] ?? "") || `main:${Date.now().toString(36)}`;
+          const kind = String(params["kind"] ?? "chat");
+          service.store.ensureSession(key);
+          if (kind !== "code") {
+            send(okFrame(id, { sessionKey: key, kind: "chat" }));
+            return;
+          }
+          const repo = String(params["repo"] ?? "");
+          if (!repo) {
+            send(errFrame(id, "bad_request", "a code session needs a repo"));
+            return;
+          }
+          const bound = await service.bindRepo({ sessionKey: key, repo, base: params["base"] ? String(params["base"]) : undefined });
+          if (!bound.ok) {
+            send(errFrame(id, "bad_request", bound.error));
+            return;
+          }
+          send(okFrame(id, { sessionKey: key, kind: "code", repo: bound.repo, branch: bound.branch, base: bound.base }));
+          return;
+        }
+        case "repo.bind": {
+          const bound = await service.bindRepo({
+            sessionKey: String(params["sessionKey"] ?? "main:main"),
+            repo: String(params["repo"] ?? ""),
+            base: params["base"] ? String(params["base"]) : undefined,
+          });
+          send(bound.ok ? okFrame(id, bound) : errFrame(id, "bad_request", bound.error));
+          return;
+        }
+        case "repo.unbind": {
+          service.unbindRepo(String(params["sessionKey"] ?? "main:main"));
+          send(okFrame(id, { unbound: true }));
+          return;
+        }
+        case "repo.status": {
+          // The bar's nine states all come from here plus the session row, so the
+          // UI never has to guess whether a clean tree or a failed clone is news.
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const binding = service.store.getSessionRepo(sessionKey);
+          if (!binding) {
+            send(okFrame(id, { bound: false, running: service.loop.isBusy(sessionKey) }));
+            return;
+          }
+          const st = await service.repos.status(binding.workspace);
+          send(
+            okFrame(id, {
+              bound: true,
+              repo: binding.repo,
+              base: binding.base,
+              branch: binding.branch || st.branch,
+              workspace: binding.workspace,
+              clean: st.clean,
+              files: st.files,
+              added: st.added,
+              removed: st.removed,
+              running: service.loop.isBusy(sessionKey),
+            }),
+          );
+          return;
+        }
+        case "repo.diff": {
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const binding = service.store.getSessionRepo(sessionKey);
+          if (!binding) {
+            send(errFrame(id, "bad_request", "this session is not working in a repository"));
+            return;
+          }
+          const diff = await service.repos.diff(binding.workspace, params["path"] ? String(params["path"]) : undefined);
+          send(okFrame(id, { diff }));
+          return;
+        }
+        case "repo.publish": {
+          // Layer 2 of the publish gate lives in the tool; this is layer 1 — the
+          // surface only sends this frame after a human pressed the button and
+          // the dialog's choice (draft or open) is carried through.
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const binding = service.store.getSessionRepo(sessionKey);
+          if (!binding) {
+            send(errFrame(id, "bad_request", "this session is not working in a repository"));
+            return;
+          }
+          if (service.loop.isBusy(sessionKey)) {
+            send(errFrame(id, "conflict", "a run is active — publish when it settles"));
+            return;
+          }
+          try {
+            const res = await service.repos.publish({
+              workspace: binding.workspace,
+              repo: binding.repo,
+              base: binding.base,
+              branch: binding.branch,
+              creds: service.githubCreds(),
+              title: String(params["title"] ?? "") || `Changes from ${sessionKey.replace(/^main:/, "")}`,
+              body: params["body"] ? String(params["body"]) : undefined,
+              // Draft is the default; "open" must be an explicit choice.
+              draft: params["draft"] !== false,
+            });
+            send(okFrame(id, res));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
+          return;
+        }
+        case "github.status": {
+          // Async because it re-verifies the token against /user — a revoked or
+          // expired token must read as "not connected", never as a stale name.
+          try {
+            send(okFrame(id, await service.githubStatus()));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
+          return;
+        }
+        case "github.connect": {
+          // Device flow: the first frame carries the code the human must type,
+          // then the same request resolves once they approve. `onCode` fires
+          // before the poll loop starts, so the UI paints the code immediately.
+          try {
+            const res = await service.githubConnect({
+              onCode: (info) => {
+                send({ jsonrpc: "2.0", method: "github.code", params: { verificationUri: info.verificationUri, userCode: info.userCode, expiresIn: info.expiresIn, interval: info.interval } });
+              },
+            });
+            send(okFrame(id, { login: res.login, host: res.host, scopes: res.scopes ?? [] }));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
+          return;
+        }
+        case "github.adoptGhCli": {
+          const res = service.githubAdoptGhCli();
+          send(res.ok ? okFrame(id, { login: res.login, host: res.host }) : errFrame(id, "bad_request", res.error ?? "no gh login"));
+          return;
+        }
+        case "github.disconnect": {
+          service.githubDisconnect();
+          send(okFrame(id, { disconnected: true }));
+          return;
+        }
+        case "github.repos": {
+          try {
+            const repos = await service.githubRepos({
+              filter: params["filter"] ? String(params["filter"]) : undefined,
+              page: typeof params["page"] === "number" ? (params["page"] as number) : 1,
+            });
+            send(okFrame(id, { repos }));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
           return;
         }
         case "usage.report": {

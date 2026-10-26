@@ -13,6 +13,9 @@ export interface SessionRow {
   title?: string;
   name?: string | null;
   archived?: number;
+  /** Task 35: a code session names its repository, so the sidebar can say so. */
+  repo?: string | null;
+  branch?: string | null;
 }
 
 export interface SessionGroup {
@@ -106,7 +109,14 @@ export function sessionRow(row: SessionRow, h: RowHandlers): HTMLElement {
   }, [
     el("span", { class: "session__text" }, [
       el("span", { class: "session__title" }, [rowTitle(row)]),
-      el("span", { class: "session__meta" }, [rowMeta(row)]),
+      el("span", { class: "session__meta" }, [
+        // A repo chip, not a second meta line: the row's height must not change
+        // between a chat and a code session (the list is a list, not a tree).
+        ...(row.repo
+          ? [el("span", { class: "session__repo mono", title: `${row.repo}${row.branch ? ` · ${row.branch}` : ""}` }, [row.repo]), " · "]
+          : []),
+        rowMeta(row),
+      ]),
     ]),
   ]);
   open.onclick = () => h.onOpen();

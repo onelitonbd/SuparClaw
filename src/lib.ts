@@ -306,3 +306,21 @@ export {
   type PruneResult,
 } from "./agent/media-store.js";
 export { pathsInSession, deleteSessionWithMedia, type DeleteSessionResult } from "./agent/media-cleanup.js";
+export {
+  githubCredsPath,
+  redact,
+  saveGithubCreds,
+  readStoredGithub,
+  clearGithubCreds,
+  resolveGithubCreds,
+  githubApiBase,
+  githubRequest,
+  githubIdentity,
+  githubListRepos,
+  githubCreatePull,
+  connectGithub,
+  type GithubCreds,
+  type GithubRepo,
+} from "./repo/github.js";
+export { RepoManager, RepoError, branchSlug, repoSegments, type GitResult, type GitRunner } from "./repo/manager.js";
+export { bindSessionRepo, unbindSessionRepo, repoPromptBlock, publishRequested, type RepoBinding } from "./repo/session.js";

@@ -40,6 +40,10 @@ import { handleSlashExtension } from "./slash-commands.js";
 import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileCheck, profileId, resolveAuthProfileOrder } from "../agent/auth.js";
 import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
+import { RepoManager } from "../repo/manager.js";
+import { bindSessionRepo, publishRequested, unbindSessionRepo } from "../repo/session.js";
+import { connectGithub, clearGithubCreds, githubIdentity, githubListRepos, readStoredGithub, resolveGithubCreds, saveGithubCreds, type GithubCreds } from "../repo/github.js";
+import type { RepoCtl } from "./tools.js";
 import { fetchModels } from "../config/providers.js";
 import { TelegramChannel, describeError, probeTelegramApi, telegramProxy } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
@@ -62,6 +66,11 @@ export interface ChatPayload {
   onFinal?: (text: string, usage?: Record<string, number>) => void | Promise<void>;
   /** P3 #26 heartbeat: skip workspace bootstrap files on this turn (lightContext). */
   lightContext?: boolean;
+  /**
+   * Task 35: the surface itself requested a publish (the bar's button, `/pr`, the
+   * Telegram card). Set by the UI after a human confirmed — not by the model.
+   */
+  publish?: boolean;
   onDelta?: (delta: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
   onApproval?: (event: Extract<RunEvent, { type: "approval" }>) => void | Promise<void>;
@@ -96,6 +105,8 @@ export class Service {
   readonly loop: AgentLoop;
   readonly events = new EventEmitter();
   readonly startedAt = Date.now();
+  /** Task 35: clone cache + per-session worktrees. */
+  readonly repos = new RepoManager({ log: (m) => this.log.warn(m) });
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
@@ -276,6 +287,7 @@ export class Service {
       // for the `## Your configuration` block.
       settings: this.settingsCtl(),
       selfRuntime: (key) => this.#selfRuntime(key),
+      repoCtl: this.#repoCtl(),
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are
@@ -338,6 +350,138 @@ export class Service {
   }
 
   /** Per-session overrides the prompt block quotes (`## Your configuration`). */
+  /** The repo surface the agent's tools call (Task 35). */
+  #repoCtl(): RepoCtl {
+    return {
+      status: async (sessionKey: string) => {
+        const binding = this.store.getSessionRepo(sessionKey);
+        if (!binding) throw new Error("this session is not bound to a repository");
+        const st = await this.repos.status(binding.workspace);
+        return { repo: binding.repo, branch: binding.branch || st.branch, base: binding.base, clean: st.clean, files: st.files, added: st.added, removed: st.removed };
+      },
+      diff: async (sessionKey: string, path?: string) => {
+        const binding = this.store.getSessionRepo(sessionKey);
+        if (!binding) throw new Error("this session is not bound to a repository");
+        return this.repos.diff(binding.workspace, path);
+      },
+      publish: async ({ sessionKey, title, body, draft }) => {
+        const binding = this.store.getSessionRepo(sessionKey);
+        if (!binding) throw new Error("this session is not bound to a repository");
+        const creds = this.githubCreds();
+        const res = await this.repos.publish({
+          workspace: binding.workspace,
+          repo: binding.repo,
+          branch: binding.branch,
+          base: binding.base,
+          title,
+          body,
+          draft,
+          creds,
+        });
+        this.events.emit("event", {
+          type: "chat",
+          sessionKey,
+          event: { type: "repo", phase: "published", url: res.prUrl, number: res.prNumber, branch: res.branch },
+        } as ServiceEvent);
+        return { url: res.prUrl, number: res.prNumber, branch: res.branch, draft: res.draft };
+      },
+    };
+  }
+
+  /** Current GitHub credentials, or null (env → gh CLI → stored token). */
+  githubCreds(): GithubCreds | null {
+    return resolveGithubCreds({ host: this.config.addons?.github?.host ?? "github.com" });
+  }
+
+  /** Connection facts for the UI/CLI. Never returns the token. */
+  async githubStatus(): Promise<{
+    connected: boolean;
+    login: string;
+    source: string;
+    host: string;
+    scopes: string[];
+    configured: boolean;
+    ghCli: boolean;
+    error?: string;
+  }> {
+    const host = this.config.addons?.github?.host ?? "github.com";
+    const creds = this.githubCreds();
+    const base = {
+      host,
+      configured: Boolean(this.config.addons?.github?.clientId?.trim()) || Boolean(this.config.addons?.github?.enabled),
+      ghCli: Boolean(creds && creds.source === "gh"),
+    };
+    if (!creds) return { connected: false, login: "", source: "", scopes: [], ...base };
+    try {
+      const who = await githubIdentity(creds.token, { host });
+      return { connected: true, login: who.login, source: creds.source, scopes: who.scopes.length > 0 ? who.scopes : creds.scopes ?? [], ...base };
+    } catch (err) {
+      return { connected: false, login: "", source: creds.source, scopes: [], ...base, error: (err as Error).message };
+    }
+  }
+
+  /** Start a device-flow connection. `onCode` fires as soon as GitHub answers. */
+  async githubConnect(opts: { onCode?: (info: { userCode: string; verificationUri: string; expiresIn: number; interval: number }) => void } = {}) {
+    const cfg = this.config.addons?.github;
+    const result = await connectGithub({
+      clientId: cfg?.clientId ?? "",
+      host: cfg?.host ?? "github.com",
+      scope: "repo read:user",
+      onCode: opts.onCode,
+    });
+    return { login: result.identity.login, scopes: result.identity.scopes, host: cfg?.host ?? "github.com" };
+  }
+
+  /** Keep an existing `gh` login as our credential (option B in the design). */
+  githubAdoptGhCli(): { ok: boolean; login?: string; host?: string; error?: string } {
+    const creds = resolveGithubCreds({ host: this.config.addons?.github?.host ?? "github.com" });
+    if (!creds || creds.source !== "gh") return { ok: false, error: "no `gh` login found — install the GitHub CLI and run `gh auth login`" };
+    saveGithubCreds({ token: creds.token, login: creds.login, host: creds.host, scopes: [] });
+    return { ok: true, login: creds.login, host: creds.host };
+  }
+
+  githubDisconnect(): boolean {
+    return clearGithubCreds();
+  }
+
+  async githubRepos(opts: { filter?: string; page?: number } = {}) {
+    const creds = this.githubCreds();
+    if (!creds) throw new Error("GitHub is not connected");
+    const host = this.config.addons?.github?.host ?? "github.com";
+    const rows = await githubListRepos(creds.token, { host, filter: opts.filter, page: opts.page });
+    return rows;
+  }
+
+  /**
+   * Bind a session to a repository (Task 35): prepare the worktree, then write
+   * the binding. Progress rides the chat event stream so every surface shows the
+   * same phases.
+   */
+  async bindRepo(opts: { sessionKey: string; repo: string; base?: string }): Promise<{ ok: true; repo: string; branch: string; base: string; workspace: string } | { ok: false; error: string }> {
+    const creds = this.githubCreds();
+    const res = await bindSessionRepo({
+      store: this.store,
+      manager: this.repos,
+      sessionKey: opts.sessionKey,
+      repo: opts.repo,
+      base: opts.base,
+      creds,
+      onProgress: (p) =>
+        this.events.emit("event", {
+          type: "chat",
+          sessionKey: opts.sessionKey,
+          event: { type: "repo", phase: p.phase, pct: p.pct, detail: p.detail },
+        } as ServiceEvent),
+    });
+    if (!res.ok) return res;
+    this.store.ensureSession(opts.sessionKey);
+    return { ok: true, repo: res.binding.repo, branch: res.binding.branch, base: res.binding.base, workspace: res.binding.workspace };
+  }
+
+  unbindRepo(sessionKey: string): void {
+    unbindSessionRepo(this.store, sessionKey);
+  }
+
   #selfRuntime(sessionKey: string): SelfRuntime {
     return {
       usage: this.usageModeFor(sessionKey),
@@ -1466,6 +1610,63 @@ export class Service {
       const input = rest.slice(first.length).trim();
       return { rewrite: `/${hit.name}${input ? ` ${input}` : ""}` };
     }
+    // Task 35 — the repo commands. Shared by web, TUI and Telegram, like every
+    // other command here: one router, one answer.
+    if (cmd === "/repo") {
+      const binding = this.store.getSessionRepo(payload.sessionKey);
+      if (!binding) return { reply: "This session is not working in a repository. /code <owner/name> binds one." };
+      const st = await this.repos.status(binding.workspace);
+      const files = st.files.slice(0, 20).map((f) => `  ${f.path}  +${f.added} −${f.removed}`).join("\n");
+      return {
+        reply: [
+          `${binding.repo} · ${binding.branch || st.branch} (from ${binding.base})`,
+          st.clean ? "no changes" : `${st.files.length} file(s), +${st.added} −${st.removed}`,
+          files,
+          st.clean ? "" : "say \"open a PR\" when you want one",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      };
+    }
+    if (cmd === "/diff") {
+      const binding = this.store.getSessionRepo(payload.sessionKey);
+      if (!binding) return { reply: "This session is not working in a repository." };
+      const path = rest.split(/\s+/).filter(Boolean)[0];
+      const text = await this.repos.diff(binding.workspace, path);
+      if (!text.trim()) return { reply: "No changes to show." };
+      const cap = 12_000;
+      return { reply: text.length > cap ? `${text.slice(0, cap)}\n\n… diff truncated (${text.length - cap} more chars) — use /diff <path>` : text };
+    }
+    if (cmd === "/pr") {
+      const binding = this.store.getSessionRepo(payload.sessionKey);
+      if (!binding) return { reply: "This session is not working in a repository, so there is nothing to publish." };
+      if (this.loop.isBusy(payload.sessionKey)) return { reply: "A run is active — publish after it settles." };
+      const st = await this.repos.status(binding.workspace);
+      if (st.clean) return { reply: "Nothing to publish — this session has no changes." };
+      const title = rest.trim() || `Changes from ${payload.sessionKey.replace(/^main:/, "")}`;
+      try {
+        const res = await this.#repoCtl().publish({ sessionKey: payload.sessionKey, title, draft: true });
+        return { reply: `${res.draft ? "Draft pull request" : "Pull request"} #${res.number} opened: ${res.url}\nbranch ${res.branch}` };
+      } catch (err) {
+        return { reply: `could not publish — ${(err as Error).message}` };
+      }
+    }
+    if (cmd === "/code") {
+      const target = rest.trim();
+      if (!target) {
+        return {
+          reply:
+            "usage: /code <owner/name> [branch] — or start a Code session from + in the web app, ctrl+g in the TUI, " +
+            "or /new on Telegram.",
+        };
+      }
+      if (this.loop.isBusy(payload.sessionKey)) return { reply: "A run is active in this session — bind the repo after it settles." };
+      const base = rest.split(/\s+/).slice(1).join(" ").trim() || undefined;
+      const bound = await this.bindRepo({ sessionKey: payload.sessionKey, repo: target.split(/\s+/)[0]!, base });
+      if (!bound.ok) return { reply: `could not bind ${target} — ${bound.error}` };
+      return { reply: `Working in ${bound.repo} · branch ${bound.branch} (from ${bound.base})\nworkspace: ${bound.workspace}` };
+    }
+
     // A bare skill name is a turn, not a command: let it through unchanged.
     const bare = cmd.slice(1);
     if (bare && this.loop.skills.some((s) => s.eligible !== false && s.userInvocable !== false && s.name.toLowerCase() === bare)) {
@@ -1610,6 +1811,9 @@ export class Service {
       lightContext: payload.lightContext === true,
       // Channel (durable-ingress style) inputs never coalesce in collect mode.
       exclusive: payload.source === "telegram",
+      // Task 35, layer 2: the publish tool refuses unless THIS turn asked for a
+      // PR. Matched on the user's text, never on the model's intention.
+      publishAllowed: payload.publish === true || publishRequested(text),
       onEvent: (event) => {
         // Reply-usage footer (P2 #15 / Task 23): a FIELD on the final event, not
         // text baked into the reply. The transcript row carries the numbers and

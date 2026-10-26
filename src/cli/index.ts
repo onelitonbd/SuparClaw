@@ -35,6 +35,9 @@ commands:
   security [audit]     review gateway/tool/channel security posture
   stop                    stop a running gateway (pid file)
   config <get|set|path>  read or write config values
+  github <status|connect|adopt-gh|disconnect|repos|code|publish>
+                        the GitHub add-on: who is connected, which repos you can
+                        see, make a session work in one, open a pull request
   sessions <list|rename|delete|show|search|cleanup|export> [flags] [--json]
                         sessions on this device; search = full-text transcripts;
                         cleanup = pruning/archive maintenance (dry-run first!);
@@ -160,6 +163,11 @@ export async function main(argv: string[]): Promise<number> {
         store?.close();
       }
     }
+    case "github":
+    case "repo":
+      // Task 35: `sc github` and `sc repo` are the same command — the second
+      // spelling exists because "repo" is what the rest of the product calls it.
+      return (await import("./github.js")).cmdGithub(rest);
     case "memory": {
       // P3 #21: memory management CLI (their openclaw memory namespace).
       const { memoryCmd } = await import("./memory-commands.js");

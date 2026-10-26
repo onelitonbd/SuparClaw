@@ -701,3 +701,36 @@ agent work in it", which is the whole point.
    the repo (a wrong repo is a much worse mistake than an extra tap).
 3. **Repo per session is fixed** — confirm that starting a *second* repo always
    means a new session (recommended), rather than rebinding the current one.
+
+---
+
+## 12. As built (differences from this design)
+
+Implemented in one commit; the six test files named in §10 exist with the
+development names `repo-github`, `repo-manager`, `repo-session`, `repo-loop`,
+`ui-repo` and `telegram-code` (the `repo-loop` file is the extra one that drives a
+real `AgentLoop`, so the prompt block and the publish gate are proven together).
+
+Four deviations, each deliberate:
+
+1. **Settings → Integrations → GitHub exists** (§2.6 asked for it after onboarding).
+   It is one card: account, host, granted scopes, credential source, Connect /
+   Reconnect / Disconnect. The schema's `addons.github.{enabled,clientId,host}`
+   still renders in All settings, so a headless install can configure the client id
+   without the browser.
+2. **One PR per session, not several.** `publish()` pushes `sc/<slug>`; a second
+   publish in the same session would reuse that branch, so the "several PRs are
+   allowed" line stays aspirational until branch-per-publish lands (P2). Nothing
+   force-pushes: a divergent second push fails loudly instead of rewriting history.
+3. **The picker's recents come from `sessions.list`**, not from a new store table —
+   the session rows already carry `repo`. Rows show `owner/name` and
+   `private · branch`; the "last used" stamp from §2.2 was dropped (the grouping
+   already says it, and the row is one line).
+4. **Telegram rotates on `/new`, not on the button tap.** `n:c` / `n:k` are the
+   card's ids exactly as designed, but the tag rotation stays in `/new` itself
+   (unchanged since Task 27, and pinned by a test). The buttons confirm the session
+   the card was drawn for; `/code` alone binds the current one.
+
+Also as built, not drawn: the composer lock while cloning (§2.1) is a banner plus a
+disabled input, and the sidebar chip (§2.9) trims to ~11 characters with the full
+`owner/name · branch` on hover.

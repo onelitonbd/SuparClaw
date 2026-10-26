@@ -21,12 +21,18 @@ export async function tuiLocal(): Promise<number> {
   let modelOverride: string | undefined;
 
   const deps: TuiDeps = {
-    header: () => ({
-      agent: service.config.agents.defaults.id,
-      session: sessionKey,
-      model: modelOverride ?? service.config.agents.defaults.model ?? "(unset)",
-      target: "local",
-    }),
+    header: () => {
+      // Task 35: the footer answers "where is my code?" — derived from the open
+      // session's binding, so switching sessions switches the line.
+      const binding = service.store.getSessionRepo(sessionKey);
+      return {
+        agent: service.config.agents.defaults.id,
+        session: sessionKey,
+        model: modelOverride ?? service.config.agents.defaults.model ?? "(unset)",
+        target: "local",
+        ...(binding ? { repo: binding.repo, branch: binding.branch } : {}),
+      };
+    },
     onSubmit: (text) => {
       // Every visual update flows through the service subscription below, so a
       // reply is never rendered twice.
@@ -149,6 +155,32 @@ export async function tuiLocal(): Promise<number> {
       modelOverride = model;
       return `model override for this session: ${model}`;
     },
+    repos: async () => {
+      try {
+        const rows = await service.githubRepos({ page: 1 });
+        return rows.map((r) => `${r.fullName}  ${r.private ? "private" : "public"} · ${r.defaultBranch}`);
+      } catch (err) {
+        app?.push({ kind: "system", text: (err as Error).message });
+        return [];
+      }
+    },
+    newSession: (spec) => {
+      sessionKey = `main:${Date.now().toString(36)}`;
+      app?.push({ kind: "system", text: `new session: ${sessionKey}` });
+      if (spec.kind === "code" && spec.repo) {
+        void service.bindRepo({ sessionKey, repo: spec.repo }).then((res) => {
+          app?.push({
+            kind: "system",
+            text: res.ok ? `working in ${res.repo} · ${res.branch} (from ${res.base})` : res.error,
+          });
+          if (res.ok) void app?.loadHistory();
+        });
+      }
+      // The transcript belongs to the new key now, and nothing else on screen
+      // should keep showing the previous session's messages.
+      if (app) app.items = [];
+      void app?.loadHistory();
+    },
     quit: () => app?.quit(),
   };
 
@@ -211,6 +243,9 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
   const client = await GatewayClient.connect(url, token);
   const health = (await client.request("health")) as { ok: boolean };
   let sessionKey = "main:main";
+  // Remote mode has no local store, so the footer's repo line is whatever this
+  // client bound in this run — never a guess about the gateway's state.
+  const repoBindings = new Map<string, { repo: string; branch: string }>();
   const { TuiApp } = await import("../tui/app.js");
   let app: InstanceType<typeof TuiApp> | null = null;
 
@@ -269,7 +304,16 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
   });
 
   const deps: TuiDeps = {
-    header: () => ({ agent: "main", session: sessionKey, model: "-", target: url }),
+    header: () => {
+      const binding = repoBindings.get(sessionKey);
+      return {
+        agent: "main",
+        session: sessionKey,
+        model: "-",
+        target: url,
+        ...(binding ? { repo: binding.repo, branch: binding.branch } : {}),
+      };
+    },
     onSubmit: (text) => {
       void client.request("chat.send", { sessionKey, text, isMainSession: true, key: crypto.randomUUID() });
     },
@@ -321,6 +365,29 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
       return res.models;
     },
     setModel: async () => "model is configured on the gateway (sc config set agents.defaults.model)",
+    repos: async () => {
+      try {
+        const res = (await client.request("github.repos", { page: 1 })) as { repos?: { fullName: string; private: boolean; defaultBranch: string }[] };
+        return (res.repos ?? []).map((r) => `${r.fullName}  ${r.private ? "private" : "public"} · ${r.defaultBranch}`);
+      } catch (err) {
+        return [];
+      }
+    },
+    newSession: (spec) => {
+      sessionKey = `main:${Date.now().toString(36)}`;
+      if (spec.kind === "code" && spec.repo) {
+        void client
+          .request("repo.bind", { sessionKey, repo: spec.repo })
+          .then((res) => {
+            const bound = res as { repo?: string; branch?: string; base?: string };
+            if (bound.repo) repoBindings.set(sessionKey, { repo: bound.repo, branch: bound.branch ?? "?" });
+            app?.push({ kind: "system", text: `working in ${bound.repo ?? spec.repo} · ${bound.branch ?? "?"}` });
+          })
+          .catch((err: Error) => app?.push({ kind: "system", text: err.message }));
+      }
+      if (app) app.items = [];
+      void app?.loadHistory();
+    },
     quit: () => {
       app?.quit();
       client.close();

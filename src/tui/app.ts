@@ -19,7 +19,16 @@ export type Approval = {
 };
 
 export interface TuiDeps {
-  header(): { agent: string; session: string; model: string; target: string };
+  /** `repo`/`branch`/`changes` appear only in a code session (Task 35). */
+  header(): {
+    agent: string;
+    session: string;
+    model: string;
+    target: string;
+    repo?: string;
+    branch?: string;
+    changes?: number;
+  };
   onSubmit(text: string): void;
   onAbort(): void;
   onApproval(callId: string, decision: "once" | "always" | "deny"): void;
@@ -29,6 +38,10 @@ export interface TuiDeps {
   history(): Promise<{ role: string; content: string }[]>;
   models(): Promise<string[]>;
   setModel(model: string): Promise<string | null>;
+  /** Repositories available to connect, `owner/name` first (Task 35). */
+  repos?(): Promise<string[]>;
+  /** Start a new session — chat, or code bound to `repo`. */
+  newSession?(spec: { kind: "chat" | "code"; repo?: string }): void;
   quit(): void;
 }
 
@@ -143,7 +156,13 @@ export class TuiApp {
     );
 
     // 2) footer — dim, pipe-joined metadata (OpenClaw's formatTuiFooter)
+    // A code session's repository is part of the footer, not a separate line:
+    // "where is my code" must be answerable from the same strip as the model.
+    const repoBit = head.repo
+      ? `repo:${head.repo}@${head.branch ?? "?"}${head.changes ? ` +${head.changes}` : ""}`
+      : "";
     const footer = [
+      ...(repoBit ? [repoBit] : []),
       `agent ${head.agent}`,
       `session ${head.session}`,
       head.model && head.model !== "(unset)" ? head.model : "unknown",
@@ -409,6 +428,10 @@ export class TuiApp {
           void this.loadHistory();
         });
         return;
+      case "ctrl-g":
+        // New session, in two steps: what kind, then (for code) which repo.
+        this.#newSessionOverlay();
+        return;
       case "ctrl-o":
         this.expandedTools = !this.expandedTools;
         return;
@@ -457,6 +480,36 @@ export class TuiApp {
     }
   }
 
+  /**
+   * `ctrl-g` — the same question the web sheet asks (Task 35): chat, or a
+   * repository. Chat is one keystroke away (`enter` on the first row); code
+   * asks for a repo from the connected account, so the overlay is never a dead
+   * end even on a fresh machine (it says how to connect instead).
+   */
+  #newSessionOverlay(): void {
+    void this.#pick("new session", ["chat — talk, research, files", "code — pick a repository, work on a branch, open a PR"], (option) => {
+      if (!this.deps.newSession) {
+        this.push({ kind: "system", text: "this TUI cannot start sessions" });
+        return;
+      }
+      if (option.startsWith("chat")) {
+        this.deps.newSession({ kind: "chat" });
+        return;
+      }
+      void (async () => {
+        const repos = (await this.deps.repos?.()) ?? [];
+        if (repos.length === 0) {
+          this.push({
+            kind: "system",
+            text: "no repositories yet — run `sc github adopt-gh` (or `sc github connect`) first",
+          });
+          return;
+        }
+        void this.#pick("repository", repos, (repo) => this.deps.newSession?.({ kind: "code", repo: repo.split(/\s+/)[0] ?? repo }));
+      })();
+    });
+  }
+
   async #pick(title: string, options: string[], onPick: (option: string) => void): Promise<void> {
     if (options.length === 0) {
       this.push({ kind: "system", text: `no ${title}s available` });
@@ -484,12 +537,12 @@ export async function runTui(deps: TuiDeps, stdin: NodeJS.ReadStream = process.s
   await app.start();
 }
 
-const HINTS = "\u23ce send \u00b7 ^L model \u00b7 ^P session \u00b7 ^O tools \u00b7 ^D quit";
+const HINTS = "\u23ce send \u00b7 ^G new \u00b7 ^L model \u00b7 ^P session \u00b7 ^O tools \u00b7 ^D quit";
 
 export const tuiHelp = [
   "TUI-local: /help /model <id> [--save] /provider <list|add|remove|test> /session <key> /new /clear /quit",
   "Everywhere (web chat resolves the same): /status /stop /queue /steer /followup /dream [on|off|status|run|log] /title <text> /export-session /tools /skills /exec [mode|global <mode>|reset] — full list: /commands",
-  "Keys: ⏎ send · ⇧⏎ newline · ^L model · ^P session · ^O tool output · ^T thinking · ^C stop · ^C^C quit",
+  "Keys: ⏎ send · ⇧⏎ newline · ^G new session · ^L model · ^P session · ^O tool output · ^T thinking · ^C stop · ^C^C quit",
   "Approvals: y once · a allow always (this directory) · n deny",
 ].join("\n");
 

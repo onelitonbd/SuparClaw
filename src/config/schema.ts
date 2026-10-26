@@ -742,6 +742,28 @@ export const CONFIG_SCHEMA: SchemaNode = {
         },
       },
     },
+    // GitHub add-on (Task 35). Credentials are NOT here on purpose: a token in
+    // the config file is a token in every backup and every `sc doctor` dump. The
+    // token comes from GITHUB_TOKEN/GH_TOKEN, an existing `gh` login, or the
+    // device flow (stored with 0600 in the state dir).
+    addons: {
+      t: "object",
+      default: {},
+      fields: {
+        github: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: false },
+            // Your own GitHub OAuth app's public client id. Device login needs
+            // no secret; it does need this id. Empty = use the `gh` login only.
+            clientId: { t: "text", default: "" },
+            // GitHub Enterprise host; github.com by default.
+            host: { t: "text", default: "github.com" },
+          },
+        },
+      },
+    },
     cron: {
       t: "object",
       default: {},
@@ -962,6 +984,14 @@ export interface SuparClawConfig {
       pricing: ModelPricing;
     }
   >;
+  /** GitHub add-on (Task 35) — never holds a token, only configuration. */
+  addons: {
+    github: {
+      enabled: boolean;
+      clientId: string;
+      host: string;
+    };
+  };
   channels: {
     telegram: {
       enabled: boolean;

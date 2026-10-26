@@ -2,6 +2,7 @@
 
 import { Chat } from "./chat.js";
 import { el, esc, fmtTime, modal, toast, fuzzy } from "./dom.js";
+import { initRepo, mountRepoBar, setRepoSession, handleRepoEvent, noteTurnEnded, openSessionSheet, bindRepoSession } from "./repo.js";
 import { friendlyModelName } from "./model-name.js";
 import { groupSessions, sessionRow, searchView, rowTitle, placeholderTitle, type SessionRow } from "./sessions.js";
 import { gateway, type ConnState } from "./rpc.js";
@@ -241,6 +242,11 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
     case "delta":
       chat.delta(String(e.text ?? ""));
       break;
+    case "repo":
+      // Clone/worktree progress and publishes (Task 35) share the chat stream,
+      // so the bar updates even when the turn that started them was a command.
+      handleRepoEvent(e);
+      break;
     case "reasoning":
       chat.reasoningDelta(String(e.text ?? ""));
       break;
@@ -304,6 +310,9 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       // own element and survives the next reload the same way.
       chat.finish(String(e.text ?? ""), typeof e.footer === "string" && e.footer ? e.footer : undefined);
       busy = false;
+      // A finished turn in a code session probably wrote files: re-derive the
+      // bar from the worktree instead of trusting a stale count.
+      noteTurnEnded();
       break;
     }
     case "error":
@@ -315,6 +324,7 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
     case "idle":
       busy = false;
       chat.setBusy(false);
+      noteTurnEnded();
       break;
   }
 }
@@ -772,6 +782,7 @@ async function switchSession(key: string): Promise<void> {
     return;
   }
   sessionKey = key;
+  setRepoSession(key);
   localStorage.setItem("sc.session", key);
   setHeaderTitle(key);
   try { location.hash = "#/chat/" + encodeURIComponent(key); } catch { location.hash = "#/chat/" + key; }
@@ -941,6 +952,18 @@ function setHeaderTitle(key: string, name?: string): void {
 }
 
 /**
+ * Task 35 stage one: a new session is a *kind* before it is a chat. The `+`
+ * opens a sheet asking chat-or-code; "Chat" falls straight through to the
+ * instant path below, "Code" picks a repository first. Telemetry of the sheet
+ * lives in repo.ts — this file only knows how to start each kind.
+ */
+async function startCodeSession(repo: string): Promise<void> {
+  const key = `main:${Date.now().toString(36)}`;
+  await switchSession(key);
+  await bindRepoSession(key, repo);
+}
+
+/**
  * A new chat starts empty and names itself (Task 29). Asking for a title before
  * the first message was the wrong order — you cannot name a conversation that
  * has not happened yet. The row is created by loadHistory; the name arrives from
@@ -1013,8 +1036,10 @@ $("drawer-btn").onclick = () => {
 };
 $("drawer-close").onclick = () => closeDrawer(true);
 $("drawer-scrim").onclick = () => closeDrawer(true);
-$("new-session").onclick = newSession;
-$("new-chat-btn").onclick = newSession;
+// Task 35: both `+` affordances ask chat-or-code. The row still starts a chat
+// on Enter, so the common case costs one keystroke more, not a dialog.
+$("new-session").onclick = openSessionSheet;
+$("new-chat-btn").onclick = openSessionSheet;
 
 /* ---------------- model sheet ---------------- */
 
@@ -1282,5 +1307,14 @@ if (!(location.hash || "").startsWith("#/settings")) {
 }
 route();
 applySidebar();
+// Task 35: the repo bar is per-session state, so it is initialised with the
+// session that boot restores — not with whatever the server last cloned.
+mountRepoBar();
+initRepo({
+  chat: () => newSession(),
+  code: (repo) => void startCodeSession(repo),
+  composer: chat,
+});
+setRepoSession(sessionKey);
 gateway.connect();
 void refresh();

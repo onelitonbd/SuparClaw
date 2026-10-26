@@ -61,6 +61,19 @@ export interface ToolContext {
    * asking elsewhere must fail honestly, so the tool checks for undefined.
    */
   askUser?: (questions: import("./ask-user.js").AskUserQuestion[]) => Promise<import("./ask-user.js").AskUserResult>;
+  /** Task 35: the repository this run is bound to, when it is a code session. */
+  repo?: { repo: string; base: string; branch: string; workspace: string } | null;
+  /** Task 35: this turn's text asked for a PR (set by the surface, not the model). */
+  publishAllowed?: boolean;
+  /** Repo operations wired by the service (publish/status/diff). */
+  repoCtl?: RepoCtl;
+}
+
+/** The repo operations a code session exposes to the agent (Task 35). */
+export interface RepoCtl {
+  status(sessionKey: string): Promise<{ repo: string; branch: string; base: string; clean: boolean; files: { path: string; added: number; removed: number }[]; added: number; removed: number }>;
+  diff(sessionKey: string, path?: string): Promise<string>;
+  publish(input: { sessionKey: string; title: string; body?: string; draft?: boolean }): Promise<{ url: string; number: number; branch: string; draft: boolean }>;
 }
 
 /** The sub-agent operations the session family of tools can invoke. */
@@ -1091,6 +1104,61 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       return [...surface, ...hidden.filter((t) => cmc.directOnly.includes(t.name))];
     }
   }
+
+  // Task 35 — repo tools. Present in every registry (they refuse with a sentence
+  // outside a code session), so the model can discover them without the schema
+  // changing mid-conversation when a repo is bound.
+  tools.push(
+    {
+      name: "repo_status",
+      description:
+        "What this code session has changed: the bound repository, branch, and the per-file line counts. Use it before summarising work or publishing.",
+      parameters: { type: "object", properties: {} },
+      async run(_args, ctx) {
+        if (!ctx.repo || !ctx.repoCtl) return "error: this session is not bound to a repository";
+        const st = await ctx.repoCtl.status(ctx.sessionKey ?? "");
+        if (st.clean) return `${st.repo} · ${st.branch} (from ${st.base}) · no changes`;
+        const files = st.files.map((f) => `  ${f.path}  +${f.added} −${f.removed}`).join("\n");
+        return `${st.repo} · ${st.branch} (from ${st.base}) · ${st.files.length} file(s), +${st.added} −${st.removed}\n${files}`;
+      },
+    },
+    {
+      name: "github_publish",
+      description:
+        "Commit this session's work, push its sc/* branch, and open a pull request. Only when the user asked for a PR in this turn — it refuses otherwise.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: str("PR title (a short sentence)"),
+          body: str("PR description (optional)"),
+          draft: { type: "boolean", description: "Open as a draft (default true)" },
+        },
+        required: ["title"],
+      },
+      async run(args, ctx) {
+        if (!ctx.repo || !ctx.repoCtl) return "error: this session is not bound to a repository";
+        if (ctx.publishAllowed !== true) {
+          return (
+            "error: the user did not ask for a pull request in this turn. Do not publish — " +
+            "summarise what changed and say you can open a PR when they ask."
+          );
+        }
+        const title = String(args["title"] ?? "").trim();
+        if (!title) return "error: a title is required";
+        try {
+          const res = await ctx.repoCtl.publish({
+            sessionKey: ctx.sessionKey ?? "",
+            title,
+            body: args["body"] === undefined ? undefined : String(args["body"]),
+            draft: args["draft"] !== false,
+          });
+          return `${res.draft ? "Draft pull request" : "Pull request"} #${res.number} opened: ${res.url}\nbranch ${res.branch}`;
+        } catch (err) {
+          return `error: ${(err as Error).message}`;
+        }
+      },
+    },
+  );
 
   return tools;
 }

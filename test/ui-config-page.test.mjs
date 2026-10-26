@@ -146,17 +146,17 @@ const open = async ({ schemaErr, replaceErr, setErr, setWhen, cfg } = {}) => {
 test("every schema leaf is one card row in the shared field language", async () => {
   await open();
   const cards = $$(".cfg-section");
-  // 14 since Task 30 added the `media` section (attachment retention).
-  assert.equal(cards.length, 14, "one card per top-level schema section");
+  // 15 since Task 35 added the `addons` section (GitHub: enabled/clientId/host).
+  assert.equal(cards.length, 15, "one card per top-level schema section");
   assert.deepEqual(cards.map((c) => text(c.querySelector(".setcard__head h3"))), [
-    "Gateway", "Agents", "Messages", "Memory", "Session", "Media", "Providers", "Auth", "Models", "Channels", "Tools", "Cron", "IMAP", "Hooks",
+    "Gateway", "Agents", "Messages", "Memory", "Session", "Media", "Providers", "Auth", "Models", "Channels", "Tools", "Addons", "Cron", "IMAP", "Hooks",
   ]);
   for (const card of cards) assert.match(text(card.querySelector(".setcard__head .hint")), /^\d+ settings?$/);
   assert.equal($("#cfg-form").classList.contains("settings__stack"), true, "the cards sit on the shared stack");
 
   const rows = $$("[data-cfg-path]");
-  // 153 since Task 32 added channels.telegram.toolProgress (152 + Task 30).
-  assert.equal(rows.length, 153, "153 editable leaves");
+  // 156 since Task 35 added addons.github.{enabled,clientId,host} (153 + 3).
+  assert.equal(rows.length, 156, "156 editable leaves");
   assert.equal($$(".modal__field").length, 0, "cards do not borrow the dialog's field class");
   assert.equal($$("select:not(.dd__store)").length, 0, "no native dropdown anywhere");
   for (const r of rows) {
@@ -224,7 +224,7 @@ test("filtering hides empty groups and cards, and says when nothing matches", as
   assert.deepEqual($$(".cfg-section").filter((c) => !c.hidden).map((c) => c.dataset.cfgSection), ["memory", "tools"], "MATCH: memory.dreaming.* and tools.memory");
   const visibleGroups = $$(".cfg-group").filter((g) => !g.hidden);
   for (const g of visibleGroups) assert.ok(g.querySelector("[data-cfg-path]:not([hidden])"), "a visible group has a visible row");
-  assert.match(text($("#cfg-toolbar-count") ?? $(".cfg-toolbar .setsec__count")), /of 153 shown/);
+  assert.match(text($("#cfg-toolbar-count") ?? $(".cfg-toolbar .setsec__count")), /of 156 shown/);
 
   await typeInto("cfg-filter", "zzz-no-such-key");
   assert.equal($$(".cfg-section").filter((c) => !c.hidden).length, 0);

@@ -6,16 +6,18 @@ import { AVATAR_ACCEPT, isStoredAvatar, prepareAvatar } from "./avatar.js";
 import { friendlyModelName } from "./model-name.js";
 import { gateway } from "./rpc.js";
 import { askPermission, loadPrefs, permissionState, savePrefs, sendTest } from "./notifications.js";
+import { connectDialog } from "./repo.js";
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "models" | "providers" | "channels" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
+type TabId = "model" | "models" | "providers" | "channels" | "github" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
 
 const TABS: { id: TabId; label: string; group?: string }[] = [
   { id: "model", label: "Defaults", group: "Chat" },
   { id: "models", label: "Models", group: "Chat" },
   { id: "providers", label: "Providers", group: "Chat" },
   { id: "channels", label: "Channels", group: "Integrations" },
+  { id: "github", label: "GitHub", group: "Integrations" },
   { id: "usage", label: "Usage", group: "Monitoring" },
   { id: "skills", label: "Skills", group: "Agent" },
   { id: "tools", label: "Tools", group: "Agent" },
@@ -34,6 +36,7 @@ const TAB_ALIASES: Record<string, TabId> = {
   models: "models",
   providers: "providers",
   channels: "channels",
+  github: "github",
   usage: "usage",
   skills: "skills",
   tools: "tools",
@@ -79,6 +82,11 @@ const TAB_META: Record<TabId, { icon: string; desc: string; keywords: string }> 
     icon: glyph('<path d="M4.5 5.5h15v10h-9l-6 4.5z"/>'),
     desc: "Where the agent can reach you, starting with Telegram.",
     keywords: "telegram bot token chat pairing typing",
+  },
+  github: {
+    icon: glyph('<path d="M9 19c-4 1.2-4-2-5.5-2.5"/><path d="M15 21v-3.4a2.9 2.9 0 0 0-.8-2.3c2.7-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.3 4.3 0 0 0-.1-3.2s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.5 2.6 5.5 2.9 5.5 2.9a4.3 4.3 0 0 0-.1 3.2A4.6 4.6 0 0 0 4.1 9.3c0 4.6 2.8 5.7 5.5 6a2.9 2.9 0 0 0-.8 2.3V21"/>'),
+    desc: "Connect the account the agent clones and pushes with.",
+    keywords: "github repo repository clone branch pull request pr oauth device token gh",
   },
   usage: {
     icon: glyph('<path d="M5 20V11"/><path d="M12 20V5"/><path d="M19 20v-6"/>'),
@@ -344,6 +352,7 @@ export class Settings {
       }
     } else if (this.#tab === "providers") this.#renderProviders(providers, config, authProfiles);
     else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
+    else if (this.#tab === "github") await this.#renderGitHub(config.addons?.github ?? {});
     else if (this.#tab === "usage") void this.#renderUsage();
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") await this.#renderTools(tools, config);
@@ -370,6 +379,7 @@ export class Settings {
         models: "models",
         providers: "providers",
         channels: "channels",
+        github: "github",
         usage: "usage",
         skills: "skills",
         tools: "tools",
@@ -4819,6 +4829,83 @@ export class Settings {
    *  every channels.telegram.* key editable; the token edits through the
    *  redaction sentinel so it never crosses the socket, and the hint points
    *  at \${ENV}/SecretRef storage (P3 #30) instead of plaintext. */
+  /**
+   * Task 35 — Settings → Integrations → GitHub. The connection card the design
+   * asks for after onboarding: who is connected, the granted scopes, and the two
+   * buttons that change it. Configuration (client id, host) stays in All
+   * settings, generated from the schema; this page never shows a token because
+   * `github.status` never returns one.
+   */
+  async #renderGitHub(cfg: { enabled?: boolean; clientId?: string; host?: string }): Promise<void> {
+    const stack = el("div", { class: "settings__stack" });
+    this.#root.append(stack);
+    type Status = { connected: boolean; login: string; source: string; host: string; scopes: string[]; configured: boolean; ghCli: boolean; error?: string };
+    let status: Status | null = null;
+    try {
+      status = (await gateway.request("github.status", {})) as Status;
+    } catch {
+      /* offline: the card still explains how to connect */
+    }
+
+    const card = el("div", { class: "card" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["GitHub"]),
+        el("p", { class: "hint" }, [
+          "Work in a repository from a chat: the agent clones it, works on a branch, and opens a pull request only when you ask.",
+        ]),
+      ]),
+    ]);
+
+    if (status?.connected) {
+      card.append(
+        el("div", { class: "row", "data-gh-key": "account" }, [
+          el("span", { class: "row__label" }, ["Connected as"]),
+          el("span", { class: "row__value mono" }, [`@${status.login}`]),
+        ]),
+        el("div", { class: "row", "data-gh-key": "host" }, [
+          el("span", { class: "row__label" }, ["Host"]),
+          el("span", { class: "row__value mono" }, [status.host]),
+        ]),
+        el("div", { class: "row", "data-gh-key": "scopes" }, [
+          el("span", { class: "row__label" }, ["Granted"]),
+          el("span", { class: "row__value mono" }, [status.scopes.length ? status.scopes.join(", ") : "unknown"]),
+        ]),
+        el("div", { class: "row", "data-gh-key": "source" }, [
+          el("span", { class: "row__label" }, ["Credential"]),
+          el("span", { class: "row__value" }, [status.source === "gh" ? "this machine's gh login" : status.source === "env" ? "environment variable" : "stored token (0600)"]),
+        ]),
+      );
+    } else {
+      card.append(
+        el("p", { class: "hint", "data-gh-key": "disconnected" }, [
+          status?.configured
+            ? "Not connected. Continue with GitHub to enter a code on github.com."
+            : "Not connected, and no OAuth client id is set — add addons.github.clientId in All settings, or run `sc github adopt-gh` on the machine to reuse an existing gh login.",
+        ]),
+      );
+    }
+
+    const row = el("div", { class: "row" });
+    const connect = el("button", { class: "btn pri", id: "gh-connect", type: "button" }, [status?.connected ? "Reconnect" : "Connect GitHub"]);
+    connect.onclick = () => connectDialog(() => void this.render());
+    row.append(connect);
+    if (status?.connected) {
+      const out = el("button", { class: "btn", id: "gh-disconnect", type: "button" }, ["Disconnect"]);
+      out.onclick = async () => {
+        try {
+          await gateway.request("github.disconnect", {});
+          toast("GitHub disconnected", "ok");
+          void this.render();
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      };
+      row.append(out);
+    }
+    card.append(row);
+    stack.append(card);
+  }
+
   #renderChannels(channels: any): void {
     const tg = channels.telegram ?? {};
     const typing = tg.typing ?? {};

@@ -275,6 +275,8 @@ interface PendingMessage {
 
 export class TelegramChannel {
   #bot: GrammyBot | null = null;
+  /** chatId → the repo list behind the current `r:<page>:<slot>` buttons. */
+  #repoPages = new Map<number, string[]>();
   #pending = new Map<string, PendingMessage>();
   #username = "";
   #botId = 0;
@@ -426,6 +428,93 @@ export class TelegramChannel {
       await ctx.answerCallbackQuery({ text: marks[decision]! }).catch(() => {});
       const original = (ctx.callbackQuery?.message?.text ?? "").split("\n\n✦")[0] ?? "approval";
       await ctx.editMessageText(`${original}\n\n✦ ${marks[decision]}`).catch(() => {});
+      return;
+    }
+
+    if (kind === "n") {
+      // Chat or code. `n:c` rotates the tag and starts the chat immediately;
+      // `n:k` rotates the same way, then shows the repo picker for the *new*
+      // tag, so the binding lands on the session the user just created.
+      const choice = parts[1];
+      if (choice !== "c" && choice !== "k") return;
+      // `/new` already rotated the tag, so this reads the session the card was
+      // drawn for rather than rotating a second time on the tap.
+      const key = this.#sessionKeyFor(fromId);
+      await ctx.answerCallbackQuery({ text: choice === "c" ? "chat" : "pick a repo" }).catch(() => {});
+      if (choice === "c") {
+        await ctx.editMessageText(`💬 Chat session ${key} — say anything to begin.`).catch(() => {});
+        return;
+      }
+      await ctx.editMessageText(`⌘ code session ${key} — pick the repository:`).catch(() => {});
+      await this.#sendRepoPicker(fromId, 0);
+      return;
+    }
+
+    if (kind === "r") {
+      // Repo picker page/slot: the slot indexes the list held for this chat, so
+      // the callback stays tiny and a stale button can never bind the wrong repo.
+      const page = Number(parts[1]);
+      const slot = parts[2] ?? "";
+      if (!Number.isFinite(page) || page < 0) return;
+      if (slot === "p") {
+        await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
+        await this.#sendRepoPicker(fromId, page);
+        return;
+      }
+      const repo = this.#repoPages.get(fromId)?.[Number(slot)];
+      if (!repo) {
+        await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: repo.slice(0, 180) }).catch(() => {});
+      const key = this.#sessionKeyFor(fromId);
+      const bound = await this.service.bindRepo({ sessionKey: key, repo });
+      await ctx
+        .editMessageText(
+          bound.ok
+            ? `⌘ working in ${bound.repo} · ${bound.branch} (from ${bound.base})\nAsk for a change, then /diff to review and /pr to publish.`
+            : bound.error,
+        )
+        .catch(() => {});
+      return;
+    }
+
+    if (kind === "p") {
+      // The publish card's three answers. Draft is the default; "open" is a
+      // separate tap, and cancel says plainly that nothing happened.
+      const choice = parts[1];
+      if (choice !== "d" && choice !== "o" && choice !== "x") return;
+      const key = this.#sessionKeyFor(fromId);
+      if (choice === "x") {
+        await ctx.answerCallbackQuery({ text: "nothing published" }).catch(() => {});
+        await ctx.editMessageText("Publish cancelled — nothing left this machine.").catch(() => {});
+        return;
+      }
+      const binding = this.service.store.getSessionRepo(key);
+      if (!binding) {
+        await ctx.answerCallbackQuery({ text: "no repository in this session" }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: choice === "d" ? "opening a draft…" : "opening…" }).catch(() => {});
+      try {
+        const res = await this.service.repos.publish({
+          workspace: binding.workspace,
+          repo: binding.repo,
+          base: binding.base,
+          branch: binding.branch,
+          creds: this.service.githubCreds(),
+          title: `Changes from ${key.replace(/^telegram:/, "")}`,
+          draft: choice === "d",
+        });
+        await ctx
+          .editMessageText(
+            `${res.draft ? "Draft pull request" : "Pull request"} #${res.prNumber} opened\n${res.prUrl}\nbranch ${res.branch}`,
+            { link_preview_options: { is_disabled: false } },
+          )
+          .catch(() => {});
+      } catch (err) {
+        await ctx.editMessageText(`could not publish — ${(err as Error).message}`).catch(() => {});
+      }
       return;
     }
 
@@ -628,11 +717,69 @@ export class TelegramChannel {
 
       case "new": {
         // A rotation tag, never a delete: the old transcript stays in Sessions.
+        // Rotation happens on the command (unchanged since Task 27), so both
+        // buttons act on a session that already exists; the ids are 3 bytes and
+        // comfortably inside the 64-byte callback cap.
         const previous = this.#sessionKeyFor(scope.chatId);
         this.service.store.setMeta(`telegram:sess:${scope.chatId}`, Date.now().toString(36));
-        return reply(
-          `new session: ${this.#sessionKeyFor(scope.chatId)}\nthe previous one is kept — ${previous} is still in Sessions.`,
-        );
+        const key = this.#sessionKeyFor(scope.chatId);
+        await this.#requireBot().api
+          .sendMessage(scope.chatId, `New session ${key}\nThe previous one is kept — ${previous} is still in Sessions.\n\nChat, or code a repository?`, {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "💬 Chat", callback_data: "n:c" },
+                  { text: "⌘ Code", callback_data: "n:k" },
+                ],
+              ],
+            },
+          })
+          .catch((err: unknown) => this.log.warn(`telegram: new-session card failed: ${(err as Error).message}`));
+        return true;
+      }
+
+      case "code": {
+        // `/code owner/name` binds now; `/code` alone shows the picker. The
+        // session key is stable across the picker, so the binding lands on the
+        // conversation the user is looking at.
+        const target = sub;
+        if (target) {
+          if (!target.includes("/")) return reply("usage: /code owner/name");
+          if (this.service.loop.isBusy(this.#sessionKeyFor(scope.chatId))) {
+            return reply("a run is active — /code again when it settles");
+          }
+          const bound = await this.service.bindRepo({ sessionKey: this.#sessionKeyFor(scope.chatId), repo: target });
+          return reply(
+            bound.ok
+              ? `working in ${bound.repo} · ${bound.branch} (from ${bound.base})\nopen a PR with /pr when you are happy.`
+              : bound.error,
+          );
+        }
+        return this.#sendRepoPicker(scope.chatId, 0);
+      }
+
+      case "pr": {
+        // Publishing is never implied: this card is the whole gate on Telegram,
+        // and the draft option is the default-shaped choice.
+        const key = this.#sessionKeyFor(scope.chatId);
+        const binding = this.service.store.getSessionRepo(key);
+        if (!binding) return reply("this chat is not working in a repository — /code first");
+        const st = await this.service.repos.status(binding.workspace);
+        if (st.clean) return reply("nothing to publish — no changes in this session");
+        await this.#requireBot().api
+          .sendMessage(scope.chatId, `Publish ${st.files.length} file(s) (+${st.added} −${st.removed}) from ${binding.branch}?`, {
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: "Draft PR", callback_data: "p:d" },
+                  { text: "Open PR", callback_data: "p:o" },
+                  { text: "Cancel", callback_data: "p:x" },
+                ],
+              ],
+            },
+          })
+          .catch((err: unknown) => this.log.warn(`telegram: publish card failed: ${(err as Error).message}`));
+        return true;
       }
 
       case "model": {
@@ -684,6 +831,49 @@ export class TelegramChannel {
         // Not ours: `#onMessage` lets it through to the shared router.
         return false;
     }
+  }
+
+  /** The bot handle, or a thrown error a command can turn into a sentence. */
+  #requireBot(): GrammyBot {
+    if (!this.#bot) throw new Error("telegram is not running");
+    return this.#bot;
+  }
+
+  /**
+   * One page of the repo picker (Task 35). `callback_data` is `r:<page>:<slot>`
+   * — 8 bytes at most, and never `owner/name`: a long org path plus a private
+   * repo would blow past Telegram's 64-byte cap, and the failure is silent.
+   * The slot indexes a list we hold per chat, so a gateway restart expires the
+   * buttons rather than binding the wrong repository.
+   */
+  async #sendRepoPicker(chatId: number, page: number): Promise<boolean> {
+    let repos: { fullName: string; private: boolean }[] = [];
+    try {
+      repos = await this.service.githubRepos({ page: page + 1 });
+    } catch (err) {
+      await this.#requireBot().api
+        .sendMessage(chatId, `GitHub is not connected — ${(err as Error).message}\n\nOn the gateway: sc github adopt-gh (or sc github connect)`)
+        .catch(() => {});
+      return true;
+    }
+    if (!repos.length) {
+      await this.#requireBot().api
+        .sendMessage(chatId, page === 0 ? "no repositories on this account" : "no more repositories")
+        .catch(() => {});
+      return true;
+    }
+    this.#repoPages.set(chatId, repos.map((r) => r.fullName));
+    const rows = repos.slice(0, 8).map((r, i) => [
+      { text: `${r.private ? "🔒 " : ""}${r.fullName}`.slice(0, 60), callback_data: `r:${page}:${i}` },
+    ]);
+    const nav: { text: string; callback_data: string }[] = [];
+    if (page > 0) nav.push({ text: "‹ Back", callback_data: `r:${page - 1}:p` });
+    nav.push({ text: "More ›", callback_data: `r:${page + 1}:p` });
+    rows.push(nav);
+    await this.#requireBot().api
+      .sendMessage(chatId, "Pick a repository — it becomes this chat's workspace.", { reply_markup: { inline_keyboard: rows } })
+      .catch((err: unknown) => this.log.warn(`telegram: repo picker failed: ${(err as Error).message}`));
+    return true;
   }
 
   /** `/new` rotates the tag, so the next message opens a fresh session while
@@ -919,6 +1109,20 @@ export class TelegramChannel {
         const cleaned = stripStrayHeartbeatOk(finalText);
         if (cleaned.trim() === "") return;
         await delivery.reply(cleaned);
+        // Task 35: in a code session the answer is not the whole story — say
+        // what changed and name the two commands that act on it. One line, no
+        // keyboard: the turn is done, this is a signpost, not a question.
+        const binding = this.service.store.getSessionRepo(this.#sessionKeyFor(chatId));
+        if (!binding) return;
+        try {
+          const st = await this.service.repos.status(binding.workspace);
+          if (st.clean) return;
+          await delivery.reply(
+            `${st.files.length} file(s) changed (+${st.added} −${st.removed}) · /diff to review · /pr to publish`,
+          );
+        } catch {
+          /* the code session's bookkeeping must never cost the answer */
+        }
       },
     });
     typing.stop(); // belt-and-braces: send() settled (turn end, error, abort)
