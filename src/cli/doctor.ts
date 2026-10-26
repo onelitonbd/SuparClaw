@@ -363,6 +363,25 @@ export async function runDoctorChecks(opts: { insideGateway?: boolean } = {}): P
     checks.push({ name: "gateway", status: "ok", detail: "serving (this daemon answered the request)" });
   }
 
+  // attachments (Task 30) — the size is otherwise invisible until the phone is
+  // full. Warns past 500 MB, and says how to get rid of them.
+  try {
+    const { mediaStats } = await import("../agent/media-store.js");
+    const stats = mediaStats(workspaceDir());
+    const mb = stats.bytes / 1048576;
+    checks.push({
+      name: "attachments",
+      status: mb > 500 ? "warn" : "ok",
+      detail:
+        stats.files === 0
+          ? "none yet"
+          : `${stats.files} file(s), ${mb.toFixed(mb < 10 ? 1 : 0)} MB, oldest ${stats.oldestDays}d`,
+      ...(mb > 500 ? { fix: "sc media prune --days 30 (or set media.retentionDays)" } : {}),
+    });
+  } catch {
+    /* media tree unreadable — the disk check below still reports the volume */
+  }
+
   // disk
   try {
     const stats = await import("node:fs").then((fs) => fs.statfsSync(stateDir()));

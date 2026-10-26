@@ -567,6 +567,28 @@ export class Store {
       .reverse() as unknown as MessageRow[];
   }
 
+  /** Every message body in a session — the delete-a-chat path reads files out
+   *  of these before the rows go (Task 30). */
+  messageContents(sessionId: string): string[] {
+    return (this.db.prepare("SELECT content FROM messages WHERE session_id = ?").all(sessionId) as { content: string }[]).map(
+      (r) => String(r.content ?? ""),
+    );
+  }
+
+  /**
+   * Does any message, in any session, still mention this text? Used to keep an
+   * attachment alive when a fork references the same file. LIKE wildcards in
+   * the needle are escaped, otherwise `media/a_b.png` would match `media/axb.png`.
+   */
+  anyMessageMentions(needle: string): boolean {
+    if (!needle) return false;
+    const escaped = needle.replace(/[\\%_]/g, (m) => `\\${m}`);
+    const hit = this.db
+      .prepare("SELECT 1 AS hit FROM messages WHERE content LIKE ? ESCAPE '\\' LIMIT 1")
+      .get(`%${escaped}%`) as { hit?: number } | undefined;
+    return Boolean(hit);
+  }
+
   /** Newest `user` row (regenerate re-runs exactly this prompt). */
   lastUserMessage(sessionId: string): MessageRow | undefined {
     return this.db

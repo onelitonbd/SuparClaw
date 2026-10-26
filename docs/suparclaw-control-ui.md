@@ -32,6 +32,17 @@ the raw key; the key stays on the row's tooltip and accessible name. Every
 writer of the header goes through `setHeaderTitle()`, and `refresh()` re-reads
 the row so a name that arrives mid-conversation appears without a reload.
 
+### Attachments in the transcript
+
+A message's files are stored as `<media:…>` tags (that is the model's syntax).
+`Chat.user()` splits them with `ui/src/media-refs.ts` and draws a chip —
+`📎 report.pdf · 512 KB` — instead of the XML, on the live path and on every
+reload/replay alike. Clicking a chip fetches `GET /media/<workspace path>` with
+the gateway token and downloads the file; the route is confined to
+`workspace/media`, refuses symlinks, and answers 404 when the file was pruned
+(the chip then says "file removed"). Rejections and omitted files stay visible
+as a muted chip, never as a silently missing message.
+
 ## Design tokens
 
 `ui/styles.css` holds the whole system. Light is the default; the dark set is

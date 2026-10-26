@@ -43,8 +43,10 @@ test("gateway wires sessions.delete + sessions.export + archived patch + include
   assert.match(src, /"sessions\.delete",/);
   assert.match(src, /"sessions\.export",/);
   assert.match(src, /case "sessions\.delete":/);
-  assert.match(src, /service\.store\.deleteSession\(key\)/);
-  assert.match(src, /okFrame\(id, \{ deleted: res\.deleted, messages: res\.messages/);
+  // Task 30: the delete also removes the chat's attachments — through the same
+  // helper the CLI uses, so only files nothing else references go.
+  assert.match(src, /deleteSessionWithMedia\(service\.store, workspaceDir\(\), key\)/);
+  assert.match(src, /deleted: res\.deleted,\s*messages: res\.messages,\s*files: res\.files,/);
   assert.match(src, /case "sessions\.export":/);
   assert.match(src, /exportSessionTranscript\(service\.store, row/); // same artifacts as the CLI (#20)
   assert.match(src, /content: summary/); // browser downloads directly

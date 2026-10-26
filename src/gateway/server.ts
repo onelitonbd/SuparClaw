@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import type { WebSocketServer as WsServer, WebSocket } from "ws";
 import type { Service } from "../agent/service.js";
@@ -17,6 +17,7 @@ import { redactSecrets, resolveRedacted, resolveRedactedDeep } from "../config/r
 import { CONFIG_SCHEMA, modelProfile, modelProfiles, parseConfig } from "../config/schema.js";
 import { readSkillBody, skillSlug, writeSkill } from "../agent/skills.js";
 import { workspaceDir } from "../util/paths.js";
+import { mediaFileOnDisk, resolveMediaPath } from "../agent/media-store.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { handleHooksRequest, type HookService } from "./webhooks.js";
 import { handleOpenAiRequest, type OpenAiService } from "./openai-http.js";
@@ -27,6 +28,35 @@ import { historyPayload } from "../agent/history.js";
 // driven; SuparClaw has one OpenAI-compatible transport, so one ladder is the
 // single source of truth (mirrors agents.defaults.reasoningEffort's values).
 export const THINKING_LEVELS = ["inherit", "off", "low", "medium", "high", "xhigh", "max"] as const;
+
+// Attachment types (Task 30). Only these are ever served from the media tree;
+// anything unknown goes out as a download with `application/octet-stream`.
+const MEDIA_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".ogg": "audio/ogg",
+  ".opus": "audio/opus",
+  ".wav": "audio/wav",
+  ".zip": "application/zip",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+/** Pictures a browser can render without executing anything. */
+const INLINE_IMAGE = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -847,8 +877,20 @@ export class Gateway {
             send(errFrame(id, "bad_request", "sessionKey is required"));
             return;
           }
-          const res = service.store.deleteSession(key);
-          send(okFrame(id, { deleted: res.deleted, messages: res.messages, sessionKey: key }));
+          // Task 30: the chat's uploads go with it — but only the files no
+          // other session (a fork) still references.
+          const { deleteSessionWithMedia } = await import("../agent/media-cleanup.js");
+          const res = deleteSessionWithMedia(service.store, workspaceDir(), key);
+          send(
+            okFrame(id, {
+              deleted: res.deleted,
+              messages: res.messages,
+              files: res.files,
+              freedBytes: res.freedBytes,
+              shared: res.shared,
+              sessionKey: key,
+            }),
+          );
           return;
         }
         case "sessions.export": {
@@ -1637,6 +1679,14 @@ case "sessions.rename": {
       return;
     }
 
+    // Attachments (Task 30): the files a message carried, served from
+    // <workspace>/media only. This is what makes a transcript chip clickable
+    // after a reload; it is deliberately NOT part of the UI's static tree.
+    if (url === "/media" || url.startsWith("/media/")) {
+      this.#serveMedia(req, res, url);
+      return;
+    }
+
     const cfg = this.service.config;
     if (!cfg.gateway.controlUi.enabled || !this.webRoot || !existsSync(this.webRoot)) {
       const looked = this.webRoot ? `looked in ${this.webRoot}` : "no ui/ directory found next to the install";
@@ -1666,5 +1716,84 @@ case "sessions.rename": {
     const type = MIME[extname(file)] ?? "application/octet-stream";
     res.writeHead(200, { "content-type": type, "cache-control": "no-cache" });
     res.end(readFileSync(file));
+  }
+
+  /**
+   * `GET /media/<workspace path>` — download one attachment.
+   *
+   * Auth mirrors the WebSocket: mode none, a loopback peer with the bypass,
+   * or `Authorization: Bearer <gateway token>`. Never a token in the query
+   * string — those end up in logs and browser history. The path is confined to
+   * `workspace/media` (symlinks resolved, traversal refused) and every response
+   * is `nosniff` + sandboxed, so an uploaded HTML/SVG file cannot run script on
+   * the UI's own origin.
+   */
+  #serveMedia(req: IncomingMessage, res: ServerResponse, url: string): void {
+    const method = (req.method ?? "GET").toUpperCase();
+    const text = (code: number, body: string): void => {
+      res.writeHead(code, { "content-type": "text/plain; charset=utf-8" });
+      res.end(body);
+    };
+    if (method !== "GET" && method !== "HEAD") {
+      text(405, "method not allowed\n");
+      return;
+    }
+
+    const auth = this.service.config.gateway.auth;
+    const token = auth.token;
+    const remote = req.socket.remoteAddress ?? "";
+    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
+    const authorized = auth.mode === "none" || (loopback && auth.loopbackBypass) || (Boolean(token) && bearer === token);
+    if (!authorized) {
+      text(401, "unauthorized — pass the gateway token as a bearer token (sc token)\n");
+      return;
+    }
+
+    let rel: string;
+    try {
+      rel = decodeURIComponent(url.slice("/media/".length));
+    } catch {
+      text(400, "bad path\n");
+      return;
+    }
+    const workspace = workspaceDir();
+    const relPath = `media/${rel}`;
+    // Two different answers on purpose: "that path is not ours" (403) and "that
+    // file is gone" (404 — pruned or deleted by hand). The UI says so in words.
+    if (!resolveMediaPath(workspace, relPath)) {
+      text(403, "forbidden — attachments are served from the workspace media tree only\n");
+      return;
+    }
+    const full = mediaFileOnDisk(workspace, relPath);
+    if (!full) {
+      text(404, "not found — this file was removed\n");
+      return;
+    }
+
+    const ext = extname(full).toLowerCase();
+    const name = full.split(/[\\/]/).pop() ?? "file";
+    // RFC 5987: browsers want the UTF-8 name, but a plain fallback keeps older
+    // clients from downloading everything as "download".
+    const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    const disposition = INLINE_IMAGE.has(ext)
+      ? `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`
+      : `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+    const headers = {
+      "content-type": MEDIA_MIME[ext] ?? "application/octet-stream",
+      "content-length": String(statSync(full).size),
+      "content-disposition": disposition,
+      "cache-control": "private, max-age=300",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "sandbox",
+    } as Record<string, string>;
+    res.writeHead(200, headers);
+    if (method === "HEAD") {
+      res.end();
+      return;
+    }
+    const stream = createReadStream(full);
+    stream.on("error", () => res.destroy());
+    stream.pipe(res);
   }
 }

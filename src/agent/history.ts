@@ -13,6 +13,7 @@
 import type { MessageRow, Store } from "../state/db.js";
 import type { ModelPricing, UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
+import { stripMediaRefs } from "../../ui/src/media-refs.js";
 
 export interface HistoryMessage {
   id: number;
@@ -95,7 +96,10 @@ export function rewindToPrompt(store: Store, sessionId: string, messageId: numbe
   if (!row) return { ok: false, error: "no such message in this session" };
   if (row.role !== "user") return { ok: false, error: "rewind must point at a user message" };
   const deleted = store.deleteMessagesFrom(sessionId, messageId);
-  return { ok: true, text: row.content, messageId: row.id, deleted };
+  // Task 30: the stored prompt carries its files as <media:…> tags. The composer
+  // is for editing prose, so the tags come off. (Regenerate keeps them: that
+  // path re-runs the model turn and must keep the file reference.)
+  return { ok: true, text: stripMediaRefs(row.content), messageId: row.id, deleted };
 }
 
 export type TruncateResult =

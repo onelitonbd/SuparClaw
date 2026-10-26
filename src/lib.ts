@@ -1,5 +1,5 @@
 // Test surface: internals are exported so the test suite can import the built bundle.
-export { readTextSafe } from "./util/paths.js";
+export { readTextSafe, workspaceDir, stateDir, ensureDirs } from "./util/paths.js";
 export { Screen, clipToWidth, rule } from "./tui/renderer.js";
 export { renderMarkdown, renderInline } from "./tui/markdown.js";
 export { palette, theme, detectLightMode, markdownTheme } from "./tui/theme.js";
@@ -289,3 +289,18 @@ export {
   type CodeModeConfig,
   type ExecCellResult,
 } from "./agent/code-mode.js";
+export { parseMediaRefs, stripMediaRefs, isSafeMediaPath, fmtBytes, type MediaRef } from "../ui/src/media-refs.js";
+export {
+  listMedia,
+  mediaStats,
+  pruneMedia,
+  pruneOrphans,
+  deleteFiles,
+  mediaFileOnDisk,
+  resolveMediaPath,
+  mediaRoot,
+  type MediaFile,
+  type MediaStats,
+  type PruneResult,
+} from "./agent/media-store.js";
+export { pathsInSession, deleteSessionWithMedia, type DeleteSessionResult } from "./agent/media-cleanup.js";

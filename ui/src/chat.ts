@@ -74,6 +74,8 @@ export interface ChatHandlers {
   approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
   questionAnswer(id: string, answers: Record<string, string[]>): void;
+  /** Open/download one saved attachment by its workspace path (Task 30). */
+  openMedia?(path: string, name: string): void;
 }
 
 type ToolStatus = "running" | "done" | "error" | "pending" | "skipped";
@@ -86,6 +88,8 @@ const ATTACH_MAX_TOTAL = 12 * 1048576;
 const IMAGE_RE = /^image\/(png|jpe?g|webp|gif)$/i;
 const FILE_ICON =
   '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+
+import { parseMediaRefs, fmtBytes, type MediaRef } from "./media-refs.js";
 
 const CHIPS = [
   "Explain this repository",
@@ -419,6 +423,38 @@ export class Chat {
     try { askOnceOnFirstSend(); } catch { /* non-fatal */ }
   }
 
+  /**
+   * One saved file in the transcript. Clickable when the file is still on disk;
+   * a muted note when the gateway told us it was omitted (too large, unsupported
+   * media) — the message must still say what happened.
+   */
+  #mediaChip(ref: MediaRef): HTMLElement {
+    const name = ref.name || ref.path.split("/").pop() || ref.kind;
+    const size = ref.size ? fmtBytes(ref.size) : "";
+    if (!ref.path) {
+      const note = el("span", { class: "msg__att-file msg__att-file--gone mono" });
+      note.textContent = ref.kind === "sticker" ? `🦀 ${ref.label ?? "sticker"}` : `📎 ${name || ref.kind} — ${ref.omitted ?? "not saved"}`;
+      note.title = ref.omitted ?? "this file was not saved";
+      return note;
+    }
+    const open = this.#handlers.openMedia;
+    if (!open) {
+      const chip = el("span", { class: "msg__att-file mono" });
+      chip.textContent = `📎 ${name}${size ? ` · ${size}` : ""}`;
+      return chip;
+    }
+    const btn = el("button", {
+      class: "msg__att-file msg__att-file--open mono",
+      type: "button",
+      "data-path": ref.path,
+      title: `${ref.path}${ref.mime ? ` · ${ref.mime}` : ""} — click to open`,
+      "aria-label": `Open attachment ${name}`,
+    });
+    btn.textContent = `📎 ${name}${size ? ` · ${size}` : ""}`;
+    btn.onclick = () => open(ref.path, name);
+    return btn;
+  }
+
   /** ---- attachment staging (P3 #28) ---- */
 
   #stageFiles(files: File[]): void {
@@ -723,6 +759,10 @@ export class Chat {
 
   user(text: string, attachments?: StagedAttachment[], opts: { id?: number } = {}): void {
     this.#clearEmpty();
+    // Task 30: a stored message carries its files as <media:…> tags. Split them
+    // out here — this is the one writer both the live path and replaceThread()
+    // go through — so a reload shows a chip, not the XML the model reads.
+    const { text: prose, refs } = parseMediaRefs(text);
     const parts: HTMLElement[] = [];
     if (attachments && attachments.length > 0) {
       const strip = el("div", { class: "msg__atts" });
@@ -736,13 +776,17 @@ export class Chat {
         }
       }
       parts.push(strip);
+    } else if (refs.length > 0) {
+      const strip = el("div", { class: "msg__atts" });
+      for (const ref of refs) strip.append(this.#mediaChip(ref));
+      parts.push(strip);
     }
-    if (text) {
+    if (prose) {
       const bubble = el("div", { class: "bubble" });
-      bubble.textContent = text;
+      bubble.textContent = prose;
       // Copy returns exactly what was typed — newlines included, never the
-      // rendered/collapsed text.
-      bubble.dataset["md"] = text;
+      // rendered/collapsed text and never the media tags.
+      bubble.dataset["md"] = prose;
       parts.push(bubble);
     }
     if (parts.length === 0) parts.push(el("div", { class: "bubble" }));

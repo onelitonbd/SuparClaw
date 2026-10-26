@@ -142,6 +142,24 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./backup.js")).cmdBackup(rest);
     case "uninstall":
       return (await import("./uninstall.js")).cmdUninstall(rest);
+    case "media": {
+      // Task 30: attachments on disk — what they cost, and how to remove them.
+      const { mediaCmd } = await import("./media.js");
+      const { Store } = await import("../state/db.js");
+      const { dbPath, workspaceDir } = await import("../util/paths.js");
+      const { readConfigFile } = await import("../config/load.js");
+      const cfg = (readConfigFile().config ?? {}) as { media?: { retentionDays?: number } };
+      const store = existsSync(dbPath()) ? Store.open(dbPath()) : null;
+      try {
+        return await mediaCmd(rest, {
+          workspace: workspaceDir(),
+          store,
+          retentionDays: Number(cfg.media?.retentionDays ?? 0) || 0,
+        });
+      } finally {
+        store?.close();
+      }
+    }
     case "memory": {
       // P3 #21: memory management CLI (their openclaw memory namespace).
       const { memoryCmd } = await import("./memory-commands.js");
@@ -413,8 +431,14 @@ async function sessionsOverviewCmd(sub: string, rest: string[]): Promise<number>
         console.error("aborted (pass --yes to skip the prompt)");
         return 1;
       }
-      const res = store.deleteSession(key);
-      console.log(`${key} deleted (${res.messages} message(s) removed)`);
+      // Task 30: attachments go with the chat, unless another session (a fork)
+      // still references the same file.
+      const { deleteSessionWithMedia } = await import("../agent/media-cleanup.js");
+      const { workspaceDir } = await import("../util/paths.js");
+      const res = deleteSessionWithMedia(store, workspaceDir(), key);
+      const files = res.files > 0 ? `, ${res.files} attachment(s) removed (${res.freedBytes} bytes)` : "";
+      const shared = res.shared > 0 ? `, ${res.shared} attachment(s) kept (still referenced)` : "";
+      console.log(`${key} deleted (${res.messages} message(s) removed${files}${shared})`);
       return 0;
     }
     if (sub === "show") {

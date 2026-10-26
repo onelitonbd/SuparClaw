@@ -30,15 +30,14 @@ export function skillsDir(): string {
 export function logsDir(): string {
   return join(stateDir(), "logs");
 }
-export function mediaDir(): string {
-  return join(stateDir(), "media");
-}
 export function pidPath(): string {
   return join(stateDir(), "gateway.pid");
 }
 
 export function ensureDirs(): void {
-  for (const dir of [stateDir(), workspaceDir(), skillsDir(), logsDir(), mediaDir()]) {
+  // Attachments live under workspace/media (Task 30); there is no separate
+  // top-level media dir — it only ever held an empty folder.
+  for (const dir of [stateDir(), workspaceDir(), skillsDir(), logsDir()]) {
     mkdirSync(dir, { recursive: true });
   }
 }

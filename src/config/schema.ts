@@ -357,6 +357,18 @@ export const CONFIG_SCHEMA: SchemaNode = {
         },
       },
     },
+    // Task 30 — attachments on disk (`<workspace>/media`). 0 keeps them
+    // forever, which is the default: silently deleting the only copy of a
+    // document someone sent is worse than disk growth, and a transcript that
+    // still shows a file would break. Turn it on and the gateway sweeps at
+    // startup + hourly; `sc media prune` does the same by hand.
+    media: {
+      t: "object",
+      default: {},
+      fields: {
+        retentionDays: { t: "int", min: 0, default: 0 },
+      },
+    },
     providers: {
       t: "record",
       default: {},
@@ -1088,6 +1100,8 @@ export interface SuparClawConfig {
     };
   };
   memory: { dreaming: { enabled: boolean; schedule: string } };
+  /** Attachment retention (Task 30); 0 = keep forever. */
+  media: { retentionDays: number };
   // P3 #19: retention controls (their session.maintenance).
   session: {
     maintenance: {

@@ -74,6 +74,42 @@ Settings → Defaults → **Session naming** is the same knob. An empty value is
 an error — it means "same as the default model"; a non-empty one is validated
 against the configured providers exactly like `agents.defaults.model`.
 
+## Attachments
+
+Anything you attach in the Control UI or send to the Telegram bot is written to
+disk on this device, under `<state>/workspace/media/` — web uploads directly
+there, Telegram media under `media/telegram/<chatId>/`. On Termux that is
+`/data/data/com.termux/files/home/.suparclaw/workspace/media/`.
+
+What the model sees depends on the type:
+
+| Type | Reaches the model |
+|---|---|
+| image (png/jpg/webp/gif) | the bytes, inline for that one turn (base64 content parts) |
+| everything else (pdf, audio, video, docs) | only a path in the prompt; the agent calls `pdf` / `fs_read` / `exec` to look at it |
+
+A text-only model is not a failure: the image turn is retried once without it
+(`[image omitted - provider text-only]`), and PDFs never need vision — the `pdf`
+tool extracts text locally. Telegram additionally runs media understanding
+(describe / transcribe / extract) before the reply; web uploads do not.
+
+Limits: 4 files per message, 8 MB each, 12 MB total on the web; 10 files,
+`channels.telegram.mediaMaxMb` (20 MB default) on Telegram.
+
+Files are kept forever by default. Clicking a file chip in a transcript
+downloads the original through the gateway (token-guarded); if a file has been
+removed the chip says so. To make the daemon clean up after itself:
+
+```bash
+sc config set media.retentionDays 30     # 0 = keep forever (default)
+sc media status                          # files, size, oldest
+sc media prune --days 30 --dry-run       # what an age prune would delete
+sc media prune --orphans                 # files no message references
+```
+
+Deleting a chat (`sc sessions delete`, or Delete in the session menu) deletes the
+attachments that only that chat referenced; files a fork still points at stay.
+
 ## Commands
 
 | Command | What it does |

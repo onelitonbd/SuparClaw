@@ -18,6 +18,7 @@ import type { SurfaceFacts } from "./surfaces.js";
 import { rewindToPrompt, truncateLastTurn } from "./history.js";
 import { settingsCtlFrom, type SelfRuntime, type SettingsCtl } from "./self.js";
 import { namingDecision, namingSample } from "./naming.js";
+import { pruneMedia } from "./media-store.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
@@ -562,6 +563,27 @@ export class Service {
   }
 
 
+  /**
+   * Attachment retention (Task 30). Runs with session maintenance, reads the
+   * config live each time, and does nothing at all unless `media.retentionDays`
+   * is above zero — an unattended delete is not something to be clever about.
+   */
+  #mediaMaintenanceTick(why: "startup" | "interval"): void {
+    try {
+      const days = Number(this.config.media?.retentionDays ?? 0) || 0;
+      if (days <= 0) return;
+      const res = pruneMedia(workspaceDir(), { maxAgeDays: days });
+      if (res.removed.length > 0) {
+        this.log.info(
+          `media retention (${why}): removed ${res.removed.length} file(s) older than ${days}d ` +
+            `(${res.freedBytes} bytes)${res.kept ? `, kept ${res.kept}` : ""}`,
+        );
+      }
+    } catch (err) {
+      this.log.warn(`media retention (${why}) failed: ${(err as Error).message}`);
+    }
+  }
+
   /** Arm (or re-arm) the dreaming sweep from config.memory.dreaming. */
   async armDreaming(): Promise<void> {
     const d = this.config.memory?.dreaming;
@@ -1042,10 +1064,16 @@ export class Service {
     // Session-store maintenance (P3 #19; their session.maintenance batched on
     // writes — hourly + once shortly after boot here, config read live each
     // tick so edits apply without a restart).
-    this.#maintenanceTimer = setInterval(() => this.#sessionMaintenanceTick("interval"), 60 * 60 * 1000);
+    this.#maintenanceTimer = setInterval(() => {
+      this.#sessionMaintenanceTick("interval");
+      this.#mediaMaintenanceTick("interval");
+    }, 60 * 60 * 1000);
     this.#maintenanceTimer.unref?.();
     {
-      const boot = setTimeout(() => this.#sessionMaintenanceTick("startup"), 15_000);
+      const boot = setTimeout(() => {
+        this.#sessionMaintenanceTick("startup");
+        this.#mediaMaintenanceTick("startup");
+      }, 15_000);
       boot.unref?.();
     }
     // Config edits made outside config.set (sc config set, hand edits) must

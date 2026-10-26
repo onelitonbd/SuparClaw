@@ -160,6 +160,43 @@ const chat = new Chat(document.body, {
   cancelQueued: (runId) => { void gateway.request("chat.abort", { sessionKey, runId }); },
   // ask_user card answers (P2 #8) ride their own RPC (session-scoped).
   questionAnswer: (_id, answers) => { void gateway.request("chat.questionAnswer", { sessionKey, answers }); },
+  // A transcript chip (Task 30): fetch the saved file with the gateway token and
+  // hand it to the browser. The token never goes in the URL — the route accepts
+  // it as a bearer header, exactly like the WebSocket does.
+  openMedia: (path: string, name: string) => {
+    void (async () => {
+      try {
+        const url = `${location.origin}/media/${path.split("/").map(encodeURIComponent).join("/")}`;
+        const res = await fetch(url, {
+          headers: gateway.token ? { authorization: `Bearer ${gateway.token}` } : {},
+        });
+        if (res.status === 404) {
+          toast("file removed — pruned or deleted", "err");
+          return;
+        }
+        if (res.status === 403) {
+          toast("not allowed — that path is outside the media folder", "err");
+          return;
+        }
+        if (res.status === 401) {
+          toast("gateway refused the download — run: sc token", "err");
+          return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = href;
+        a.download = name || path.split("/").pop() || "file";
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(href), 10_000);
+      } catch (err) {
+        toast((err as Error).message, "err");
+      }
+    })();
+  },
 });
 
 /* ---------------- events ---------------- */
