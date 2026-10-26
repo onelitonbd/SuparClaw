@@ -36,15 +36,32 @@ export interface UpdatePlan {
   upToDate: boolean;
 }
 
-/** Which ref to update FROM: flag, then .git's checked-out branch, then main. */
+/** The ref `install.sh` recorded for an unpacked tree (Task 37). */
+export const INSTALL_REF_FILE = ".suparclaw-ref";
+
+/**
+ * Which ref to update FROM, most specific first:
+ *   `--ref` flag → the checkout's own branch (`.git/HEAD`) → the ref
+ *   `install.sh` recorded → `main`.
+ *
+ * The third step exists because an unpacked install has no `.git`: without it,
+ * installing `--ref <branch>` and later running `sc update` would silently pull
+ * `main` over the branch build — which is precisely how an add-on disappears.
+ */
 export function resolveRef(root: string, flag?: string): string {
-  if (flag) return flag;
+  if (flag?.trim()) return flag.trim();
   const head = join(root, ".git", "HEAD");
   try {
     const m = /^ref: refs\/heads\/(.+)$/.exec(readFileSync(head, "utf8").trim());
     if (m) return m[1]!;
   } catch {
-    /* an unpacked install has no .git — main it is */
+    /* an unpacked install has no .git — fall through to the recorded ref */
+  }
+  try {
+    const recorded = readFileSync(join(root, INSTALL_REF_FILE), "utf8").trim();
+    if (recorded) return recorded;
+  } catch {
+    /* installed before this file existed — main it is */
   }
   return "main";
 }

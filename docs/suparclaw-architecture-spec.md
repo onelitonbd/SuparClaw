@@ -280,10 +280,13 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 
 ## 8. Install & distribution (Termux-first)
 
-- **Primary:** `npm i -g suparclaw` — engine `>=24.16` + runtime probe (no <25/≥26.1 hard gate;
-  probe instead). **No preinstall/postinstall side effects beyond a version print.**
-- **Fallback (no npm):** `curl -fsSL …/install.sh | bash` — Termux-aware: detects `$PREFIX`, downloads
-  the single-file bundle (~5–10 MB), writes `sc` launcher to `$PREFIX/bin`, runs `sc doctor`.
+- **Primary:** `curl -fsSL …/install.sh | bash` — Termux-aware: detects `$PREFIX`, fetches the
+  runtime files only (sparse clone, ~2 MB; the codeload tarball is the fallback), writes the `sc`
+  launcher to `$PREFIX/bin`, records the ref in `current/.suparclaw-ref`, runs `sc doctor`.
+  `--ref <branch|tag>` installs something other than `main`, and `sc update` then follows it.
+- **From source:** `npm i -g github:onelitonbd/SuparClaw` — engine `>=24.16` + runtime probe
+  (no <25/≥26.1 hard gate; probe instead). **No preinstall/postinstall side effects beyond a
+  version print.** The package is not published to the npm registry, so the bare name would 404.
 - **Service:** `sc service install` writes a **termux-services** run script
   (`$PREFIX/var/service/suparclaw/run`) and prints `termux-wake-lock` guidance; `sc service status`.
   No systemd assumptions, ever.

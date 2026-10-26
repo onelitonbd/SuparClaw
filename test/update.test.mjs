@@ -1,11 +1,11 @@
 // P2 #13 — sc update pure decisions.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { parseRepoSlug, resolveRef, currentSha, computeUpdatePlan, fetchRemoteHead } = await import("../dist/lib.js");
+const { parseRepoSlug, resolveRef, currentSha, computeUpdatePlan, fetchRemoteHead, INSTALL_REF_FILE } = await import("../dist/lib.js");
 
 test("parseRepoSlug reads the three github shapes", () => {
   assert.deepEqual(parseRepoSlug("https://github.com/a/b.git"), { owner: "a", repo: "b" });
@@ -25,6 +25,32 @@ test("resolveRef: flag > .git HEAD branch > main; currentSha: branch ref, detach
   writeFileSync(join(dir, ".git", "refs", "heads", "arena", "16378222-suparclaw"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n");
   assert.equal(resolveRef(dir), "arena/16378222-suparclaw");
   assert.equal(currentSha(dir), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+});
+
+test("an unpacked install updates the ref it was installed from (Task 37)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sc-ref-"));
+  assert.equal(INSTALL_REF_FILE, ".suparclaw-ref", "the file install.sh writes");
+  assert.equal(resolveRef(dir), "main", "an old install with no ref file is unchanged");
+
+  writeFileSync(join(dir, INSTALL_REF_FILE), "arena/439621f4-suparclaw\n");
+  assert.equal(resolveRef(dir), "arena/439621f4-suparclaw", "the recorded branch wins over the default");
+  assert.equal(resolveRef(dir, "beta"), "beta", "an explicit --ref still wins over the file");
+  assert.equal(resolveRef(dir, "  "), "arena/439621f4-suparclaw", "a blank flag is not a ref");
+
+  // A blank/whitespace file is not a ref either — it must not become "".
+  writeFileSync(join(dir, INSTALL_REF_FILE), "   \n");
+  assert.equal(resolveRef(dir), "main");
+
+  // A git checkout describes itself; the recorded file never overrides it.
+  mkdirSync(join(dir, ".git", "refs", "heads", "arena"), { recursive: true });
+  writeFileSync(join(dir, ".git", "HEAD"), "ref: refs/heads/arena/other\n");
+  writeFileSync(join(dir, INSTALL_REF_FILE), "arena/439621f4-suparclaw\n");
+  assert.equal(resolveRef(dir), "arena/other", ".git/HEAD beats the file");
+
+  // And install.sh must actually write it, or the whole thing is decoration.
+  const installer = readFileSync(join(process.cwd(), "install.sh"), "utf8");
+  assert.match(installer, /printf '%s\\n' "\$REF" > "\$PREFIX_DIR\/current\/\.suparclaw-ref"/, "install.sh records the ref it unpacked");
+  assert.match(installer, /--ref <branch\|tag>   install another ref \(default: main\)/, "--ref is documented in the installer header");
 });
 
 test("computeUpdatePlan: prefix-tolerant sha compare", () => {

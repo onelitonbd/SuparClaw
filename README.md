@@ -7,18 +7,44 @@ channels, tools, skills, sessions, memory files and cron — packaged as a singl
 JavaScript file with **zero native modules**.
 
 Built in the shape of OpenClaw (daemon → gateway → agent loop → tools/skills/sessions), but
-designed for a phone: it installs with `npm i -g`, starts in milliseconds, and never needs
+designed for a phone: it installs with one `curl`, starts in milliseconds, and never needs
 PRoot, glibc, node-gyp or systemd.
 
 ## Install (Termux)
 
 ```bash
-pkg install nodejs          # Node >= 24.16
-npm i -g suparclaw          # or: npm i -g github:onelitonbd/SuparClaw
+curl -fsSL https://raw.githubusercontent.com/onelitonbd/SuparClaw/main/install.sh | bash
 
 sc init                     # workspace files + gateway token
 sc doctor                   # verify this device
 sc chat                     # open the terminal UI
+```
+
+The installer checks Node (installing it with `pkg` on Termux if needed), fetches
+only the runtime files — a ~2 MB sparse checkout, not the repository history —
+drops them in `~/.suparclaw-install/current`, and wires an `sc` launcher into
+`$PREFIX/bin` (or `~/.local/bin`). It needs Node >= 24.16 and nothing else.
+
+```bash
+# install from another branch or tag
+curl -fsSL https://raw.githubusercontent.com/onelitonbd/SuparClaw/main/install.sh \
+  | bash -s -- --ref <branch|tag>
+
+# a private fork needs a token
+SUPARCLAW_GITHUB_TOKEN=ghp_… curl -fsSL …/install.sh | bash -s -- --ref main
+
+# elsewhere / custom location
+curl -fsSL …/install.sh | bash -s -- --dir ~/suparclaw
+```
+
+`install.sh` records the ref it installed in `current/.suparclaw-ref`, so
+`sc update` keeps updating **that** ref; `sc update --ref main` switches back.
+
+From source instead (needs a build step):
+
+```bash
+npm i -g github:onelitonbd/SuparClaw
+sc version
 ```
 
 Run the daemon in the background:

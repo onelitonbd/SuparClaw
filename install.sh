@@ -209,7 +209,12 @@ for f in $RUNTIME_FILES; do
   [ -e "$SRC/$f" ] && cp -R "$SRC/$f" "$PREFIX_DIR/current/"
 done
 [ -f "$PREFIX_DIR/current/dist/sc.js" ] || { fail "archive did not contain dist/"; exit 1; }
+# Remember *which* ref this tree came from. An unpacked install has no .git, so
+# this one line is the only thing that lets `sc update` stay on the branch it was
+# installed from instead of quietly pulling main over it.
+printf '%s\n' "$REF" > "$PREFIX_DIR/current/.suparclaw-ref"
 ok "installed $(du -sh "$PREFIX_DIR/current" 2>/dev/null | cut -f1 || echo "runtime") to $PREFIX_DIR/current"
+kv "ref" "$REF"
 stage_done
 
 # ------------------------------------------------------------------ [4/5]
@@ -243,6 +248,7 @@ stage_done
 echo ""
 card "$ACCENT" \
   "🦀  SuparClaw ${VERSION} is installed" \
+  "${INFO}${REPO}@${REF}${NC}" \
   "${INFO}${TAGLINE}${NC}"
 completion_line
 
