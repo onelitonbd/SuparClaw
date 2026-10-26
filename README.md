@@ -131,6 +131,37 @@ attachments that only that chat referenced; files a fork still points at stay.
 Web UI: `http://127.0.0.1:18790/` while `sc gateway` runs (dark/light, same design tokens
 as OpenClaw's Control UI).
 
+### What a Telegram turn looks like
+
+The chat is for answers, not for the machinery. By default
+(`channels.telegram.streaming: "progress"`) a turn posts:
+
+1. **one status draft**, edited in place — what the turn is *doing*
+   (`Reading files → Running a command`), never which tool ran, never the
+   model's reasoning, never a half-written answer;
+2. **the answer**, as its own message, rendered from the model's Markdown into
+   Telegram's HTML (bold, italics, code, quotes, links; headings become bold and
+   GFM tables become an aligned monospace block, because Telegram has no table).
+
+The draft is deleted when the answer lands, and a turn that says nothing posts
+nothing — no stray `…` bubble. If Telegram rejects the markup, the answer is
+re-sent as plain text rather than lost.
+
+| `channels.telegram.streaming` | What you see |
+|---|---|
+| `progress` *(default)* | quiet status draft, then the answer as its own message |
+| `partial` / `block` | the answer streams into the draft (the old live preview) |
+| `off` | no draft and no chatter; the answer, approvals and media still arrive |
+
+`channels.telegram.toolProgress: true` puts the raw tool log back in the draft —
+useful while debugging a tool, off by default. Reasoning is never forwarded to
+any chat surface; it stays in the session transcript and the Control UI.
+
+```bash
+sc config set channels.telegram.streaming progress
+sc config set channels.telegram.toolProgress true    # opt in to the tool log
+```
+
 ### Chat commands (TUI, web chat, Telegram)
 
 One router answers `/…` on every surface (`src/agent/slash-commands.ts` + `#commands` in

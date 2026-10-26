@@ -5044,7 +5044,10 @@ export class Settings {
       ]),
       el("div", { class: "card" }, [
         el("h3", {}, ["Messages"]),
-        pick("Draft streaming to Telegram", "channels.telegram.streaming", tg.streaming ?? "off", ["off", "partial", "progress"]),
+        pick("What the chat shows while a turn runs", "channels.telegram.streaming", tg.streaming ?? "progress", ["progress", "partial", "block", "off"],
+          "progress (default): one quiet status draft, then the answer as its own message. partial/block: the answer streams into the draft. off: no draft at all."),
+        check("Show tool names in the status draft", "channels.telegram.toolProgress", Boolean(tg.toolProgress),
+          "Off by default — the draft says what stage the turn is at (\"Reading files\"), not which tool ran."),
         num("Batch window (ms)", "channels.telegram.batchMs", tg.batchMs ?? 0, {
           min: 0, max: 5000, hint: "Rapid-fire messages are merged before one reply. 0 disables batching.",
         }),

@@ -483,7 +483,15 @@ export const CONFIG_SCHEMA: SchemaNode = {
                 cooldownSeconds: { t: "int", min: 5, max: 86400, default: 60 },
               },
             },
-            streaming: { t: "enum", values: ["off", "partial", "progress"], default: "progress" },
+            // Task 32 — what the chat shows while a turn runs (their four modes,
+            // messaging.md:71). "progress" (default) keeps ONE editable status
+            // draft and sends the final answer as its own message; "partial" and
+            // "block" edit the answer into that draft instead; "off" posts no
+            // draft at all and keeps tool chatter out of the chat entirely.
+            streaming: { t: "enum", values: ["off", "partial", "block", "progress"], default: "progress" },
+            // Their streaming.progress.toolProgress (default false): the quiet
+            // draft shows the stage, not a rolling log of tool names.
+            toolProgress: { t: "bool", default: false },
             batchMs: { t: "int", min: 0, max: 5000, default: 300 },
             // Task 27: the `/` menu lives on the bot token, so a token that ran
             // another build keeps showing that build's commands. We replace it
@@ -968,7 +976,9 @@ export interface SuparClawConfig {
       vision: boolean;
       allowBots: boolean;
       botLoopProtection: BotLoopProtectionConfig;
-      streaming: "off" | "partial" | "progress";
+      streaming: "off" | "partial" | "block" | "progress";
+      /** Show tool names in the status draft (default false: stage only). */
+      toolProgress: boolean;
       batchMs: number;
       /** Replace the bot's stored `/` menu with ours on start (Task 27). */
       commandsMenu: boolean;

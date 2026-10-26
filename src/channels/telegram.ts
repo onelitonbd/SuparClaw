@@ -18,6 +18,8 @@ import {
 } from "../config/providers.js";
 import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
 import { buildCommandMenu, staleCommandScopes } from "./telegram-menu.js";
+import { splitForTelegram, stripHtmlTags, telegramChunks } from "./telegram-format.js";
+import { createTurnDelivery } from "./telegram-delivery.js";
 
 // Telegram channel: grammY long polling, per-chat batching, one editable status
 // draft per turn, DM pairing + group allowlists + mention gating.
@@ -295,8 +297,34 @@ export class TelegramChannel {
    */
   async sendText(chatId: number, text: string): Promise<void> {
     if (!this.#bot) throw new Error("telegram bot not running");
-    for (const chunk of splitForTelegram(text)) {
-      await this.#bot.api.sendMessage(chatId, chunk);
+    for (const chunk of telegramChunks(text)) {
+      const ok = await this.#bot.api
+        .sendMessage(chatId, chunk, { parse_mode: "HTML", link_preview_options: { is_disabled: true } })
+        .catch(() => null);
+      if (!ok) {
+        // Telegram rejected the markup — deliver the text plainly rather than
+        // dropping the message. Harmless if the failure was a network blip.
+        this.log.warn("telegram: HTML send rejected — falling back to plain text");
+        await this.#bot.api.sendMessage(chatId, stripHtmlTags(chunk)).catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Final-answer delivery: Markdown → Telegram HTML, chunked, with a plain-text
+   * fallback so a formatting rejection never swallows the answer.
+   */
+  async #sendFormatted(chatId: number, text: string, extra: Record<string, unknown> = {}): Promise<void> {
+    const bot = this.#bot;
+    if (!bot) return;
+    for (const chunk of telegramChunks(text)) {
+      const ok = await bot.api
+        .sendMessage(chatId, chunk, { parse_mode: "HTML", link_preview_options: { is_disabled: true }, ...extra })
+        .catch(() => null);
+      if (!ok) {
+        this.log.warn("telegram: HTML reply rejected — falling back to plain text");
+        await bot.api.sendMessage(chatId, stripHtmlTags(chunk), extra).catch(() => {});
+      }
     }
   }
 
@@ -812,10 +840,15 @@ export class TelegramChannel {
     // interval (their 6s) with a 2-minute TTL safety stop.
     const typing = this.#typingFor(chatId, pending.topicId, pending.isGroup === true, pending.mentioned === true);
 
-    const preview = await bot.api.sendMessage(chatId, "…", { link_preview_options: { is_disabled: true } }).catch(() => null);
-
-    let lastEdit = 0;
-    let statusLines: string[] = [];
+    // Task 32 — outbound delivery is a pure module (telegram-delivery.ts) so the
+    // quiet-draft / formatted-answer contract is testable without a bot.
+    const delivery = createTurnDelivery({
+      api: bot.api as unknown as import("./telegram-delivery.js").DeliveryApi,
+      chatId,
+      mode: (cfg.streaming === "off" ? "off" : cfg.streaming === "partial" || cfg.streaming === "block" ? (cfg.streaming as "partial" | "block") : "progress"),
+      toolProgress: cfg.toolProgress === true,
+      log: (m: string) => this.log.warn(m),
+    });
 
     await this.service.send({
       sessionKey: this.#sessionKeyFor(chatId),
@@ -840,21 +873,11 @@ export class TelegramChannel {
       },
       onDelta: async (delta) => {
         typing.onText(delta);
-        if (!preview || cfg.streaming === "off") return;
-        const now = Date.now();
-        if (now - lastEdit < 2000) return;
-        lastEdit = now;
-        await bot.api
-          .editMessageText(chatId, preview.message_id, "▌ working…", { link_preview_options: { is_disabled: true } })
-          .catch(() => {});
+        await delivery.onDelta(delta);
       },
       onTool: async (event) => {
         typing.onTool();
-        if (!preview || cfg.streaming === "off") return;
-        statusLines = [...statusLines.slice(-4), `· ${event.name}`];
-        await bot.api
-          .editMessageText(chatId, preview.message_id, `▌ working…\n${statusLines.join("\n")}`)
-          .catch(() => {});
+        await delivery.onTool(event.name);
       },
       onApproval: async (event) => {
         // Approval card with buttons (P2 #17): one tap resolves; the card
@@ -880,17 +903,7 @@ export class TelegramChannel {
         // stripped (their response contract); a pure-OK message is dropped.
         const cleaned = stripStrayHeartbeatOk(finalText);
         if (cleaned.trim() === "") return;
-        const chunks = splitForTelegram(cleaned);
-        if (!preview) {
-          for (const chunk of chunks) await bot.api.sendMessage(chatId, chunk).catch(() => {});
-          return;
-        }
-        await bot.api
-          .editMessageText(chatId, preview.message_id, chunks[0] ?? "(empty)", { link_preview_options: { is_disabled: true } })
-          .catch(() => {});
-        for (const chunk of chunks.slice(1)) {
-          await bot.api.sendMessage(chatId, chunk).catch(() => {});
-        }
+        await delivery.reply(cleaned);
       },
     });
     typing.stop(); // belt-and-braces: send() settled (turn end, error, abort)
@@ -918,18 +931,5 @@ export class TelegramChannel {
 
 
 
-/** Telegram rejects messages over 4096 chars — split on paragraph boundaries. */
-export function splitForTelegram(text: string, limit = 4000): string[] {
-  if (text.length <= limit) return [text];
-  const out: string[] = [];
-  let rest = text;
-  while (rest.length > limit) {
-    const window = rest.slice(0, limit);
-    const cut = Math.max(window.lastIndexOf("\n\n"), window.lastIndexOf("\n"), window.lastIndexOf(" "));
-    const at = cut > limit * 0.5 ? cut : limit;
-    out.push(rest.slice(0, at).trim());
-    rest = rest.slice(at).trimStart();
-  }
-  if (rest.length > 0) out.push(rest);
-  return out;
-}
+/** Re-exported for callers on the old surface (the splitter lives in telegram-format). */
+export { splitForTelegram } from "./telegram-format.js";

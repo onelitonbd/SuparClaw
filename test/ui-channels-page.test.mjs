@@ -156,6 +156,7 @@ test("every control the backend reads is on the page, with live status and Conne
     "channels.telegram.mentionGated",
     "channels.telegram.allowBots",
     "channels.telegram.streaming",
+    "channels.telegram.toolProgress",
     "channels.telegram.batchMs",
     "channels.telegram.typing.mode",
     "channels.telegram.typing.intervalSeconds",
@@ -169,6 +170,10 @@ test("every control the backend reads is on the page, with live status and Conne
   assert.equal(statusText(), "✔Connected as @mybot");
   assert.ok(document.getElementById("tg-connect"), "the connect action is there");
   assert.equal(inputOf("channels.telegram.typing.intervalSeconds").value, "6", "values come from the config");
+  // Task 32: the four upstream modes are choosable, and the quiet default wins
+  // when the config names none.
+  const modes = [...inputOf("channels.telegram.streaming").options].map((o) => o.value);
+  assert.deepEqual(modes, ["progress", "partial", "block", "off"]);
 });
 
 test("Save writes the whole block in one frame, not one frame per control", async () => {
