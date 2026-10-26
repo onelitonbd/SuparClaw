@@ -211,6 +211,7 @@ export class Gateway {
       "chat.send",
       "chat.history",
       "chat.regenerate",
+      "chat.rewind",
       "chat.abort",
       "chat.approval",
       "approvals.get",
@@ -430,6 +431,23 @@ export class Gateway {
             return;
           }
           send(okFrame(id, { regenerated: true, text: result.text, dropped: result.deleted }));
+          return;
+        }
+        case "chat.rewind": {
+          // Task 24 — Edit: drop a prompt and everything after it, return its
+          // text. Nothing is sent; the client puts it back in the composer.
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const messageId = Number(params["messageId"]);
+          if (!Number.isInteger(messageId) || messageId <= 0) {
+            send(errFrame(id, "bad_request", "messageId must be a positive integer"));
+            return;
+          }
+          const result = service.rewind(sessionKey, messageId);
+          if (!result.ok) {
+            send(errFrame(id, "rewind_refused", result.error));
+            return;
+          }
+          send(okFrame(id, { rewound: true, text: result.text, dropped: result.deleted }));
           return;
         }
         case "queue.set": {

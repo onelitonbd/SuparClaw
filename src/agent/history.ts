@@ -78,6 +78,26 @@ export function historyPayload(rows: MessageRow[], opts: HistoryOptions): Histor
   });
 }
 
+export type RewindResult =
+  | { ok: true; text: string; messageId: number; deleted: number }
+  | { ok: false; error: string };
+
+/**
+ * The destructive half of Edit (OpenClaw's Rewind): the clicked prompt and
+ * everything after it go away, and its text returns to the composer for an
+ * edit — never re-sent automatically.
+ *
+ * The row is checked before anything is deleted, so a stale id, a foreign id or
+ * an assistant row can never truncate a conversation.
+ */
+export function rewindToPrompt(store: Store, sessionId: string, messageId: number): RewindResult {
+  const row = store.messageById(sessionId, messageId);
+  if (!row) return { ok: false, error: "no such message in this session" };
+  if (row.role !== "user") return { ok: false, error: "rewind must point at a user message" };
+  const deleted = store.deleteMessagesFrom(sessionId, messageId);
+  return { ok: true, text: row.content, messageId: row.id, deleted };
+}
+
 export type TruncateResult =
   | { ok: true; text: string; userMessageId: number; deleted: number }
   | { ok: false; error: string };

@@ -105,6 +105,34 @@ const chat = new Chat(document.body, {
       },
     });
   },
+  // Rewind/Edit (Task 24) — OpenClaw's "Rewind to here". The clicked prompt and
+  // everything after it are deleted server-side, then its text returns to the
+  // composer. Destructive, and the point is an EDIT, so it asks first and never
+  // re-sends on its own.
+  rewind: (messageId: number) => {
+    modal({
+      title: "Edit this prompt?",
+      body: el("div", {}, [
+        el("p", {}, ["This prompt and everything after it are removed. Its text goes back into the composer, ready to edit."]),
+        el("p", { class: "hint" }, ["Anything the conversation already did with tools is not undone."]),
+      ]),
+      confirmLabel: "Edit prompt",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const res = (await gateway.request("chat.rewind", { sessionKey, messageId })) as { text?: string };
+          // Reload first: the deleted turn must disappear before the composer
+          // can make it look like nothing happened.
+          await loadHistory();
+          chat.setDraft(String(res.text ?? ""));
+          toast("prompt restored — edit and send", "info");
+        } catch (err) {
+          toast((err as Error).message, "err");
+          chat.notice(`rewind failed: ${(err as Error).message}`, "notice--error");
+        }
+      },
+    });
+  },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
   approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
   // Remove just that queued message (their chat.abort runId parity).

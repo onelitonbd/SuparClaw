@@ -574,13 +574,34 @@ export class Store {
       .get(sessionId) as MessageRow | undefined;
   }
 
+  /**
+   * One row by id, scoped to its session — the anchor for a rewind. Scoping is
+   * not decorative: an id from another session must not be reachable.
+   */
+  messageById(sessionId: string, id: number): MessageRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM messages WHERE session_id = ? AND id = ?")
+      .get(sessionId, id) as MessageRow | undefined;
+  }
+
   /** Drop every row after `afterId` — one turn's worth for regenerate. */
   deleteMessagesAfter(sessionId: string, afterId: number): number {
+    return this.#deleteRows(sessionId, ">", afterId);
+  }
+
+  /** Drop `fromId` itself and everything after it — one prompt for rewind/Edit. */
+  deleteMessagesFrom(sessionId: string, fromId: number): number {
+    return this.#deleteRows(sessionId, ">=", fromId);
+  }
+
+  /** Shared tail of both truncations: rows, their FTS entries, the session clock. */
+  #deleteRows(sessionId: string, op: ">" | ">=", bound: number): number {
+    const where = `session_id = ? AND id ${op} ?`;
     const ids = this.db
-      .prepare("SELECT id FROM messages WHERE session_id = ? AND id > ?")
-      .all(sessionId, afterId) as { id: number }[];
+      .prepare(`SELECT id FROM messages WHERE ${where}`)
+      .all(sessionId, bound) as { id: number }[];
     if (ids.length === 0) return 0;
-    this.db.prepare("DELETE FROM messages WHERE session_id = ? AND id > ?").run(sessionId, afterId);
+    this.db.prepare(`DELETE FROM messages WHERE ${where}`).run(sessionId, bound);
     if (this.fts) {
       const del = this.db.prepare("DELETE FROM fts_messages WHERE message_id = ?");
       for (const row of ids) del.run(row.id);

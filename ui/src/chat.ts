@@ -64,6 +64,9 @@ export interface ChatHandlers {
   send(text: string, attachments?: StagedAttachment[]): void;
   /** Re-run the newest answer (server truncates the turn first). */
   regenerate(): void;
+  /** Rewind to a saved prompt: the server drops it and its answer, the text
+   *  comes back to the composer for editing (OpenClaw's Edit / Rewind). */
+  rewind(messageId: number): void;
   abort(): void;
   approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
@@ -131,7 +134,7 @@ interface LiveBody {
 
 /** Clipboard write with the plain-http fallback (`navigator.clipboard` is
  *  unavailable outside secure contexts, and this UI is served over the LAN). */
-function copyText(text: string): void {
+async function copyText(text: string): Promise<boolean> {
   const fallback = (): boolean => {
     try {
       const area = el("textarea", { class: "visually-hidden" }) as HTMLTextAreaElement;
@@ -145,13 +148,15 @@ function copyText(text: string): void {
       return false;
     }
   };
-  const done = (ok: boolean): void => toast(ok ? "copied to clipboard" : "copy failed", ok ? "ok" : "err");
-  const write = navigator.clipboard?.writeText(text);
-  if (!write) {
-    done(fallback());
-    return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* insecure context or a denied permission — try the old path */
   }
-  void write.then(() => done(true), () => done(fallback()));
+  return fallback();
 }
 
 /** The usage line for a turn (Task 23) — its own element, never in the body. */
@@ -159,24 +164,73 @@ function usageLine(footer: string): HTMLElement {
   return el("div", { class: "msg__usage" }, [footer]);
 }
 
-/** Copy + Regenerate for an assistant turn (Task 23). */
-function actionRow(onRegenerate: (() => void) | null): HTMLElement {
-  const row = el("div", { class: "msg__actions" });
-  const copy = el("button", { class: "msg__act", type: "button", "data-copy": "", "aria-label": "Copy answer" }, ["Copy"]);
-  row.append(copy);
-  if (onRegenerate) {
-    const regen = el(
-      "button",
-      { class: "msg__act", type: "button", "data-regen": "", "aria-label": "Regenerate answer" },
-      ["Regenerate"],
-    );
-    regen.addEventListener("click", (e) => {
+// Bundled glyphs, Lucide geometry, never fetched (this UI runs on a LAN and
+// OpenClaw's rule is the same: the icon set ships with the app). `currentColor`
+// keeps them on the token palette in both themes.
+const GLYPHS = {
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  refresh: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+} as const;
+
+const glyph = (name: keyof typeof GLYPHS): string =>
+  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${GLYPHS[name]}</svg>`;
+
+/**
+ * One icon-only action button. The words live in `aria-label` (screen readers)
+ * and `data-tip` (the CSS tooltip) — never as button text, which is what
+ * OpenClaw's message actions do.
+ */
+function actButton(
+  glyphName: keyof typeof GLYPHS,
+  label: string,
+  dataAttr: string,
+  onAct?: () => void,
+): HTMLButtonElement {
+  const btn = el("button", {
+    class: "msg__act",
+    type: "button",
+    "aria-label": label,
+    "data-tip": label,
+    [dataAttr]: "",
+  }) as HTMLButtonElement;
+  btn.append(icon(glyph(glyphName)));
+  if (onAct) {
+    btn.addEventListener("click", (e) => {
       e.preventDefault();
-      onRegenerate();
+      onAct();
     });
-    row.append(regen);
   }
+  return btn;
+}
+
+/** Copy on every message; Regenerate on the newest answer; Edit on a saved prompt. */
+function actionRow(actions: { regenerate?: () => void; rewind?: () => void } = {}): HTMLElement {
+  const row = el("div", { class: "msg__actions" });
+  row.append(actButton("copy", "Copy", "data-copy"));
+  if (actions.regenerate) row.append(actButton("refresh", "Regenerate", "data-regen", actions.regenerate));
+  if (actions.rewind) row.append(actButton("pencil", "Edit prompt", "data-rewind", actions.rewind));
   return row;
+}
+
+/** Copy acknowledged: a check for a beat, then back to the copy glyph. */
+function markCopied(btn: HTMLElement): void {
+  if (btn.dataset["copied"] === "1") return;
+  const html = btn.innerHTML;
+  btn.dataset["copied"] = "1";
+  btn.classList.add("msg__act--ok");
+  btn.innerHTML = "";
+  btn.append(icon(glyph("check")));
+  btn.setAttribute("aria-label", "Copied");
+  btn.setAttribute("data-tip", "Copied");
+  setTimeout(() => {
+    delete btn.dataset["copied"];
+    btn.classList.remove("msg__act--ok");
+    btn.innerHTML = html;
+    btn.setAttribute("aria-label", "Copy");
+    btn.setAttribute("data-tip", "Copy");
+  }, 1400);
 }
 
 export class Chat {
@@ -323,18 +377,22 @@ export class Chat {
     };
 
     // copy a message — the ORIGINAL Markdown (their rule: copy hands back the
-    // source, not the rendered text). Every body carries its markdown in
-    // `data-md`; the fallback covers old nodes and user bubbles.
+    // source, not the rendered text). Assistant bodies and user bubbles both
+    // carry their source in `data-md`; `innerText` is only the last resort.
     this.stack.addEventListener("click", (e) => {
       const target = e.target as HTMLElement;
       const copy = target.closest<HTMLElement>("[data-copy]");
       if (!copy) return;
       const msg = copy.closest<HTMLElement>(".msg");
       const bodies = Array.from(msg?.querySelectorAll<HTMLElement>(".msg__body") ?? []);
+      const bubble = msg?.querySelector<HTMLElement>(".bubble");
       const text = bodies.length > 0
         ? bodies.map((b) => b.dataset["md"] ?? b.innerText ?? "").filter((t) => t.length > 0).join("\n\n")
-        : msg?.querySelector<HTMLElement>(".bubble")?.innerText ?? "";
-      copyText(text);
+        : bubble?.dataset["md"] ?? bubble?.innerText ?? "";
+      void copyText(text).then((ok) => {
+        if (ok) markCopied(copy);
+        else toast("copy failed", "err");
+      });
     });
   }
 
@@ -451,6 +509,14 @@ export class Chat {
     this.#sendBtn.disabled = archived || this.#input.value.trim().length === 0;
   }
 
+  /** Rewind/Edit hands the prompt back: fill the composer, ready to send. */
+  setDraft(text: string): void {
+    this.#input.value = text;
+    this.#autosize();
+    this.#sendBtn.disabled = text.trim().length === 0 && this.#staged.every((a) => a.error !== undefined);
+    this.#input.focus();
+  }
+
   setBusy(busy: boolean): void {
     this.#stopBtn.hidden = !busy;
     this.#sendBtn.hidden = busy;
@@ -545,7 +611,7 @@ export class Chat {
         if (row.role === "user") {
           flushTurn();
           promptTs = tsOf(row, index);
-          this.user(row.content);
+          this.user(row.content, undefined, { id: row.id });
           markAnchor(row.id);
           rendered++;
           continue;
@@ -634,7 +700,8 @@ export class Chat {
     flushTurn();
     turnWraps.forEach((wrap, i) => {
       if (!wrap.querySelector(".msg__body")) return; // tool-only turn: nothing to copy
-      wrap.append(actionRow(i === turnWraps.length - 1 ? () => this.#handlers.regenerate() : null));
+      const newest = i === turnWraps.length - 1;
+      wrap.append(actionRow(newest ? { regenerate: () => this.#handlers.regenerate() } : {}));
     });
     if (rendered === 0) this.#renderEmpty();
     if (live) {
@@ -646,7 +713,7 @@ export class Chat {
 
   /** ---- transcript writers ---- */
 
-  user(text: string, attachments?: StagedAttachment[]): void {
+  user(text: string, attachments?: StagedAttachment[], opts: { id?: number } = {}): void {
     this.#clearEmpty();
     const parts: HTMLElement[] = [];
     if (attachments && attachments.length > 0) {
@@ -665,10 +732,18 @@ export class Chat {
     if (text) {
       const bubble = el("div", { class: "bubble" });
       bubble.textContent = text;
+      // Copy returns exactly what was typed — newlines included, never the
+      // rendered/collapsed text.
+      bubble.dataset["md"] = text;
       parts.push(bubble);
     }
     if (parts.length === 0) parts.push(el("div", { class: "bubble" }));
-    this.stack.append(el("div", { class: "msg msg--user" }, parts));
+    const wrap = el("div", { class: "msg msg--user" }, parts);
+    // Edit needs a persisted row: a prompt that is still streaming has no id
+    // yet, so it gets Copy only (OpenClaw's "persisted messages" rule).
+    const id = opts.id;
+    wrap.append(actionRow({ rewind: id === undefined ? undefined : () => this.#handlers.rewind(id) }));
+    this.stack.append(wrap);
     this.#scrollToBottom();
   }
 
@@ -731,7 +806,7 @@ export class Chat {
     // stays the model's own Markdown (copy, search, next-turn context) and the
     // line gets its own element — the same shape a reload produces.
     if (footer) this.#liveWrap!.append(usageLine(footer));
-    if (this.#liveWrap) this.#liveWrap.append(actionRow(() => this.#handlers.regenerate()));
+    if (this.#liveWrap) this.#liveWrap.append(actionRow({ regenerate: () => this.#handlers.regenerate() }));
     const t = this.#liveTrace;
     if (t) t.push({ type: "run_end", ts: Date.now(), status: "done" });
     this.#live = null;
@@ -766,7 +841,7 @@ export class Chat {
     body.dataset["md"] = text;
     wrap.append(body);
     if (footer) wrap.append(usageLine(footer));
-    wrap.append(actionRow(() => this.#handlers.regenerate()));
+    wrap.append(actionRow({ regenerate: () => this.#handlers.regenerate() }));
     this.stack.append(wrap);
     this.#scrollToBottom();
   }

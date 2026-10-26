@@ -15,7 +15,7 @@ import { assertWebhookUrl, postWebhook, webhookPayload, resolveDelivery, isEmpty
 import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
 import type { SurfaceFacts } from "./surfaces.js";
-import { truncateLastTurn } from "./history.js";
+import { rewindToPrompt, truncateLastTurn } from "./history.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
@@ -1362,6 +1362,22 @@ export class Service {
     const ext = await handleSlashExtension(this, cmd, rest, payload);
     if (ext !== null) return { reply: ext };
     return { reply: `unknown command ${cmd} — try /commands` };
+  }
+
+  /**
+   * Rewind to a prompt (Task 24) — OpenClaw's Edit: drop the clicked prompt and
+   * everything after it, hand the text back for editing. Deliberately does not
+   * send: the point is to change the prompt first. Refuses while busy so two
+   * clients cannot truncate a live run.
+   */
+  rewind(sessionKey: string, messageId: number): { ok: true; text: string; deleted: number } | { ok: false; error: string } {
+    if (this.loop.isBusy(sessionKey)) return { ok: false, error: "a run is active in this session — wait for it to finish" };
+    const session = this.store.getSessionByKey(sessionKey);
+    if (!session) return { ok: false, error: "no such session" };
+    const result = rewindToPrompt(this.store, session.id, messageId);
+    if (!result.ok) return result;
+    this.log.info(`rewind ${sessionKey}: dropped ${result.deleted} row(s) from #${messageId}, prompt back in the composer`);
+    return { ok: true, text: result.text, deleted: result.deleted };
   }
 
   /**
