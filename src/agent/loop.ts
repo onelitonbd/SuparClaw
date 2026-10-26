@@ -666,7 +666,15 @@ export class AgentLoop {
       let loopBreak: ToolLoopBreak | null = null;
       let guardNotified = false;
       let activeSchema = schema;
-      for (let turn = 0, lastThoughtRow = ""; turn < this.deps.config.agents.defaults.maxToolIterations; turn++) {
+      const maxTurns = this.deps.config.agents.defaults.maxToolIterations;
+      let turnsUsed = 0;
+      let endedOnToolCalls = false;
+      // The bound grants ONE spare round after a guard break: the guard must be
+      // able to end the turn with an explanation, even when it fired on the last
+      // allowed iteration. That round is tool-free (activeSchema is emptied), so
+      // it cannot start the loop again.
+      for (let turn = 0, lastThoughtRow = ""; turn < maxTurns || (loopBreak !== null && !guardNotified); turn++) {
+        turnsUsed = turn + 1;
         // Loop-guard final pass (P2 #16): once the detector breaks, the next
         // model call gets the guard note and NO tools — the reply explains
         // what looped instead of burning the session on the same call again.
@@ -800,7 +808,11 @@ export class AgentLoop {
           thought = "";
         }
 
-        if (toolCalls.length === 0) break;
+        if (toolCalls.length === 0) {
+          endedOnToolCalls = false;
+          break;
+        }
+        endedOnToolCalls = true;
 
         messages.push({
           role: "assistant",
@@ -834,7 +846,9 @@ export class AgentLoop {
           const parkRest = (from: number): void => {
             for (let p = from; p < toolCalls.length; p++) {
               const skipped = toolCalls[p]!;
-              const out = `[skipped: tool-loop guard stopped the turn before this call ran]\n`;
+              const out =
+                `[not run: the tool-loop guard stopped this turn before this call executed. ` +
+                `Nothing happened — do not retry it blindly; ask the user how to proceed. ]\n`;
               messages.push({ role: "tool", tool_call_id: skipped.id, name: skipped.name, content: out });
               this.deps.store.appendMessage(session.id, "tool", `→ ${skipped.name} · skipped\n${out.trim()}`, runId);
               onEvent({ type: "tool", callId: skipped.id, name: skipped.name, status: "skipped", detail: "tool-loop guard" });
@@ -919,11 +933,27 @@ export class AgentLoop {
 
       // sessions_yield armed: the turn ends with a waiting acknowledgment and
       // the completion batch arrives as this session's next turn.
-      let finalText = answer.trim() || "(no response)";
+      // A turn must never end in silence. Two ways it used to: the loop guard
+      // stopped the turn and the tool-free wrap-up came back empty (providers do
+      // return an empty content block when no tools are offered), or the tool
+      // budget ran out mid-work. Both wrote "(no response)" and the chat looked
+      // like it had died. The guard's own reason is a better last word.
+      let finalText = answer.trim();
       if (ctx.yieldArmed) {
         yieldedWait = true;
         finalText = "Waiting for the sub-agent(s) to finish — the results arrive as my next turn.";
         this.markYieldWait(sessionKey);
+      } else if (!finalText) {
+        const budgetSpent = !loopBreak && endedOnToolCalls && turnsUsed >= maxTurns;
+        if (loopBreak) {
+          finalText =
+            `I stopped: ${loopBreak.reason}. Nothing else was run — tell me how you would like to proceed, ` +
+            `or change the input and I will try a different way.`;
+        } else if (budgetSpent) {
+          finalText = `I used all ${maxTurns} tool rounds without a final answer. Say “continue” and I will pick up from here.`;
+        } else {
+          finalText = "(no response)";
+        }
       }
       // The numbers ride the transcript row: the footer is re-rendered from them
       // after a reload (they used to exist only on the live event's text, so a

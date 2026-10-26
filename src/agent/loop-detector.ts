@@ -7,7 +7,7 @@
 //   1. AN identical call that errors out 3 times in a row ALWAYS breaks the
 //      turn, even when the detector is disabled — the always-on safety net
 //      (their "always" rule for consecutive identical errors).
-//   2. With loopDetection.enabled (default true) a rolling detector watches
+//   2. With loopDetection.enabled (default FALSE, like upstream) a rolling detector watches
 //      the last 10 calls; ANY call — success or error — seen 3 times in that
 //      window breaks the turn. Validation failures (unknown tool, bad args)
 //      count too (their nuance: never-reached calls still loop).
@@ -18,7 +18,7 @@
 //   4. Post-compaction guard: after a context-overflow compaction retry the
 //      model loses its look-back, so the identical-error budget tightens to
 //      the SAME call twice (their "post-compaction repetition limits") until
-//      any call succeeds.
+//      any call succeeds. Only armed while the detector is enabled.
 
 export interface ToolLoopBreak {
   reason: string;
@@ -47,8 +47,15 @@ export class ToolLoopDetector {
 
   constructor(private readonly enabled: boolean) {}
 
-  /** Arm the post-compaction guard (after an overflow compact+retry). */
+  /**
+   * Arm the post-compaction guard (after an overflow compact+retry).
+   *
+   * A no-op when the detector is disabled: upstream's `enabled: false` turns
+   * off the post-compaction guard too (loop-detection.md:79), so switching this
+   * setting off means exactly one guard is left — the identical-error one.
+   */
   armPostCompaction(): void {
+    if (!this.enabled) return;
     this.#postCompact = true;
   }
 

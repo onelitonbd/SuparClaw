@@ -1203,7 +1203,7 @@ export class Settings {
     };
     const sub = d.subagents ?? {};
     const iterations = mkNum("ad-iterations", "Tool iterations", Number(d.maxToolIterations ?? 12),
-      "No ceiling — one turn keeps working until it answers. The loop guard still stops a repeat.");
+      "No ceiling — one turn keeps working until it answers. A tool failing the same way 3× still stops the turn, and it always explains why here.");
     const concur = mkNum("ad-concurrent", "Concurrent runs", Number(d.maxConcurrent ?? 0),
       "0 = auto (max(8, CPU × 4)).");
     const reasoning = mkSel("ad-reasoning", "Reasoning effort", String(d.reasoningEffort ?? "inherit"),

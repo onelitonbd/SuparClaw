@@ -234,6 +234,32 @@ owns them. Only the main session may change settings.
 Bare `node -e ''` on this box costs 0.66 s, so SuparClaw's own startup work is ~0.39 s here and
 far less on native Termux.
 
+## When a turn stops early
+
+Two things can stop a running turn, and both now say so in the chat instead of
+going quiet:
+
+- **A tool that fails the same way three times in a row** (same tool, same
+  arguments, same error). This guard is always on — retrying a broken call is
+  never going to work — and it costs nothing to leave alone: any change in the
+  arguments or the result resets it, so normal retries and polling never trip it.
+- **The tool-round budget** for one turn (`agents.defaults.maxToolIterations`,
+  default 12, no upper limit). When it runs out the assistant says so and
+  "continue" picks the work back up.
+
+Either way the turn ends with an explanation and a way forward, not with
+silence. A stricter layer — which also counts *successful* repeat calls, useful
+for small models that spin on the same read — is opt-in:
+
+```bash
+sc config set tools.loopDetection.enabled true
+```
+
+It is off by default because it cannot tell a loop from ordinary work that
+happens to call the same thing repeatedly (three `cron_list` reads while
+answering, for instance). Turning it off also disables the post-compaction
+retry guard, matching upstream.
+
 ## Security
 
 The gateway is a control plane that holds your API keys and can run tools — it is

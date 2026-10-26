@@ -85,6 +85,19 @@ test("one break per offender; guard prompt carries the instruction", () => {
   assert.match(prompt, /tool-loop guard/);
 });
 
-test("schema default: tools.loopDetection.enabled true", () => {
-  assert.equal(emptyConfig().tools.loopDetection.enabled, true);
+test("schema default: tools.loopDetection.enabled false (upstream parity)", () => {
+  // The rolling layer counts identical RESULTS, so it also fires on repeated
+  // successful calls — three ordinary `cron_list` reads ended a working turn.
+  // Upstream ships it off (docs/openclaw/tools/loop-detection.md:79); the
+  // always-on identical-error guard is the safety net that stays.
+  assert.equal(emptyConfig().tools.loopDetection.enabled, false);
+});
+
+test("armPostCompaction is a no-op on a disabled detector (enabled:false means one guard)", () => {
+  const det = new ToolLoopDetector(false);
+  det.armPostCompaction();
+  const out = "error: fetch failed";
+  det.record("web_fetch", "{}", out);
+  assert.equal(det.record("web_fetch", "{}", out), null, "still the normal 3-error budget");
+  assert.ok(det.record("web_fetch", "{}", out), "breaks on the 3rd, not the 2nd");
 });

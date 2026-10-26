@@ -537,7 +537,12 @@ export const CONFIG_SCHEMA: SchemaNode = {
           t: "object",
           default: {},
           fields: {
-            enabled: { t: "bool", default: true },
+            // Off by default, like upstream (loop-detection.md:79). This is the
+            // ROLLING layer — it compares results, so it also fires on repeated
+            // *successful* calls (three identical `cron_list` reads killed a
+            // working turn). The always-on guard below still stops a tool that
+            // fails the same way three times, which is the case that matters.
+            enabled: { t: "bool", default: false },
           },
         },
         // P3 #22 — media understanding (their tools.media): capability list of
