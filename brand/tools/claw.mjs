@@ -74,58 +74,58 @@ function finger({ tip, r1, r2, o1, o2, i1, i2 }) {
 // Local frame: arm along −x, pincer along +x, wrist pivot near (−330, 0).
 
 const PALM = {
-  m: [-330, 40],
+  m: [-330, -46],
   c: [
-    [[-326, -112], [-240, -214], [-118, -254]],   // shoulder, up over the back
-    [[-26, -290], [42, -264], [74, -202]],        // back into the upper root
-    [[92, -158], [70, -76], [44, -4]],            // right edge, behind the throat
-    [[22, 66], [-4, 116], [-48, 156]],            // belly shoulder
-    [[-176, 246], [-298, 202], [-330, 40]],       // around the wrist
+    [[-322, -156], [-248, -240], [-136, -286]],   // shoulder, up over the back
+    [[-26, -322], [86, -306], [150, -262]],       // back into the upper root
+    [[188, -228], [178, -120], [150, -14]],       // right edge, convex
+    [[120, 76], [60, 130], [-8, 160]],            // belly shoulder
+    [[-150, 216], [-284, 186], [-330, 118]],      // belly, back to the wrist
   ],
 };
 
 const ARM = -34;      // the arm hangs below the pincer's axis — the claw's gesture
 const ARM_PIVOT = [-330, 40];
 
-const WRIST = { x: -512, y: -136, w: 196, h: 316, r: 40 };
-const SLASHES = [-1, 0, 1].map((i) => ({ x: -466, y: -62 + i * 74, w: 116, h: 20 }));
+// the cuff overlaps the palm by ~140 units so the arm is part of the claw, not a
+// tag stuck to it
+const WRIST = { x: -486, y: -160, w: 300, h: 330, r: 44 };
+const SLASHES = [-1, 0, 1].map((i) => ({ x: -452, y: -70 + i * 74, w: 124, h: 21 }));
 
-const V = {
-  // b1 — thin blade, heavy lobe, wide mouth
-  b1: {
-    angle: -12,
-    palm: PALM,
-    upper: { tip: [566, -286], r1: [-40, -216], r2: [-58, -84],
-             o1: [286, -424], o2: [40, -330], i1: [250, -178], i2: [418, -214] },
-    lower: { tip: [498, 286], r1: [-48, 4], r2: [-80, 168],
-             o1: [300, 236], o2: [250, 120], i1: [70, 300], i2: [300, 366] },
-  },
-  // b2 — blade lifted, mouth deeper
-  b2: {
-    angle: -16,
-    palm: PALM,
-    upper: { tip: [596, -302], r1: [-52, -226], r2: [-66, -100],
-             o1: [300, -456], o2: [36, -352], i1: [270, -190], i2: [448, -228] },
-    lower: { tip: [512, 320], r1: [-44, -18], r2: [-92, 148],
-             o1: [312, 268], o2: [262, 148], i1: [62, 320], i2: [300, 392] },
-  },
-  // b3 — chunkier; the 16 px cut
-  b3: {
-    angle: -8,
-    palm: PALM,
-    upper: { tip: [512, -258], r1: [-34, -206], r2: [-52, -84],
-             o1: [258, -378], o2: [30, -296], i1: [228, -160], i2: [382, -194] },
-    lower: { tip: [466, 266], r1: [-42, 0], r2: [-76, 160],
-             o1: [288, 220], o2: [240, 112], i1: [66, 280], i2: [286, 340] },
-  },
+// The mouth is a CUT, not a gap between two shapes. Every attempt to leave it as
+// the space between a palm and a finger produced a hairline seam wherever the two
+// edges came close to tangent; a cut in the plate colour cannot leave a seam
+// because there is nothing to touch.
+const MOUTH = {
+  m: [-46, -104],                                   // throat, set back inside the palm
+  c: [
+    [[150, -186], [340, -252], [600, -292]],        // over the upper finger's underside
+    [[820, -318], [1000, -330], [1180, -338]],      // out past the tip
+    [[1180, 430], [1180, 420], [1140, 408]],        // around the open end
+    [[760, 380], [560, 330], [470, 300]],           // back under the lower tip
+    [[260, 190], [80, 60], [-10, -20]],             // under the lower finger's top edge
+    [[-40, -52], [-50, -84], [-46, -104]],          // close at the throat
+  ],
 };
 
-export const PRESETS = Object.fromEntries(
-  Object.entries(V).map(([k, v]) => [
-    k,
-    { ...v, arm: ARM, armPivot: ARM_PIVOT, wrist: WRIST, slashes: SLASHES, pivot: [-80, 0] },
-  ]),
-);
+const MARK = {
+  angle: -8,
+  palm: PALM,
+  // the upper finger arcs up and hooks back down to a sharp tip — a straight
+  // blade reads as a beak, which is what the rejected cuts looked like
+  upper: { tip: [544, -222], r1: [-30, -206], r2: [14, -132],
+           o1: [334, -406], o2: [110, -330], i1: [344, -248], i2: [298, -212] },
+  // the lower finger is shorter, heavier, and sweeps away below the mouth
+  lower: { tip: [466, 266], r1: [-42, 0], r2: [-76, 160],
+           o1: [288, 220], o2: [240, 112], i1: [66, 280], i2: [286, 340] },
+  arm: ARM,
+  armPivot: ARM_PIVOT,
+  wrist: WRIST,
+  slashes: SLASHES,
+  pivot: [-80, 0],
+};
+
+export const PRESETS = { claw: MARK };
 
 /* --------------------------------------------------------------- fit ----- */
 
@@ -155,8 +155,8 @@ export function fitMark(preset, box = BOX, pad = PAD) {
 
 /* -------------------------------------------------------------- emit ----- */
 
-export function clawMark({ variant = "b1", color = "#EDEDF0", cut = "#17171A", wristColor = null } = {}) {
-  const preset = PRESETS[variant] ?? PRESETS.b1;
+export function clawMark({ variant = "claw", color = "#EDEDF0", cut = "#17171A", wristColor = null, preset: override = null } = {}) {
+  const preset = override ?? PRESETS[variant] ?? PRESETS.claw;
   const { scale, tx, ty } = fitMark(preset);
   const w = preset.wrist;
   const slashes = preset.slashes
@@ -175,7 +175,7 @@ export function clawMark({ variant = "b1", color = "#EDEDF0", cut = "#17171A", w
   </g>`;
 }
 
-export function markSvg({ variant = "b1", size = 512, bg = "#17171A", color = "#EDEDF0" } = {}) {
+export function markSvg({ variant = "claw", size = 512, bg = "#17171A", color = "#EDEDF0" } = {}) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${BOX} ${BOX}" role="img" aria-label="SuparClaw claw mark">
 ${bg ? `  <rect width="${BOX}" height="${BOX}" fill="${bg}"/>\n` : ""}  ${clawMark({ variant, color, cut: bg ?? "#F4F3EF" })}
 </svg>

@@ -1,3 +1,5 @@
+<img src="brand/lockup.png" alt="SuparClaw" width="380">
+
 # SuparClaw
 
 **Your phone is the machine.** 🦀

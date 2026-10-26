@@ -1,15 +1,18 @@
-// Compose SuparClaw logos: the traced claw mark + a heavy grotesque wordmark.
+// Compose SuparClaw logos: the claw mark + a heavy grotesque wordmark.
 //
 //   node tools/compose.mjs
 //
 // Every wordmark is real font outlines (see tools/wordmark.py) — the SVGs need
-// no font installed to render. The mark is a traced path (tools/trace_claw.py)
-// so it matches the reference the user picked instead of approximating it.
+// no font installed to render. The mark comes from tools/claw.mjs, the same
+// generator the candidates were chosen from, so the lockups can never drift
+// from the mark.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { clawMark } from "./claw.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -74,23 +77,19 @@ function textGroup(data, fill, { x = 0, y = 0 } = {}) {
 
 /* -------------------------------------------------------------------- mark */
 
-const CLAW = readFileSync(join(ROOT, "mark", "claw.path"), "utf8");
-
-/** The claw, `size` px wide, with its accent joint dot. */
-function claw({ size, fill = C.darkInk, dot = C.accent, dotScale = 1, x = 0, y = 0 }) {
+/** The claw, `size` px wide. `cut` is the colour of the three wrist slashes —
+ *  the plate the mark sits on, or the accent when the slashes carry the brand. */
+function claw({ size, fill = C.darkInk, cut = C.ink, x = 0, y = 0 }) {
   const s = size / 1024;
-  return `<g transform="translate(${x} ${y}) scale(${s})">
-    <path fill="${fill}" fill-rule="evenodd" d="${CLAW}"/>
-    ${dot ? `<circle cx="352" cy="806" r="${34 * dotScale}" fill="${dot}"/>` : ""}
-  </g>`;
+  return `<g transform="translate(${x} ${y}) scale(${s})">${clawMark({ color: fill, cut })}</g>`;
 }
 
 /** Rounded-square badge holding the mark. */
-function badge({ size, r, fill = C.ink, inset = 0.075, x = 0, y = 0, markFill = C.darkInk, dot = C.accent }) {
+function badge({ size, r, fill = C.ink, inset = 0.065, x = 0, y = 0, markFill = C.darkInk, dot = C.accent }) {
   const inner = size * (1 - inset * 2);
   return `<g transform="translate(${x} ${y})">
     <rect width="${size}" height="${size}" rx="${r}" fill="${fill}"/>
-    ${claw({ size: inner, fill: markFill, dot, x: size * inset, y: size * inset })}
+    ${claw({ size: inner, fill: markFill, cut: dot, x: size * inset, y: size * inset })}
   </g>`;
 }
 
@@ -185,14 +184,14 @@ ${textGroup(word, C.darkInk, { x: 96 + bs + 66, y: baseline })}`, C.dark);
   const H = 470;
   const baseline = H / 2 + word.xHeight / 2 - 4;
   files["06-lockup-mono.svg"] = svg(W, H,
-    `${badge({ size: bs, r: bs * 0.235, markFill: C.darkInk, dot: C.darkInk, x: 96, y: (H - bs) / 2 })}
+    `${badge({ size: bs, r: bs * 0.235, markFill: C.darkInk, dot: C.ink, x: 96, y: (H - bs) / 2 })}
 ${textGroup(word, C.ink, { x: 96 + bs + 66, y: baseline })}`, C.bg);
 }
 
 /* 07 — the app icon alone (favicon / PWA / home screen), edge to edge */
 files["07-app-icon.svg"] = svg(512, 512,
   `<rect width="512" height="512" rx="120" fill="${C.ink}"/>
-   ${claw({ size: 512 * 0.85, x: 512 * 0.075, y: 512 * 0.075 })}`);
+   ${claw({ size: 512 * 0.85, cut: C.ink, x: 512 * 0.075, y: 512 * 0.075 })}`);
 
 /* 08 — app icon presented on the brand surface */
 files["08-app-icon-plate.svg"] = svg(1024, 1024,
