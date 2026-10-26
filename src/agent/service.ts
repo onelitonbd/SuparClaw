@@ -16,6 +16,7 @@ import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
 import type { SurfaceFacts } from "./surfaces.js";
 import { rewindToPrompt, truncateLastTurn } from "./history.js";
+import { settingsCtlFrom, type SelfRuntime, type SettingsCtl } from "./self.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
@@ -269,6 +270,10 @@ export class Service {
       // Fresh every turn, so connecting Telegram mid-session is visible to the
       // very next reply (the false "no API access" answer came from a stale void).
       surfaces: () => this.chatSurfaces(),
+      // Self-knowledge (Task 26): the settings tool and this session's overrides
+      // for the `## Your configuration` block.
+      settings: this.settingsCtl(),
+      selfRuntime: (key) => this.#selfRuntime(key),
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are
@@ -319,6 +324,26 @@ export class Service {
   }
 
   /** Push a fresh config into the live components (called after any config write). */
+  /**
+   * The `settings` tool's control surface (Task 26): the same validated write
+   * path the Settings UI uses (ConfigService.setPath → atomic write), followed
+   * by the live apply. Memoised so the config file path in the prompt is stable.
+   */
+  #settingsCtl?: SettingsCtl;
+  settingsCtl(): SettingsCtl {
+    this.#settingsCtl ??= settingsCtlFrom(this.configSvc, () => this.applyConfig());
+    return this.#settingsCtl;
+  }
+
+  /** Per-session overrides the prompt block quotes (`## Your configuration`). */
+  #selfRuntime(sessionKey: string): SelfRuntime {
+    return {
+      usage: this.usageModeFor(sessionKey),
+      queue: this.loop.queueStatus(sessionKey).mode,
+      execMode: this.getSessionExecMode(sessionKey) ?? execModeOf(this.config.tools.exec),
+    };
+  }
+
   applyConfig(_next?: SuparClawConfig): void {
     const config = this.config;
     this.loop.setConfig(config);

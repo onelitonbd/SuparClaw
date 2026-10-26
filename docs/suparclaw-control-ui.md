@@ -92,6 +92,37 @@ The build concatenates `ui/fonts/fonts.css` with `ui/styles.css`, minifies
 with esbuild and writes `dist/ui/styles.css`; the woff2 files are copied to
 `dist/ui/fonts/`. The gateway serves them with `font/woff2`.
 
+## Mobile layout rules
+
+The app is one fixed viewport (`100dvh`), never a scrolling page, so the
+platform chrome has to be handled explicitly:
+
+- `index.html` sets `viewport-fit=cover` and `interactive-widget=resizes-content`
+  — the keyboard resizes the viewport instead of pushing the composer off it.
+- `.rail` (top) and `.settings__topbar` add `env(safe-area-inset-top)` to their
+  height and padding; `.dock` (composer) adds `env(safe-area-inset-bottom)` to
+  its bottom padding; `.drawer` pads both. A notched phone therefore never
+  slides a control under the notch or the home indicator.
+- Text inputs are ≥16 px so iOS does not zoom on focus; touch targets grow
+  under `@media (pointer: coarse)`.
+- Below 880 px the settings rail and the chat drawer become overlays
+  (`min(84vw, 320px)`) instead of columns.
+- Wide tables live inside a scrolling wrapper (`.settings .usage-tablewrap`),
+  never inside the page body.
+
+`test/ui-mobile.test.mjs` pins each of these against `index.html` and the
+stylesheet.
+
+## The gateway's method list
+
+The gateway answers `hello-ok` with `methods: string[]` — every RPC it can
+handle. `ui/src/rpc.ts` keeps that list and logs a one-time
+`[gateway] this server does not advertise <method>` warning if the app asks
+for something the running server does not have (an old build, a stale
+`dist/ui`, a removed handler). `test/ui-backend-contract.test.mjs` enforces
+the three-way contract: every method the UI calls is both advertised and
+handled, and nothing is advertised twice.
+
 ## Adding a feature
 
 1. Use the tokens — never hard-code a colour.

@@ -71,6 +71,20 @@ export { BotLoopGuard } from "./channels/bot-guard.js";
 export { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./agent/loop-detector.js";
 export { usageNumbers, runCost, fmtTokens, fmtCost, usageFooter, summarizeUsage, buildUsageReport } from "./util/usage.js";
 export { historyPayload, truncateLastTurn, type HistoryMessage, type HistoryOptions } from "./agent/history.js";
+export {
+  selfPromptLine,
+  selfFactsFrom,
+  describeSettings,
+  coerceSetting,
+  isSecretPath,
+  settingSpec,
+  settingsCtlFrom,
+  MUTABLE_SETTINGS,
+  type SettingSpec,
+  type SettingsCtl,
+  type SelfFacts,
+  type SelfRuntime,
+} from "./agent/self.js";
 export type { UsageRunInput, UsageReport } from "./util/usage.js";
 export { jobTimezone } from "./cron/scheduler.js";
 export { resolveDelivery, isEmptySummary, assertWebhookUrl, webhookPayload, errorStreak, shouldAlert } from "./cron/delivery.js";

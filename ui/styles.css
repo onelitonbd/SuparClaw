@@ -207,12 +207,13 @@ textarea:focus-visible {
 /* -------------------------------------------------------------- rail ---- */
 
 .rail {
-  height: var(--rail-h);
+  /* viewport-fit=cover: grow past the notch instead of sliding under it. */
+  height: calc(var(--rail-h) + env(safe-area-inset-top));
   flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 6px;
+  padding: env(safe-area-inset-top) 6px 0;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
@@ -707,7 +708,8 @@ textarea:focus-visible {
 
 .dock {
   flex: none;
-  padding: 0 12px 14px;
+  /* Keep the composer above the home indicator on a notched phone. */
+  padding: 0 12px calc(14px + env(safe-area-inset-bottom));
   position: relative;
 }
 
@@ -1368,6 +1370,8 @@ textarea:focus-visible {
   position: absolute;
   top: 0;
   bottom: 0;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
   left: 0;
   width: 316px;
   max-width: 86%;
@@ -2022,8 +2026,8 @@ html[data-theme-mode='dark'] .modal {
   display: flex;
   align-items: center;
   gap: 9px;
-  height: var(--set-bar);
-  padding: 0 10px 0 8px;
+  height: calc(var(--set-bar) + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 10px 0 8px;
   border-bottom: 1px solid var(--set-line);
   background: var(--set-canvas);
 }
@@ -4765,7 +4769,7 @@ html[data-theme-mode='dark'] .settings select.inp {
   .settings__drawer-head { display: flex; }
 
   .settings__pagehead { padding: 20px 16px 2px; }
-  .settings__body { padding: 8px 16px 44px; }
+  .settings__body { padding: 8px 16px calc(44px + env(safe-area-inset-bottom)); }
 
   .settings__nav-item {
     min-height: 44px;

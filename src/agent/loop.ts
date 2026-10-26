@@ -12,6 +12,7 @@ import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, p
 import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
 import { surfacesFromConfig, surfacesPromptLine, type SurfaceFacts } from "./surfaces.js";
+import { selfFactsFrom, selfPromptLine, type SelfRuntime, type SettingsCtl } from "./self.js";
 import { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
 import type { AskUserQuestion, AskUserResult } from "./ask-user.js";
 
@@ -99,6 +100,10 @@ export interface LoopDeps {
   cronChanged?: () => void | Promise<void>;
   /** Live channel facts for the prompt + cron delivery targets. */
   surfaces?: () => SurfaceFacts;
+  /** Settings surface for the `settings` tool (Task 26); main sessions only. */
+  settings?: SettingsCtl;
+  /** This session's effective usage/queue/exec overrides, for the prompt block. */
+  selfRuntime?: (sessionKey: string) => SelfRuntime;
   /**
    * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
    * immediately and side-generate no UI. When a human must decide, the
@@ -588,6 +593,8 @@ export class AgentLoop {
       const runProfile = modelProfile(this.deps.config, input.model ?? "");
       const ctx: ToolContext = {
         surfaces: this.#surfaceFacts(),
+        // A child must not rewrite global settings mid-flight (ask_user's rule).
+        settings: isMain ? this.deps.settings : undefined,
         workspace: this.workspace,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
@@ -1147,6 +1154,17 @@ export class AgentLoop {
       `Session: ${sessionKey} (${channelLabel(sessionKey)})`,
       `Where this message came from: ${channelLabel(sessionKey)}. A direct message can be answered privately; in a group or topic chat others can read your reply, so keep it on-topic and mention people by name when needed.`,
       surfacesPromptLine(surfaces, sessionKey),
+      // What it is set to, not just what it can do (Task 26). Rebuilt per turn
+      // from live config + this session's overrides, so it cannot drift.
+      selfPromptLine(
+        selfFactsFrom(this.deps.config, {
+          sessionKey,
+          workspace: this.workspace,
+          configPath: this.deps.settings?.path ?? "",
+          skills: this.skills.filter((s) => s.eligible !== false).length,
+          runtime: this.deps.selfRuntime?.(sessionKey),
+        }),
+      ),
       skillsCatalog(this.skills),
       skillBlocks.length > 0 ? `## Skills loaded for this turn\n\n${skillBlocks.join("\n\n")}` : "",
       ctx.text,

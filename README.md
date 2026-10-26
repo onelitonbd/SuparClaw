@@ -112,6 +112,17 @@ Skills are markdown packs (`SKILL.md` + frontmatter) discovered from
 `workspace/skills` → `~/.suparclaw/skills` → bundled. Only name + "use when" reach the prompt;
 the body loads on demand through the `skill_read` tool.
 
+The agent also knows its own configuration. Every turn rebuilds a `## Your configuration`
+prompt block from the live config plus this session's overrides — model and fallbacks,
+reasoning, `/usage` footer mode, queue mode, exec policy, limits, cron, dreaming, workspace
+and config path — so "what model are you on?" or "switch the usage footer to cost" is
+answered from facts, not defaults. The `settings` tool (list / get / set) is the write half:
+it accepts a fixed allowlist of 17 paths, coerces and validates each value (model refs are
+canonicalised against configured providers), writes through the same `ConfigService.setPath`
+path the Settings pages use, reads the file back, then applies live. API keys, provider
+credentials and the gateway's port/bind/auth are refused by name with the Settings page that
+owns them. Only the main session may change settings.
+
 ## Measured on a proot Android box (aarch64, 8 cores)
 
 | | SuparClaw | OpenClaw |

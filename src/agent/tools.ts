@@ -8,6 +8,7 @@ import { searchMemoryFiles, rankTranscriptHits } from "./memory-search.js";
 import { discoverSkills, readSkillBody, skillsCatalog, writeSkill, type SkillMeta } from "./skills.js";
 import { codeModeEngages, CodeMode, codeModeSurface, type CodeModeConfig, type GuestTool } from "./code-mode.js";
 import { describeDelivery, resolveAnnounceTarget, NO_SURFACES, type SurfaceFacts } from "./surfaces.js";
+import { describeSettings, type SettingsCtl } from "./self.js";
 
 export interface JsonSchema {
   type: "object";
@@ -43,6 +44,11 @@ export interface ToolContext {
   cronChanged?: () => void | Promise<void>;
   /** Channel facts for this turn: what a delivery target can actually reach. */
   surfaces?: SurfaceFacts;
+  /**
+   * Settings surface (Task 26): read/change the live configuration. Undefined on
+   * sub-agent runs — a child must not rewrite global settings mid-flight.
+   */
+  settings?: SettingsCtl;
   /** The model this run is using (profile id). A spawned child inherits it when
    *  neither the tool argument nor agents.defaults.subagents.model names one. */
   model?: string;
@@ -978,6 +984,51 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
     },
   );
+
+  // ── Task 26 — the agent knows its own settings and can change them.
+  // The prompt block (`## Your configuration`) states the current values; this
+  // tool is the write half. An exact allowlist + read-back, because the config
+  // caster can silently drop a key that setPath created by typo.
+  tools.push({
+    name: "settings",
+    description:
+      "Read or change your own configuration (the Settings pages) when the user asks — default model, " +
+      "fallbacks, reasoning, reply usage footer, queue mode, exec policy, cron timezone, identity. " +
+      "Actions: list (what is writable), get (one path), set (path + value; applies live). " +
+      "API keys, provider credentials and the gateway's port/bind/auth are operator-only and are refused " +
+      "with the Settings page that owns them.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "get", "set"], description: "list = writable paths, get = read one, set = change one." },
+        path: { type: "string", description: "Dotted config path, e.g. agents.defaults.model or agents.defaults.usage." },
+        value: { description: "New value for set: string, number, boolean, or a list of strings." },
+      },
+      required: ["action"],
+    },
+    async run(args, ctx) {
+      const ctl = ctx.settings;
+      if (!ctl) return "error: settings can only be changed from the main session";
+      const action = String(args["action"] ?? "list").trim().toLowerCase();
+      if (action === "list") {
+        return `Writable settings (config: ${ctl.path}):\n${describeSettings()}`;
+      }
+      const path = String(args["path"] ?? "").trim();
+      if (!path) return "error: path is required for get and set";
+      if (action === "get") {
+        const read = ctl.get(path);
+        return read.ok ? `${path} = ${JSON.stringify(read.value)}` : `error: ${read.error}`;
+      }
+      if (action === "set") {
+        if (!("value" in args)) return "error: value is required for set";
+        const write = ctl.set(path, args["value"]);
+        return write.ok
+          ? `ok: ${path} = ${JSON.stringify(write.value)} (applied live — the next turn uses it)`
+          : `error: ${write.error}`;
+      }
+      return `error: unknown action "${action}" — use list, get or set`;
+    },
+  });
 
   // ── P3 #23 — Code Mode surface swap (their tools.codeMode, mode:"only"):
   // when engaged, the model sees exec+wait(+direct-only); every other tool is
