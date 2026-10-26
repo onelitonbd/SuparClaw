@@ -153,9 +153,13 @@ test("history survives rename and refresh — the messages-vanish regression", a
   assert.equal(hist.payload.messages.length, 0, "old key no longer holds the thread");
 
   const list = await ws.request("sessions.list", { limit: 20 });
-  const keys = (list.payload.sessions ?? []).map((s) => s.key);
+  const entries = list.payload.sessions ?? [];
+  const keys = entries.map((s) => s.key);
   assert.ok(keys.includes("main:new-name"), `sidebar sees the renamed session: ${JSON.stringify(keys)}`);
   assert.ok(!keys.includes("main:old-name"), "old key is not in the sidebar");
+  // Task 29: the name you typed is the name it shows — a key rename carries it,
+  // so the row does not fall back to "New chat" and auto-titling leaves it be.
+  assert.equal(entries.find((s) => s.key === "main:new-name").name, "new-name", "the typed name is stored");
 
   // ── 4. renames are honest: collisions and unknown sessions error out
   await ws.request("chat.send", { sessionKey: "main:other", text: "x", key: "h2" });

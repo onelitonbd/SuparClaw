@@ -3,7 +3,7 @@
 import { Chat } from "./chat.js";
 import { el, esc, fmtTime, modal, toast, fuzzy } from "./dom.js";
 import { friendlyModelName } from "./model-name.js";
-import { groupSessions, sessionRow, searchView, type SessionRow } from "./sessions.js";
+import { groupSessions, sessionRow, searchView, rowTitle, placeholderTitle, type SessionRow } from "./sessions.js";
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
 import { onGatewayEvent } from "./notifications.js";
@@ -370,6 +370,9 @@ async function refresh(): Promise<void> {
     // Archived current session: read-only transcript + Unarchive banner
     // (their composer-disabled contract).
     const curRow = ((sessionRes as any).sessions ?? []).find((r: SessionListRow) => r.key === sessionKey);
+    // The header follows the row: a session that just named itself (or was
+    // renamed) shows the name without switching chats or reloading.
+    setHeaderTitle(sessionKey, curRow ? rowTitle(curRow) : undefined);
     chat.setArchived(Number(curRow?.archived ?? 0) === 1, () => void setSessionArchived(sessionKey, false));
   } catch { /* gateway reconnecting */ }
 }
@@ -684,7 +687,7 @@ async function removeSession(key: string): Promise<void> {
     if (key === sessionKey) {
       sessionKey = "main:main";
       localStorage.setItem("sc.session", sessionKey);
-      $("session-title").textContent = sessionKey;
+      setHeaderTitle(sessionKey);
       try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
       await loadHistory();
     }
@@ -733,7 +736,7 @@ async function switchSession(key: string): Promise<void> {
   }
   sessionKey = key;
   localStorage.setItem("sc.session", key);
-  $("session-title").textContent = key;
+  setHeaderTitle(key);
   try { location.hash = "#/chat/" + encodeURIComponent(key); } catch { location.hash = "#/chat/" + key; }
   if (!sideQuery?.matches) closeDrawer();
   await loadHistory();
@@ -804,7 +807,7 @@ async function openSearchHit(sessionKeyHit: string, messageId?: number): Promise
   if (sessionKeyHit !== sessionKey) {
     sessionKey = sessionKeyHit;
     localStorage.setItem("sc.session", sessionKeyHit);
-    $("session-title").textContent = sessionKeyHit;
+    setHeaderTitle(sessionKeyHit);
   }
   // A column on a laptop stays open across a session switch; the phone overlay
   // gets out of the way.
@@ -884,7 +887,7 @@ function renameSession(key: string): void {
       const next = `${prefix}:${v.name}`;
       try {
         await gateway.request("sessions.rename", { sessionKey: key, newKey: next });
-        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); $("session-title").textContent = next; try { location.hash = "#/chat/" + encodeURIComponent(next); } catch { location.hash = "#/chat/" + next; } }
+        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); setHeaderTitle(next); try { location.hash = "#/chat/" + encodeURIComponent(next); } catch { location.hash = "#/chat/" + next; } }
         toast("session renamed", "ok");
         void refresh();
       } catch (err) { toast((err as Error).message, "err"); }
@@ -892,18 +895,23 @@ function renameSession(key: string): void {
   });
 }
 
+/** The chat header: the session's name when we know it, else a placeholder —
+ *  never the raw key. Every writer of #session-title goes through here. */
+function setHeaderTitle(key: string, name?: string): void {
+  const title = name?.trim() || placeholderTitle(key);
+  $("session-title").textContent = title;
+  $("session-title").setAttribute("title", key);
+}
+
+/**
+ * A new chat starts empty and names itself (Task 29). Asking for a title before
+ * the first message was the wrong order — you cannot name a conversation that
+ * has not happened yet. The row is created by loadHistory; the name arrives from
+ * the first reply and is refined once the second one lands.
+ */
 function newSession(): void {
-  modal({
-    title: "New session",
-    fields: [{ name: "name", label: "Session name", placeholder: "fix-bug" }],
-    confirmLabel: "Create",
-    onConfirm: async (v) => {
-      const name = (v.name || `s${Date.now().toString(36)}`).replace(/\s+/g, "-");
-      const key = `main:${name}`;
-      await switchSession(key); // loadHistory creates the row server-side
-      chat.notice(`session ${key}`);
-    },
-  });
+  const key = `main:${Date.now().toString(36)}`;
+  void switchSession(key);
 }
 
 /* ---------------- drawer ---------------- */
@@ -1179,7 +1187,7 @@ async function route(): Promise<void> {
   if (chatHash && chatHash !== sessionKey) {
     sessionKey = chatHash;
     localStorage.setItem("sc.session", sessionKey);
-    $("session-title").textContent = sessionKey;
+    setHeaderTitle(sessionKey);
     void loadHistory();
     void refresh();
   } else if (!settingsOpen && h && h !== "#/" && !h.startsWith("#/chat") && !h.startsWith("#/c")) {
@@ -1206,7 +1214,7 @@ async function route(): Promise<void> {
     closeDrawer();
   } else {
     if (chatHash) {
-      $("session-title").textContent = sessionKey;
+      setHeaderTitle(sessionKey);
     }
     applySidebar();
   }
@@ -1229,7 +1237,7 @@ document.addEventListener("keydown", (e) => {
 
 const savedTheme = localStorage.getItem("sc.theme");
 if (savedTheme) document.documentElement.dataset.themeMode = savedTheme;
-$("session-title").textContent = sessionKey;
+setHeaderTitle(sessionKey);
 if (!(location.hash || "").startsWith("#/settings")) {
   if (!getSessionFromHash()) {
     try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }

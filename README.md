@@ -56,6 +56,24 @@ Model references are validated on write — `sc config set agents.defaults.model
 rejects a reference that does not resolve against the configured providers
 (exactly like OpenClaw's `config set`).
 
+### Naming new chats
+
+A chat names itself from what it is about: the first reply in any channel
+(web, Telegram, TUI, cron) triggers one small model call over the transcript so
+far, and the name is refined once at the second exchange. After that it stops —
+and a name you type always wins, the same way OpenClaw treats a manual rename.
+
+By default the naming call runs on the chat model. To use a cheaper one:
+
+```bash
+sc config set agents.defaults.utilityModel "openrouter/google/gemini-2.5-flash"
+sc config set agents.defaults.utilityModel ""    # back to the default model
+```
+
+Settings → Defaults → **Session naming** is the same knob. An empty value is not
+an error — it means "same as the default model"; a non-empty one is validated
+against the configured providers exactly like `agents.defaults.model`.
+
 ## Commands
 
 | Command | What it does |

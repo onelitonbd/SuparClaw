@@ -204,6 +204,11 @@ export const CONFIG_SCHEMA: SchemaNode = {
             id: { t: "string", default: "main" },
             model: { t: "string", default: "" },
             fallbacks: { t: "array", of: { t: "string" }, default: [] },
+            // The model used for short internal tasks, starting with the name a
+            // new session gives itself (OpenClaw's utilityModel, models.md:69).
+            // "" = the default model above, so nothing changes until you pick
+            // something; a cheap fast model is the point of the setting.
+            utilityModel: { t: "string", default: "" },
             // No upper bound on purpose: how many tool rounds a task needs is a
             // property of the task, not a number we can guess. Runaway turns are
             // stopped by content (ToolLoopDetector + the loop-guard pass), never
@@ -877,6 +882,8 @@ export interface SuparClawConfig {
       id: string;
       model: string;
       fallbacks: string[];
+      /** Model for short internal tasks (session naming). "" = the default. */
+      utilityModel: string;
       maxToolIterations: number;
       contextBudgetChars: number;
       queueMode: "steer" | "followup";

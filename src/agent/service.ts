@@ -17,6 +17,7 @@ import { Subagents } from "../agent/subagents.js";
 import type { SurfaceFacts } from "./surfaces.js";
 import { rewindToPrompt, truncateLastTurn } from "./history.js";
 import { settingsCtlFrom, type SelfRuntime, type SettingsCtl } from "./self.js";
+import { namingDecision, namingSample } from "./naming.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
@@ -921,33 +922,70 @@ export class Service {
   }
 
   /**
-   * OpenClaw-style session naming: once the first reply settles, a tiny model
-   * call turns the opening user message into a 2-6 word title. Non-blocking,
-   * one attempt per session, and it never disturbs the chat path.
+   * The name a chat gives itself (Task 29).
+   *
+   * Every surface runs through `send()`, so this covers the web chat, the TUI,
+   * Telegram and cron without any channel knowing about it. It reads whole
+   * exchanges — the first one names the session, the second refines it once,
+   * and that is the end of it (`namingDecision`). A name the user typed always
+   * wins: we remember the exact title we wrote, so anything else in `row.name`
+   * is theirs and this returns before touching it.
+   *
+   * The model is `agents.defaults.utilityModel` — a small fast one is enough for
+   * 24 tokens — falling back to the default chat model when it is unset.
    */
   async #maybeAutoTitle(sessionKey: string): Promise<void> {
     try {
       if (sessionKey.startsWith("system:") || sessionKey === DREAM_SESSION_KEY) return;
       if (this.#titleBusy.has(sessionKey)) return;
       const row = this.store.getSessionByKey(sessionKey);
-      if (!row || row.name) return;
-      const msgs = this.store.recentMessages(row.id, 50);
-      const firstUser = msgs.find((m) => m.role === "user");
-      if (!firstUser) return;
+      if (!row) return;
+
+      const msgs = this.store.recentMessages(row.id, 80);
+      const exchanges = msgs.filter((m) => m.role === "assistant" && String(m.content ?? "").trim()).length;
+      const autoKey = `title:auto:${sessionKey}`;
+      const uptoKey = `title:auto:upto:${sessionKey}`;
+      const decision = namingDecision({
+        name: row.name,
+        autoTitle: this.store.getMeta(autoKey),
+        used: Number(this.store.getMeta(uptoKey) ?? 0) || 0,
+        exchanges,
+      });
+      if (!decision.generate) return;
+
+      const sample = namingSample(msgs, { turns: decision.target });
+      if (!sample.trim()) return;
+
       this.#titleBusy.add(sessionKey);
+      // "" resolves to the configured default inside modelProfile, so this is
+      // the same call as before when the setting is untouched.
+      const utility = String(this.config.agents.defaults.utilityModel ?? "").trim();
+      const model = utility ? modelProfile(this.config, utility).ref : modelProfile(this.config, "").ref;
       let raw = "";
       const stream = this.loop.llm.stream({
-        messages: [{ role: "user", content: titlePrompt(firstUser.content.slice(0, 400)) }],
-        model: modelProfile(this.config, "").ref,
+        messages: [{ role: "user", content: titlePrompt(sample) }],
+        model,
         maxTokens: 24,
+        // A title needs no thinking: off keeps the call cheap and the answer short.
+        reasoning: "off",
       });
       for await (const ev of stream) {
         if (ev.type === "text") raw += ev.text;
       }
       const title = cleanTitle(raw);
       if (!title) return;
+      // A rename can land while the model is thinking (the UI's rename, /title,
+      // `sc sessions rename`). A name a human typed always wins, so drop the
+      // title we just fetched if the row moved under us — otherwise a slow
+      // naming call would overwrite the name the user typed a moment ago.
+      const after = this.store.getSessionByKey(sessionKey);
+      if (!after || String(after.name ?? "") !== String(row.name ?? "")) return;
       this.store.renameSession(row.id, title);
-      this.log.info(`session auto-titled: ${sessionKey} -> ${title}`);
+      this.store.setMeta(autoKey, title);
+      this.store.setMeta(uptoKey, String(decision.target));
+      this.log.info(
+        `session ${decision.refine ? "re-titled" : "auto-titled"}: ${sessionKey} -> ${title} (${decision.target} exchange(s), ${model || "default"})`,
+      );
       this.events.emit("event", { type: "session.updated", sessionKey, name: title } satisfies ServiceEvent);
     } catch (err) {
       // Best-effort by design — log and move on.

@@ -52,6 +52,7 @@ const CONFIG = {
       defaults: {
         model: "google/gemini-3.1-flash-lite",
         fallbacks: [...FALLBACKS],
+        utilityModel: "",
         maxToolIterations: 12,
         contextBudgetChars: 60000,
         queueMode: "followup",
@@ -142,10 +143,11 @@ const tap = (node) => fire(node, "click");
 const press = (node, key) => fire(node, "keydown", { key });
 
 test("Defaults page renders: no visible native <select>, every value store hidden", () => {
-  // Seven, not eight: the legacy queue store went with the control it served
-  // (messages.queue.mode owns that decision now, see core.test.mjs).
+  // Eight: the legacy queue store went with the control it served
+  // (messages.queue.mode owns that decision now, see core.test.mjs), and
+  // Task 29's Session naming card added one.
   const selects = $$("select");
-  assert.equal(selects.length, 7, `expected the seven value stores, saw ${selects.length}`);
+  assert.equal(selects.length, 8, `expected the eight value stores, saw ${selects.length}`);
   for (const sel of selects) {
     assert.ok(sel.hasAttribute("hidden"), `select#${sel.id} must be hidden (it is only the value store)`);
     assert.ok(sel.querySelector("option"), `select#${sel.id} must still carry its options`);
@@ -315,4 +317,48 @@ test("only one menu is open at a time — opening another closes the first", () 
   tap(byId("ad-rview-btn"));
   assert.equal(opens().length, 1, "the usage menu closed when the view menu opened");
   assert.equal(byId("ad-rview-menu").hasAttribute("hidden"), false);
+});
+
+// ---- Task 29: session naming ------------------------------------------------
+
+test("Session naming is its own card: a model picker that inherits by default", async () => {
+  const card = $$(".setcard").find((c) => c.querySelector(".setcard__head h3")?.textContent === "Session naming");
+  assert.ok(card, "the card is on the Defaults page");
+  assert.match(
+    card.querySelector(".setcard__head .hint").textContent,
+    /first two exchanges/,
+    "the copy states the rule the user asked for",
+  );
+
+  // Empty config = inherit, and that is what the control shows.
+  assert.equal(byId("naming-model").value, "", "unset means the default model");
+  const btnText = byId("naming-model-btn").querySelector(".dd__val").textContent;
+  assert.match(btnText, /Same as the default model/);
+
+  tap(byId("naming-model-btn"));
+  const opts = [...card.querySelectorAll(".dd__opt")];
+  assert.ok(opts.length >= 12, `every switched-on model is offered, saw ${opts.length}`);
+  assert.ok(opts.some((o) => o.textContent.includes("Same as the default model")), "inherit stays reachable");
+  const disabled = opts.find((o) => o.getAttribute("title") === "openrouter/model-switched-off");
+  assert.equal(disabled, undefined, "a switched-off model is never offered");
+});
+
+test("picking a naming model saves only that leaf", async () => {
+  globalThis.__GW_CALLS = [];
+  const card = $$(".setcard").find((c) => c.querySelector(".setcard__head h3")?.textContent === "Session naming");
+  tap(byId("naming-model-btn"));
+  const pick = [...card.querySelectorAll(".dd__opt")].find((o) => o.getAttribute("title") === "mistral/mistral-large-latest");
+  assert.ok(pick, "the raw ref rides the option, so the stored value is the model id");
+  tap(pick);
+  assert.equal(byId("naming-model").value, "mistral/mistral-large-latest");
+
+  tap([...card.querySelectorAll("button")].find((b) => b.textContent === "Save naming"));
+  await new Promise((r) => setTimeout(r, 0));
+
+  const written = globalThis.__GW_CALLS.filter((c) => c.method === "config.set");
+  assert.deepEqual(
+    written.map((c) => [c.params.path, c.params.value]),
+    [["agents.defaults.utilityModel", "mistral/mistral-large-latest"]],
+    "one leaf, nothing else",
+  );
 });

@@ -62,6 +62,7 @@ export { fuzzy } from "../ui/src/dom.js";
 export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, testProvider, maskKey, defaultModelLine, parseProviderAddArgs, canonicalModelRef } from "./config/providers.js";
 export { ConfigService, readConfigFile, writeConfigFile } from "./config/load.js";
 export { handleSlashExtension, slashHelp, slashCommands, SLASH_CATALOG, SHARED_COMMANDS } from "./agent/slash-commands.js";
+export { namingSample, namingDecision, NAMING_TURNS, type NamingMessage, type NamingDecision } from "./agent/naming.js";
 export { handleHooksRequest, hookTokenFingerprint, type HookService } from "./gateway/webhooks.js";
 export { handleOpenAiRequest, type OpenAiService } from "./gateway/openai-http.js";
 export { isContextOverflowError, planCompactSpan, summarizerPrompt, renderSpan, clampSpanInput } from "./agent/compaction.js";

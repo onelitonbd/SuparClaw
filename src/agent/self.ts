@@ -54,6 +54,11 @@ export const MUTABLE_SETTINGS: SettingSpec[] = [
   },
   { path: "agents.defaults.fallbacks", label: "models tried in order when the first fails", type: "string[]" },
   {
+    path: "agents.defaults.utilityModel",
+    label: "the model that names new chats (empty = the default model)",
+    type: "string",
+  },
+  {
     path: "agents.defaults.reasoningEffort",
     label: "how hard you think before answering",
     type: "enum",
@@ -224,6 +229,17 @@ export function settingsCtlFrom(config: ConfigLike, apply: () => void): Settings
       const norm = normalizeModelRef(config.current, String(value));
       if (!norm.ok) return norm;
       value = norm.value;
+    } else if (key === "agents.defaults.utilityModel") {
+      // Same validation as the default model, except that empty is meaningful:
+      // it means "use the default model", so clearing it back is allowed.
+      const wanted = String(value).trim();
+      if (wanted) {
+        const norm = normalizeModelRef(config.current, wanted);
+        if (!norm.ok) return norm;
+        value = norm.value;
+      } else {
+        value = "";
+      }
     } else if (key === "agents.defaults.fallbacks") {
       const list: string[] = [];
       for (const entry of value as string[]) {
@@ -269,6 +285,8 @@ export interface SelfFacts {
   /** Set when `model` is a curated profile. */
   profile?: string;
   fallbacks: string[];
+  /** Model for short internal tasks (session naming); "" = the default. */
+  utilityModel: string;
   reasoning: string;
   usage: string;
   queue: string;
@@ -310,6 +328,7 @@ export function selfFactsFrom(config: SuparClawConfig, opts: SelfOptions): SelfF
     model: profile ? profile.ref || d.model : d.model,
     ...(profile ? { profile: d.model } : {}),
     fallbacks: [...(d.fallbacks ?? [])],
+    utilityModel: String(d.utilityModel ?? "").trim(),
     reasoning: d.reasoningEffort,
     usage: opts.runtime?.usage ?? d.usage,
     queue: opts.runtime?.queue ?? d.queueMode,
@@ -343,6 +362,7 @@ export function selfPromptLine(facts: SelfFacts): string {
     "",
     "Live settings for this session — facts, not defaults. Quote them instead of guessing.",
     `- Model: ${model}${profile} · fallbacks: ${fallbacks}`,
+    `- Naming new chats: ${facts.utilityModel ? "`" + facts.utilityModel + "`" : "this model"}`,
     `- Reasoning: \`${facts.reasoning}\` · reply usage footer: \`${facts.usage}\` · queue: \`${facts.queue}\``,
     `- Exec: mode \`${facts.execMode}\` · approvals: ${onOff(facts.approvals)} · sandbox: \`${facts.sandbox}\``,
     `- Limits: ${facts.maxIterations} tool iterations · context budget ${budget} chars · skills: ${facts.skills} enabled`,

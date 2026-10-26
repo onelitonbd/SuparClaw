@@ -297,3 +297,36 @@ test("styles keep long errors and tokens inside the thread", () => {
   assert.ok(/overflow-x:\s*hidden/.test(css), "thread scroller clips horizontal overflow");
   assert.ok(css.includes(".notice--error"), "errors render as a bounded card");
 });
+
+// ---- Task 29: a new chat names itself --------------------------------
+
+test("New chat opens instantly — the name prompt is gone", () => {
+  const src = readFileSync(join(ROOT, "ui/src/main.ts"), "utf8");
+  const fn = src.slice(src.indexOf("function newSession"), src.indexOf("/* ---------------- drawer ----------------"));
+  assert.ok(fn.length > 0, "newSession still exists");
+  assert.ok(!/\bprompt\(/.test(src), "no native prompt() anywhere in the UI");
+  assert.ok(!fn.includes("modal("), "a new chat asks nothing");
+  assert.ok(!fn.includes("sessions.rename"), "and does not pre-name itself");
+  assert.match(fn, /main:\$\{Date\.now\(\)\.toString\(36\)\}/, "the key is a timestamp, so no prompt is needed");
+  assert.ok(fn.includes("switchSession"), "and it just switches to the new chat");
+
+  // Renaming an existing chat is a different thing and stays where it is.
+  const rename = src.slice(src.indexOf("function renameSession"), src.indexOf("/* ---------------- drawer ----------------"));
+  assert.ok(rename.includes('label: "Session name"'), "the rename dialog still exists");
+  assert.ok(rename.includes("sessions.rename"), "driven by the sessions.rename request");
+});
+
+test("the chat header follows the name, and every writer goes through one place", () => {
+  const src = readFileSync(join(ROOT, "ui/src/main.ts"), "utf8");
+  const helper = src.slice(src.indexOf("function setHeaderTitle"), src.indexOf("function newSession"));
+  assert.ok(helper.includes('$("session-title").textContent = title'), "the helper owns the text");
+  assert.ok(helper.includes("placeholderTitle(key)"), "an unnamed chat reads as a placeholder, not a key");
+  assert.ok(helper.includes('setAttribute("title", key)'), "the raw key is still on hover");
+  const writes = src.split("\n").filter((l) => /\$\("session-title"\)\.textContent/.test(l));
+  assert.equal(writes.length, 1, `only the helper writes the header text, saw ${writes.length}`);
+  assert.match(
+    src.slice(src.indexOf("const curRow"), src.indexOf("chat.setArchived")),
+    /setHeaderTitle\(sessionKey, curRow \? rowTitle\(curRow\) : undefined\)/,
+    "refresh() re-reads the row, so an auto-title shows up without switching chats",
+  );
+});

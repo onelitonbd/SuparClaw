@@ -217,6 +217,57 @@ test("settingsCtl writes, validates and applies — and says what it cannot touc
   assert.equal(cfg.current.agents.defaults.model, "", "and the old model stands");
 });
 
+test("the naming model is writable from chat, and empty means inherit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sc-self-naming-"));
+  const path = join(dir, "config.json5");
+  const seeded = emptyConfig();
+  for (const [name, model] of [["openai", "gpt-4.1"], ["kilo", "gpt-4.1"]]) {
+    seeded.providers[name] = {
+      baseUrl: "https://example.test/v1",
+      apiKey: "",
+      headers: {},
+      models: [model],
+      authProfiles: [],
+      api: "openai-completions",
+    };
+  }
+  writeConfigFile(seeded, path);
+  const cfg = new ConfigService(createLogger({ level: "error" }), path);
+  let applied = 0;
+  const ctl = settingsCtlFrom(cfg, () => { applied += 1; });
+
+  // Two providers carry the same model name, so an unqualified ref is ambiguous
+  // and must be refused rather than silently guessed.
+  const vague = ctl.set("agents.defaults.utilityModel", "gpt-4.1");
+  assert.equal(vague.ok, false);
+  assert.match(vague.error, /several providers/);
+
+  const ok = ctl.set("agents.defaults.utilityModel", "kilo/gpt-4.1");
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.equal(applied, 1, "the write applies live");
+  assert.equal(cfg.current.agents.defaults.utilityModel, "kilo/gpt-4.1");
+  assert.match(readFileSync(path, "utf8"), /utilityModel:\s*['"]kilo\/gpt-4\.1['"]/, "and lands on disk");
+
+  const bad = ctl.set("agents.defaults.utilityModel", "not-a-model");
+  assert.equal(bad.ok, false, "a nonsense ref is refused, not stored");
+  assert.match(bad.error, /model/i);
+
+  const cleared = ctl.set("agents.defaults.utilityModel", "");
+  assert.equal(cleared.ok, true, "clearing back to inherit is allowed");
+  assert.equal(cfg.current.agents.defaults.utilityModel, "", "and it means the default model");
+});
+
+test("the facts line says which model names chats", () => {
+  const opts = { sessionKey: "main:main", workspace: "/w", configPath: "/c" };
+  const facts = selfFactsFrom(emptyConfig(), opts);
+  assert.equal(facts.utilityModel, "", "unset is stated as such");
+  assert.match(selfPromptLine(facts), /Naming new chats: this model/);
+
+  const named = emptyConfig();
+  named.agents.defaults.utilityModel = "kilo/gpt-4.1";
+  assert.match(selfPromptLine(selfFactsFrom(named, opts)), /Naming new chats: `kilo\/gpt-4\.1`/);
+});
+
 test("a curated model profile id is accepted as the default model", () => {
   const dir = mkdtempSync(join(tmpdir(), "sc-self-model-"));
   const path = join(dir, "config.json5");

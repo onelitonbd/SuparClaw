@@ -901,6 +901,13 @@ case "sessions.rename": {
               send(errFrame(id, "bad_request", result.error ?? "rename failed"));
               return;
             }
+            // A key rename made in the UI is a name a human typed (Task 29), so
+            // the row carries it as the display name: otherwise an unnamed chat
+            // renamed to "main:launch-plan" would still read "New chat", and
+            // auto-titling would overwrite the choice on the next reply.
+            const renamedRow = service.store.getSessionByKey(newKey);
+            const typed = newKey.includes(":") ? newKey.split(":").slice(1).join(":") : newKey;
+            if (renamedRow && typed) service.store.renameSession(renamedRow.id, typed);
             send(okFrame(id, { renamed: true, sessionKey: newKey }));
             return;
           }

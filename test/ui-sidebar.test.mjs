@@ -29,7 +29,7 @@ await (await import("esbuild")).build({
   entryPoints: [join(ROOT, "ui/src/sessions.ts")],
   bundle: true, format: "esm", outdir: outDir, outExtension: { ".js": ".mjs" }, platform: "neutral",
 });
-const { bucketOf, groupSessions, rowTitle, rowMeta, sessionRow, sessionHit, searchView } =
+const { bucketOf, groupSessions, rowTitle, rowMeta, placeholderTitle, sessionRow, sessionHit, searchView } =
   await import(pathToFileURL(join(outDir, "sessions.mjs")).href);
 
 const text = (n) => (n?.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -105,12 +105,21 @@ test("inactive, busy, archived and unnamed rows", () => {
   assert.match(archived.className, /session--archived/, "an archived row is marked in the list");
   assert.ok(!text(archived.querySelector(".session__meta")).includes("archived"), "the group already says archived");
 
+  // Task 29: an unnamed chat no longer introduces itself by its key — new chats
+  // name themselves from their first exchange, and until then they read as what
+  // they are. (`main:main` is the chat that always exists, so it says "Main".)
   const bare = sessionRow({ key: "main:main" }, { active: false, busy: false, onOpen() {}, onMenu() {} });
-  assert.equal(text(bare.querySelector(".session__title")), "main:main", "the key stands in for a missing title");
+  assert.equal(text(bare.querySelector(".session__title")), "Main chat", "no key in the title");
   assert.equal(text(bare.querySelector(".session__meta")), "no messages");
+  assert.match(bare.getAttribute("aria-label") ?? bare.querySelector(".session__open").getAttribute("aria-label") ?? "", /main:main/, "the key is still announced");
+
+  const fresh = sessionRow({ key: "main:m3x9q" }, { active: false, busy: false, onOpen() {}, onMenu() {} });
+  assert.equal(text(fresh.querySelector(".session__title")), "New chat");
 
   assert.equal(rowTitle({ key: "main:a", name: "Named", title: "Auto" }), "Named", "rename wins");
   assert.equal(rowTitle({ key: "main:a", title: "Auto" }), "Auto");
+  assert.equal(rowTitle({ key: "main:a" }), "New chat", "and an unnamed row has a readable fallback");
+  assert.equal(placeholderTitle("main:main"), "Main chat");
   assert.equal(rowMeta({ key: "main:a", last_msg_at: 0 }), "no messages");
 });
 

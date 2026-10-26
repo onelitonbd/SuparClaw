@@ -24,6 +24,14 @@ Overlays (all with a scrim, all dismissable with Esc or a tap outside):
 - `#sheet-overlay` — model picker, slides up from the bottom
 - `#modal-overlay` — confirmations, token entry, provider forms
 
+New chat asks nothing: it opens an empty `main:<timestamp>` session immediately,
+and the session names itself from its first exchange (the second refines it —
+see "Naming new chats" in the README). Until a name exists the row and the
+`#session-title` header read "New chat" (or "Main chat" for `main:main`), never
+the raw key; the key stays on the row's tooltip and accessible name. Every
+writer of the header goes through `setHeaderTitle()`, and `refresh()` re-reads
+the row so a name that arrives mid-conversation appears without a reload.
+
 ## Design tokens
 
 `ui/styles.css` holds the whole system. Light is the default; the dark set is

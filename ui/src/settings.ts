@@ -866,7 +866,7 @@ export class Settings {
     };
 
     // The hero goes first on the page: the answer before the controls.
-    this.#root.append(hero(), card);
+    this.#root.append(hero(), card, this.#namingCard(defaults, options));
     redrawFallbacks();
 
     function hero(): HTMLElement {
@@ -900,6 +900,46 @@ export class Settings {
    *  The portrait is picked from any PNG/JPEG/WebP, centre-cropped square and
    *  shrunk to a bounded data URL (ui/src/avatar.ts) that lives in the config, so
    *  the face travels with backups and `sc config`. */
+  /**
+   * Session naming (Task 29). A new chat names itself from its first exchanges;
+   * this picks the model that writes the name. Same custom dropdown as every
+   * other choice on the page — the hidden <select> is only the value store.
+   */
+  #namingCard(defaults: any, options: DdOption[]): HTMLElement {
+    const current = String(defaults.utilityModel ?? "");
+    const choices: DdOption[] = [
+      { value: "", label: "Same as the default model", group: "Inherit" },
+      ...options,
+    ];
+    const dd = this.#dropdown({
+      id: "naming-model",
+      value: current,
+      label: "Naming model",
+      placeholder: "Same as the default model",
+      options: choices,
+    });
+    const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
+    const save = el("button", { class: "btn pri", type: "button" }, ["Save naming"]);
+    const card = el("div", { class: "card setcard" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Session naming"]),
+        el("p", { class: "hint" }, [
+          "A new chat names itself from its first two exchanges — on every channel. A small, fast model is enough here.",
+        ]),
+      ]),
+      this.#field("Naming model", dd.node, {
+        hint: "Titles are 2-6 words, so this never needs a big model. Leave it on the default if you have only one.",
+      }),
+      el("div", { class: "setfoot" }, [note, save]),
+    ]);
+    const clearDirty = this.#dirtyWatch(card, note);
+    save.onclick = async () => {
+      const ok = await this.#setMany([["agents.defaults.utilityModel", dd.sel.value]], "naming model saved");
+      if (ok) clearDirty();
+    };
+    return card;
+  }
+
   #renderAgentIdentity(config: any): void {
     const id = config.agents?.identity ?? {};
     const presets: { glyph: string; label: string }[] = [

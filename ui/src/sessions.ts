@@ -62,9 +62,18 @@ export function groupSessions(rows: SessionRow[], now = Date.now()): SessionGrou
     .map((label) => ({ label, rows: buckets.get(label) ?? [] }));
 }
 
-/** What a row is called: a rename wins, then the auto-title, then the key. */
+/**
+ * What a row is called: a rename wins, then the auto-title, then a readable
+ * placeholder — a chat that has not been named yet should not introduce itself
+ * as `main:m3x9q` (it names itself from its first exchange; see naming.ts).
+ */
 export function rowTitle(row: SessionRow): string {
-  return String(row.name || row.title || row.key);
+  return String(row.name || row.title || placeholderTitle(row.key));
+}
+
+/** The name an unnamed session shows: the main chat is still "Main". */
+export function placeholderTitle(key: string): string {
+  return key === "main:main" ? "Main chat" : "New chat";
 }
 
 /** The second line: when it last spoke. The key is on the row's tooltip and in
