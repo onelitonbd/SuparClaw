@@ -36,6 +36,14 @@ export {
 } from "./agent/memory-search.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
 export { buildRegistry, toolsToSchema, safePath } from "./agent/tools.js";
+export {
+  surfacesPromptLine,
+  resolveAnnounceTarget,
+  describeDelivery,
+  surfacesFromConfig,
+  NO_SURFACES,
+  type SurfaceFacts,
+} from "./agent/surfaces.js";
 export { LlmClient, resolveModel, parseToolArgs, parseRetryAfter, parseRetryHint, LlmError, providerErrorText, googleThoughtSignature, reasoningTokens, SKIP_THOUGHT_SIGNATURE } from "./agent/llm.js";
 export { hostAllowed, originAllowed, hostnameOf, type TrustPolicy } from "./gateway/trust.js";
 export { parseWebAttachments, isImageMime, sanitizeAttachName, WEB_ATTACH_LIMITS } from "./gateway/web-attachments.js";

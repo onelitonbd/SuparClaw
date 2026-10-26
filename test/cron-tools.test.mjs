@@ -263,3 +263,72 @@ test("exec ships on and approved by default; the operator can still take it back
   config3.tools.exec.approvals = false;
   assert.equal(execModeOf(config3.tools.exec), "full", "the legacy switch still maps");
 });
+
+// ---- Task 22: the agent knows its surfaces ---------------------------------
+// The reminder worked and the *explanation* was a lie ("I don't have direct
+// Telegram API access from this device"). cron_add now resolves targets against
+// the live channel facts, so "telegram" is a real chat id and an impossible
+// target is an error instead of a promise.
+
+const TG_ONLINE = {
+  telegram: { enabled: true, hasToken: true, running: true, username: "suparbot", error: "" },
+  telegramChats: ["123456789"],
+};
+const TG_OFFLINE = {
+  telegram: { enabled: true, hasToken: true, running: false, username: "", error: "401 Unauthorized" },
+  telegramChats: ["123456789"],
+};
+
+test("cron_add: a web-chat reminder still comes back here, and the reply names the Telegram route", async () => {
+  const { store, tool, ctx } = harness({ surfaces: TG_ONLINE });
+  const out = await tool("cron_add").run(JOB, ctx);
+  const row = store.getJob("math-questions-for-toha");
+  assert.equal(row.delivery_to, "session:main:test", "the surface that asked is unchanged");
+  assert.match(
+    out,
+    /Telegram is online as @suparbot — pass to=telegram to send it to chat 123456789 instead/,
+    "no invented limitation: the real target and the exact argument",
+  );
+});
+
+test('cron_add: to="telegram" delivers to the operator chat from the web chat', async () => {
+  const { store, tool, ctx } = harness({ surfaces: TG_ONLINE });
+  const out = await tool("cron_add").run({ ...JOB, to: "telegram" }, ctx);
+  assert.match(out, /^created cron job /);
+  const row = store.getJob("math-questions-for-toha");
+  assert.equal(row.delivery_mode, "announce");
+  assert.equal(row.delivery_to, "telegram:123456789");
+  assert.match(out, /delivery: announce → telegram:123456789 via @suparbot on Telegram/);
+});
+
+test("cron_add: an impossible Telegram target is an error and writes nothing", async () => {
+  const offline = harness({ surfaces: TG_OFFLINE });
+  const offOut = await offline.tool("cron_add").run({ ...JOB, to: "telegram" }, offline.ctx);
+  assert.match(offOut, /^error: Telegram is configured but not running \(401 Unauthorized\)/);
+  assert.equal(offline.store.listJobs().length, 0);
+
+  const unconfigured = harness();
+  const noneOut = await unconfigured.tool("cron_add").run({ ...JOB, to: "telegram" }, unconfigured.ctx);
+  assert.match(noneOut, /^error: Telegram is not configured/);
+  assert.equal(unconfigured.store.listJobs().length, 0);
+});
+
+test("cron_update: retargets a running job to Telegram, and lists it with the live state", async () => {
+  const { store, tool, ctx } = harness({ surfaces: TG_ONLINE });
+  await tool("cron_add").run(JOB, ctx);
+  const id = "math-questions-for-toha";
+
+  const moved = await tool("cron_update").run({ id, to: "telegram" }, ctx);
+  assert.match(moved, /to → telegram:123456789/);
+  assert.equal(store.getJob(id).delivery_to, "telegram:123456789");
+
+  const listed = await tool("cron_list").run({}, ctx);
+  assert.match(listed, /delivery: announce → telegram:123456789 via @suparbot on Telegram/);
+
+  // and the same move is refused when the channel cannot deliver
+  const offline = harness({ surfaces: TG_OFFLINE });
+  await offline.tool("cron_add").run(JOB, offline.ctx);
+  const refused = await offline.tool("cron_update").run({ id, to: "telegram" }, offline.ctx);
+  assert.match(refused, /^error: Telegram is configured but not running/);
+  assert.equal(offline.store.getJob(id).delivery_to, "session:main:test", "the old target survives a refused move");
+});

@@ -14,6 +14,7 @@ import { matchTextReply, type AskUserQuestion, type AskUserResult } from "./ask-
 import { assertWebhookUrl, postWebhook, webhookPayload, resolveDelivery, isEmptySummary, errorStreak, shouldAlert } from "../cron/delivery.js";
 import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
+import type { SurfaceFacts } from "./surfaces.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
@@ -264,6 +265,9 @@ export class Service {
       // A job the agent creates mid-turn must arm before the turn's reply lands,
       // not at the next daemon restart (same reason cron.list reconciles).
       cronChanged: () => this.cronReconcile(),
+      // Fresh every turn, so connecting Telegram mid-session is visible to the
+      // very next reply (the false "no API access" answer came from a stale void).
+      surfaces: () => this.chatSurfaces(),
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are
@@ -379,6 +383,26 @@ export class Service {
       this.#telegramError = describeError(err);
       this.log.error(`telegram failed to start: ${this.#telegramError}`);
     }
+  }
+
+  /**
+   * What the agent can reach, for the prompt's `## Surfaces` block and for
+   * cron delivery targets: live channel health + the chat ids the bot has
+   * actually talked in (most recent first), with the pairing allowlist as the
+   * fallback before any chat has messaged it.
+   */
+  chatSurfaces(): SurfaceFacts {
+    const st = this.channelsStatus().telegram;
+    const chats: string[] = [];
+    for (const s of this.store.listSessions(100, { includeArchived: true })) {
+      const id = /^telegram:(\d+)/.exec(s.key)?.[1];
+      if (id && !chats.includes(id)) chats.push(id);
+    }
+    for (const raw of this.config.channels.telegram.allowFrom ?? []) {
+      const id = String(raw).trim();
+      if (/^\d+$/.test(id) && !chats.includes(id)) chats.push(id);
+    }
+    return { telegram: st, telegramChats: chats };
   }
 
   /** Live channel health for Settings → Channels (their channels status). */

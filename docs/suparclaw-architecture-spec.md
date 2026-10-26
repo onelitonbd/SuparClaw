@@ -107,7 +107,9 @@ graph weight, not Node itself.
 2. Queue: `steer` / `followup` (MVP), later `collect` / `interrupt`.
 3. Turn admission: one active run per session; `runId` + single-writer fence on transcript writes.
 4. Prompt assembly: base prompt + workspace bootstrap (`AGENTS.md`, `SOUL.md`, `USER.md`,
-   `MEMORY.md`, `memory/*.md`) + skills snapshot (truncation budgets).
+   `MEMORY.md`, `memory/*.md`) + skills snapshot (truncation budgets) + a `## Surfaces` block
+   rebuilt every turn (live channel status and the chat ids a scheduled result can reach), so
+   the agent never invents a capability gap it does not have.
 5. Model call: OpenAI-compatible first (covers most local/remote providers); streaming; retries with
    backoff; model fallback chain; idle watchdog; separate quick `agent.wait` timeout (30s, wait-only).
 6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec follows

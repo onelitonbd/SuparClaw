@@ -11,6 +11,7 @@ import { historyBudget, fallbackTuning } from "./context-budget.js";
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
 import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
+import { surfacesFromConfig, surfacesPromptLine, type SurfaceFacts } from "./surfaces.js";
 import { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
 import type { AskUserQuestion, AskUserResult } from "./ask-user.js";
 
@@ -91,6 +92,8 @@ export interface LoopDeps {
   subagents?: SubagentCtl;
   /** Re-arm scheduled jobs after a cron tool changed the store. */
   cronChanged?: () => void | Promise<void>;
+  /** Live channel facts for the prompt + cron delivery targets. */
+  surfaces?: () => SurfaceFacts;
   /**
    * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
    * immediately and side-generate no UI. When a human must decide, the
@@ -579,6 +582,7 @@ export class AgentLoop {
       // will call the model with, so a spawned child can inherit both.
       const runProfile = modelProfile(this.deps.config, input.model ?? "");
       const ctx: ToolContext = {
+        surfaces: this.#surfaceFacts(),
         workspace: this.workspace,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
@@ -979,6 +983,11 @@ export class AgentLoop {
     return this.tools.filter((t) => !["sessions_spawn", "sessions_yield", "session_send", "subagents"].includes(t.name));
   }
 
+  /** Channel facts for this turn: live from the service, config-only otherwise. */
+  #surfaceFacts(): SurfaceFacts {
+    return this.deps.surfaces?.() ?? surfacesFromConfig(this.deps.config.channels);
+  }
+
   #buildMessages(
     sessionId: string,
     sessionKey: string,
@@ -1114,6 +1123,7 @@ export class AgentLoop {
       );
     }
 
+    const surfaces = this.#surfaceFacts();
     const systemParts = [
       basePrompt(this.deps.config.agents.identity ?? {}),
       ...subParts,
@@ -1123,6 +1133,7 @@ export class AgentLoop {
       `Current date: ${new Date().toString()}`,
       `Session: ${sessionKey} (${channelLabel(sessionKey)})`,
       `Where this message came from: ${channelLabel(sessionKey)}. A direct message can be answered privately; in a group or topic chat others can read your reply, so keep it on-topic and mention people by name when needed.`,
+      surfacesPromptLine(surfaces, sessionKey),
       skillsCatalog(this.skills),
       skillBlocks.length > 0 ? `## Skills loaded for this turn\n\n${skillBlocks.join("\n\n")}` : "",
       ctx.text,

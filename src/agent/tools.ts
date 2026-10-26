@@ -7,6 +7,7 @@ import { todayStamp } from "./workspace.js";
 import { searchMemoryFiles, rankTranscriptHits } from "./memory-search.js";
 import { discoverSkills, readSkillBody, skillsCatalog, writeSkill, type SkillMeta } from "./skills.js";
 import { codeModeEngages, CodeMode, codeModeSurface, type CodeModeConfig, type GuestTool } from "./code-mode.js";
+import { describeDelivery, resolveAnnounceTarget, NO_SURFACES, type SurfaceFacts } from "./surfaces.js";
 
 export interface JsonSchema {
   type: "object";
@@ -40,6 +41,8 @@ export interface ToolContext {
   /** Re-arm scheduled jobs after a cron tool changed the store (the service
    *  wires this to its scheduler; without it a new job waits for a restart). */
   cronChanged?: () => void | Promise<void>;
+  /** Channel facts for this turn: what a delivery target can actually reach. */
+  surfaces?: SurfaceFacts;
   /** The model this run is using (profile id). A spawned child inherits it when
    *  neither the tool argument nor agents.defaults.subagents.model names one. */
   model?: string;
@@ -122,18 +125,20 @@ function cronWhen(job: Pick<JobRow, "schedule" | "tz" | "enabled">, next: Date |
   return `schedule: ${job.schedule}${zone} · ${when} · ${job.enabled ? "enabled" : "paused"}`;
 }
 
-/** "announce → telegram:123" | "cron.delivery default". */
-function cronDelivery(job: Pick<JobRow, "delivery_mode" | "delivery_to">): string {
+/** "announce → telegram:123 via @bot" | "cron.delivery default". */
+function cronDelivery(job: Pick<JobRow, "delivery_mode" | "delivery_to">, ctx: ToolContext): string {
   if (!job.delivery_mode) return "cron.delivery default";
-  return job.delivery_to ? `${job.delivery_mode} → ${job.delivery_to}` : job.delivery_mode;
+  if (!job.delivery_to) return job.delivery_mode;
+  return describeDelivery(job, factsOf(ctx));
 }
 
-/** Where "tell me here" points: the Telegram chat that asked, else its session. */
-function announceTargetFor(ctx: ToolContext): string {
-  const key = ctx.sessionKey ?? "";
-  const tg = /^telegram:(\d+)/.exec(key);
-  if (tg) return `telegram:${tg[1]}`;
-  return key ? `session:${key}` : "";
+/** Channel facts for this turn (config-only when no service is wired). */
+const factsOf = (ctx: ToolContext): SurfaceFacts => ctx.surfaces ?? NO_SURFACES;
+
+/** Resolve a requested target against the live surfaces; "" means "this chat". */
+function targetOf(ctx: ToolContext, to: string, mode: string | null): { target: string; note?: string; error?: string } {
+  if (mode !== "announce") return { target: to };
+  return resolveAnnounceTarget(to, ctx.sessionKey ?? "", factsOf(ctx));
 }
 
 /** Termux bash first, then ordinary shells — exec must work off-phone too. */
@@ -530,7 +535,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             [
               `${job.id} — ${job.name}`,
               `  ${cronWhen(job, next, bad)}`,
-              `  delivery: ${cronDelivery(job)} · session ${job.session_key}`,
+              `  delivery: ${cronDelivery(job, ctx)} · session ${job.session_key}`,
               last
                 ? `  last run: ${new Date(last.started_at).toISOString()} · ${last.status}`
                 : "  last run: never",
@@ -548,7 +553,8 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         "The job runs in its own fresh session: write the prompt as a self-contained instruction, naming the people, files and exactly what to send. " +
         "schedule is a five-field cron expression interpreted in tz (an IANA zone such as Asia/Dhaka), or an ISO datetime like 2026-10-27T08:00:00 for a one-shot. " +
         "Always pass tz when the user gives a wall-clock time. " +
-        "With no delivery argument the result is announced back to the chat you are in, unless the operator configured a global cron.delivery.mode; pass delivery=\"none\" for a silent run.",
+        "With no delivery argument the result is announced back to the chat you are in, unless the operator configured a global cron.delivery.mode; pass delivery=\"none\" for a silent run. " +
+        "The ## Surfaces block in your prompt lists which channels are live and the chat ids they reach: to=\"telegram\" delivers to the operator's Telegram chat, to=telegram:<chatId> to a specific one. The reply tells you where the result will actually go — quote that, never claim a channel is unreachable when Surfaces says it is online.",
       parameters: {
         type: "object",
         properties: {
@@ -561,7 +567,9 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             enum: ["none", "announce", "webhook"],
             description: "Where the finished result goes; default announces it back to this chat",
           },
-          to: str("Target: telegram:<chatId> or session:<key> for announce, https://… for webhook"),
+          to: str(
+            "Target for announce: \"telegram\" (the operator's Telegram chat, resolved from the Surfaces block), telegram:<chatId>, or session:<key>. https://… only for webhook.",
+          ),
         },
         required: ["name", "schedule", "prompt"],
       },
@@ -591,13 +599,18 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         // Delivery: an explicit choice wins; otherwise inherit the operator's
         // global default; and when that default delivers nothing, announce back
         // to this chat — a reminder filed in a transcript nobody opens is the
-        // failure this whole task is about.
+        // failure this whole task is about. The target is then resolved against
+        // the live surfaces, so "telegram" means a real chat id and an
+        // impossible target is an error instead of a promise.
         let mode: string | null = asked || null;
-        if (!mode && ctx.config.cron.delivery.mode === "none") {
-          mode = "announce";
-          to = to || announceTargetFor(ctx);
+        if (!mode && ctx.config.cron.delivery.mode === "none") mode = "announce";
+        let note: string | undefined;
+        if (mode === "announce") {
+          const resolved = targetOf(ctx, to, mode);
+          if (resolved.error) return `error: ${resolved.error}`;
+          to = resolved.target;
+          note = resolved.note;
         }
-        if (mode === "announce" && !to) to = announceTargetFor(ctx);
         const row = ctx.store.upsertJob({
           id,
           name,
@@ -615,7 +628,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         const lines = [
           `created cron job ${row.id}`,
           `  ${cronWhen(row, next)}`,
-          `  delivery: ${cronDelivery(row)}`,
+          `  delivery: ${cronDelivery(row, ctx)}${note ? ` (${note})` : ""}`,
           `  session: ${row.session_key} — every run starts fresh, so this prompt is all it will see`,
           `  prompt: ${prompt.replace(/\s+/g, " ")}`,
         ];
@@ -642,7 +655,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             enum: ["none", "announce", "webhook"],
             description: "New delivery mode",
           },
-          to: str("New target: telegram:<chatId>, session:<key> or https://…"),
+          to: str("New target: \"telegram\", telegram:<chatId>, session:<key> (https://… for webhook)"),
           enabled: { type: "boolean", description: "false pauses the job, true resumes it" },
         },
         required: ["id"],
@@ -665,9 +678,15 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           return "error: delivery must be none | announce | webhook";
         }
         const mode = asked === undefined ? existing.delivery_mode : asked || null;
-        const to =
-          args["to"] === undefined ? existing.delivery_to : String(args["to"]).trim() || null;
+        let to = args["to"] === undefined ? existing.delivery_to : String(args["to"]).trim() || null;
         if (mode === "webhook" && !to) return "error: delivery webhook needs to=<url>";
+        // Retargeting to "telegram" has to mean a real chat id, and an offline
+        // channel is an error here rather than a job that silently drops.
+        if (mode === "announce" && args["to"] !== undefined) {
+          const resolved = resolveAnnounceTarget(String(to ?? ""), ctx.sessionKey ?? "", factsOf(ctx));
+          if (resolved.error) return `error: ${resolved.error}`;
+          to = resolved.target || null;
+        }
         const enabled =
           args["enabled"] === undefined ? existing.enabled : args["enabled"] ? 1 : 0;
         let next: Date | null = null;
@@ -701,7 +720,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         return [
           `updated ${row.id}${changed.length ? ` — ${changed.join(", ")}` : " — nothing changed"}`,
           `  ${cronWhen(row, next)}`,
-          `  delivery: ${cronDelivery(row)}`,
+          `  delivery: ${cronDelivery(row, ctx)}`,
         ].join("\n");
       },
     },

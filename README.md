@@ -71,7 +71,7 @@ rejects a reference that does not resolve against the configured providers
 | `sc status` | subsystem readiness + effective config — probes the **running** gateway when one is up (`live: true`), offline view otherwise |
 | `sc config get\|set\|path` | read and write `~/.suparclaw/config.json5` |
 | `sc pair approve <id>` | allow a Telegram user to DM the bot |
-| `sc cron add\|list\|remove` | scheduled prompts (the agent schedules too: `cron_add`, `cron_list`, `cron_update`, `cron_remove`) |
+| `sc cron add\|list\|remove` | scheduled prompts (the agent schedules too: `cron_add`, `cron_list`, `cron_update`, `cron_remove` — each turn's prompt lists which channels are live and the chat ids a result can be delivered to) |
 | `sc service install\|status\|uninstall` | termux-services integration |
 
 Web UI: `http://127.0.0.1:18790/` while `sc gateway` runs (dark/light, same design tokens
