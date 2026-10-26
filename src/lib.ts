@@ -93,6 +93,8 @@ export { jobTimezone } from "./cron/scheduler.js";
 export { resolveDelivery, isEmptySummary, assertWebhookUrl, webhookPayload, errorStreak, shouldAlert } from "./cron/delivery.js";
 export { parseLogLine, filterLogLines, readLogTail, readLogDelta } from "./cli/logs.js";
 export { parseRepoSlug, resolveRef, currentSha, computeUpdatePlan, fetchRemoteHead, INSTALL_REF_FILE } from "./cli/update.js";
+export { gitDirOf, gitHead, gitRefSha, gitIsFile, gitCommonDir } from "./util/git-head.js";
+export type { GitHead } from "./util/git-head.js";
 export { parseUninstallArgs, planUninstall, deleteStateContents, cliRemovalHint, cmdUninstall } from "./cli/uninstall.js";
 export { parseDurationMs, parseByteSize } from "./util/units.js";
 export {

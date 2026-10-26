@@ -12,6 +12,7 @@ import { createWriteStream, existsSync, mkdtempSync, rmSync, cpSync, readFileSyn
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { gitHead } from "../util/git-head.js";
 import { spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
@@ -50,13 +51,11 @@ export const INSTALL_REF_FILE = ".suparclaw-ref";
  */
 export function resolveRef(root: string, flag?: string): string {
   if (flag?.trim()) return flag.trim();
-  const head = join(root, ".git", "HEAD");
-  try {
-    const m = /^ref: refs\/heads\/(.+)$/.exec(readFileSync(head, "utf8").trim());
-    if (m) return m[1]!;
-  } catch {
-    /* an unpacked install has no .git — fall through to the recorded ref */
-  }
+  // A linked worktree — every code session checks one out — keeps `.git` as a
+  // file, so `join(root, ".git", "HEAD")` threw ENOTDIR and the catch below
+  // silently answered "main" (Task 39). `gitHead` follows the pointer.
+  const head = gitHead(root);
+  if (head?.ref) return head.ref;
   try {
     const recorded = readFileSync(join(root, INSTALL_REF_FILE), "utf8").trim();
     if (recorded) return recorded;
@@ -68,14 +67,10 @@ export function resolveRef(root: string, flag?: string): string {
 
 /** Local identity: the checkout's HEAD when .git exists, else the stamp file. */
 export function currentSha(root: string): string {
-  try {
-    const head = readFileSync(join(root, ".git", "HEAD"), "utf8").trim();
-    const m = /^ref: refs\/heads\/(.+)$/.exec(head);
-    if (m) return readFileSync(join(root, ".git", "refs", "heads", `${m[1]!}`), "utf8").trim();
-    if (/^[0-9a-f]{40}$/.test(head)) return head; // detached
-  } catch {
-    /* packed refs or no .git — try the stamp */
-  }
+  // Worktree-aware (Task 39): the sha comes from the ref file, the shared common
+  // dir, or packed-refs — whichever holds it — and a detached HEAD is its own sha.
+  const head = gitHead(root);
+  if (head?.sha) return head.sha;
   try {
     return JSON.parse(readFileSync(join(root, "dist", "build-stamp.json"), "utf8")).sha ?? "unknown";
   } catch {

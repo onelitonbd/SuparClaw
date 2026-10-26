@@ -39,6 +39,9 @@ curl -fsSL …/install.sh | bash -s -- --dir ~/suparclaw
 
 `install.sh` records the ref it installed in `current/.suparclaw-ref`, so
 `sc update` keeps updating **that** ref; `sc update --ref main` switches back.
+In a git checkout — including a code session's linked worktree, where `.git` is
+a pointer file rather than a directory — `sc update` follows the branch that
+checkout is on; `.suparclaw-ref` is the fallback for an unpacked install.
 
 From source instead (needs a build step):
 

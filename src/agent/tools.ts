@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, appendFileSync, statSync, renameSync, existsSync } from "node:fs";
-import { join, resolve, relative, dirname, extname } from "node:path";
+import { join, resolve, relative, dirname, extname, sep } from "node:path";
+import { gitHead, gitIsFile, gitCommonDir, type GitHead } from "../util/git-head.js";
 import type { SuparClawConfig } from "../config/schema.js";
 import type { Store, JobRow } from "../state/db.js";
 import type { Logger } from "../util/log.js";
@@ -126,6 +127,64 @@ export function safePath(workspace: string, p: string): string {
 
 const MAX_READ = 60_000;
 
+/* ---------------- reading through a `.git` that is a file (Task 39) -------------
+ * Every code session works in a linked git worktree, where `.git` is a one-line
+ * file (`gitdir: …`). "Which branch am I on?" is then a read of `.git/HEAD`,
+ * which used to answer `ENOTDIR: not a directory` — a Node error the model can
+ * do nothing with. The pointer is followed for *checkout metadata only*: HEAD,
+ * refs/** and packed-refs. `config` (it can hold credentials), `hooks/`,
+ * `objects/` and `logs/` stay out of the sandbox.
+ */
+
+/** The git root a workspace-relative path is talking about, when its path
+ *  crosses a `.git` that is a file. `null` for ordinary paths and for a clone
+ *  whose `.git` is a real directory (that reads normally). */
+function gitFileRoot(workspace: string, file: string): { root: string; sub: string; head: GitHead } | null {
+  const segs = relative(workspace, file).split(sep);
+  const at = segs.indexOf(".git");
+  if (at < 0) return null;
+  const root = join(workspace, ...segs.slice(0, at));
+  if (!gitIsFile(root)) return null;
+  const sub = segs.slice(at + 1).join("/");
+  const head = gitHead(root);
+  return head ? { root, sub, head } : null;
+}
+
+/** What a `.git` pointer file can and cannot answer, with the branch already
+ *  filled in so the model gets its answer in the same breath. */
+function gitPointerNotice(head: GitHead): string {
+  const branch = head.ref ?? `detached at ${head.sha ?? "an unknown commit"}`;
+  return [
+    `.git is a file here — this is a linked git worktree (gitdir: ${head.gitDir}).`,
+    `The checkout is on ${branch}.`,
+    "Readable through it: .git/HEAD, .git/refs/**, .git/packed-refs. Everything else in .git (config, hooks, objects, logs) is outside the workspace sandbox.",
+  ].join("\n");
+}
+
+/** Read one of the allowed metadata files, or explain why not. `null` means
+ *  "not a git-metadata path — carry on with a normal read". */
+function readGitMetadata(workspace: string, file: string): string | null {
+  const hit = gitFileRoot(workspace, file);
+  if (!hit) return null;
+  const { sub, head } = hit;
+  if (!sub) return gitPointerNotice(head);
+  const common = gitCommonDir(head.gitDir);
+  const inGit = (dir: string, name: string): string | null => {
+    try {
+      return readFileSync(join(dir, name), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  if (sub === "HEAD") return `${head.text}\n`;
+  if (sub === "packed-refs") return inGit(common, "packed-refs") ?? inGit(head.gitDir, "packed-refs") ?? "(no packed refs — every ref is a loose file)";
+  if (sub.startsWith("refs/")) {
+    const text = inGit(head.gitDir, sub) ?? inGit(common, sub);
+    return text ?? `error: no such ref: ${sub.replace(/^refs\/heads\//, "").replace(/^refs\//, "")}`;
+  }
+  return `error: ${gitPointerNotice(head)}`;
+}
+
 // ---- cron tool helpers -----------------------------------------------------
 
 /** Same id derivation as `sc cron add` and the gateway's cron.upsert. */
@@ -186,7 +245,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     tools.push(
       {
         name: "fs_read",
-        description: "Read a UTF-8 text file from the workspace. Paths are workspace-relative.",
+        description: "Read a UTF-8 text file from the workspace. Paths are workspace-relative. `.git/HEAD` works here even though a code session's `.git` is a file (a linked worktree) — it is the quickest way to see the current branch.",
         parameters: {
           type: "object",
           properties: { path: str("Workspace-relative file path"), offset: int("1-based first line"), limit: int("Max lines to read (default 400)") },
@@ -194,6 +253,9 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         },
         async run(args, ctx) {
           const file = safePath(ctx.workspace, String(args["path"]));
+          // `.git/HEAD` in a worktree (Task 39), or a refusal that says why.
+          const git = readGitMetadata(ctx.workspace, file);
+          if (git !== null) return git;
           let text = readFileSync(file, "utf8");
           const offset = Number(args["offset"] ?? 1);
           const limit = Number(args["limit"] ?? 400);
@@ -216,6 +278,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         },
         async run(args, ctx) {
           const file = safePath(ctx.workspace, String(args["path"]));
+          if (gitFileRoot(ctx.workspace, file)) return "error: git owns .git — change the checkout with git, not by writing into its metadata";
           mkdirSync(dirname(file), { recursive: true });
           writeFileSync(file, String(args["content"]), "utf8");
           return `wrote ${args["path"]} (${String(args["content"]).length} chars)`;
@@ -231,6 +294,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         },
         async run(args, ctx) {
           const file = safePath(ctx.workspace, String(args["path"]));
+          if (gitFileRoot(ctx.workspace, file)) return "error: git owns .git — change the checkout with git, not by editing its metadata";
           const old = String(args["old"]);
           const next = String(args["new"]);
           const text = readFileSync(file, "utf8");
@@ -251,6 +315,9 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         },
         async run(args, ctx) {
           const root = safePath(ctx.workspace, String(args["path"] ?? "."));
+          // A `.git` pointer file (worktree) has nothing to list — say what it is.
+          const asGit = gitFileRoot(ctx.workspace, root);
+          if (asGit && !asGit.sub) return gitPointerNotice(asGit.head);
           const depth = Number(args["depth"] ?? 2);
           const out: string[] = [];
           const walk = (dir: string, level: number) => {
