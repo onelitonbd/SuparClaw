@@ -964,8 +964,16 @@ export class AgentLoop {
           ? JSON.stringify({ usage, model: runProfile.id, label: runProfile.label })
           : null;
       this.deps.store.appendMessage(session.id, "assistant", finalText, runId, storedUsage);
-      this.deps.store.finishRun(runId, "done", usage, undefined, lastModelRef || undefined);
+      // The answer is on the books. Tell the surfaces BEFORE the run bookkeeping:
+      // a failed `finishRun` (a busy or locked database on a small box) used to
+      // sit between the transcript row and the `final` event, so the answer was
+      // saved and visible in the web UI while the chat never received it.
       onEvent({ type: "final", runId, text: finalText, usage });
+      try {
+        this.deps.store.finishRun(runId, "done", usage, undefined, lastModelRef || undefined);
+      } catch (err) {
+        this.deps.log.warn(`run ${runId}: could not record completion — ${(err as Error).message}`);
+      }
     } catch (err) {
       const message = (err as Error).message;
       const aborted = (err as Error).name === "AbortError";

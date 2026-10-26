@@ -144,8 +144,16 @@ The chat is for answers, not for the machinery. By default
    GFM tables become an aligned monospace block, because Telegram has no table).
 
 The draft is deleted when the answer lands, and a turn that says nothing posts
-nothing — no stray `…` bubble. If Telegram rejects the markup, the answer is
-re-sent as plain text rather than lost.
+nothing — no stray `…` bubble.
+
+**An answer is never lost to the network.** A turn's answer is persisted and
+broadcast to the web chat whether or not the Telegram send succeeds, so a failed
+send used to leave the chat on its last tool line while the answer sat in the
+session. Now: transient failures (a drop, a 429, a 5xx) are retried with
+Telegram's own `retry_after`; a rejected markup falls back to plain text; and if
+every attempt fails the draft becomes a visible notice saying the answer is in
+the web chat — the chat never just stops. The draft is only deleted once the
+answer is confirmed delivered.
 
 | `channels.telegram.streaming` | What you see |
 |---|---|

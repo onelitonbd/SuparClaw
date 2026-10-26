@@ -1625,17 +1625,32 @@ export class Service {
         this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event: out } satisfies ServiceEvent);
         // Auto-title fires once the reply settles: non-blocking, best-effort.
         if (out.type === "final") void this.#maybeAutoTitle(payload.sessionKey);
-        if (out.type === "delta") void payload.onDelta?.(out.text);
-        else if (out.type === "tool") void payload.onTool?.(out);
-        else if (out.type === "approval") void payload.onApproval?.(out);
+        // Channel callbacks are fire-and-forget: the run must not wait on a
+        // socket. But an unhandled rejection here is a LOST ANSWER — the web UI
+        // already has it (it is broadcast above, and persisted by the loop) while
+        // the chat shows nothing but the last tool line. So every one of them is
+        // caught and logged with the channel's name.
+        const deliver = (what: string, fn: (() => void | Promise<void>) | undefined): void => {
+          if (!fn) return;
+          try {
+            void Promise.resolve(fn()).catch((err: unknown) => {
+              this.log.error(`${payload.source} ${what} delivery failed (${payload.sessionKey}): ${(err as Error).message}`);
+            });
+          } catch (err) {
+            this.log.error(`${payload.source} ${what} delivery failed (${payload.sessionKey}): ${(err as Error).message}`);
+          }
+        };
+        if (out.type === "delta") deliver("stream", () => payload.onDelta?.(out.text));
+        else if (out.type === "tool") deliver("progress", () => payload.onTool?.(out));
+        else if (out.type === "approval") deliver("approval", () => payload.onApproval?.(out));
         else if (out.type === "final") {
           // Telegram / TUI / the OpenAI-compatible endpoint get one string;
           // the web chat draws the line in its own element from `footer`.
           const composed = footer ? `${out.text}\n\n${footer}` : out.text;
-          void payload.onFinal?.(composed, out.usage);
-          void payload.reply(composed);
+          deliver("final", () => payload.onFinal?.(composed, out.usage));
+          deliver("reply", () => payload.reply(composed));
         }
-        else if (out.type === "error") void payload.reply(`⚠ ${out.message}`);
+        else if (out.type === "error") deliver("error", () => payload.reply(`⚠ ${out.message}`));
       },
     });
   }

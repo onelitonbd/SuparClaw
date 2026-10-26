@@ -188,3 +188,256 @@ test("the turn's answer is never mixed into the status draft in progress mode", 
   const draftEdits = api.calls.filter((x) => x.op === "edit");
   assert.ok(draftEdits.every((e) => !e.text.includes("Partial answer")), "the draft holds a stage, never half an answer");
 });
+
+// ---------------------------------------------------------------------------
+// "The answer was in the web UI but never reached Telegram" — the delivery
+// failures behind it. The web gets the answer from the run's `final` event and
+// the transcript row; Telegram only gets it if a send succeeds. One transient
+// failure used to cost the whole answer, silently.
+// ---------------------------------------------------------------------------
+
+const { isTransientTelegramError } = await import("../dist/lib.js");
+
+/** A bot whose sends fail a controllable number of times, then work. */
+function flakyApi({ failSendTimes = 0, error = new Error("Network request for 'sendMessage' failed! (ETIMEDOUT)"), failEdit = false } = {}) {
+  let nextId = 500;
+  let remaining = failSendTimes;
+  const calls = [];
+  return {
+    calls,
+    async sendMessage(chatId, text, extra) {
+      if (remaining > 0) {
+        remaining -= 1;
+        calls.push({ op: "send", text, extra, failed: true });
+        throw error;
+      }
+      const id = nextId++;
+      calls.push({ op: "send", text, extra, message_id: id });
+      return { message_id: id };
+    },
+    async editMessageText(chatId, messageId, text, extra) {
+      if (failEdit) throw new Error("400 Bad Request: message can't be edited");
+      calls.push({ op: "edit", messageId, text, extra });
+      return true;
+    },
+    async deleteMessage(chatId, messageId) {
+      calls.push({ op: "delete", messageId });
+      return true;
+    },
+  };
+}
+
+test("a transient send failure is retried — the answer still arrives", async () => {
+  const api = flakyApi({ failSendTimes: 1 }); // first answer send fails, retry works
+  const slept = [];
+  const d = createTurnDelivery({ api, chatId: 7, mode: "off", sleep: async (ms) => slept.push(ms) });
+  await d.reply("The **answer**.");
+  const delivered = api.calls.filter((c) => c.op === "send" && !c.failed);
+  assert.equal(delivered.length, 1, "exactly one delivered message");
+  assert.equal(delivered[0].text, "The <b>answer</b>.");
+  assert.deepEqual(slept, [400], "waited once before retrying");
+});
+
+test("a 429 honours Telegram's retry_after", async () => {
+  const err = Object.assign(new Error("429: Too Many Requests"), { error_code: 429, parameters: { retry_after: 3 } });
+  const api = flakyApi({ failSendTimes: 1, error: err });
+  const slept = [];
+  const d = createTurnDelivery({ api, chatId: 7, mode: "off", sleep: async (ms) => slept.push(ms) });
+  await d.reply("hello");
+  assert.deepEqual(slept, [3000], "waited the 3s Telegram asked for");
+  assert.equal(api.calls.filter((c) => c.op === "send" && !c.failed).length, 1);
+});
+
+test("a markup rejection is not retried three times — it falls back immediately", async () => {
+  const api = fakeApi({ failSend: (_t, extra) => extra?.parse_mode === "HTML" });
+  const slept = [];
+  const d = createTurnDelivery({ api, chatId: 7, mode: "off", sleep: async (ms) => slept.push(ms) });
+  await d.reply("**bold**");
+  assert.deepEqual(slept, [], "a 400 will fail the same way — no pointless waiting");
+  assert.equal(api.calls.filter((c) => c.op === "send" && !c.failed).length, 1, "delivered as plain text");
+});
+
+test("progress: a failed answer leaves the draft visible, turned into a notice", async () => {
+  // Exactly the report: tools ran, the answer existed, Telegram would not take
+  // it. The chat must not end up empty, and must not keep saying "working…".
+  // The draft send works (it is small, and it happened first); every later send
+  // fails, which is what a connection dropping mid-turn looks like.
+  const draft = { message_id: 900, text: "▌ working…" };
+  let draftSent = false;
+  const calls = [];
+  const api = {
+    async sendMessage(_c, text, extra) {
+      if (!draftSent) {
+        draftSent = true;
+        calls.push({ op: "send", text, extra, message_id: draft.message_id });
+        return { message_id: draft.message_id };
+      }
+      calls.push({ op: "send", text, extra, failed: true });
+      throw new Error("Network request for 'sendMessage' failed! (ETIMEDOUT)");
+    },
+    async editMessageText(_c, id, text) { calls.push({ op: "edit", messageId: id, text }); draft.text = text; return true; },
+    async deleteMessage() { calls.push({ op: "delete" }); return true; },
+  };
+  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", sleep: async () => {} });
+  const unref = api; // keep the shape readable below
+  await d.onTool("exec");
+  await d.reply("Here is the **answer**.");
+
+  assert.equal(calls.filter((c) => c.op === "delete").length, 0, "the draft is NOT deleted when the answer failed");
+  const notice = calls.filter((c) => c.op === "edit").at(-1);
+  assert.ok(notice, "the draft was rewritten");
+  assert.match(notice.text, /could not be delivered/);
+  assert.match(notice.text, /web chat/, "and says where the answer is");
+  assert.ok(!/working…/.test(notice.text), "no endless spinner");
+});
+
+test("progress: the draft is deleted only after the answer is confirmed sent", async () => {
+  const order = [];
+  const api = {
+    async sendMessage(_c, text) { order.push(text.includes("<b>") ? "answer" : "draft"); return { message_id: order.length }; },
+    async editMessageText() { order.push("edit"); return true; },
+    async deleteMessage() { order.push("delete"); return true; },
+  };
+  const d = createTurnDelivery({ api, chatId: 7, mode: "progress" });
+  await d.onTool("exec");
+  order.length = 0;
+  await d.reply("**Answer**");
+  assert.deepEqual(order, ["answer", "delete"], "answer first, cleanup second");
+});
+
+test("preview: a failed edit still delivers the answer as its own message", async () => {
+  const api = flakyApi({ failSendTimes: 0, failEdit: true });
+  const d = createTurnDelivery({ api, chatId: 7, mode: "partial", sleep: async () => {} });
+  await d.onTool("exec");
+  await d.reply("**Answer**");
+  const delivered = api.calls.filter((c) => c.op === "send" && !c.failed && c.text.includes("Answer"));
+  assert.equal(delivered.length, 1, "the answer was not lost with the failed edit");
+  assert.equal(delivered[0].text, "<b>Answer</b>");
+});
+
+test("a silent turn removes a draft it had already shown", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7, mode: "progress" });
+  await d.onTool("exec");
+  await d.reply("   ");
+  assert.equal(api.calls.filter((c) => c.op === "delete").length, 1, "no draft left spinning after an empty answer");
+});
+
+test("transient vs permanent errors are classified", () => {
+  const t = (m, extra = {}) => isTransientTelegramError(Object.assign(new Error(m), extra));
+  assert.equal(t("Network request for 'sendMessage' failed!"), true);
+  assert.equal(t("fetch failed"), true);
+  assert.equal(t("connect ETIMEDOUT 149.154.167.220:443"), true);
+  assert.equal(t("429: Too Many Requests"), true);
+  assert.equal(t("Bad Gateway", { error_code: 502 }), true);
+  assert.equal(t("400 Bad Request: can't parse entities"), false);
+  assert.equal(t("400 Bad Request: message is too long"), false);
+  assert.equal(t("403 Forbidden: bot was blocked by the user"), false);
+});
+
+// ---------------------------------------------------------------------------
+// The other half of the report: the surface that DIDN'T get the answer while
+// the web UI did. The service broadcasts the final event (web reads it) before
+// it calls the channel's reply, and used to fire that reply with no catch — a
+// throw became an unhandled rejection and the chat went quiet.
+// ---------------------------------------------------------------------------
+
+const { Service } = await import("../dist/lib.js");
+
+test("a channel reply that throws is logged, not swallowed as an unhandled rejection", async () => {
+  const svc = new Service();
+  const saved = svc.loop.run.bind(svc.loop);
+  const logged = [];
+  const originalError = svc.log.error.bind(svc.log);
+  svc.log.error = (...args) => {
+    logged.push(args.join(" "));
+    originalError?.(...args);
+  };
+  try {
+    // A run that produces exactly one final event, like a real turn.
+    svc.loop.run = async ({ onEvent }) => {
+      onEvent({ type: "final", runId: "r1", text: "Hi there", usage: { total_tokens: 3 } });
+    };
+    const seen = [];
+    const onEvent = (evt) => { if (evt.type === "chat") seen.push(evt.event.type); };
+    svc.events.on("event", onEvent);
+    try {
+      await svc.send({
+        sessionKey: "main:reply-throw",
+        text: "hello",
+        isMainSession: true,
+        source: "telegram",
+        reply: async () => {
+          throw new Error("Network request for 'sendMessage' failed! (ETIMEDOUT)");
+        },
+      });
+      await new Promise((r) => setTimeout(r, 30));
+    } finally {
+      svc.events.off("event", onEvent);
+    }
+    assert.ok(seen.includes("final"), "the web surface still received the answer");
+    assert.match(logged.join("\n"), /telegram reply delivery failed/, "the failed channel delivery is on the record");
+    assert.match(logged.join("\n"), /sendMessage/, "with the real cause");
+  } finally {
+    svc.loop.run = saved;
+    await svc.stop();
+  }
+});
+
+test("bookkeeping that fails cannot swallow the final event", async () => {
+  // `finishRun` sits between the transcript row and the `final` event. When it
+  // threw, the answer was persisted (so the web UI showed it after a refresh)
+  // and no surface was ever told — the chat stayed on the last tool line.
+  const { AgentLoop, Store, emptyConfig, createLogger } = await import("../dist/lib.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "sc-final-event-"));
+  const store = Store.open(join(dir, "state.sqlite"));
+  store.finishRun = () => {
+    throw new Error("SQLITE_BUSY: database is locked");
+  };
+  const config = emptyConfig();
+  const llm = {
+    async *stream() {
+      yield { type: "text", text: "The answer the user is waiting for." };
+      yield { type: "usage", usage: { total_tokens: 2 } };
+    },
+  };
+  const loop = new AgentLoop({ config, store, log: createLogger({ level: "error" }), llm });
+  const events = [];
+  try {
+    await loop.run({ sessionKey: "main:finish-fail", text: "hi", onEvent: (e) => events.push(e) });
+  } finally {
+    store.close();
+  }
+  const final = events.find((e) => e.type === "final");
+  assert.ok(final, "the surfaces were told, despite the failed bookkeeping");
+  assert.equal(final.text, "The answer the user is waiting for.");
+  assert.ok(!events.some((e) => e.type === "error"), "a bookkeeping failure is not reported as a lost turn");
+});
+
+test("a half-delivered long answer says so instead of ending mid-sentence", async () => {
+  // First chunk lands, the send of the second fails permanently.
+  let sent = 0;
+  const calls = [];
+  const api = {
+    async sendMessage(_c, text, extra) {
+      if (text.includes("Part five")) throw new Error("400 Bad Request: message is too long");
+      sent += 1;
+      calls.push({ op: "send", text, extra });
+      return { message_id: 900 + sent };
+    },
+    async editMessageText(_c, id, text) { calls.push({ op: "edit", text }); return true; },
+    async deleteMessage() { calls.push({ op: "delete" }); return true; },
+  };
+  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", sleep: async () => {} });
+  const body = ["Part one", "Part two", "Part three", "Part four", "Part five", "Part six"]
+    .map((p) => `${p}\n\n${"filler ".repeat(700)}`) // each too big to share a message
+    .join("\n\n");
+  await d.reply(body);
+  const delivered = calls.filter((c) => c.op === "send" || c.op === "edit").map((c) => c.text);
+  assert.ok(delivered.some((t) => /Part one/.test(t)), "the start of the answer arrived");
+  assert.ok(delivered.some((t) => /Part of this reply could not be delivered/.test(t)), "and the truncation is flagged");
+  assert.ok(delivered.some((t) => /full answer is in the web chat/.test(t)));
+});

@@ -19,7 +19,7 @@ import {
 import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
 import { buildCommandMenu, staleCommandScopes } from "./telegram-menu.js";
 import { splitForTelegram, stripHtmlTags, telegramChunks } from "./telegram-format.js";
-import { createTurnDelivery } from "./telegram-delivery.js";
+import { createTurnDelivery, isTransientTelegramError } from "./telegram-delivery.js";
 
 // Telegram channel: grammY long polling, per-chat batching, one editable status
 // draft per turn, DM pairing + group allowlists + mention gating.
@@ -296,16 +296,31 @@ export class TelegramChannel {
    * chunked by the usual rule; hard errors propagate for the caller to log.
    */
   async sendText(chatId: number, text: string): Promise<void> {
-    if (!this.#bot) throw new Error("telegram bot not running");
+    const bot = this.#bot;
+    if (!bot) throw new Error("telegram bot not running");
+    // Same rule as a turn's answer: a transient failure is retried, a markup
+    // rejection falls back to plain text, and a message is never dropped just
+    // because one call failed.
+    const send = async (body: string, extra: Record<string, unknown>): Promise<boolean> => {
+      for (let i = 0; ; i++) {
+        try {
+          await bot.api.sendMessage(chatId, body, extra);
+          return true;
+        } catch (err) {
+          const retry = i < 2 && isTransientTelegramError(err);
+          if (!retry) {
+            this.log.warn(`telegram: sendText failed — ${(err as Error).message}`);
+            return false;
+          }
+          await new Promise<void>((r) => setTimeout(r, i === 0 ? 400 : 1500));
+        }
+      }
+    };
     for (const chunk of telegramChunks(text)) {
-      const ok = await this.#bot.api
-        .sendMessage(chatId, chunk, { parse_mode: "HTML", link_preview_options: { is_disabled: true } })
-        .catch(() => null);
+      const ok = await send(chunk, { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
       if (!ok) {
-        // Telegram rejected the markup — deliver the text plainly rather than
-        // dropping the message. Harmless if the failure was a network blip.
         this.log.warn("telegram: HTML send rejected — falling back to plain text");
-        await this.#bot.api.sendMessage(chatId, stripHtmlTags(chunk)).catch(() => {});
+        await send(stripHtmlTags(chunk), {});
       }
     }
   }
