@@ -82,7 +82,7 @@ export const MUTABLE_SETTINGS: SettingSpec[] = [
     type: "enum",
     values: ["steer", "followup"],
   },
-  { path: "agents.defaults.maxToolIterations", label: "tool rounds allowed per turn", type: "number" },
+  { path: "agents.defaults.maxToolIterations", label: "tool rounds allowed per turn (0 = no limit)", type: "number" },
   { path: "agents.defaults.contextBudgetChars", label: "prompt character budget", type: "number" },
   { path: "tools.exec.enabled", label: "whether you may run commands", type: "boolean" },
   {

@@ -21,7 +21,7 @@ export const STARTER_CONFIG = `// SuparClaw config (JSON5: comments allowed)
     defaults: {
       id: "main",
       model: "",              // e.g. "openai/gpt-4o-mini" or "local/qwen2.5"
-      maxToolIterations: 12,
+      maxToolIterations: 0,   // 0 = no ceiling on tool rounds per turn
       queueMode: "followup"   // "steer" injects mid-turn, "followup" waits
     }
   },

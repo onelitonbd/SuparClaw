@@ -781,7 +781,9 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             return "error: execution needs approval — ask the user to approve, then retry";
           }
           const { execFile } = await import("node:child_process");
-          const timeoutMs = Math.min(Number(args["timeoutMs"] ?? config.tools.exec.timeoutMs), 600_000);
+          // Task 38: 30 minutes for every command, and a per-call request can
+          // not exceed it. `npm install`/a test suite on a phone is not "hung".
+          const timeoutMs = Math.min(Number(args["timeoutMs"] ?? config.tools.exec.timeoutMs), 1_800_000);
           // Sandbox plan (P2 #9): off = legacy argv env; strict = env scrub +
           // prlimit caps (+ proot jail on Termux when enabled). The note is
           // prepended to output so audits see what actually ran.
@@ -806,7 +808,10 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             execFile(
               bin!,
               rest,
-            { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 1_000_000, env: plan.env },
+            // 16 MB: the model reads the first 60k characters either way, but a
+            // chatty command must be truncated for it, not failed outright with
+            // "stdout maxBuffer length exceeded" (Task 38).
+            { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: plan.env },
             (err, stdout, stderr) => {
               const parts: string[] = [];
               if (stdout) parts.push(stdout);

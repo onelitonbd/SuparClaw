@@ -222,11 +222,15 @@ test("loop: fallbacks may be profile ids; retry events reach the surface", async
   assert.equal(finals.length, 1, "the run still completed");
 });
 
-test("no time limits: exec keeps only the 10-minute safety cap", async () => {
+test("no time limits: exec keeps only the 30-minute safety cap (Task 38)", async () => {
   const { emptyConfig, buildRegistry } = await import("../dist/lib.js");
   const config = emptyConfig();
-  assert.equal(config.tools.exec.timeoutMs, 600000, "exec default is the generous 10-min safety cap");
-  assert.ok(config.tools.exec.timeoutMs >= 600000);
+  assert.equal(config.tools.exec.timeoutMs, 1800000, "exec default is 30 minutes — a phone build or test suite is not 'hung'");
+  // The schema must accept a request for the full half hour; a 10-min ceiling
+  // made `sc config set tools.exec.timeoutMs 1800000` fail validation.
+  const { parseConfig } = await import("../dist/lib.js");
+  assert.equal(parseConfig({ tools: { exec: { timeoutMs: 1800000 } } }).errors.length, 0);
+  assert.ok(parseConfig({ tools: { exec: { timeoutMs: 3600000 } } }).errors.length > 0, "an hour is still refused");
   // the exec tool clamps its per-call override to the same cap, nothing less
   config.tools.exec.enabled = true;
   const exec = buildRegistry(config).find((t) => t.name === "exec");

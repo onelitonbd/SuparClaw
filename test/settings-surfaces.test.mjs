@@ -27,8 +27,9 @@ test("#38 exec & tools settings: one exec card owns the whole tools.exec block",
   // their unset-is-a-state rule for exec mode: blank follows the approvals bool
   assert.match(src, /\/\^\(deny\|allowlist\|ask\|full\)\$\/\.test\(chosen\)/);
   // Refuse, never clamp — the previous version silently rewrote the number.
-  assert.match(src, /timeoutMs < 1000 \|\| timeoutMs > 600000/);
-  assert.match(src, /between 1000 and 600000 ms/);
+  // Task 38: the accepted range follows the 30-minute command cap.
+  assert.match(src, /timeoutMs < 1000 \|\| timeoutMs > 1800000/);
+  assert.match(src, /between 1000 and 1800000 ms/);
   assert.match(src, /aria-invalid/);
   // Dependencies stated in the UI, not discovered from a broken run.
   assert.match(src, /strict \(scrubbed env \+ prlimit caps\)/);
@@ -123,7 +124,8 @@ test("#39 agent identity + defaults on the Defaults tab", () => {
   assert.ok(!src.includes("ad-budget"), "the context budget field is gone");
   assert.ok(src.includes("Models → Tune"), "the card says where the window is set");
   assert.ok(!src.includes('["agents.defaults.contextBudgetChars"'), "and it writes no budget leaf");
-  assert.match(src, /No ceiling/); // iterations: no 1-40 rating any more
+  assert.match(src, /0 = no limit \(the default\)/); // Task 38: the default is genuinely unlimited
+  assert.match(src, /nudged, and only a second repetition stops the turn/);
   assert.ok(!src.includes("Math.min(40,"), "the 40-round clamp is gone");
   // No queue row: agents.defaults.queueMode was superseded by messages.queue.mode,
   // which the loop actually reads (see the migration case in core.test.mjs). A

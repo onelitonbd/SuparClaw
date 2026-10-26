@@ -76,6 +76,14 @@ type Handlers = {
 
 let handlers: Handlers = { chat: () => {}, code: () => {} };
 let sessionKey = "main:main";
+/**
+ * Bumped on every session switch (Task 38). Async answers — `repo.status`,
+ * `repo.bind` — capture it and drop themselves if it moved while they were in
+ * flight. Without this, switching from a code session to a new chat showed the
+ * PREVIOUS session's repository in the new chat's bar: its `repo.status` simply
+ * landed late and painted itself.
+ */
+let sessionEpoch = 0;
 let status: RepoStatus = { bound: false };
 let bar: BarState = { kind: "ready" };
 let lastPr: { number?: number; url: string } | null = null;
@@ -93,6 +101,7 @@ export function initRepo(next: Handlers & { composer?: Chat }): void {
 export function setRepoSession(key: string): void {
   if (key === sessionKey) return;
   sessionKey = key;
+  sessionEpoch += 1;
   status = { bound: false };
   bar = { kind: "ready" };
   lastPr = null;
@@ -193,8 +202,14 @@ function derive(next: RepoStatus): void {
 }
 
 export async function refreshRepo(): Promise<void> {
+  const key = sessionKey;
+  const epoch = sessionEpoch;
   try {
-    derive((await gateway.request("repo.status", { sessionKey })) as RepoStatus);
+    const next = (await gateway.request("repo.status", { sessionKey: key })) as RepoStatus;
+    // The user moved on while this was in flight: the answer describes a
+    // session that is no longer on screen.
+    if (key !== sessionKey || epoch !== sessionEpoch) return;
+    derive(next);
   } catch {
     /* reconnecting: the bar keeps its last honest state rather than blanking */
   }
@@ -267,12 +282,20 @@ export function openSessionSheet(): void {
   let at = 0;
   let focusables: HTMLElement[] = [];
   let rows: RepoRow[] = [];
-  /** Repos this installation has already worked in, newest first (§2.2). */
-  let recents: string[] = [];
+  /**
+   * Repos this installation has already worked in, newest first (§2.2). `base`
+   * is the default branch recorded on the session that used it (Task 38): a
+   * recent repo that is not on the current page of `github.repos` still knows
+   * which branch is its default, so the branch step can mark it instead of
+   * printing `undefined`.
+   */
+  let recents: { repo: string; base: string }[] = [];
   let filterText = "";
   let picked: Picked | null = null;
   let branches: BranchRow[] = [];
   let branchFilter = "";
+  /** The GitHub login the current `rows`/`recents` were fetched for. */
+  let listLogin = "";
 
   const close = () => {
     overlay.hidden = true;
@@ -351,6 +374,15 @@ export function openSessionSheet(): void {
   /** Step two: the repository. Choosing one moves to step three. */
   const drawRepos = async () => {
     phase = "repos";
+    // Signing into a different account invalidates both lists: the repos and
+    // the recents belonged to the previous login (Task 38).
+    const login = github?.login ?? "";
+    if (listLogin && login && login !== listLogin) {
+      rows = [];
+      recents = [];
+      listLogin = "";
+      filterText = "";
+    }
     head.textContent = "Pick a repository";
     foot.innerHTML = "";
     list.innerHTML = "";
@@ -399,24 +431,22 @@ export function openSessionSheet(): void {
       const shown = rows.filter((r) => !q || r.fullName.toLowerCase().includes(q)).slice(0, 60);
       // Recents come from our own sessions, not from GitHub's ordering: the
       // repos this installation actually worked in are the likeliest next pick.
-      const recent = recents.filter((r) => !q || r.toLowerCase().includes(q));
-      if (recent.length && rows.length) {
+      const recent = recents.filter((r) => !q || r.repo.toLowerCase().includes(q));
+      if (recent.length) {
         rowsHost.append(el("div", { class: "sheet__group" }, ["Recent"]));
-        for (const name of recent.slice(0, 5)) {
-          const known = rows.find((r) => r.fullName === name);
-          rowsHost.append(
-            repoRow(
-              name,
-              known ? `${known.private ? "🔒 private" : "public"} · ${known.defaultBranch}` : "used in a previous session",
-              known?.defaultBranch ?? "",
-            ),
-          );
+        for (const r of recent) {
+          const known = rows.find((row) => row.fullName === r.repo);
+          // The default branch comes from whichever source knows it: the live
+          // repo list, or the session that worked here last.
+          const base = known?.defaultBranch || r.base || "";
+          const kind = known ? (known.private ? "🔒 private" : "public") : "worked here before";
+          rowsHost.append(repoRow(r.repo, base ? `${kind} · ${base}` : kind, base));
         }
-        rowsHost.append(el("div", { class: "sheet__group" }, ["Your repositories"]));
+        if (rows.length) rowsHost.append(el("div", { class: "sheet__group" }, ["Your repositories"]));
       }
       if (rows.length && !shown.length && !recent.length) rowsHost.append(el("div", { class: "sheet__empty" }, ["No repos match"]));
       for (const r of shown) {
-        if (recent.includes(r.fullName)) continue;
+        if (recent.some((x) => x.repo === r.fullName)) continue;
         rowsHost.append(repoRow(r.fullName, `${r.private ? "🔒 private" : "public"} · ${r.defaultBranch}`, r.defaultBranch));
       }
       // The filter stays the first focusable so typing never moves the cursor.
@@ -434,10 +464,21 @@ export function openSessionSheet(): void {
         const [res, list] = await Promise.all([
           gateway.request("github.repos", { page: 1 }) as Promise<{ repos?: RepoRow[] }>,
           // A failed session list must not hide the repos: recents are a nicety.
-          (gateway.request("sessions.list", {}) as Promise<{ sessions?: { repo?: string | null; last_msg_at?: number }[] }>).catch(() => ({ sessions: [] })),
+          (gateway.request("sessions.list", {}) as Promise<{ sessions?: { repo?: string | null; base?: string | null; last_msg_at?: number }[] }>).catch(() => ({ sessions: [] })),
         ]);
         rows = res.repos ?? [];
-        recents = [...new Set((list.sessions ?? []).filter((r) => r.repo).map((r) => String(r.repo)))].slice(0, 5);
+        // `sessions.list` is SELECT *: every code session carries the repo, the
+        // base and the branch it worked on, so the recents remember the default.
+        const seen = new Set<string>();
+        recents = [];
+        for (const row of list.sessions ?? []) {
+          const repo = row.repo ? String(row.repo) : "";
+          if (!repo || seen.has(repo)) continue;
+          seen.add(repo);
+          recents.push({ repo, base: row.base ? String(row.base) : "" });
+          if (recents.length === 5) break;
+        }
+        listLogin = github?.login ?? "";
         note.textContent = rows.length ? "" : "No repositories — an empty account, or a token without the repo scope.";
         if (force) note.textContent = note.textContent || "";
         drawRows();
@@ -459,6 +500,9 @@ export function openSessionSheet(): void {
    *  common answer and it is the one that changes what a publish does. */
   const drawBranches = async (pick: Picked) => {
     phase = "branches";
+    // A filter typed for the previous repository must not hide this one's
+    // branches (Task 38: it used to carry over and show "No branches match").
+    if (picked?.repo !== pick.repo) branchFilter = "";
     picked = pick;
     head.textContent = "Pick a branch";
     foot.innerHTML = "";
@@ -647,14 +691,21 @@ async function startDeviceFlow(body: HTMLElement, close: () => void, after?: () 
 /** Bind an existing session (used by retry, and by the TUI-parity path). */
 export async function bindRepoSession(key: string, repo: string, opts: { base?: string; branch?: string } = {}): Promise<boolean> {
   sessionKey = key;
+  sessionEpoch += 1;
+  const epoch = sessionEpoch;
   status = { bound: true, repo, branch: opts.branch ?? "starting…", base: opts.base };
   bar = { kind: "preparing", pct: 0, label: "cloning" };
   renderBar();
+  const moved = () => key !== sessionKey || epoch !== sessionEpoch;
   try {
     await gateway.request("repo.bind", { sessionKey: key, repo, ...(opts.base ? { base: opts.base } : {}), ...(opts.branch ? { branch: opts.branch } : {}) });
+    // The clone finished for a session that is no longer open: never paint its
+    // failure (or its success) into whatever the user is looking at now.
+    if (moved()) return true;
     await refreshRepo();
     return true;
   } catch (err) {
+    if (moved()) return false;
     bar = { kind: "failed" };
     renderBar();
     toast((err as Error).message, "err");

@@ -14,7 +14,7 @@ import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
 import { surfacesFromConfig, surfacesPromptLine, type SurfaceFacts } from "./surfaces.js";
 import { selfFactsFrom, selfPromptLine, type SelfRuntime, type SettingsCtl } from "./self.js";
-import { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
+import { ToolLoopDetector, loopGuardNudge, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
 import type { AskUserQuestion, AskUserResult } from "./ask-user.js";
 
 export type QueueMode = "steer" | "followup" | "collect" | "interrupt";
@@ -710,8 +710,18 @@ export class AgentLoop {
       const loopDet = new ToolLoopDetector(this.deps.config.tools.loopDetection.enabled);
       let loopBreak: ToolLoopBreak | null = null;
       let guardNotified = false;
+      // Task 38: a suspicion of a loop is a warning first. The first verdict in
+      // a turn is injected as a note and the turn keeps running with every tool
+      // available — one stuck command used to end the whole session. Only a
+      // SECOND verdict parks the batch and brings the turn to an explanation.
+      let guardStrikes = 0;
+      let pendingNudge: ToolLoopBreak | null = null;
       let activeSchema = schema;
-      const maxTurns = this.deps.config.agents.defaults.maxToolIterations;
+      // Task 38: 0 (the default) means no ceiling at all. How many rounds a task
+      // needs is a property of the task; a stuck turn is stopped by content (the
+      // loop guard) and by the stop button, never by a count we guessed.
+      const configuredTurns = this.deps.config.agents.defaults.maxToolIterations;
+      const maxTurns = configuredTurns > 0 ? configuredTurns : Number.POSITIVE_INFINITY;
       let turnsUsed = 0;
       let endedOnToolCalls = false;
       // The bound grants ONE spare round after a guard break: the guard must be
@@ -735,6 +745,14 @@ export class AgentLoop {
           });
           activeSchema = [];
           sessionTools = [];
+        }
+        // Task 38: a nudge from the previous round is appended AFTER its tool
+        // results and before this round's model call. (Never between an
+        // assistant `tool_calls` message and its results — strict
+        // OpenAI-compatible providers reject that ordering.)
+        if (pendingNudge) {
+          messages.push({ role: "user", content: loopGuardNudge(pendingNudge) });
+          pendingNudge = null;
         }
         // Boundaries before every model call: drained steers append after the
         // previous round's tool results, in arrival order.
@@ -908,6 +926,21 @@ export class AgentLoop {
             // (their nuance), so the unknown-tool error feeds the detector too.
             const verdict = loopDet.record(call.name, call.args, output);
             if (verdict && !loopBreak) {
+              guardStrikes += 1;
+              if (guardStrikes === 1) {
+                // Warn and keep going: the rest of the batch still runs and the
+                // note reaches the model before its next call.
+                pendingNudge = verdict;
+                onEvent({
+                  type: "tool",
+                  callId: "loop-guard-nudge",
+                  name: "tool-loop guard",
+                  status: "error",
+                  detail: `nudged — ${verdict.reason}`,
+                });
+                this.deps.log.warn(`tool-loop guard: nudged — ${verdict.reason} (${sessionKey})`);
+                continue;
+              }
               loopBreak = verdict;
               this.deps.log.warn(`tool-loop guard: ${verdict.reason} (${sessionKey})`);
               parkRest(ci + 1);
@@ -964,6 +997,20 @@ export class AgentLoop {
           // errors AND successes (their polling-loop case).
           const verdict = loopDet.record(call.name, call.args, output);
           if (verdict && !loopBreak) {
+            guardStrikes += 1;
+            if (guardStrikes === 1) {
+              // First strike: the turn continues, the model is told plainly.
+              pendingNudge = verdict;
+              onEvent({
+                type: "tool",
+                callId: "loop-guard-nudge",
+                name: "tool-loop guard",
+                status: "error",
+                detail: `nudged — ${verdict.reason}`,
+              });
+              this.deps.log.warn(`tool-loop guard: nudged — ${verdict.reason} (${sessionKey})`);
+              continue;
+            }
             loopBreak = verdict;
             this.deps.log.warn(`tool-loop guard: ${verdict.reason} (${sessionKey})`);
             parkRest(ci + 1);
@@ -995,7 +1042,7 @@ export class AgentLoop {
             `I stopped: ${loopBreak.reason}. Nothing else was run — tell me how you would like to proceed, ` +
             `or change the input and I will try a different way.`;
         } else if (budgetSpent) {
-          finalText = `I used all ${maxTurns} tool rounds without a final answer. Say “continue” and I will pick up from here.`;
+          finalText = `I used all ${configuredTurns} tool rounds without a final answer. Say “continue” and I will pick up from here.`;
         } else {
           finalText = "(no response)";
         }

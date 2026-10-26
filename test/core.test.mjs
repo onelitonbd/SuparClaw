@@ -46,7 +46,8 @@ test("config defaults are applied and unknown keys rejected", () => {
   assert.equal(errors.length, 0);
   assert.equal(config.gateway.port, 19999);
   assert.equal(config.gateway.bind, "loopback");
-  assert.equal(config.agents.defaults.maxToolIterations, 12);
+  // Task 38: 0 means no ceiling — the old default of 12 cut real work short.
+  assert.equal(config.agents.defaults.maxToolIterations, 0);
 
   const bad = parseConfig({ gateway: { prot: 1 } });
   assert.ok(bad.errors.some((e) => e.includes("unknown key")));

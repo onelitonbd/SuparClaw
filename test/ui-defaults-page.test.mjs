@@ -291,11 +291,17 @@ test("tool iterations have no ceiling — a long task is not cut off at 40", asy
   await new Promise((r) => setTimeout(r, 0));
   const written = new Map(globalThis.__GW_CALLS.filter((c) => c.method === "config.set").map((c) => [c.params.path, c.params.value]));
   assert.equal(written.get("agents.defaults.maxToolIterations"), 500, "500 is accepted, not clamped to 40");
+  // Task 38: 0 is a real answer now — it means "no ceiling", which is also the
+  // shipped default. It used to be rewritten to 12.
   byId("ad-iterations").value = "0";
   tap(byId("agent-defaults-save"));
   await new Promise((r) => setTimeout(r, 0));
   const floor = new Map(globalThis.__GW_CALLS.filter((c) => c.method === "config.set").map((c) => [c.params.path, c.params.value]));
-  assert.equal(floor.get("agents.defaults.maxToolIterations"), 12, "0 falls back to the default, never to 0 turns");
+  assert.equal(floor.get("agents.defaults.maxToolIterations"), 0, "0 is written as 0 = no limit");
+  // Rendered, not just stored: the label under the box says what 0 means.
+  const hint = byId("ad-iterations").closest(".def-field")?.textContent ?? "";
+  assert.match(hint, /0 = no limit \(the default\)/, "the field explains the default");
+  assert.match(hint, /only a second repetition stops the turn/, "and what happens to a repeating tool");
   byId("ad-iterations").value = "12";
 });
 

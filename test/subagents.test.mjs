@@ -29,6 +29,11 @@ function makeRig(patch = {}) {
   const cfg = emptyConfig();
   cfg.messages.queue = { mode: "steer", cap: 20, drop: "summarize", debounceMs: 5, byChannel: {} };
   cfg.agents.defaults.maxConcurrent = 64;
+  // A bounded rig on purpose. The product default is 0 = no ceiling (Task 38),
+  // but these tests script a model that keeps calling the same tool forever —
+  // the rig wants a terminator so a regression shows up as a failed assertion,
+  // not a hung suite.
+  cfg.agents.defaults.maxToolIterations = 12;
   Object.assign(cfg.agents.defaults.subagents, patch.subagents ?? {});
   const store = Store.open(join(HOME, `s-${dbSeq++}.db`));
   const rounds = [];

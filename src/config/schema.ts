@@ -210,10 +210,11 @@ export const CONFIG_SCHEMA: SchemaNode = {
             // something; a cheap fast model is the point of the setting.
             utilityModel: { t: "string", default: "" },
             // No upper bound on purpose: how many tool rounds a task needs is a
-            // property of the task, not a number we can guess. Runaway turns are
-            // stopped by content (ToolLoopDetector + the loop-guard pass), never
-            // by a count.
-            maxToolIterations: { t: "int", min: 1, default: 12 },
+            // property of the task, not a number we can guess. 0 = no ceiling
+            // (the default since Task 38 — the old default of 12 stopped real
+            // work mid-task). Runaway turns are stopped by content (the loop
+            // guard) and by the operator's stop button, never by a count.
+            maxToolIterations: { t: "int", min: 0, default: 0 },
             // Legacy fallback only. The history budget is derived from the
             // model's context window (Settings → Models → Tune) — see
             // src/agent/context-budget.ts. This value is used only when no model
@@ -720,8 +721,10 @@ export const CONFIG_SCHEMA: SchemaNode = {
             safeBins: { t: "array", of: { t: "string" }, default: ["cut", "uniq", "head", "tail", "tr", "wc"] },
             safeBinTrustedDirs: { t: "array", of: { t: "string" }, default: ["/bin", "/usr/bin"] },
             // No time limits on the agent's work — this is only a safety cap
-            // so a hung command cannot block a session forever (10 minutes).
-            timeoutMs: { t: "int", min: 1000, max: 600000, default: 600000 },
+            // so a hung command cannot block a session forever. 30 minutes
+            // (Task 38): `npm install`, a test suite or a build on a phone is
+            // routinely longer than the old 10.
+            timeoutMs: { t: "int", min: 1000, max: 1800000, default: 1800000 },
             // Execution sandbox (P2 #9; their tools exec sandbox at our
             // scale): "off" runs plain (legacy), "strict" confines the child
             // to a scrubbed env (PATH of trusted dirs, HOME=workspace),

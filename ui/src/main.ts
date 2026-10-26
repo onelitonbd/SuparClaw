@@ -797,13 +797,18 @@ async function loadHistory(anchorMid?: number): Promise<void> {
   // gateway was briefly unreachable). One retry for a gateway that is still
   // settling after a reconnect.
   let lastError: Error | null = null;
+  // Task 38: a slow transcript must not land in the chat that replaced it.
+  // Switching sessions twice quickly used to paint the first session's history
+  // into the second one.
+  const forSession = sessionKey;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await gateway.request("chat.history", {
-        sessionKey,
+        sessionKey: forSession,
         limit: anchorMid ? 40 : 60,
         ...(anchorMid ? { messageId: anchorMid } : {}),
       });
+      if (forSession !== sessionKey) return;
       const messages = (res as any).messages ?? [];
       const rendered = chat.replaceThread(
         messages.map((m: any) => ({

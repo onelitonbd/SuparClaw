@@ -1212,8 +1212,8 @@ export class Settings {
       return { sel: dd.sel, node: this.#field(label, dd.node, { hint }) };
     };
     const sub = d.subagents ?? {};
-    const iterations = mkNum("ad-iterations", "Tool iterations", Number(d.maxToolIterations ?? 12),
-      "No ceiling — one turn keeps working until it answers. A tool failing the same way 3× still stops the turn, and it always explains why here.");
+    const iterations = mkNum("ad-iterations", "Tool iterations", Number(d.maxToolIterations ?? 0),
+      "0 = no limit (the default) — one turn keeps working until it answers. A tool that repeats itself is nudged, and only a second repetition stops the turn with an explanation.");
     const concur = mkNum("ad-concurrent", "Concurrent runs", Number(d.maxConcurrent ?? 0),
       "0 = auto (max(8, CPU × 4)).");
     const reasoning = mkSel("ad-reasoning", "Reasoning effort", String(d.reasoningEffort ?? "inherit"),
@@ -1298,7 +1298,9 @@ export class Settings {
     saveD.onclick = async () => {
       const ok = await this.#setMany(
         [
-          ["agents.defaults.maxToolIterations", Math.max(1, Math.trunc(Number(iterations.input.value)) || 12)],
+          // 0 is a real answer here: no ceiling. Only a negative/blank input
+          // falls back to the default (Task 38).
+          ["agents.defaults.maxToolIterations", Math.max(0, Math.trunc(Number(iterations.input.value)) || 0)],
           ["agents.defaults.maxConcurrent", Math.max(0, Number(concur.input.value) || 0)],
           ["agents.defaults.reasoningEffort", reasoning.sel.value],
           ["agents.defaults.reasoningView", viewSel.sel.value],
@@ -2521,7 +2523,7 @@ export class Settings {
 
     const timeoutInp = el("input", {
       class: "inp mono", id: "exec-timeout", inputmode: "numeric", autocomplete: "off", spellcheck: "false",
-      value: String(Number(x.timeoutMs ?? 600000)),
+      value: String(Number(x.timeoutMs ?? 1800000)),
     }) as HTMLInputElement;
     const timeoutEcho = el("span", { class: "setcard__echo", "aria-live": "polite" }, []);
     const syncEcho = (): void => {
@@ -2607,9 +2609,9 @@ export class Settings {
       const timeoutMs = Number(timeoutRaw);
       // Refuse, never clamp: silently turning 50 ms into 1000 is how a policy
       // setting becomes a lie.
-      if (!timeoutRaw || !Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) {
+      if (!timeoutRaw || !Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 1800000) {
         timeoutInp.setAttribute("aria-invalid", "true");
-        problem.textContent = "Not saved — the timeout has to be between 1000 and 600000 ms.";
+        problem.textContent = "Not saved — the timeout has to be between 1000 and 1800000 ms.";
         problem.removeAttribute("hidden");
         timeoutInp.focus();
         return;
@@ -2818,7 +2820,7 @@ export class Settings {
       el("div", { class: "setfield" }, [
         el("label", { class: "lbl", for: "exec-timeout" }, ["Timeout per command (ms)"]),
         el("div", { class: "setline" }, [timeoutInp, timeoutEcho]),
-        el("p", { class: "hint" }, ["1000–600000. A safety cap only — a hung command cannot block a session forever."]),
+        el("p", { class: "hint" }, ["1000–1800000 (30 min, the default). A safety cap only — a hung command cannot block a session forever."]),
       ]),
       el("div", { class: "setfield" }, [
         el("span", { class: "lbl" }, ["Sandbox"]),

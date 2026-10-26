@@ -34,11 +34,23 @@ test("rolling detector catches identical SUCCESS calls (polling loop)", () => {
 
 test("identical RESULT with different args still breaks (idle-arg eviction fix)", () => {
   const det = new ToolLoopDetector(true);
+  assert.equal(det.record("exec", '{"a":1}', "error: [pid 12345]"), null);
+  assert.equal(det.record("exec", '{"a":2}', "error: [pid 12345]"), null);
+  const brk = det.record("exec", '{"a":3}', "error: [pid 12345]");
+  assert.ok(brk, "same FAILED output from the same tool breaks at three");
+  assert.match(brk.reason, /identical result 3 times/);
+});
+
+test("a successful result repeated needs four — three is ordinary work (Task 38)", () => {
+  // `ls`, a clean `git status` and a grep with no hits all print the same short
+  // thing. Three of those used to be called a loop and ended the turn.
+  const det = new ToolLoopDetector(true);
   assert.equal(det.record("exec", '{"a":1}', "ok [pid 12345]"), null);
   assert.equal(det.record("exec", '{"a":2}', "ok [pid 12345]"), null);
-  const brk = det.record("exec", '{"a":3}', "ok [pid 12345]");
-  assert.ok(brk, "same output signature from the same tool breaks under enabled detector");
-  assert.match(brk.reason, /identical result 3 times/);
+  assert.equal(det.record("exec", '{"a":3}', "ok [pid 12345]"), null, "three identical successes are not a loop");
+  const brk = det.record("exec", '{"a":4}', "ok [pid 12345]");
+  assert.ok(brk, "the fourth is suspicious enough to warn about");
+  assert.match(brk.reason, /identical result 4 times/);
 });
 
 test("enabled:false suspends ONLY the rolling layer", () => {

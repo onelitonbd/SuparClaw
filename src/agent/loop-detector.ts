@@ -15,6 +15,11 @@
 //      (e.g. env changes each time) evades (tool,args) identity, so the
 //      rolling detector ALSO matches on (tool, output-signature) — the
 //      identical RESULT gives the loop away (their upstream issue fix).
+//      Task 38: only FAILED results count at three. Three successful commands
+//      that happen to print the same short thing (`ls`, a clean `git status`,
+//      a grep with no hits) are ordinary work, not a loop; successes need four
+//      before this layer calls it one — and even then the turn is only nudged,
+//      not stopped (see `loopGuardNudge`).
 //   4. Post-compaction guard: after a context-overflow compaction retry the
 //      model loses its look-back, so the identical-error budget tightens to
 //      the SAME call twice (their "post-compaction repetition limits") until
@@ -36,6 +41,8 @@ interface RecentCall {
 
 const ROLLING_WINDOW = 10;
 const ROLLING_LIMIT = 3;
+/** Successful repeats are cheaper to misread, so they need one more hit. */
+const ROLLING_LIMIT_OK = 4;
 const STREAK_LIMIT = 3;
 const STREAK_LIMIT_POST_COMPACT = 2;
 
@@ -115,9 +122,13 @@ export class ToolLoopDetector {
       };
     }
     // Evasion-safe layer: identical RESULT from same tool with varying args
-    // (their exec-identity fix). Success and failure both count.
+    // (their exec-identity fix). A failure repeated is a loop at three; a
+    // success repeated needs four — and success is only ever a *nudge* (the
+    // loop does not stop on it), because `ls`, `git status` and an empty grep
+    // legitimately print the same thing three times in a row.
     const sameOutcome = this.#recent.filter((r) => r.outSig === entry.outSig).length;
-    if (sameOutcome >= ROLLING_LIMIT) {
+    const outcomeLimit = entry.failed ? ROLLING_LIMIT : ROLLING_LIMIT_OK;
+    if (sameOutcome >= outcomeLimit) {
       this.#recent = this.#recent.filter((r) => r.outSig !== entry.outSig);
       return {
         tool,
@@ -129,7 +140,23 @@ export class ToolLoopDetector {
   }
 }
 
-/** Guard message injected as a user note so the model must answer plainly. */
+/**
+ * First-strike note (Task 38). The turn keeps going: the model is told what
+ * repeated and asked to do something different, with every tool still on the
+ * table. Ending a whole turn on the first suspicion of a loop is what made a
+ * single stuck command look like a dead session.
+ */
+export function loopGuardNudge(brk: ToolLoopBreak): string {
+  return (
+    `[tool-loop guard] ${brk.reason}. Nothing was cancelled — this is a warning, not a stop. ` +
+    `Do not repeat that same call. Change the approach (different arguments, a different tool, ` +
+    `or read what you already have) and keep going. If you are deliberately polling something ` +
+    `that is still changing, say so in one line and vary the check. ` +
+    `A second repetition ends this turn, so make the next call count.`
+  );
+}
+
+/** Final-strike message injected as a user note so the model must answer plainly. */
 export function loopGuardPrompt(brk: ToolLoopBreak): string {
   return (
     `[tool-loop guard] ${brk.reason}. The attempt was stopped — DO NOT retry the same call. ` +

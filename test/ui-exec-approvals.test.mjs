@@ -41,7 +41,8 @@ const CONFIG = {
       strictInlineEval: false,
       safeBins: ["head", "cut", "rm"],
       safeBinTrustedDirs: ["/bin", "/usr/bin"],
-      timeoutMs: 600000,
+      // Task 38: the shipped default is the 30-minute command cap.
+      timeoutMs: 1800000,
       sandbox: "off",
       sandboxProot: false,
       someFutureKnob: 7,
@@ -256,20 +257,22 @@ test("saving writes the whole block once, merged over what is stored", async () 
   assert.equal(noteText(), "", "a landed save clears the marker");
 });
 
-test("a timeout outside 1000–600000 is refused, never clamped", async () => {
+test("a timeout outside 1000–1800000 is refused, never clamped", async () => {
   await type("exec-timeout", "50");
   await click("exec-policy-save");
   assert.equal(sets().length, 0, "nothing written");
   assert.equal(byId("exec-timeout").getAttribute("aria-invalid"), "true");
   const problem = $(".setfoot .hint--err");
   assert.equal(problem.hasAttribute("hidden"), false);
-  assert.match(problem.textContent, /between 1000 and 600000/);
+  assert.match(problem.textContent, /between 1000 and 1800000/);
   assert.ok(focused.includes(byId("exec-timeout")), "focus lands on the field to fix");
   assert.equal(noteText(), "Unsaved changes", "the draft is still there");
 });
 
 test("the timeout says what it means in minutes, and the echo tracks typing", async () => {
-  assert.equal($(".setcard__echo").textContent, "≈ 10 min");
+  assert.equal($(".setcard__echo").textContent, "≈ 30 min", "the default is the 30-minute cap");
+  // The range the field will actually accept is on screen, next to the box.
+  assert.match(byId("exec-timeout").closest(".setfield")?.textContent ?? "", /1000–1800000 \(30 min, the default\)/, "the range is on screen next to the box");
   await type("exec-timeout", "90000");
   assert.equal($(".setcard__echo").textContent, "≈ 1.5 min");
 });
