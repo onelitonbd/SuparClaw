@@ -58,7 +58,7 @@ const SHELL = `
 function mount() {
   const root = parseHTML(`<html><body>${SHELL}</body></html>`);
   const host = root.document.getElementById("root");
-  const calls = { regenerate: 0, rewind: [], send: 0 };
+  const calls = { regenerate: 0, rewind: [], fork: [], send: 0 };
   const chat = new Chat(host, {
     send: () => { calls.send += 1; },
     abort: () => {},
@@ -67,6 +67,7 @@ function mount() {
     questionAnswer: () => {},
     regenerate: () => { calls.regenerate += 1; },
     rewind: (id) => { calls.rewind.push(id); },
+    fork: (id) => { calls.fork.push(id); },
   });
   return { chat, host: root.document, calls };
 }
@@ -127,7 +128,7 @@ test("Regenerate is offered on the newest answer only; older answers keep Copy",
   assert.ok(rows[1].querySelector("[data-regen]"), "the newest answer can be regenerated");
 });
 
-test("a saved prompt gets its own actions: Copy and Edit", () => {
+test("a saved prompt gets its own actions: Copy, Edit and Fork", () => {
   const { chat } = mount();
   chat.replaceThread([
     { role: "user", content: "make math questions", id: 11 },
@@ -135,13 +136,20 @@ test("a saved prompt gets its own actions: Copy and Edit", () => {
   ]);
   const userRow = chat.stack.querySelector(".msg--user .msg__actions");
   assert.ok(userRow, "OpenClaw puts actions on prompts too");
-  assert.equal(userRow.querySelectorAll(".msg__act").length, 2);
+  assert.equal(userRow.querySelectorAll(".msg__act").length, 3);
   assert.ok(userRow.querySelector("[data-copy]"), "Copy");
   const edit = userRow.querySelector("[data-rewind]");
   assert.ok(edit, "Edit");
   assert.equal(edit.getAttribute("aria-label"), "Edit prompt");
-  assert.equal(text(edit), "", "the Edit control is an icon");
-  assert.equal(edit.querySelectorAll("svg").length, 1);
+  const fork = userRow.querySelector("[data-fork]");
+  assert.ok(fork, "Fork");
+  assert.equal(fork.getAttribute("aria-label"), "Fork from here");
+  assert.equal(fork.getAttribute("data-tip"), "Fork from here", "the tooltip carries the words");
+  for (const btn of [edit, fork]) {
+    assert.equal(text(btn), "", "icon only");
+    assert.equal(btn.querySelectorAll("svg").length, 1);
+  }
+  assert.notEqual(edit.innerHTML, fork.innerHTML, "Edit and Fork are different glyphs");
 });
 
 test("Edit hands the message id to the handler (a rewind, not a re-send)", () => {
@@ -157,6 +165,10 @@ test("Edit hands the message id to the handler (a rewind, not a re-send)", () =>
   click(edits[1], host);
   assert.deepEqual(calls.rewind, [23], "the clicked row's id");
   assert.equal(calls.send, 0, "editing is not a send");
+
+  click(chat.stack.querySelectorAll("[data-fork]")[0], host);
+  assert.deepEqual(calls.fork, [21], "fork also names the row it starts from");
+  assert.equal(calls.send, 0, "forking is not a send");
 });
 
 test("a live prompt has no Edit yet — only persisted messages carry one", () => {
@@ -166,6 +178,7 @@ test("a live prompt has no Edit yet — only persisted messages carry one", () =
   assert.ok(row, "you can copy what you just sent");
   assert.ok(row.querySelector("[data-copy]"));
   assert.equal(row.querySelector("[data-rewind]"), null, "no id yet, so nothing to rewind to");
+  assert.equal(row.querySelector("[data-fork]"), null, "nor to fork from");
 });
 
 test("Copy hands back the original Markdown, not the rendered text", async () => {
@@ -283,4 +296,16 @@ test("Edit asks first: the app's own dialog, then rewind, reload, and the draft"
   assert.ok(!src.includes("window.confirm"), "no native dialogs anywhere in the chat shell");
   assert.match(src, /chat\.setDraft\(/, "the text comes back to the composer");
   assert.match(src, /rewind failed: \$\{\(err as Error\)\.message\}/, "refusals stay visible");
+});
+
+test("Fork wires to the gateway, switches session, and seeds the composer", () => {
+  const src = readFileSync(join(ROOT, "ui/src/main.ts"), "utf8");
+  assert.match(src, /gateway\.request\("chat\.fork"/);
+  assert.match(src, /switchSession\(res\.sessionKey\)/, "the fork opens");
+  assert.match(src, /chat\.setDraft\(/, "with the prompt ready to edit");
+  assert.match(src, /fork failed: \$\{\(err as Error\)\.message\}/, "failures stay visible");
+  // Non-destructive, so no modal gate — unlike Edit and Regenerate.
+  const at = src.indexOf("fork:");
+  const block = src.slice(at, at + 900);
+  assert.ok(!/modal\(/.test(block), "forking adds a session; it does not need a confirmation");
 });

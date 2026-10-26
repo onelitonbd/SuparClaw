@@ -614,6 +614,45 @@ export class Store {
     return ids.length;
   }
 
+  /**
+   * Fork a conversation (Task 25): a new session holding every row written
+   * before `beforeId`, in order. The copy is faithful — created_at, run_id and
+   * the usage blob move with the row — so a forked turn keeps its real clock
+   * and its /usage line. The parent is only read.
+   */
+  forkSession(
+    parent: SessionRow,
+    opts: { key: string; name?: string | null; beforeId: number },
+  ): { session: SessionRow; copied: number } {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    this.db
+      .prepare("INSERT INTO sessions(id, key, agent_id, name, created_at, last_msg_at) VALUES(?, ?, ?, ?, ?, ?)")
+      .run(id, opts.key, parent.agent_id, opts.name ?? null, now, now);
+
+    const rows = this.db
+      .prepare("SELECT * FROM messages WHERE session_id = ? AND id < ? ORDER BY id ASC")
+      .all(parent.id, opts.beforeId) as unknown as MessageRow[];
+
+    const insert = this.db.prepare(
+      "INSERT INTO messages(session_id, run_id, role, content, created_at, usage) VALUES(?, ?, ?, ?, ?, ?)",
+    );
+    let lastAt = now;
+    for (const row of rows) {
+      const res = insert.run(id, row.run_id, row.role, row.content, row.created_at, row.usage ?? null);
+      lastAt = row.created_at;
+      if (this.fts) {
+        this.db
+          .prepare("INSERT INTO fts_messages(content, session_id, message_id) VALUES(?, ?, ?)")
+          .run(row.content.replace(/\s+/g, " ").slice(0, 4000), id, Number(res.lastInsertRowid));
+      }
+    }
+    // The new session's clock is the last thing it actually contains.
+    if (rows.length > 0) this.db.prepare("UPDATE sessions SET last_msg_at = ? WHERE id = ?").run(lastAt, id);
+
+    return { session: this.getSession(id)!, copied: rows.length };
+  }
+
   // ---- context compaction (P1 A2) ------------------------------------------
 
   /** All rows after `afterId` (oldest-first) — compaction spans, not display. */

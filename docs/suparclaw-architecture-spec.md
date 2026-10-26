@@ -122,10 +122,12 @@ graph weight, not Node itself.
 9. Transcript actions follow OpenClaw's chat: every persisted message carries a quiet icon row —
    Copy returns the source Markdown for answers and the exact typed text for prompts; the newest
    answer adds Regenerate; a prompt adds Edit (`chat.rewind` drops that prompt and everything after
-   it and returns the text to the composer, never re-sends). Labels live in the tooltip and the
-   accessible name, and the glyphs ship with the bundle. Fork, reactions and per-run failure
-   details are deliberately not implemented yet (they need session branches, reaction storage and
-   a run-error record respectively).
+   it and returns the text to the composer, never re-sends) and Fork (`chat.fork` copies the
+   conversation's prefix before that prompt into a new session, opens it until a send, and seeds
+   the composer -- the parent is only read; timestamps and usage move with the rows). Labels live in
+   the tooltip and the accessible name, and the glyphs ship with the bundle. Reactions and per-run
+   failure details are deliberately not implemented yet (they need reaction storage and a
+   run-error record respectively).
 
 ### 4.3 Channels
 

@@ -212,6 +212,7 @@ export class Gateway {
       "chat.history",
       "chat.regenerate",
       "chat.rewind",
+      "chat.fork",
       "chat.abort",
       "chat.approval",
       "approvals.get",
@@ -448,6 +449,29 @@ export class Gateway {
             return;
           }
           send(okFrame(id, { rewound: true, text: result.text, dropped: result.deleted }));
+          return;
+        }
+        case "chat.fork": {
+          // Task 25 — Fork from here: a new session with everything before the
+          // clicked prompt, which comes back to the composer. Parent untouched.
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const messageId = Number(params["messageId"]);
+          if (!Number.isInteger(messageId) || messageId <= 0) {
+            send(errFrame(id, "bad_request", "messageId must be a positive integer"));
+            return;
+          }
+          const result = service.fork(sessionKey, messageId);
+          if (!result.ok) {
+            send(errFrame(id, "fork_refused", result.error));
+            return;
+          }
+          send(okFrame(id, {
+            forked: true,
+            sessionKey: result.sessionKey,
+            title: result.title,
+            text: result.text,
+            copied: result.copied,
+          }));
           return;
         }
         case "queue.set": {

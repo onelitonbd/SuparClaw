@@ -1365,6 +1365,40 @@ export class Service {
   }
 
   /**
+   * Fork from a prompt (Task 25) — OpenClaw's `sessions.fork`: a new session
+   * holding everything *before* that message, plus the prompt handed back for
+   * an edit. Non-destructive: the parent transcript is only read.
+   */
+  fork(
+    sessionKey: string,
+    messageId: number,
+  ): { ok: true; sessionKey: string; title: string; text: string; copied: number } | { ok: false; error: string } {
+    if (this.loop.isBusy(sessionKey)) return { ok: false, error: "a run is active in this session — wait for it to finish" };
+    const session = this.store.getSessionByKey(sessionKey);
+    if (!session) return { ok: false, error: "no such session" };
+    const row = this.store.messageById(session.id, messageId);
+    if (!row) return { ok: false, error: "no such message in this session" };
+    if (row.role !== "user") return { ok: false, error: "fork must point at a user message" };
+
+    const key = this.#forkKey(session.key);
+    const title = `${session.name || session.key} (fork)`;
+    const { session: forked, copied } = this.store.forkSession(session, { key, name: title, beforeId: row.id });
+    this.log.info(`fork ${sessionKey} → ${forked.key}: ${copied} row(s) before #${messageId}`);
+    return { ok: true, sessionKey: forked.key, title, text: row.content, copied };
+  }
+
+  /** A fresh `main:…` key for a fork — never an existing one, never empty. */
+  #forkKey(base: string): string {
+    const stem = base.replace(/^main:/, "").replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 40) || "chat";
+    for (let i = 0; i < 50; i++) {
+      const suffix = Date.now().toString(36).slice(-4) + (i === 0 ? "" : `-${i}`);
+      const key = `main:${stem}-fork-${suffix}`;
+      if (!this.store.getSessionByKey(key)) return key;
+    }
+    return `main:${stem}-fork-${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  /**
    * Rewind to a prompt (Task 24) — OpenClaw's Edit: drop the clicked prompt and
    * everything after it, hand the text back for editing. Deliberately does not
    * send: the point is to change the prompt first. Refuses while busy so two

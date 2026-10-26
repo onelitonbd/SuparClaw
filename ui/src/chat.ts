@@ -67,6 +67,9 @@ export interface ChatHandlers {
   /** Rewind to a saved prompt: the server drops it and its answer, the text
    *  comes back to the composer for editing (OpenClaw's Edit / Rewind). */
   rewind(messageId: number): void;
+  /** Fork from a saved prompt: a new session with the prefix before it, opened
+   *  and seeded with its text (OpenClaw's Fork from here). */
+  fork(messageId: number): void;
   abort(): void;
   approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
@@ -171,6 +174,7 @@ const GLYPHS = {
   copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   refresh: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
   pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
+  branch: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
 } as const;
 
@@ -205,12 +209,16 @@ function actButton(
   return btn;
 }
 
-/** Copy on every message; Regenerate on the newest answer; Edit on a saved prompt. */
-function actionRow(actions: { regenerate?: () => void; rewind?: () => void } = {}): HTMLElement {
+/**
+ * Copy on every message; Regenerate on the newest answer; on a saved prompt,
+ * Edit (rewind) and Fork — OpenClaw's set, in its order.
+ */
+function actionRow(actions: { regenerate?: () => void; rewind?: () => void; fork?: () => void } = {}): HTMLElement {
   const row = el("div", { class: "msg__actions" });
   row.append(actButton("copy", "Copy", "data-copy"));
   if (actions.regenerate) row.append(actButton("refresh", "Regenerate", "data-regen", actions.regenerate));
   if (actions.rewind) row.append(actButton("pencil", "Edit prompt", "data-rewind", actions.rewind));
+  if (actions.fork) row.append(actButton("branch", "Fork from here", "data-fork", actions.fork));
   return row;
 }
 
@@ -742,7 +750,13 @@ export class Chat {
     // Edit needs a persisted row: a prompt that is still streaming has no id
     // yet, so it gets Copy only (OpenClaw's "persisted messages" rule).
     const id = opts.id;
-    wrap.append(actionRow({ rewind: id === undefined ? undefined : () => this.#handlers.rewind(id) }));
+    wrap.append(
+      actionRow(
+        id === undefined
+          ? {}
+          : { rewind: () => this.#handlers.rewind(id), fork: () => this.#handlers.fork(id) },
+      ),
+    );
     this.stack.append(wrap);
     this.#scrollToBottom();
   }

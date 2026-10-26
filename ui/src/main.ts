@@ -133,6 +133,27 @@ const chat = new Chat(document.body, {
       },
     });
   },
+  // Fork from here (Task 25) — OpenClaw's "Fork from here": a new session holds
+  // everything before this prompt; the original keeps running untouched. It
+  // adds rather than deletes, so there is nothing to confirm: it opens the fork
+  // and leaves the prompt in the composer.
+  fork: (messageId: number) => {
+    void (async () => {
+      try {
+        const res = (await gateway.request("chat.fork", { sessionKey, messageId })) as {
+          sessionKey?: string;
+          text?: string;
+        };
+        if (!res.sessionKey) throw new Error("the gateway did not return the fork");
+        await switchSession(res.sessionKey);
+        chat.setDraft(String(res.text ?? ""));
+        toast(`forked to ${res.sessionKey} — edit and send`, "ok");
+      } catch (err) {
+        toast((err as Error).message, "err");
+        chat.notice(`fork failed: ${(err as Error).message}`, "notice--error");
+      }
+    })();
+  },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
   approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
   // Remove just that queued message (their chat.abort runId parity).
