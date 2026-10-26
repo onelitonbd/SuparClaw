@@ -468,6 +468,10 @@ export const CONFIG_SCHEMA: SchemaNode = {
             },
             streaming: { t: "enum", values: ["off", "partial", "progress"], default: "progress" },
             batchMs: { t: "int", min: 0, max: 5000, default: 300 },
+            // Task 27: the `/` menu lives on the bot token, so a token that ran
+            // another build keeps showing that build's commands. We replace it
+            // on every start unless the operator curates it in BotFather.
+            commandsMenu: { t: "bool", default: true },
             // Typing indicator (P3 #24 — their agents.defaults.typingMode /
             // typingIntervalSeconds life-cycle: DMs+mentions immediate
             // ("instant"), first reasoning/tool under "thinking", first
@@ -942,6 +946,8 @@ export interface SuparClawConfig {
       botLoopProtection: BotLoopProtectionConfig;
       streaming: "off" | "partial" | "progress";
       batchMs: number;
+      /** Replace the bot's stored `/` menu with ours on start (Task 27). */
+      commandsMenu: boolean;
       // P3 #24 — typing indicator (their typingMode/typingIntervalSeconds).
       typing: { mode: "instant" | "thinking" | "message" | "never"; intervalSeconds: number };
     };

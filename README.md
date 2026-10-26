@@ -77,6 +77,24 @@ rejects a reference that does not resolve against the configured providers
 Web UI: `http://127.0.0.1:18790/` while `sc gateway` runs (dark/light, same design tokens
 as OpenClaw's Control UI).
 
+### Chat commands (TUI, web chat, Telegram)
+
+One router answers `/…` on every surface (`src/agent/slash-commands.ts` + `#commands` in
+`service.ts`), so `/stop`, `/usage`, `/queue`, `/compact`, `/title`, `/dream`, `/think`,
+`/models`, `/context`, `/skills`, `/tools`, `/exec`, `/subagents`, `/export-session` and
+`/skill` behave the same wherever they are typed. `/help` and `/commands` print that same
+catalog — the list, the help text and the menu cannot drift apart.
+
+Telegram additionally owns `/model`, `/provider`, `/whoami` and `/new`; anything else falls
+through to the shared router (it used to answer "unknown command" instead).
+
+**The `/` menu is stored on the bot token, not in this app.** A token that ran another build
+keeps showing that build's command list until something replaces it, so on every start the
+gateway deletes the default, private-chat and group-chat scopes and re-publishes the catalog
+above from `buildCommandMenu()` — 100 entries is the Bot API cap, ours is ~31 including one
+command per bundled skill. Set `channels.telegram.commandsMenu: false` to keep a menu you
+curate in BotFather instead.
+
 ## How it works
 
 ```

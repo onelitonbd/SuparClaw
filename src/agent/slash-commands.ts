@@ -15,27 +15,49 @@ export const SLASH_CATALOG: { cmd: string; summary: string }[] = [
   { cmd: "/help", summary: "short help summary" },
   { cmd: "/commands", summary: "full command catalog" },
   { cmd: "/status", summary: "model, tools, dreaming and runtime status" },
+  { cmd: "/context", summary: "what the prompt holds and how full the budget is" },
   { cmd: "/stop", summary: "cancel queued work, then the active run" },
+  { cmd: "/usage [off|tokens|full|cost]", summary: "this session's per-reply usage footer" },
   { cmd: "/queue [mode|default]", summary: "show or set this session's queue mode" },
   { cmd: "/steer <msg>", summary: "inject into the live turn (alias /tell)" },
+  { cmd: "/question", summary: "re-show the pending question, if any" },
   { cmd: "/followup <msg>", summary: "run as its own turn, queued behind work" },
   { cmd: "/subagents", summary: "sub-agent runs for this session (text view)" },
   { cmd: "/tools", summary: "tools the agent can use right now" },
   { cmd: "/skills", summary: "installed skills and readiness" },
   { cmd: "/dream [on|off|status|run|log [full]]", summary: "dreaming: toggle, status, manual sweep, diary" },
   { cmd: "/compact [instructions]", summary: "summarize older context now (recent turns stay verbatim)" },
+  { cmd: "/think [level|default]", summary: "thinking effort for this session (off…max)" },
+  { cmd: "/models [provider]", summary: "configured providers and their models" },
+  { cmd: "/skill <name> [input]", summary: "run an installed skill by name (a bare /<name> works too)" },
   { cmd: "/exec [mode|global <mode>|reset]", summary: "exec approval mode for this session or globally" },
-  { cmd: "/title <text>", summary: "rename the current session" },
+  { cmd: "/title <text>", summary: "rename the current session (alias /name)" },
   { cmd: "/export-session [name]", summary: "export this chat to HTML in the workspace (alias /export)" },
-  { cmd: "/new", summary: "fresh session (handled by your surface: TUI rotates; web UI chat switcher)" },
+  { cmd: "/new", summary: "start a fresh session; the current one is kept" },
 ];
+
+/**
+ * Every command name the shared pipeline answers (`Service.#commands` here in
+ * the extension). Telegram falls through to exactly this set; surface-local
+ * commands (/new on the TUI, /model on the TUI, /model + /provider + /whoami on
+ * Telegram) are deliberately absent — one command, one owner.
+ *
+ * Aliases are listed because they are real names a user can type.
+ */
+export const SHARED_COMMANDS = [
+  "help", "commands", "status", "context", "stop", "abort", "queue", "usage",
+  "question", "followup", "steer", "tell", "subagents", "tools", "skills",
+  "skill", "dream", "compact", "exec", "think", "title", "name", "models",
+  "export-session", "export",
+] as const;
 
 export function slashHelp(): string {
   return [
     "suparclaw chat commands:",
     ...SLASH_CATALOG.map((c) => `  ${c.cmd.padEnd(36)} ${c.summary}`),
     "",
-    "surface-local (client): /exit /quit /clear /session <key> /model [--save] (TUI) · /new (surface switcher)",
+    "surface-local: /exit /quit /clear /session <key> /model [--save] (TUI) · /new (TUI, web, Telegram)",
+    "Telegram-only: /model · /provider [list|add|remove|test] · /whoami",
   ].join("\n");
 }
 
@@ -218,7 +240,77 @@ export async function handleSlashExtension(
       }
     }
 
-    case "/title": {
+    case "/think": {
+      // The session column already exists and is already second in the loop's
+      // reasoning chain (`#reasoningFor`) — a writer is all this needed.
+      const levels = ["off", "low", "medium", "high", "xhigh", "max"];
+      const row = service.store.ensureSession(payload.sessionKey);
+      const current = (row.thinking as string | null | undefined) ?? null;
+      const want = rest.trim().toLowerCase();
+      if (!want) {
+        return `thinking for this session: ${
+          current ?? `inherit (config: ${service.config.agents.defaults.reasoningEffort})`
+        } · /think ${levels.join("|")} · /think default`;
+      }
+      if (["default", "inherit", "reset", "clear"].includes(want)) {
+        service.store.setSessionThinking(payload.sessionKey, null);
+        return `thinking reset — the config default applies again (${service.config.agents.defaults.reasoningEffort})`;
+      }
+      if (!levels.includes(want)) {
+        return `unknown thinking level "${rest.trim()}" — use ${levels.join(", ")}, or default`;
+      }
+      service.store.setSessionThinking(payload.sessionKey, want);
+      return `thinking for this session: ${want} (applies from the next turn)`;
+    }
+
+    case "/models": {
+      const cfg = service.config;
+      const providers = Object.entries(cfg.providers ?? {}) as [string, { models?: string[]; apiKey?: string }][];
+      const want = rest.trim().toLowerCase();
+      if (want) {
+        const hit = providers.find(([name]) => name.toLowerCase() === want);
+        if (!hit) {
+          return `no provider "${rest.trim()}" — configured: ${providers.map(([n]) => n).join(", ") || "(none)"}`;
+        }
+        const models = hit[1].models ?? [];
+        if (models.length === 0) return `${hit[0]}: no models listed yet — /provider test ${hit[0]}`;
+        const shown = models.slice(0, 40).map((m) => `  ${m}`).join("\n");
+        return `${hit[0]} (${models.length}):\n${shown}${models.length > 40 ? `\n  … ${models.length - 40} more` : ""}`;
+      }
+      const profiles = Object.entries(cfg.models ?? {}) as [string, { ref?: string }][];
+      return [
+        `default model: ${cfg.agents.defaults.model || "(unset)"}`,
+        providers.length
+          ? `providers:\n${providers.map(([n, p]) => `  ${n} — ${(p.models ?? []).length} model(s) · key ${p.apiKey ? "set" : "missing"}`).join("\n")}`
+          : "providers: (none — /provider add <name> [url] [key])",
+        profiles.length ? `profiles:\n${profiles.map(([id, m]) => `  ${id} → ${m.ref ?? "?"}`).join("\n")}` : null,
+        "one provider in detail: /models <provider>",
+      ]
+        .filter((l): l is string => l !== null)
+        .join("\n");
+    }
+
+    case "/context": {
+      // Their /context explains the prompt. We can be exact about our half:
+      // the transcript vs the budget, plus what the system prompt carries.
+      const row = service.store.getSessionByKey(payload.sessionKey);
+      const msgs = row ? service.store.recentMessages(row.id, 100000) : [];
+      const chars = msgs.reduce((n, m) => n + m.content.length, 0);
+      const budget = service.config.agents.defaults.contextBudgetChars;
+      const pct = budget > 0 ? Math.round((chars / budget) * 100) : 0;
+      const comp = service.compactionStats(payload.sessionKey);
+      return [
+        `session:    ${payload.sessionKey}${row?.name ? ` (${row.name})` : ""}`,
+        `transcript: ${msgs.length} message(s) · ${chars.toLocaleString()} chars (${pct}% of the budget)`,
+        `budget:     ${budget.toLocaleString()} chars`,
+        `compaction: ${comp ? `${comp.count} sweep(s), ${comp.chars.toLocaleString()} chars folded (up to #${comp.upto})` : "none yet — /compact forces one"}`,
+        `model:      ${service.config.agents.defaults.model || "(unset)"}`,
+        "system prompt also carries: identity, workspace files, skills catalog, live surfaces, live settings",
+      ].join("\n");
+    }
+
+    case "/title":
+    case "/name": {
       const t = rest.trim();
       // The row must exist even when the very first thing typed is a command.
       const row = service.store.ensureSession(payload.sessionKey);

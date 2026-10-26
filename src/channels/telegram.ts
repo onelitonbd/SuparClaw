@@ -16,6 +16,8 @@ import {
   removeProvider,
   testProvider,
 } from "../config/providers.js";
+import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
+import { buildCommandMenu } from "./telegram-menu.js";
 
 // Telegram channel: grammY long polling, per-chat batching, one editable status
 // draft per turn, DM pairing + group allowlists + mention gating.
@@ -187,6 +189,24 @@ export function describeError(err: unknown): string {
 
 type GrammyBot = Awaited<ReturnType<typeof createBot>>;
 
+/**
+ * Commands only Telegram answers (`#onCommand`). Everything else is handed to
+ * the shared router, so this list must stay in sync with that switch — the
+ * partition test fails if a name appears in both.
+ */
+export const TELEGRAM_COMMANDS: { cmd: string; summary: string }[] = [
+  { cmd: "/start", summary: "what this bot is, and every command" },
+  { cmd: "/model [provider/model]", summary: "show or set the default model" },
+  { cmd: "/provider [list|add|remove|test]", summary: "manage model providers" },
+  { cmd: "/whoami", summary: "your Telegram id, this chat and its session" },
+  { cmd: "/new", summary: "start a fresh session (the old one is kept)" },
+];
+
+/** Session key for a chat: the base key, plus `/new`'s rotation tag if set. */
+export function telegramSessionKey(chatId: number, tag?: string | null): string {
+  return `telegram:${chatId}${tag ? `:${tag}` : ""}`;
+}
+
 export interface BotCommand {
   name: string;
   args: string;
@@ -265,6 +285,7 @@ export class TelegramChannel {
     this.#botId = me.id;
     this.running = true;
     this.log.info(`telegram online as @${me.username}`);
+    await this.#registerCommandMenu(bot);
 
     // Long polling: no inbound port needed, ideal behind mobile NAT.
     void bot
@@ -438,20 +459,26 @@ export class TelegramChannel {
 
     const command = parseCommand(text);
     if (command && media.length === 0) {
-      await this.#onCommand(ctx, command);
-      return;
+      const handled = await this.#onCommand(ctx, command, { chatId, isGroup });
+      // Not ours → keep going: the shared router answers it below with the same
+      // session, typing indicator and reply pipeline as any other message.
+      if (handled) return;
     }
 
     const key = `${chatId}`;
     const topicId = (msg as { message_thread_id?: number }).message_thread_id;
-    const sessionKey = `telegram:${chatId}${topicId ? `:topic:${topicId}` : isGroup ? `:group` : ""}`;
-    void sessionKey; // (keying lives in #flush; kept for readability)
+    // Session keying lives in #sessionKeyFor (rotation-aware); batching is per chat.
 
+    const isCommand = command !== null;
     const existing = this.#pending.get(key);
     if (existing) {
       if (text.trim()) existing.texts.push(text);
       existing.media.push(...media);
       clearTimeout(existing.timer);
+      if (isCommand) {
+        void this.#flush(key);
+        return;
+      }
       existing.timer = setTimeout(() => void this.#flush(key), cfg.batchMs);
       return;
     }
@@ -468,14 +495,30 @@ export class TelegramChannel {
       timer: setTimeout(() => void this.#flush(key), cfg.batchMs),
     };
     this.#pending.set(key, entry);
+    if (isCommand) {
+      // A command is a standalone message: no reason to sit in the batch window.
+      clearTimeout(entry.timer);
+      void this.#flush(key);
+    }
   }
 
-  /** Bot commands: status, model and full provider management. */
-  async #onCommand(ctx: Context, cmd: BotCommand): Promise<void> {
-    const reply = async (body: string): Promise<void> => {
+  /**
+   * Commands this surface owns. Everything else returns false and falls back to
+   * the ordinary message path, where `Service.#commands` answers it — the same
+   * router the TUI and the web chat use. Returning false instead of replying
+   * "unknown command" is what makes /stop, /usage, /compact, /title, /dream and
+   * the rest reachable from Telegram at all (Task 27).
+   */
+  async #onCommand(
+    ctx: Context,
+    cmd: BotCommand,
+    scope: { chatId: number; isGroup: boolean },
+  ): Promise<boolean> {
+    const reply = async (body: string): Promise<boolean> => {
       await ctx
         .reply(body.slice(0, 4000), { link_preview_options: { is_disabled: true } })
         .catch((err: unknown) => this.log.warn(`telegram reply failed: ${(err as Error).message}`));
+      return true;
     };
 
     const cfgSvc = this.service.configSvc;
@@ -483,28 +526,35 @@ export class TelegramChannel {
 
     switch (cmd.name) {
       case "start":
-      case "help":
-        return reply([
-          "SuparClaw commands",
-          "",
-          "/status — model, providers, tools",
-          "/model — current default model",
-          "/model <provider>/<model> — switch the default model",
-          "/provider — list providers",
-          "/provider add <name> [url|key] [key] [models,a,b]",
-          "/provider test <name> · /provider remove <name>",
-          "",
-          "Anything else is sent to the agent.",
-        ].join("\n"));
+        return reply(
+          [
+            "SuparClaw is online.",
+            "",
+            slashHelp(),
+            "",
+            "Anything that is not a command is sent to the agent.",
+          ].join("\n"),
+        );
 
-      case "status": {
-        const config = this.service.config;
-        return reply([
-          defaultModelLine(config),
-          `providers: ${Object.keys(config.providers ?? {}).join(", ") || "none"}`,
-          `tools: ${this.service.loop.tools.length} · skills: ${this.service.loop.skills.length}`,
-          `cron: ${config.cron.enabled ? "on" : "off"}`,
-        ].join("\n"));
+      case "whoami": {
+        const from = ctx.from?.id;
+        return reply(
+          [
+            `you:    ${from ?? "?"}${ctx.from?.username ? ` (@${ctx.from.username})` : ""}`,
+            `chat:   ${scope.chatId}${scope.isGroup ? " (group)" : " (dm)"}`,
+            `session: ${this.#sessionKeyFor(scope.chatId)}`,
+            `paired: ${from !== undefined && this.#paired(from) ? "yes" : `no — sc pair approve ${from ?? "?"}`}`,
+          ].join("\n"),
+        );
+      }
+
+      case "new": {
+        // A rotation tag, never a delete: the old transcript stays in Sessions.
+        const previous = this.#sessionKeyFor(scope.chatId);
+        this.service.store.setMeta(`telegram:sess:${scope.chatId}`, Date.now().toString(36));
+        return reply(
+          `new session: ${this.#sessionKeyFor(scope.chatId)}\nthe previous one is kept — ${previous} is still in Sessions.`,
+        );
       }
 
       case "model": {
@@ -553,7 +603,42 @@ export class TelegramChannel {
       }
 
       default:
-        return reply(`unknown command /${cmd.name} — try /help`);
+        // Not ours: `#onMessage` lets it through to the shared router.
+        return false;
+    }
+  }
+
+  /** `/new` rotates the tag, so the next message opens a fresh session while
+   *  every earlier transcript stays exactly where it is. */
+  #sessionKeyFor(chatId: number): string {
+    return telegramSessionKey(chatId, this.service.store.getMeta(`telegram:sess:${chatId}`));
+  }
+
+  /**
+   * Claim the `/` menu. That list lives on the bot token (Bot API), so a token
+   * that ran another build keeps showing that build's commands until something
+   * replaces it — including entries this build cannot answer. Delete the three
+   * scopes we may have inherited, then publish the catalog we actually serve.
+   */
+  async #registerCommandMenu(bot: GrammyBot): Promise<void> {
+    if ((this.service.config.channels.telegram as { commandsMenu?: boolean }).commandsMenu === false) return;
+    const menu = buildCommandMenu({
+      catalog: SLASH_CATALOG,
+      local: TELEGRAM_COMMANDS,
+      skills: this.service.loop.skills,
+    });
+    try {
+      for (const scope of [
+        { type: "default" as const },
+        { type: "all_private_chats" as const },
+        { type: "all_group_chats" as const },
+      ]) {
+        await bot.api.deleteMyCommands({ scope }).catch(() => {});
+      }
+      await bot.api.setMyCommands(menu.map((m) => ({ command: m.command, description: m.description })));
+      this.log.info(`telegram: registered ${menu.length} command(s) in the / menu`);
+    } catch (err) {
+      this.log.warn(`telegram: could not register the / menu: ${(err as Error).message}`);
     }
   }
 
@@ -670,7 +755,7 @@ export class TelegramChannel {
     let statusLines: string[] = [];
 
     await this.service.send({
-      sessionKey: key.startsWith("telegram:") ? key : `telegram:${key}`,
+      sessionKey: this.#sessionKeyFor(chatId),
       text,
       isMainSession: pending.isMain === true,
       source: "telegram",

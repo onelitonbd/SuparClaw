@@ -61,7 +61,7 @@ export { Service } from "./agent/service.js";export { renderMarkdown as renderUi
 export { fuzzy } from "../ui/src/dom.js";
 export { fetchModels, PRESETS, formatProviders, addProvider, removeProvider, testProvider, maskKey, defaultModelLine, parseProviderAddArgs, canonicalModelRef } from "./config/providers.js";
 export { ConfigService, readConfigFile, writeConfigFile } from "./config/load.js";
-export { handleSlashExtension, slashHelp, slashCommands, SLASH_CATALOG } from "./agent/slash-commands.js";
+export { handleSlashExtension, slashHelp, slashCommands, SLASH_CATALOG, SHARED_COMMANDS } from "./agent/slash-commands.js";
 export { handleHooksRequest, hookTokenFingerprint, type HookService } from "./gateway/webhooks.js";
 export { handleOpenAiRequest, type OpenAiService } from "./gateway/openai-http.js";
 export { isContextOverflowError, planCompactSpan, summarizerPrompt, renderSpan, clampSpanInput } from "./agent/compaction.js";
@@ -110,6 +110,8 @@ export { createLogger } from "./util/log.js";
 export { createBackup, verifyBackup, restoreBackup, listBackups, backupStamp, BACKUP_MANIFEST_VERSION, type BackupManifest, type BackupResult, type VerifyResult } from "./backup/backup.js";
 export { resolveSecrets, substituteEnvText, isSecretRef, validateSecretRef, ENV_ID_RE, EXEC_ID_RE, PROVIDER_NAME_RE, type SecretRef } from "./config/secrets.js";
 export { parseCommand as parseBotCommand } from "./channels/telegram.js";
+export { telegramSessionKey, TELEGRAM_COMMANDS } from "./channels/telegram.js";
+export { buildCommandMenu, menuName, MENU_LIMIT } from "./channels/telegram-menu.js";
 
 /**
  * Where a message arrived from, for the prompt's "Session:" line. OpenClaw

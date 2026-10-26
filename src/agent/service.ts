@@ -1287,7 +1287,10 @@ export class Service {
     if (!raw.startsWith("/")) return null;
     const [head, ...restParts] = raw.split(/\s+/);
     const rest = raw.slice((head ?? "").length).trim();
-    const cmd = (head ?? "").toLowerCase();
+    // Telegram (and BotFather) names cannot contain hyphens, so the menu
+    // publishes `export_session`; normalise back to the canonical spelling so
+    // one router answers both. Skills follow the same rule (`web_digest`).
+    const cmd = (head ?? "").toLowerCase().replace(/_/g, "-");
     const MODES = ["steer", "followup", "collect", "interrupt"];
 
     // /queue — show or set this session's override (their per-session /queue).
@@ -1380,6 +1383,29 @@ export class Service {
         .join("\n");
       return { reply: `Sub-agents:\n${text}` };
     }
+    // /skill <name> [input], and a bare /<skill-name>: a skill is prompt material,
+    // not a reply, so hand the turn to the model with the canonical `/<name>`
+    // spelling `matchSkills` already recognises (skills.ts) as an explicit hit.
+    if (cmd === "/skill") {
+      const skills = this.loop.skills.filter((s) => s.eligible !== false && s.userInvocable !== false);
+      const first = rest.split(/\s+/)[0] ?? "";
+      const wanted = first.toLowerCase().replace(/_/g, "-");
+      if (!wanted) {
+        return { reply: `usage: /skill <name> [input] — installed: ${skills.map((s) => s.name).join(", ") || "(none)"}` };
+      }
+      const hit = skills.find((s) => s.name.toLowerCase() === wanted);
+      if (!hit) {
+        return { reply: `no skill named "${first}" — installed: ${skills.map((s) => s.name).join(", ") || "(none)"}` };
+      }
+      const input = rest.slice(first.length).trim();
+      return { rewrite: `/${hit.name}${input ? ` ${input}` : ""}` };
+    }
+    // A bare skill name is a turn, not a command: let it through unchanged.
+    const bare = cmd.slice(1);
+    if (bare && this.loop.skills.some((s) => s.eligible !== false && s.userInvocable !== false && s.name.toLowerCase() === bare)) {
+      return { rewrite: raw };
+    }
+
     // Partial #10: the shared extension router (help/status/dream/title/…).
     // Every surface funnels here, so a command answers the same way no matter
     // where it was typed. Unknown `/…` text gets a catalog pointer instead of
