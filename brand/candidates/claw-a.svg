@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 1024 1024" role="img" aria-label="SuparClaw claw mark">
+  <rect width="1024" height="1024" fill="#17171A"/>
+  <g transform="translate(393.18 512.00) scale(1.24804)">
+    <g fill="#EDEDF0" stroke="#EDEDF0" stroke-linejoin="round">
+      <rect x="-218" y="-56" width="112" height="112" rx="28" stroke="none"/>
+      <g fill="none"><path d="M 70 -58 L 253.85 -212.27" stroke-width="100" stroke-linecap="round"/><path d="M 240.06 -200.7 L 376.42 -315.12" stroke-width="44" stroke-linecap="round"/><path d="M 70 58 L 253.85 212.27" stroke-width="100" stroke-linecap="round"/><path d="M 240.06 200.7 L 376.42 315.12" stroke-width="44" stroke-linecap="round"/></g>
+      <ellipse cx="10" cy="0" rx="124" ry="158" transform="rotate(-8 10 0)" stroke="none"/>
+    </g>
+    <circle cx="-192" cy="0" r="30" fill="#2B50F0"/>
+  </g>
+</svg>
