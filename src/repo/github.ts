@@ -252,6 +252,54 @@ export async function githubListRepos(
     }));
 }
 
+export interface GithubBranch {
+  name: string;
+  /** Branch rules exist on it — publishing to it would be refused by GitHub. */
+  protected?: boolean;
+  /** Set by `orderBranches` on the branch the pickers offer first. */
+  default?: boolean;
+}
+
+/**
+ * The branches of one repository, for the picker.
+ *
+ * This matters because a session *continues* a branch instead of inventing one:
+ * the list the user sees here is exactly the set of branches that already have
+ * work on them. GitHub returns them alphabetically; the caller puts the default
+ * branch first, because "continue main" is the common answer.
+ */
+/**
+ * The picker's order (Task 36): the default branch first and marked, then the
+ * rest alphabetically. GitHub returns newest-committed first, which is a
+ * sensible order for a website and a bad one for a list you scan for `main`.
+ * If the base is missing from the page (an older repo, a page boundary) it is
+ * still offered — it is the one branch the caller always has an answer about.
+ */
+export function orderBranches(rows: GithubBranch[], base: string): GithubBranch[] {
+  const wanted = base.trim();
+  const has = rows.some((b) => b.name === wanted);
+  const all = wanted && !has ? [{ name: wanted }, ...rows] : [...rows];
+  return all
+    .sort((a, b) => (a.name === wanted ? -1 : b.name === wanted ? 1 : a.name.localeCompare(b.name)))
+    .map((b) => ({ ...b, default: b.name === wanted }));
+}
+
+export async function githubListBranches(
+  token: string,
+  opts: { repo: string; host?: string; page?: number; perPage?: number; fetchFn?: FetchLike },
+): Promise<GithubBranch[]> {
+  const perPage = Math.min(Math.max(opts.perPage ?? 100, 1), 100);
+  const page = Math.max(opts.page ?? 1, 1);
+  const raw = await githubRequest<unknown[]>(
+    `/repos/${opts.repo}/branches?per_page=${perPage}&page=${page}`,
+    { token, host: opts.host, fetchFn: opts.fetchFn },
+  );
+  return (Array.isArray(raw) ? raw : [])
+    .map((b) => b as { name?: string; protected?: boolean })
+    .filter((b) => typeof b.name === "string")
+    .map((b) => ({ name: String(b.name), protected: b.protected === true }));
+}
+
 export interface CreatePrOptions {
   token: string;
   repo: string;

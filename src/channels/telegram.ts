@@ -276,7 +276,11 @@ interface PendingMessage {
 export class TelegramChannel {
   #bot: GrammyBot | null = null;
   /** chatId → the repo list behind the current `r:<page>:<slot>` buttons. */
-  #repoPages = new Map<number, string[]>();
+  #repoPages = new Map<number, { fullName: string; defaultBranch: string }[]>();
+  /** chatId → the repo picked on the way to the branch keyboard. */
+  #pickedRepo = new Map<number, { repo: string; base: string }>();
+  /** chatId → the branch list behind the current `b:<index>` buttons. */
+  #branchPages = new Map<number, string[]>();
   #pending = new Map<string, PendingMessage>();
   #username = "";
   #botId = 0;
@@ -466,15 +470,39 @@ export class TelegramChannel {
         await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
         return;
       }
-      await ctx.answerCallbackQuery({ text: repo.slice(0, 180) }).catch(() => {});
+      // Task 36: one more question — which branch to continue — before anything
+      // is cloned, so the worktree is checked out on the right branch first time.
+      this.#pickedRepo.set(fromId, { repo: repo.fullName, base: repo.defaultBranch });
+      await ctx.answerCallbackQuery({ text: repo.fullName.slice(0, 180) }).catch(() => {});
+      await ctx.editMessageText(`⌘ ${repo.fullName} — which branch should the agent continue?`).catch(() => {});
+      await this.#sendBranchPicker(fromId, 0);
+      return;
+    }
+
+    if (kind === "b") {
+      // Branch keyboard: `b:<index>` selects, `b:p:<page>` pages. Two bytes of
+      // verb and an integer — a branch name never rides a callback.
+      const pick = this.#pickedRepo.get(fromId);
+      if (!pick) {
+        await ctx.answerCallbackQuery({ text: "Pick a repository first — /code", show_alert: true }).catch(() => {});
+        return;
+      }
+      if (parts[1] === "p") {
+        await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
+        await this.#sendBranchPicker(fromId, Number(parts[2] ?? 0) || 0);
+        return;
+      }
+      const branch = this.#branchPages.get(fromId)?.[Number(parts[1])];
+      if (!branch) {
+        await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: branch.slice(0, 180) }).catch(() => {});
       const key = this.#sessionKeyFor(fromId);
-      const bound = await this.service.bindRepo({ sessionKey: key, repo });
+      const bound = await this.service.bindRepo({ sessionKey: key, repo: pick.repo, base: pick.base, branch });
+      this.#pickedRepo.delete(fromId);
       await ctx
-        .editMessageText(
-          bound.ok
-            ? `⌘ working in ${bound.repo} · ${bound.branch} (from ${bound.base})\nAsk for a change, then /diff to review and /pr to publish.`
-            : bound.error,
-        )
+        .editMessageText(bound.ok ? `${this.#boundLine(bound)}\nAsk for a change, then /diff to review and /pr to publish.` : bound.error)
         .catch(() => {});
       return;
     }
@@ -505,6 +533,7 @@ export class TelegramChannel {
           creds: this.service.githubCreds(),
           title: `Changes from ${key.replace(/^telegram:/, "")}`,
           draft: choice === "d",
+          sessionKey: key,
         });
         await ctx
           .editMessageText(
@@ -744,16 +773,17 @@ export class TelegramChannel {
         // conversation the user is looking at.
         const target = sub;
         if (target) {
-          if (!target.includes("/")) return reply("usage: /code owner/name");
+          if (!target.includes("/")) return reply("usage: /code owner/name [branch]");
           if (this.service.loop.isBusy(this.#sessionKeyFor(scope.chatId))) {
             return reply("a run is active — /code again when it settles");
           }
-          const bound = await this.service.bindRepo({ sessionKey: this.#sessionKeyFor(scope.chatId), repo: target });
-          return reply(
-            bound.ok
-              ? `working in ${bound.repo} · ${bound.branch} (from ${bound.base})\nopen a PR with /pr when you are happy.`
-              : bound.error,
-          );
+          const bound = await this.service.bindRepo({
+            sessionKey: this.#sessionKeyFor(scope.chatId),
+            repo: target,
+            // Task 36: `[branch]` is the branch to continue, not one to create.
+            branch: rest[0],
+          });
+          return reply(bound.ok ? this.#boundLine(bound) : bound.error);
         }
         return this.#sendRepoPicker(scope.chatId, 0);
       }
@@ -847,7 +877,7 @@ export class TelegramChannel {
    * buttons rather than binding the wrong repository.
    */
   async #sendRepoPicker(chatId: number, page: number): Promise<boolean> {
-    let repos: { fullName: string; private: boolean }[] = [];
+    let repos: { fullName: string; private: boolean; defaultBranch?: string }[] = [];
     try {
       repos = await this.service.githubRepos({ page: page + 1 });
     } catch (err) {
@@ -862,7 +892,7 @@ export class TelegramChannel {
         .catch(() => {});
       return true;
     }
-    this.#repoPages.set(chatId, repos.map((r) => r.fullName));
+    this.#repoPages.set(chatId, repos.map((r) => ({ fullName: r.fullName, defaultBranch: r.defaultBranch ?? "main" })));
     const rows = repos.slice(0, 8).map((r, i) => [
       { text: `${r.private ? "🔒 " : ""}${r.fullName}`.slice(0, 60), callback_data: `r:${page}:${i}` },
     ]);
@@ -874,6 +904,58 @@ export class TelegramChannel {
       .sendMessage(chatId, "Pick a repository — it becomes this chat's workspace.", { reply_markup: { inline_keyboard: rows } })
       .catch((err: unknown) => this.log.warn(`telegram: repo picker failed: ${(err as Error).message}`));
     return true;
+  }
+
+  /**
+   * One page of the branch keyboard (Task 36). The default branch is first and
+   * marked, because "continue the default branch" is the common answer; the
+   * indices are absolute, so paging never has to renumber a callback.
+   */
+  async #sendBranchPicker(chatId: number, page: number): Promise<boolean> {
+    const pick = this.#pickedRepo.get(chatId);
+    if (!pick) return true;
+    let branches: { name: string; default?: boolean; protected?: boolean }[] = [];
+    try {
+      branches = await this.service.githubBranches({ repo: pick.repo, base: pick.base });
+    } catch (err) {
+      await this.#requireBot().api
+        .sendMessage(chatId, `could not list branches — ${(err as Error).message}`)
+        .catch(() => {});
+      return true;
+    }
+    if (!branches.length) {
+      await this.#requireBot().api
+        .sendMessage(chatId, `${pick.repo} has no branches yet — nothing to continue.`)
+        .catch(() => {});
+      return true;
+    }
+    this.#branchPages.set(chatId, branches.map((b) => b.name));
+    const perPage = 8;
+    const start = Math.max(0, page) * perPage;
+    const slice = branches.slice(start, start + perPage);
+    const rows = slice.map((b, i) => [
+      {
+        text: `${b.default ? "★ " : ""}${b.name}${b.protected ? " 🔒" : ""}`.slice(0, 60),
+        callback_data: `b:${start + i}`,
+      },
+    ]);
+    const nav: { text: string; callback_data: string }[] = [];
+    if (page > 0) nav.push({ text: "‹ Back", callback_data: `b:p:${page - 1}` });
+    if (start + perPage < branches.length) nav.push({ text: "More ›", callback_data: `b:p:${page + 1}` });
+    if (nav.length) rows.push(nav);
+    await this.#requireBot().api
+      .sendMessage(chatId, `${pick.repo} · ★ = default branch. The agent continues the branch you pick.`, {
+        reply_markup: { inline_keyboard: rows },
+      })
+      .catch((err: unknown) => this.log.warn(`telegram: branch picker failed: ${(err as Error).message}`));
+    return true;
+  }
+
+  /** The one sentence every surface says after a bind. */
+  #boundLine(bound: { repo: string; branch: string; base: string }): string {
+    return bound.branch === bound.base
+      ? `⌘ working in ${bound.repo} · ${bound.branch} (the default branch)`
+      : `⌘ working in ${bound.repo} · ${bound.branch} (from ${bound.base})`;
   }
 
   /** `/new` rotates the tag, so the next message opens a fresh session while

@@ -21,6 +21,9 @@ test("callback ids are short and indexed, never a repo name", () => {
   assert.match(TG, /callback_data: `r:\$\{page\}:\$\{i\}`/, "repo slot, indexed");
   assert.match(TG, /callback_data: `r:\$\{page \+ 1\}:p`/, "next page");
   assert.match(TG, /callback_data: `r:\$\{page - 1\}:p`/, "previous page");
+  assert.match(TG, /callback_data: `b:\$\{start \+ i\}`/, "branch slot, indexed");
+  assert.match(TG, /callback_data: `b:p:\$\{page - 1\}`/, "branch back");
+  assert.match(TG, /callback_data: `b:p:\$\{page \+ 1\}`/, "branch more");
   assert.match(TG, /callback_data: "p:d"/);
   assert.match(TG, /callback_data: "p:o"/);
   assert.match(TG, /callback_data: "p:x"/);
@@ -37,9 +40,14 @@ test("callback ids are short and indexed, never a repo name", () => {
 });
 
 test("the picker stores the page in memory and expires instead of guessing", () => {
-  assert.match(TG, /#repoPages = new Map<number, string\[\]>\(\)/);
-  assert.match(TG, /this\.#repoPages\.set\(chatId, repos\.map\(\(r\) => r\.fullName\)\)/);
+  // Task 36: the row now carries the default branch, because the next question
+  // is which branch to continue and the answer needs a base.
+  assert.match(TG, /#repoPages = new Map<number, \{ fullName: string; defaultBranch: string \}\[\]>\(\)/);
+  assert.match(TG, /this\.#repoPages\.set\(chatId, repos\.map\(\(r\) => \(\{ fullName: r\.fullName, defaultBranch: r\.defaultBranch \?\? "main" \}\)\)\)/);
+  assert.match(TG, /#branchPages = new Map<number, string\[\]>\(\)/);
+  assert.match(TG, /#pickedRepo = new Map<number, \{ repo: string; base: string \}>\(\)/);
   assert.match(TG, /if \(!repo\) \{[\s\S]{0,160}This picker expired — send \/code again/);
+  assert.match(TG, /if \(!branch\) \{[\s\S]{0,160}This picker expired — send \/code again/);
   assert.ok(TG.includes("show_alert: true"), "a stale tap explains itself in a modal, not a silent no-op");
 });
 
@@ -52,20 +60,26 @@ test("/new asks chat-or-code and keeps its rotation semantics", () => {
   assert.match(TG, /setMeta\(`telegram:sess:\$\{scope\.chatId\}`, Date\.now\(\)\.toString\(36\)\)/);
 });
 
-test("a repo tap binds the session the card was drawn for", () => {
-  const handler = TG.slice(TG.indexOf('if (kind === "n")'), TG.indexOf('if (kind === "p")'));
+test("a repo tap asks for a branch, and the branch tap binds the session", () => {
+  const repo = TG.slice(TG.indexOf('if (kind === "r")'), TG.indexOf('if (kind === "b")'));
+  assert.match(repo, /which branch should the agent continue\?/, "one more question before anything is cloned");
+  assert.match(repo, /this\.#pickedRepo\.set\(fromId, \{ repo: repo\.fullName, base: repo\.defaultBranch \}\)/);
+  assert.match(repo, /this\.#sendBranchPicker\(fromId, 0\)/);
+
+  const handler = TG.slice(TG.indexOf('if (kind === "b")'), TG.indexOf('if (kind === "p")'));
   assert.match(handler, /this\.#sessionKeyFor\(fromId\)/, "the tag is read at tap time");
-  assert.match(handler, /this\.service\.bindRepo\(\{ sessionKey: key, repo \}\)/);
+  assert.match(handler, /this\.service\.bindRepo\(\{ sessionKey: key, repo: pick\.repo, base: pick\.base, branch \}\)/, "the branch the user tapped is the branch that is continued");
+  assert.match(handler, /this\.#pickedRepo\.delete\(fromId\)/, "the pick is consumed, so a double tap cannot bind twice");
   assert.match(TG, /Ask for a change, then \/diff to review and \/pr to publish/, "the confirmation names the next two commands");
 });
 
 test("/code binds directly or opens the picker; a busy run is refused", () => {
   const block = TG.slice(TG.indexOf('case "code":'), TG.indexOf('case "pr":'));
   assert.match(block, /if \(target\)/, "an argument binds immediately");
-  assert.match(block, /usage: \/code owner\/name/, "a malformed argument says the shape");
+  assert.match(block, /usage: \/code owner\/name \[branch\]/, "a malformed argument says the shape, branch included");
   assert.match(block, /isBusy\(/, "never rebind under a running turn");
   assert.match(block, /#sendRepoPicker\(scope\.chatId, 0\)/, "no argument opens the picker");
-  assert.match(block, /open a PR with \/pr when you are happy/, "and says what publishing looks like");
+  assert.match(block, /branch: rest\[0\]/, "an optional second argument is the branch to continue");
 });
 
 test("/pr is the whole gate on Telegram: it shows what would go, then asks", () => {

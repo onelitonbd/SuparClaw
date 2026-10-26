@@ -164,14 +164,23 @@ export async function tuiLocal(): Promise<number> {
         return [];
       }
     },
+    branches: async (repo) => {
+      try {
+        const rows = await service.githubBranches({ repo });
+        return rows.map((b) => `${b.default ? "●" : " "} ${b.name}${b.protected ? "  (protected)" : ""}`);
+      } catch (err) {
+        app?.push({ kind: "system", text: (err as Error).message });
+        return [];
+      }
+    },
     newSession: (spec) => {
       sessionKey = `main:${Date.now().toString(36)}`;
       app?.push({ kind: "system", text: `new session: ${sessionKey}` });
       if (spec.kind === "code" && spec.repo) {
-        void service.bindRepo({ sessionKey, repo: spec.repo }).then((res) => {
+        void service.bindRepo({ sessionKey, repo: spec.repo, branch: spec.branch }).then((res) => {
           app?.push({
             kind: "system",
-            text: res.ok ? `working in ${res.repo} · ${res.branch} (from ${res.base})` : res.error,
+            text: res.ok ? `working in ${res.repo} · ${res.branch}${res.branch === res.base ? " (the default branch)" : ` (from ${res.base})`}` : res.error,
           });
           if (res.ok) void app?.loadHistory();
         });
@@ -373,11 +382,19 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
         return [];
       }
     },
+    branches: async (repo) => {
+      try {
+        const res = (await client.request("github.branches", { repo })) as { branches?: { name: string; default?: boolean; protected?: boolean }[] };
+        return (res.branches ?? []).map((b) => `${b.default ? "●" : " "} ${b.name}${b.protected ? "  (protected)" : ""}`);
+      } catch {
+        return [];
+      }
+    },
     newSession: (spec) => {
       sessionKey = `main:${Date.now().toString(36)}`;
       if (spec.kind === "code" && spec.repo) {
         void client
-          .request("repo.bind", { sessionKey, repo: spec.repo })
+          .request("repo.bind", { sessionKey, repo: spec.repo, ...(spec.branch ? { branch: spec.branch } : {}) })
           .then((res) => {
             const bound = res as { repo?: string; branch?: string; base?: string };
             if (bound.repo) repoBindings.set(sessionKey, { repo: bound.repo, branch: bound.branch ?? "?" });

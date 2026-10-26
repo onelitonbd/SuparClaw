@@ -722,6 +722,8 @@ Four deviations, each deliberate:
    publish in the same session would reuse that branch, so the "several PRs are
    allowed" line stays aspirational until branch-per-publish lands (P2). Nothing
    force-pushes: a divergent second push fails loudly instead of rewriting history.
+   *(Superseded in part by §13: a session that continues a feature branch pushes
+   that branch, so its second publish is a normal update to the same PR.)*
 3. **The picker's recents come from `sessions.list`**, not from a new store table —
    the session rows already carry `repo`. Rows show `owner/name` and
    `private · branch`; the "last used" stamp from §2.2 was dropped (the grouping
@@ -734,3 +736,71 @@ Four deviations, each deliberate:
 Also as built, not drawn: the composer lock while cloning (§2.1) is a banner plus a
 disabled input, and the sidebar chip (§2.9) trims to ~11 characters with the full
 `owner/name · branch` on hover.
+
+---
+
+## 13. Revision — you pick the branch (Task 36)
+
+Four corrections to §2, all from using the shipped add-on.
+
+### 13.1 The branch is part of the choice, not something we invent
+
+The additive design created `sc/<slug>` at checkout time. That was wrong in the
+way that matters: it decided *where the work goes* on the user's behalf, and it
+made a code session a parallel universe instead of a continuation of the branch
+the user is already on.
+
+Now checkout asks. `prepare({branch})` checks out **that** branch; the default
+branch is checkout-time's default answer, not a mandate. Three surfaces ask the
+same question in the same order:
+
+| Surface | Step 1 | Step 2 | Step 3 |
+|---|---|---|---|
+| Web | chat or code | repository (filter, recents) | branch (`● Default · main` first) |
+| TUI (`ctrl-g`) | chat or code | repository | branch |
+| Telegram (`/new` → Code, `/code`) | — | repository page | branch keyboard (`★` = default, 🔒 = protected) |
+
+`/code owner/name [branch]` and `sc github code owner/name [branch]` skip the
+pickers for people who already know. `sc github branches owner/name [--base b]`
+lists what the pickers would show, default first.
+
+### 13.2 Publishing keeps the safety rule, with one branch of logic
+
+| Working branch | Push target | PR head → base |
+|---|---|---|
+| `feature/x` (≠ base) | `feature/x` | `feature/x → main` |
+| `main` (== base) | `sc/<slug>` at the same commit | `sc/<slug> → main` |
+
+One function decides it — `publishBranchFor()` in `manager.ts` — and two readers
+share it: `publish()` and the `repo.status` RPC. The publish sheet therefore
+names the branch *before* the button is pressed (`sc/probe → main`, plus "This
+session continues main, so the commits go to sc/probe. main is never pushed
+to."). Non-fast-forward, protected-branch and unsafe-name refusals are unchanged:
+nothing is ever force-pushed.
+
+### 13.3 The bar lost its sentences
+
+`⌘ SuparClaw · main  [PR]`. Icon, repository **name** (never `owner/name` — that
+stays in the tooltip), the branch, one small button. Five states instead of nine:
+
+- `preparing` → `cloning 42%` (composer locked, because there is no workspace yet)
+- `failed` → `clone failed — retry` (tap retries; composer unlocked)
+- `ready` → the bare branch name
+- `publishing` → `publishing…`
+- `warn` → the branch in warning colour (stale token / repository gone)
+
+No file counts, no "no changes", no "working…" — the thread already shows a turn
+running, and the diff is one tap away. The PR button is always present, disabled
+rather than hidden when there is nothing to publish, and becomes `PR #12 ↗` once
+a PR exists.
+
+### 13.4 Dialogs on a phone
+
+A floating card 96px from the top is a desktop shape. ≤640px every `.modal` is a
+bottom sheet: full width, `top: auto; bottom: 0`, one rounded edge, `88dvh`
+(not `vh` — the address bar is not part of the viewport), `env(safe-area-inset-bottom)`
+on the foot so the home indicator never covers the actions, a body that shrinks
+and scrolls under a fixed foot, and one action per row (two half-width buttons
+wrapped their own labels). Long paths wrap (`overflow-wrap: anywhere`) instead of
+widening the dialog, and the diff switches from `white-space: pre` to `pre-wrap`
+so a phone reads it top-to-bottom. Sheet rows ellipsis a long repository name.

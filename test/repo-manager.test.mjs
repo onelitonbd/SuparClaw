@@ -15,7 +15,7 @@ process.env["SUPARCLAW_STATE_DIR"] = mkdtempSync(join(tmpdir(), "sc-repo-state-"
 delete process.env["GITHUB_TOKEN"];
 delete process.env["GH_TOKEN"];
 
-const { RepoManager, branchSlug, repoSegments } = await import("../dist/lib.js");
+const { RepoManager, branchSlug, repoSegments, isPlainBranchName, publishBranchFor } = await import("../dist/lib.js");
 
 /** A git that pretends: records argv, answers from a handler table. */
 function fakeGit(handler = () => ({ code: 0, stdout: "", stderr: "" })) {
@@ -47,7 +47,7 @@ test("the cache is shared and the worktree is per session", () => {
   assert.notEqual(m.worktreePath("acme/api", "main:one"), m.worktreePath("acme/api", "main:two"));
 });
 
-test("prepare clones once, then adds an sc/* worktree from the base branch", async () => {
+test("prepare continues the branch you picked — it does not invent sc/*", async () => {
   const git = fakeGit((args) => {
     if (args.includes("symbolic-ref")) return { code: 0, stdout: "trunk\n", stderr: "" };
     return { code: 0, stdout: "", stderr: "" };
@@ -57,11 +57,14 @@ test("prepare clones once, then adds an sc/* worktree from the base branch", asy
   const res = await m.prepare({
     repo: "acme/api",
     sessionKey: "main:alpha",
+    // Task 36: the user picked this branch in the picker.
+    branch: "feature/login",
     creds: { token: "gho_tok", login: "me", host: "github.com", source: "token", scopes: [] },
     onProgress: (p) => phases.push(p),
   });
 
-  assert.equal(res.branch, "sc/alpha");
+  assert.equal(res.branch, "feature/login", "the branch the user chose is the branch the agent gets");
+  assert.equal(res.localRef, "feature/login");
   assert.equal(res.base, "trunk", "the remote's default branch is discovered, not assumed to be main");
   assert.equal(res.workspace, m.worktreePath("acme/api", "main:alpha"));
   assert.deepEqual([...new Set(phases.map((p) => p.phase))], ["clone", "worktree", "done"]);
@@ -73,8 +76,11 @@ test("prepare clones once, then adds an sc/* worktree from the base branch", asy
 
   const add = git.calls.find((c) => c.args.includes("worktree") && c.args.includes("add"));
   assert.ok(add, "a worktree is added for the session");
-  assert.ok(add.args.includes("-B") && add.args.includes("sc/alpha"), "on this session's own branch");
-  assert.ok(add.args.includes("origin/trunk"), "from the base branch");
+  const all = add.args.join(" ");
+  assert.ok(!all.includes("sc/alpha"), "no session branch is created any more");
+  assert.ok(!add.args.includes("-B"), "-B would reset an existing branch — the point is to continue it");
+  assert.ok(add.args.includes("feature/login"), "checked out under its own name");
+  assert.ok(add.args.includes("origin/feature/login"), "starting from the remote's tip of that branch");
 
   // The credential rides `-c http.https://<host>/.extraheader`, one invocation
   // at a time — never the remote URL, never `.git/config`.
@@ -82,6 +88,57 @@ test("prepare clones once, then adds an sc/* worktree from the base branch", asy
   assert.ok(withToken.length >= 1);
   assert.ok(withToken.every((a) => a.startsWith("http.https://github.com/.extraheader=")));
   assert.ok(!git.calls.some((c) => c.args.some((a) => a.includes("gho_tok") && a.startsWith("https://"))), "the token is never in a URL");
+});
+
+test("prepare with no branch continues the default branch, still without sc/*", async () => {
+  const git = fakeGit((args) => {
+    if (args.includes("symbolic-ref")) return { code: 0, stdout: "trunk\n", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const m = new RepoManager({ root, run: git.run });
+  const res = await m.prepare({ repo: "acme/default", sessionKey: "main:plain" });
+  assert.equal(res.branch, "trunk");
+  assert.equal(res.base, "trunk");
+  const add = git.calls.find((c) => c.args.includes("worktree") && c.args.includes("add"));
+  assert.ok(add.args.includes("trunk"), "the default branch is checked out as itself");
+  assert.ok(!add.args.join(" ").includes("sc/"), "the session branch is a publish-time idea, not a checkout-time one");
+});
+
+test("a branch another worktree already holds gets a local alias, not a reset", async () => {
+  const git = fakeGit((args) => {
+    if (args.includes("symbolic-ref")) return { code: 0, stdout: "main\n", stderr: "" };
+    // The branch already has a local ref…
+    if (args.includes("rev-parse") && args.includes("refs/heads/feature/x")) return { code: 0, stdout: "abc123\n", stderr: "" };
+    // …and another worktree has it checked out.
+    if (args.includes("worktree") && args.includes("list")) {
+      return { code: 0, stdout: "worktree /tmp/other\nHEAD abc123\nbranch refs/heads/feature/x\n\n", stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const m = new RepoManager({ root, run: git.run });
+  const res = await m.prepare({ repo: "acme/alias", sessionKey: "main:beta", branch: "feature/x" });
+  assert.equal(res.branch, "feature/x", "the session still reports the chosen branch");
+  assert.equal(res.localRef, "feature/x-beta", "the local ref is aliased so two checkouts can share the branch name");
+  const add = git.calls.find((c) => c.args.includes("worktree") && c.args.includes("add"));
+  assert.ok(add.args.includes("-b") && add.args.includes("feature/x-beta"), "a new local ref that points at the branch's tip");
+  assert.ok(!add.args.includes("-B"), "never reset the branch someone else is working on");
+});
+
+test("a branch that is missing on origin says which one and what to do", async () => {
+  const git = fakeGit((args) => {
+    const all = args.join(" ");
+    if (args.includes("symbolic-ref")) return { code: 0, stdout: "main\n", stderr: "" };
+    if (all.includes("worktree") && args.includes("add")) {
+      return { code: 128, stdout: "", stderr: "fatal: invalid reference: origin/feature/nope" };
+    }
+    if (args.includes("fetch")) return { code: 128, stdout: "", stderr: "fatal: couldn't find remote ref feature/nope" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const m = new RepoManager({ root, run: git.run });
+  await assert.rejects(
+    () => m.prepare({ repo: "acme/noref", sessionKey: "main:gone", branch: "feature/nope" }),
+    /the branch "feature\/nope" was not found on origin — pick another branch, or push it first/,
+  );
 });
 
 test("a clone failure explains itself and keeps the cache path for a retry", async () => {
@@ -132,24 +189,137 @@ test("an empty numstat and no untracked files is a clean tree", async () => {
   assert.equal(st.added, 0);
 });
 
-test("publish refuses: no token, a non-sc branch, the base branch, a clean tree", async () => {
+test("publish refuses: no token, an unsafe branch name, a clean tree", async () => {
   const m = new RepoManager({ root, run: fakeGit().run });
   const base = {
     workspace: "/tmp/wt",
     repo: "acme/api",
-    branch: "sc/alpha",
+    branch: "feature/x",
     base: "main",
     title: "Fix",
     creds: { token: "t", login: "me", host: "github.com", source: "token", scopes: [] },
   };
 
   await assert.rejects(() => m.publish({ ...base, creds: null }), /not connected/i);
-  await assert.rejects(() => m.publish({ ...base, branch: "main" }), /only sc\/\* branches/i);
-  await assert.rejects(() => m.publish({ ...base, branch: "feature/x" }), /only sc\/\* branches/i);
+  // Task 36: any plain branch is publishable, but never a name git or a shell
+  // could misread — those came from a picker, so one here means a bug upstream.
+  await assert.rejects(() => m.publish({ ...base, branch: "feature/x y" }), /not a plain branch name/i);
+  await assert.rejects(() => m.publish({ ...base, branch: "-evil" }), /not a plain branch name/i);
 
   const cleanRepo = new RepoManager({ root, run: fakeGit(() => ({ code: 0, stdout: "", stderr: "" })).run });
-  await assert.rejects(() => cleanRepo.publish({ ...base, branch: "sc/x", base: "sc/x" }), /base branch/i);
-  await assert.rejects(() => cleanRepo.publish({ ...base, branch: "sc/x", base: "main" }), /nothing to publish/i);
+  await assert.rejects(() => cleanRepo.publish({ ...base, branch: "feature/x", base: "main" }), /nothing to publish/i);
+});
+
+test("the publish target is the continued branch, or sc/<slug> when that branch is the base", () => {
+  // Task 36's table, read from the one function both `publish` and the UI use.
+  assert.equal(publishBranchFor("feature/x", "main", "main:alpha"), "feature/x", "a feature branch is pushed as itself");
+  assert.equal(publishBranchFor("main", "main", "main:alpha"), "sc/alpha", "working on main publishes to a session branch");
+  assert.equal(publishBranchFor("main", "trunk", "main:alpha"), "main", "a non-default branch is never renamed");
+  assert.notEqual(publishBranchFor("main", "main", "telegram:99:m1"), "main", "the base branch is never the push target");
+});
+
+test("isPlainBranchName rejects what git would choke on", () => {
+  for (const ok of ["main", "feature/x", "release-1.2", "user/fix-thing_2"]) assert.equal(isPlainBranchName(ok), true, ok);
+  for (const bad of ["", "has space", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "/lead", "trail/", "a//b", "a..b", "-lead", "x.lock", "x".repeat(201)]) {
+    assert.equal(isPlainBranchName(bad), false, JSON.stringify(bad));
+  }
+});
+
+test("publish on the default branch pushes sc/<slug>, never the base", async () => {
+  const seen = [];
+  const git = fakeGit((args) => {
+    seen.push(args);
+    if (args.includes("--numstat")) return { code: 0, stdout: "2\t0\tsrc/a.ts\n", stderr: "" };
+    if (args.includes("rev-parse")) return { code: 0, stdout: "main\n", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const m = new RepoManager({ root, run: git.run });
+  const originalFetch = globalThis.fetch;
+  let prBody = null;
+  globalThis.fetch = async (_url, init) => {
+    prBody = JSON.parse(init.body);
+    return { ok: true, status: 201, headers: { get: () => null }, text: async () => JSON.stringify({ number: 12, html_url: "https://github.com/acme/api/pull/12", draft: false }) };
+  };
+  try {
+    const res = await m.publish({
+      workspace: "/tmp/wt",
+      repo: "acme/api",
+      branch: "main",
+      base: "main",
+      sessionKey: "main:alpha",
+      title: "Fix the thing",
+      draft: false,
+      creds: { token: "gho_tok", login: "me", host: "github.com", source: "token", scopes: [] },
+    });
+    assert.equal(res.branch, "sc/alpha", "the commits land on a session branch");
+    assert.equal(prBody.head, "sc/alpha");
+    assert.equal(prBody.base, "main");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  const push = seen.find((args) => args.includes("push"));
+  assert.ok(push.includes("HEAD:refs/heads/sc/alpha"), "the refspec names the session branch");
+  assert.ok(!push.some((a) => a === "refs/heads/main"), "main is not a push target");
+  assert.ok(!push.includes("--force") && !push.includes("-f"), "never rewrite published history");
+});
+
+test("publish on a feature branch pushes that branch, and a moved branch is refused loudly", async () => {
+  const seen = [];
+  let pushCode = 0;
+  const git = fakeGit((args) => {
+    seen.push(args);
+    if (args.includes("--numstat")) return { code: 0, stdout: "1\t0\ta.ts\n", stderr: "" };
+    if (args.includes("push")) return { code: pushCode, stdout: "", stderr: pushCode ? " ! [rejected] feature/x -> feature/x (non-fast-forward)\nerror: failed to push" : "" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const m = new RepoManager({ root, run: git.run });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 201, headers: { get: () => null }, text: async () => JSON.stringify({ number: 3, html_url: "u", draft: true }) });
+  const args = {
+    workspace: "/tmp/wt",
+    repo: "acme/api",
+    branch: "feature/x",
+    base: "main",
+    sessionKey: "main:alpha",
+    title: "Fix",
+    creds: { token: "gho_tok", login: "me", host: "github.com", source: "token", scopes: [] },
+  };
+  try {
+    const res = await m.publish(args);
+    assert.equal(res.branch, "feature/x", "the branch you picked is the branch the PR comes from");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  const push = seen.find((a) => a.includes("push"));
+  assert.ok(push.includes("HEAD:refs/heads/feature/x"));
+
+  pushCode = 1;
+  await assert.rejects(
+    () => m.publish(args),
+    /feature\/x moved on GitHub since this session started — pull it in and publish again. Nothing was overwritten\./,
+  );
+  assert.ok(!seen.filter((a) => a.includes("push")).some((a) => a.includes("--force")), "the refusal is never replaced by a force-push");
+});
+
+test("a protected branch refusal names the branch, not the git exit code", async () => {
+  const git = fakeGit((args) => {
+    if (args.includes("--numstat")) return { code: 0, stdout: "1\t0\ta.ts\n", stderr: "" };
+    if (args.includes("push")) return { code: 1, stdout: "", stderr: "remote: error: GH006: Protected branch update failed\n" };
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const m = new RepoManager({ root, run: git.run });
+  await assert.rejects(
+    () => m.publish({
+      workspace: "/tmp/wt",
+      repo: "acme/api",
+      branch: "main",
+      base: "main",
+      sessionKey: "main:alpha",
+      title: "Fix",
+      creds: { token: "gho_tok", login: "me", host: "github.com", source: "token", scopes: [] },
+    }),
+    /GitHub refused the push: sc\/alpha is protected/,
+  );
 });
 
 test("publish commits, pushes without force, and opens a draft PR by default", async () => {

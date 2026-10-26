@@ -30,8 +30,9 @@ function usage(): number {
   out("  disconnect              forget the stored token (env/gh logins are untouched)");
   out("  repos [--filter text] [--limit N]");
   out("                          list repositories this account can see, private marked");
+  out("  branches <owner/name>   the branches this account could continue");
   out("  code <owner/name> [branch] [--session key]");
-  out("                          make a session work in that repository");
+  out("                          continue that repository's branch in a session");
   out("  publish [--session key] [--title t] [--open]");
   out("                          open a pull request — draft unless --open");
   out("");
@@ -121,6 +122,24 @@ export async function cmdGithub(argv: string[]): Promise<number> {
       return 0;
     }
 
+    if (sub === "branches") {
+      const repo = argv.slice(1).find((a) => !a.startsWith("--"));
+      if (!repo || !repo.includes("/")) {
+        out("usage: sc github branches <owner/name>");
+        return 1;
+      }
+      const defaultBranch = flag("base");
+      const branches = await svc.githubBranches({ repo, base: defaultBranch });
+      if (!branches.length) {
+        out("no branches returned — an empty repository, or a token without the repo scope");
+        return 0;
+      }
+      for (const b of branches) out(`${b.default ? "*" : " "} ${b.name}${b.protected ? "   (protected)" : ""}`);
+      out("");
+      out("continue one:  sc github code " + repo + " <branch>");
+      return 0;
+    }
+
     if (sub === "code") {
       // Positionals only: skip the flags *and* their values, so
       // `code --session main:x owner/name` and `code owner/name --session main:x`
@@ -141,7 +160,8 @@ export async function cmdGithub(argv: string[]): Promise<number> {
         out("usage: sc github code <owner/name> [branch] [--session key]");
         return 1;
       }
-      out(`preparing ${repo} in ${svc.store.getSessionRepo(sessionKey)?.workspace ?? "(new worktree)"}…`);
+      out(`preparing ${repo}${base ? ` on ${base}` : ""} in ${svc.store.getSessionRepo(sessionKey)?.workspace ?? "(new worktree)"}…`);
+      // `base` here is the branch argument: the branch this session continues.
       const bound = await svc.bindRepo({ sessionKey, repo, base });
       if (!bound.ok) {
         out(bound.error);
@@ -176,6 +196,7 @@ export async function cmdGithub(argv: string[]): Promise<number> {
           creds: resolveGithubCreds({ host: svc.config.addons.github.host }),
           title: flag("title") ?? `Changes from ${sessionKey.replace(/^main:/, "")}`,
           draft: !argv.includes("--open"),
+          sessionKey,
         });
         out(`${res.draft ? "draft " : ""}pull request #${res.prNumber}: ${res.prUrl}`);
         out(`branch ${res.branch}`);

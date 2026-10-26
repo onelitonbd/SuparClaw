@@ -17,17 +17,33 @@ const sessions = readFileSync(join(ROOT, "ui/src/sessions.ts"), "utf8");
 const chat = readFileSync(join(ROOT, "ui/src/chat.ts"), "utf8");
 const settings = readFileSync(join(ROOT, "ui/src/settings.ts"), "utf8");
 
-test("the bar has one renderer with all nine states and its exact copy", () => {
-  for (const kind of ["preparing", "failed", "clean", "working", "changed", "pushing", "pr", "stale", "gone"]) {
-    assert.match(repo, new RegExp(`kind: "${kind}"`), `the ${kind} state is part of the union`);
+test("the bar says Name · branch and a small PR button — nothing else", () => {
+  // Task 36 replaced nine states with five: the strip answers *where am I* and
+  // offers *the one action*. Anything that was a status sentence is gone.
+  for (const kind of ["preparing", "failed", "ready", "publishing", "warn"]) {
+    assert.match(repo, new RegExp(`kind: \"${kind}\"`), `the ${kind} state is part of the union`);
   }
+  const union = repo.slice(repo.indexOf("type BarState ="), repo.indexOf("type Handlers ="));
+  assert.match(union, /reason: "stale" \| "gone"/, "a warning says which warning it is");
+  for (const gone of ["clean", "working", "changed", "pushing", "pr"]) {
+    assert.doesNotMatch(union, new RegExp(`kind: \"${gone}\"`), `${gone} is no longer a bar state`);
+  }
+
+  assert.match(repo, /function shortRepo\(repo: string\): string \{\n  return repo\.split\("\/"\)/, "the owner prefix is dropped in one place");
+  assert.match(repo, /const label = \(text: string\) => \(name \? `\$\{name\} · \$\{text\}` : text\)/, "Name · branch, and the name is the short one");
+  assert.match(repo, /paint\(label\(branch\)/, "the resting state is the branch, bare");
+  assert.match(repo, /cloning\$\{bar\.pct !== undefined \? ` \$\{bar\.pct\}%` : "…"\}/, "a clone reports its percentage");
+  assert.match(repo, /paint\(label\("publishing…"\)/, "publishing is the only other verb");
   assert.match(repo, /clone failed — retry/, "a failed clone says what happened and what to do");
-  assert.match(repo, /GitHub reconnecting…/, "a stale token has its own sentence");
-  assert.match(repo, /repository unavailable/, "a repo that vanished has its own sentence");
-  assert.match(repo, /· no changes`, \{ action: "Publish PR", disabled: true \}/, "publish is disabled, never hidden");
-  assert.match(repo, new RegExp("PR\\$\\{bar\\.number \\? ` #\\$\\{bar\\.number\\}` : \"\"\\} open ↗"), "an open PR links out");
-  assert.match(repo, /working…/);
-  assert.match(repo, /publishing…/);
+  const renderer = repo.slice(repo.indexOf("function renderBar()"), repo.indexOf("export async function refreshRepo"));
+  assert.doesNotMatch(renderer, /no changes|files, \+|working…/, "no change counts, no 'no changes', no 'working…'");
+
+  // The PR button: always present, disabled rather than hidden, and it becomes
+  // the PR itself once one exists.
+  assert.match(repo, /const label = lastPr \? `PR\$\{lastPr\.number \? ` #\$\{lastPr\.number\}` : ""\} ↗` : "PR";/);
+  assert.match(repo, /disabled: Boolean\(status\.clean\) && !lastPr/, "nothing to publish disables the button, it does not hide it");
+  assert.match(repo, /window\.open\(lastPr\.url/, "an existing PR opens instead of pushing again");
+  assert.match(repo, /const full = `\$\{status\.repo \?\? ""\} · \$\{branch\}`/, "the full owner/name survives only in the tooltip");
 });
 
 test("the bar follows the open session, not a global current repo", () => {
@@ -49,11 +65,11 @@ test("the new-session sheet is a decision with a focus trap, chat first", () => 
   assert.ok(sheet.includes("New session"), "the sheet has a title");
   assert.ok(sheet.includes("Chat") && sheet.includes("Code a repository"), "the two rows are the question");
   assert.ok(sheet.includes("Talk, research, files"), "chat explains itself in five words");
-  assert.ok(/Pick a repo, work on a branch, open a PR/.test(sheet), "code names the payoff");
+  assert.ok(/Pick a repo and a branch, then open a PR/.test(sheet), "code names the payoff");
   assert.match(sheet, /Connect GitHub to start/, "not connected is a route, not a dead end");
   assert.match(sheet, /new-session-overlay/, "it drives its own overlay");
   assert.match(sheet, /e\.key === "Tab"[\s\S]{0,120}focusAt/, "Tab cycles inside the sheet");
-  assert.match(sheet, /e\.key === "Escape"[\s\S]{0,120}close\(\)/, "Esc cancels");
+  assert.match(sheet, /e\.key === "Escape"[\s\S]{0,240}return close\(\)/, "Esc cancels");
   assert.match(sheet, /new-chat-btn"\) as HTMLElement \| null\)\?\.focus\(\)/, "focus returns to the control that opened it");
 });
 
@@ -63,6 +79,25 @@ test("the + buttons open the sheet; the instant chat path still exists", () => {
   // Task 29's contract: a new chat is created by a timestamp key and never asks
   // for a name. The sheet changes *why* you press +, not what a chat is.
   assert.match(main, /function newSession\(\): void \{\n  const key = `main:\$\{Date\.now\(\)\.toString\(36\)\}`;\n  void switchSession\(key\);\n\}/);
+});
+
+test("choosing a repository asks for a branch, and the branch is what binds", () => {
+  assert.match(repo, /type Phase = "choose" \| "repos" \| "branches"/, "three steps, one question each");
+  const sheet = repo.slice(repo.indexOf("export function openSessionSheet"), repo.indexOf("/* ---------------- connect"));
+  assert.match(sheet, /Pick a branch/, "the third step has a title");
+  assert.match(sheet, /Filter branches…/, "a long branch list is filterable");
+  assert.match(sheet, /Loading branches of \$\{pick\.repo\}…/);
+  assert.match(sheet, /gateway\.request\("github\.branches", \{ repo: pick\.repo, \.\.\.\(pick\.base \? \{ base: pick\.base \} : \{\}\) \}\)/, "the list comes from the same RPC the TUI and Telegram use");
+  assert.match(sheet, /b\.default \? "default branch · you will work on it directly" : "continues this branch"/, "the default branch says what publishing will do");
+  assert.match(sheet, /handlers\.code\(pick\.repo, b\.name\)/, "the pick carries the branch");
+  assert.match(sheet, /if \(phase === "branches"\) return void drawRepos\(\)/, "Esc walks back a step, it does not throw the choice away");
+  // No repo ever reaches the handler without a branch: the repo row only opens
+  // the branch step.
+  const repoRows = sheet.slice(sheet.indexOf("const repoRow ="), sheet.indexOf("const drawRows ="));
+  assert.match(repoRows, /drawBranches\(\{ repo: name, base \}\)/);
+  assert.doesNotMatch(repoRows, /handlers\.code\(name\)/, "a repo tap never binds by itself");
+  assert.match(main, /code: \(repo, branch\) => void startCodeSession\(repo, branch\)/, "main.ts forwards the branch");
+  assert.match(main, /branch \? \{ branch \} : \{\}/, "and binds with it, or without it when the user skipped");
 });
 
 test("the repo picker pages, filters, and offers Clone by URL + Refresh", () => {
@@ -85,6 +120,29 @@ test("publish is a dialog with a draft default and a secret speed bump", () => {
   assert.match(repo, /repo\.publish/);
   // Several PRs are allowed across a session, but only from this dialog.
   assert.match(repo, /PR\$\{res\.prNumber\}|PR #\$\{res\.prNumber\}/);
+});
+
+test("the publish sheet names the branch that will receive the commits", () => {
+  assert.match(repo, /publishBranch\?: string;/, "the gateway tells the UI where publish will push");
+  assert.match(repo, /const push = status\.publishBranch \|\| status\.branch;/, "the dialog prefers the real target");
+  assert.match(repo, /`\$\{push\} → \$\{status\.base\}`/, "head → base, in the sheet");
+  assert.match(repo, /This session continues \$\{status\.base\}, so the commits go to \$\{push\}\. \$\{status\.base\} is never pushed to\./, "the default-branch case explains itself");
+  assert.match(repo, /publishes to \$\{push\} → \$\{status\.base\}/, "the changes dialog says the same thing before the sheet opens");
+});
+
+test("dialogs fit a phone", () => {
+  // Task 36 moved the modal from a floating card to a bottom sheet on phones.
+  const mobile = css.slice(css.indexOf("Task 36: dialogs, phone"));
+  assert.match(mobile, /@media \(max-width: 640px\)/);
+  assert.match(mobile, /\.modal \{[\s\S]{0,220}top: auto;[\s\S]{0,80}bottom: 0;/, "a modal is anchored to the bottom edge");
+  assert.match(mobile, /max-height: 88dvh/, "dvh, so the address bar cannot push the buttons off-screen");
+  assert.match(mobile, /border-radius: var\(--r-xl\) var\(--r-xl\) 0 0/, "one rounded edge, like the other sheets");
+  assert.match(mobile, /env\(safe-area-inset-bottom, 0px\)/, "the home indicator never covers the actions");
+  assert.match(mobile, /\.modal__body \{[\s\S]{0,160}min-height: 0/, "the body shrinks so the foot stays put");
+  assert.match(mobile, /white-space: pre-wrap/, "the diff wraps instead of scrolling the dialog sideways");
+  assert.match(mobile, /\.gh__diff \{[\s\S]{0,200}overflow-wrap: anywhere/);
+  assert.match(css, /\.modal__head h2,\s*\n\.modal__body,/, "a long path or title wraps in every dialog width");
+  assert.match(css, /\.sheet__row \.mono \{[\s\S]{0,140}text-overflow: ellipsis/, "a long repository name is clipped, not pushed");
 });
 
 test("connect offers the gh login first and the device code second", () => {
@@ -120,8 +178,8 @@ test("a cloning session locks the composer with copy, not a silent disable", () 
   assert.match(chat, /setRepoLock\(locked: boolean, detail\?: string\)/);
   assert.match(chat, /Preparing the repository/);
   assert.match(repo, /composer\?\.setRepoLock\(/, "the bar drives the lock");
-  assert.match(repo, /case "preparing":\s*return paint\([^;]{0,200}lock: true \}/, "preparing locks");
-  assert.match(repo, /case "failed":\s*return paint\("clone failed — retry", \{ warn: true, lock: false \}\)/, "and a failure releases it");
+  assert.match(repo, /case "preparing":\s*return paint\(label\([^;]{0,200}lock: true/, "preparing locks");
+  assert.match(repo, /case "failed":\s*return paint\(label\("clone failed — retry"\), \{ warn: true, disabled: true, lock: false/, "and a failure releases it");
 });
 
 test("a code session is recognisable in the sidebar before you open it", () => {

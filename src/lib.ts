@@ -317,10 +317,22 @@ export {
   githubRequest,
   githubIdentity,
   githubListRepos,
+  githubListBranches,
+  orderBranches,
   githubCreatePull,
   connectGithub,
   type GithubCreds,
   type GithubRepo,
+  type GithubBranch,
 } from "./repo/github.js";
-export { RepoManager, RepoError, branchSlug, repoSegments, type GitResult, type GitRunner } from "./repo/manager.js";
+export {
+  RepoManager,
+  RepoError,
+  branchSlug,
+  repoSegments,
+  isPlainBranchName,
+  publishBranchFor,
+  type GitResult,
+  type GitRunner,
+} from "./repo/manager.js";
 export { bindSessionRepo, unbindSessionRepo, repoPromptBlock, publishRequested, type RepoBinding } from "./repo/session.js";

@@ -957,10 +957,10 @@ function setHeaderTitle(key: string, name?: string): void {
  * instant path below, "Code" picks a repository first. Telemetry of the sheet
  * lives in repo.ts — this file only knows how to start each kind.
  */
-async function startCodeSession(repo: string): Promise<void> {
+async function startCodeSession(repo: string, branch?: string): Promise<void> {
   const key = `main:${Date.now().toString(36)}`;
   await switchSession(key);
-  await bindRepoSession(key, repo);
+  await bindRepoSession(key, repo, branch ? { branch } : {});
 }
 
 /**
@@ -1312,7 +1312,7 @@ applySidebar();
 mountRepoBar();
 initRepo({
   chat: () => newSession(),
-  code: (repo) => void startCodeSession(repo),
+  code: (repo, branch) => void startCodeSession(repo, branch),
   composer: chat,
 });
 setRepoSession(sessionKey);

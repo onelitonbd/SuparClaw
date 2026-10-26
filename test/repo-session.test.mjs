@@ -112,6 +112,35 @@ test("the prompt block carries the branch, the workspace and the publish rule", 
   assert.match(on, /asked for a pull request in this turn/);
 });
 
+test("a chosen branch is continued, and the prompt says which branch that is", async () => {
+  const store = Store.open(join(mkdtempSync(join(tmpdir(), "sc-branch-")), "s.db"));
+  store.ensureSession("main:keep");
+  const manager = managerFor({ workspace: "/tmp/wt/keep", branch: "feature/login", base: "main", localRef: "feature/login" });
+
+  // Task 36: the user picked this branch in the picker.
+  const res = await bindSessionRepo({ store, manager, sessionKey: "main:keep", repo: "acme/api", branch: "feature/login" });
+  assert.equal(res.ok, true);
+  assert.equal(manager.calls[0].branch, "feature/login", "the picker's branch reaches prepare");
+  assert.ok(!String(manager.calls[0].branch).startsWith("sc/"), "no session branch is manufactured");
+  assert.deepEqual(store.getSessionRepo("main:keep"), {
+    kind: "code",
+    repo: "acme/api",
+    base: "main",
+    branch: "feature/login",
+    workspace: "/tmp/wt/keep",
+  });
+
+  const prompt = repoPromptBlock({ repo: "acme/api", base: "main", branch: "feature/login", workspace: "/tmp/wt/keep" });
+  assert.match(prompt, /acme\/api · branch feature\/login \(from main\)/, "the prompt names the continued branch and its base");
+  assert.match(prompt, /Work on the branch you are given \(feature\/login\)\. Do not switch branches or create one; that is the user's choice\./);
+
+  // Working on the default branch reads differently, because publishing does.
+  const onBase = repoPromptBlock({ repo: "acme/api", base: "main", branch: "main", workspace: "/tmp/wt/keep" });
+  assert.match(onBase, /branch main \(the default branch\)/);
+  assert.match(repoPromptBlock({ repo: "a/b", base: "main", branch: "main", workspace: "/w", publishAllowed: true }), /commits go to a session branch that targets main/);
+  assert.match(prompt, /Publish only when the user asks in this turn/, "a continued branch does not loosen the publish rule");
+});
+
 test("publishRequested recognises an ask and ignores ordinary work", () => {
   const yes = [
     "open a PR when you're done",

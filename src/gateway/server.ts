@@ -20,6 +20,7 @@ import { workspaceDir } from "../util/paths.js";
 import { mediaFileOnDisk, resolveMediaPath } from "../agent/media-store.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { handleHooksRequest, type HookService } from "./webhooks.js";
+import { publishBranchFor } from "../repo/manager.js";
 import { handleOpenAiRequest, type OpenAiService } from "./openai-http.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
 import { historyPayload } from "../agent/history.js";
@@ -280,6 +281,7 @@ export class Gateway {
       "github.adoptGhCli",
       "github.disconnect",
       "github.repos",
+      "github.branches",
       "usage.report",
       "models.list",
       "models.plugins",
@@ -999,7 +1001,13 @@ case "sessions.rename": {
             send(errFrame(id, "bad_request", "a code session needs a repo"));
             return;
           }
-          const bound = await service.bindRepo({ sessionKey: key, repo, base: params["base"] ? String(params["base"]) : undefined });
+          const bound = await service.bindRepo({
+            sessionKey: key,
+            repo,
+            base: params["base"] ? String(params["base"]) : undefined,
+            // Task 36: the branch the user picked to continue on.
+            branch: params["branch"] ? String(params["branch"]) : undefined,
+          });
           if (!bound.ok) {
             send(errFrame(id, "bad_request", bound.error));
             return;
@@ -1012,6 +1020,7 @@ case "sessions.rename": {
             sessionKey: String(params["sessionKey"] ?? "main:main"),
             repo: String(params["repo"] ?? ""),
             base: params["base"] ? String(params["base"]) : undefined,
+            branch: params["branch"] ? String(params["branch"]) : undefined,
           });
           send(bound.ok ? okFrame(id, bound) : errFrame(id, "bad_request", bound.error));
           return;
@@ -1022,8 +1031,8 @@ case "sessions.rename": {
           return;
         }
         case "repo.status": {
-          // The bar's nine states all come from here plus the session row, so the
-          // UI never has to guess whether a clean tree or a failed clone is news.
+          // Every state the bar can show comes from here plus the session row, so
+          // the UI never has to guess whether a clean tree or a failed clone is news.
           const sessionKey = String(params["sessionKey"] ?? "main:main");
           const binding = service.store.getSessionRepo(sessionKey);
           if (!binding) {
@@ -1031,12 +1040,15 @@ case "sessions.rename": {
             return;
           }
           const st = await service.repos.status(binding.workspace);
+          const branch = binding.branch || st.branch;
           send(
             okFrame(id, {
               bound: true,
               repo: binding.repo,
               base: binding.base,
-              branch: binding.branch || st.branch,
+              branch,
+              // The publish dialog names the branch before you press the button.
+              publishBranch: publishBranchFor(branch, binding.base, sessionKey, binding.workspace),
               workspace: binding.workspace,
               clean: st.clean,
               files: st.files,
@@ -1083,6 +1095,7 @@ case "sessions.rename": {
               body: params["body"] ? String(params["body"]) : undefined,
               // Draft is the default; "open" must be an explicit choice.
               draft: params["draft"] !== false,
+              sessionKey,
             });
             send(okFrame(id, res));
           } catch (err) {
@@ -1124,6 +1137,21 @@ case "sessions.rename": {
         case "github.disconnect": {
           service.githubDisconnect();
           send(okFrame(id, { disconnected: true }));
+          return;
+        }
+        case "github.branches": {
+          // Task 36: one repository's branches, default first. Read before the
+          // session is created, so a bind never guesses which branch to continue.
+          try {
+            const branches = await service.githubBranches({
+              repo: String(params["repo"] ?? ""),
+              base: params["base"] ? String(params["base"]) : undefined,
+              page: typeof params["page"] === "number" ? (params["page"] as number) : 1,
+            });
+            send(okFrame(id, { branches }));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
           return;
         }
         case "github.repos": {

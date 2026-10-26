@@ -42,7 +42,18 @@ import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
 import { RepoManager } from "../repo/manager.js";
 import { bindSessionRepo, publishRequested, unbindSessionRepo } from "../repo/session.js";
-import { connectGithub, clearGithubCreds, githubIdentity, githubListRepos, readStoredGithub, resolveGithubCreds, saveGithubCreds, type GithubCreds } from "../repo/github.js";
+import {
+  connectGithub,
+  clearGithubCreds,
+  githubIdentity,
+  githubListBranches,
+  githubListRepos,
+  orderBranches,
+  readStoredGithub,
+  resolveGithubCreds,
+  saveGithubCreds,
+  type GithubCreds,
+} from "../repo/github.js";
 import type { RepoCtl } from "./tools.js";
 import { fetchModels } from "../config/providers.js";
 import { TelegramChannel, describeError, probeTelegramApi, telegramProxy } from "../channels/telegram.js";
@@ -377,6 +388,7 @@ export class Service {
           body,
           draft,
           creds,
+          sessionKey,
         });
         this.events.emit("event", {
           type: "chat",
@@ -444,6 +456,20 @@ export class Service {
     return clearGithubCreds();
   }
 
+  /**
+   * The branches of one repository (Task 36). The default branch is moved to the
+   * front here, once, so every surface lists "continue the default" first —
+   * three pickers each sorting differently is three different products.
+   */
+  async githubBranches(opts: { repo: string; base?: string; page?: number }) {
+    const creds = this.githubCreds();
+    if (!creds) throw new Error("GitHub is not connected");
+    const host = this.config.addons?.github?.host ?? "github.com";
+    const rows = await githubListBranches(creds.token, { repo: opts.repo, host, page: opts.page });
+    // Ordering is a pure function so the picker's shape is tested, not implied.
+    return orderBranches(rows, opts.base ?? "");
+  }
+
   async githubRepos(opts: { filter?: string; page?: number } = {}) {
     const creds = this.githubCreds();
     if (!creds) throw new Error("GitHub is not connected");
@@ -457,7 +483,13 @@ export class Service {
    * the binding. Progress rides the chat event stream so every surface shows the
    * same phases.
    */
-  async bindRepo(opts: { sessionKey: string; repo: string; base?: string }): Promise<{ ok: true; repo: string; branch: string; base: string; workspace: string } | { ok: false; error: string }> {
+  async bindRepo(opts: {
+    sessionKey: string;
+    repo: string;
+    base?: string;
+    /** The branch to continue (Task 36); defaults to the base branch. */
+    branch?: string;
+  }): Promise<{ ok: true; repo: string; branch: string; base: string; workspace: string } | { ok: false; error: string }> {
     const creds = this.githubCreds();
     const res = await bindSessionRepo({
       store: this.store,
@@ -465,6 +497,7 @@ export class Service {
       sessionKey: opts.sessionKey,
       repo: opts.repo,
       base: opts.base,
+      branch: opts.branch,
       creds,
       onProgress: (p) =>
         this.events.emit("event", {

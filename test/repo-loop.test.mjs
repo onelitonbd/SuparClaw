@@ -78,6 +78,22 @@ test("a bound session's prompt carries the repo, the branch and the workspace", 
   assert.match(h.seen.system, /Publish only when the user asks in this turn/);
 });
 
+test("the prompt tells the model which branch to continue, in the user's words", async () => {
+  const h = harness();
+  h.store.setSessionRepo("main:cont", {
+    kind: "code",
+    repo: "acme/api",
+    base: "main",
+    branch: "release/2.1",
+    workspace: "/tmp/sc-worktrees/acme-api/cont",
+  });
+  const loop = loopFor(h);
+  await loop.run({ sessionKey: "main:cont", text: "add a test", onEvent: () => {} });
+  assert.match(h.seen.system, /acme\/api · branch release\/2\.1 \(from main\)/);
+  assert.match(h.seen.system, /Work on the branch you are given \(release\/2\.1\)/);
+  assert.doesNotMatch(h.seen.system, /sc\/cont/, "the session branch is a publish-time detail, not the working branch");
+});
+
 test("a plain chat has no repository block at all", async () => {
   const h = harness();
   const loop = loopFor(h);

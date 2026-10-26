@@ -5138,3 +5138,88 @@ html[data-theme-mode='dark'] .settings select.inp {
   white-space: nowrap;
   color: var(--ink2);
 }
+
+/* ------------------------------------------------ Task 36: dialogs, phone ---- */
+/* A card floating 96px below the top is a desktop shape. On a phone every
+   dialog becomes a bottom sheet: full width, one rounded edge, a foot the thumb
+   can reach, and a body that scrolls *under* that foot instead of pushing it
+   off-screen. `dvh` because `vh` counts the part of the page the address bar
+   covers, and the safe-area inset because the home indicator sits on top of the
+   last 34px of the viewport. */
+
+.modal__head h2,
+.modal__body,
+.modal__body p,
+.modal__body li,
+.gh__muted,
+.notice {
+  /* A long path or URL used to widen the dialog and cut off its right edge.
+     Break inside words rather than push the box outwards. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* One repository name per row: ellipsis, never a sideways scrollbar. */
+.sheet__row .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sheet__sub { overflow-wrap: anywhere; }
+.sheet__list { overscroll-behavior: contain; }
+.sheet__foot { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+
+@media (max-width: 640px) {
+  .modal {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 88dvh;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-right: 0;
+    animation: slideU .3s cubic-bezier(.2, .8, .2, 1) both;
+  }
+  .modal__head { padding: 16px 16px 2px; }
+  .modal__head h2 { font-size: 17px; }
+  .modal__body {
+    min-height: 0;          /* the body shrinks; the foot keeps its height */
+    flex: 1 1 auto;
+    padding: 8px 16px 14px;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .modal__body p { line-height: 1.5; }
+  .modal__field { margin-top: 14px; }
+  .modal__field .lbl { font-size: 12.5px; }
+  .modal__foot {
+    flex: none;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    border-radius: 0;
+  }
+  /* One action per row: two half-width buttons in a 360px sheet wrap their own
+     labels into two lines, which is what "misaligned" looked like. */
+  .modal__foot .btn {
+    flex: 1 1 100%;
+    min-height: var(--tap);
+  }
+  /* The diff reads top-to-bottom on a phone. `pre` keeps its newlines, the
+     wrapping stops a long line from scrolling the whole dialog sideways. */
+  .gh__diff {
+    max-height: 50dvh;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 11.5px;
+    line-height: 1.55;
+    padding: 10px 8px;
+  }
+  /* The new-session sheet shares the bottom edge; give it the same insets so
+     its last row is not behind the home indicator. */
+  .sheet { max-height: 90dvh; }
+  .sheet__row--tall { min-height: 58px; }
+}

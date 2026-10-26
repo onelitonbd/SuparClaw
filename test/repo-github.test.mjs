@@ -29,6 +29,8 @@ const {
   githubRequest,
   githubIdentity,
   githubListRepos,
+  githubListBranches,
+  orderBranches,
   githubCreatePull,
   connectGithub,
 } = await import("../dist/lib.js");
@@ -173,6 +175,57 @@ test("a filter switches to the search endpoint", async () => {
   assert.equal(repos[0].fullName, "acme/api");
   assert.match(calls[0].url, /search\/repositories/);
   assert.match(calls[0].url, /q=api/);
+});
+
+test("the branch list is names with a protected flag, and nothing else", async () => {
+  const { fn, calls } = fakeFetch([
+    {
+      body: [
+        { name: "main", protected: true, commit: { sha: "abc" } },
+        { name: "feature/login", protected: false },
+        { nope: "no name at all" },
+      ],
+    },
+  ]);
+  const branches = await githubListBranches("tok", { repo: "acme/api", fetchFn: fn });
+  assert.deepEqual(branches, [
+    { name: "main", protected: true },
+    { name: "feature/login", protected: false },
+  ]);
+  assert.match(calls[0].url, /\/repos\/acme\/api\/branches\?per_page=100&page=1/);
+  assert.equal(calls[0].method, "GET");
+});
+
+test("branch paging is honoured and clamped, and a bad answer is an empty list", async () => {
+  const { fn, calls } = fakeFetch([{ body: { message: "Not Found" } }]);
+  assert.deepEqual(await githubListBranches("tok", { repo: "acme/api", page: 2, perPage: 20, fetchFn: fn }), []);
+  assert.match(calls[0].url, /per_page=20&page=2/);
+
+  // GitHub rejects per_page above 100; the clamp is the difference between an
+  // empty picker and a 422 the user cannot act on.
+  const big = fakeFetch([{ body: [] }]);
+  await githubListBranches("tok", { repo: "acme/api", perPage: 5000, page: 0, fetchFn: big.fn });
+  assert.match(big.calls[0].url, /per_page=100&page=1/);
+});
+
+test("the picker puts the default branch first and marks it", () => {
+  // GitHub returns newest-committed first, which buries `main` in a busy repo.
+  const rows = [
+    { name: "zebra", protected: false },
+    { name: "main", protected: true },
+    { name: "feature/login", protected: false },
+  ];
+  assert.deepEqual(orderBranches(rows, "main").map((b) => [b.name, b.default]), [
+    ["main", true],
+    ["feature/login", false],
+    ["zebra", false],
+  ]);
+  // A page that does not contain the base still offers it: it is the one branch
+  // every caller has an answer about.
+  assert.deepEqual(orderBranches([{ name: "only" }], "trunk").map((b) => b.name), ["trunk", "only"]);
+  // No base known (a repo chosen by URL before we know its default) keeps the
+  // alphabetical order and marks nothing.
+  assert.deepEqual(orderBranches([{ name: "b" }, { name: "a" }], "").map((b) => b.default), [false, false]);
 });
 
 test("a pull request is a draft unless the caller says otherwise", async () => {

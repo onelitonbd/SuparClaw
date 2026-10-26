@@ -91,6 +91,26 @@ export function branchSlug(sessionKey: string): string {
   return (stem || "session").slice(0, 40);
 }
 
+/** A branch name we are willing to hand to `git push` and to GitHub's API. */
+export function isPlainBranchName(name: string): boolean {
+  if (!name || name.length > 200) return false;
+  if (/[\s~^:?*[\\]/.test(name)) return false;
+  if (name.startsWith("/") || name.endsWith("/") || name.includes("//") || name.includes("..")) return false;
+  if (name.startsWith("-") || name.endsWith(".lock")) return false;
+  return true;
+}
+
+/**
+ * The branch `publish` will push to (Task 36). A continued branch is pushed as
+ * itself; working *on* the base branch would push straight to it, so those
+ * commits go to a session branch instead. Exported because the UI names it in
+ * the publish dialog before anything is pushed — one rule, two readers.
+ */
+export function publishBranchFor(branch: string, base: string, sessionKey?: string, workspace?: string): string {
+  if (branch !== base) return branch;
+  return `sc/${branchSlug(sessionKey ?? (workspace ? basename(workspace) : "session"))}`;
+}
+
 export interface RepoManagerOptions {
   /** Root for caches and worktrees; defaults to `<state>/repos`. */
   root?: string;
@@ -126,7 +146,16 @@ export class RepoManager {
   }
 
   /**
-   * Clone (once) and create this session's worktree.
+   * Clone (once) and check out the branch this session continues.
+   *
+   * `branch` is what the user picked: work goes *on* that branch, not on a
+   * branch we invent. `base` is only the pull-request target (the repository's
+   * default branch), which is why the two are separate fields.
+   *
+   * The local ref may get a suffix when the same branch is already checked out
+   * in another worktree (git refuses two checkouts of one branch). That is an
+   * implementation detail: the binding remembers the *remote* branch name, and
+   * publishing pushes `HEAD` to it explicitly.
    *
    * Phases are reported so a surface can say where the time goes; a failure
    * leaves the cache in place (the next attempt is faster) and explains itself.
@@ -135,15 +164,16 @@ export class RepoManager {
     repo: string;
     sessionKey: string;
     base?: string;
+    /** The branch to continue. Defaults to the base (the repo's default branch). */
+    branch?: string;
     creds?: GithubCreds | null;
     onProgress?: (p: PrepareProgress) => void;
     signal?: AbortSignal;
-  }): Promise<{ workspace: string; branch: string; base: string }> {
+  }): Promise<{ workspace: string; branch: string; base: string; localRef: string }> {
     const repo = input.repo.trim();
     const { owner, name } = repoSegments(repo);
     const cache = this.cachePath(repo);
     const worktree = this.worktreePath(repo, input.sessionKey);
-    const branch = `sc/${branchSlug(input.sessionKey)}`;
     const progress = input.onProgress ?? (() => {});
     const base = input.base?.trim() || "";
 
@@ -173,34 +203,66 @@ export class RepoManager {
     }
 
     const defaultBranch = base || (await this.#defaultBranch(cache)) || "main";
-    progress({ phase: "worktree", pct: 70, detail: defaultBranch });
+    const branch = input.branch?.trim() || defaultBranch;
+    progress({ phase: "worktree", pct: 70, detail: branch });
     if (existsSync(worktree)) {
       progress({ phase: "done", pct: 100 });
-      return { workspace: worktree, branch, base: defaultBranch };
+      return { workspace: worktree, branch, base: defaultBranch, localRef: await this.#localRef(worktree) };
     }
+
+    // A branch is "local" when an earlier session already created it; it is
+    // "taken" when some other worktree has it checked out. Only the second case
+    // needs a local alias.
+    const localExists = await this.#refExists(cache, `refs/heads/${branch}`);
+    const taken = (await this.#checkedOutBranches(cache)).includes(branch);
+    const localRef = localExists && taken ? `${branch}-${branchSlug(input.sessionKey)}`.replace(/\/{2,}/g, "/") : branch;
+
+    const addArgs = (): string[] => {
+      if (localExists && localRef === branch) return ["-C", cache, "worktree", "add", "--force", worktree, branch];
+      if (localExists) return ["-C", cache, "worktree", "add", "--force", "-b", localRef, worktree, branch];
+      return ["-C", cache, "worktree", "add", "--force", "-b", localRef, worktree, `origin/${branch}`];
+    };
+
     mkdirSync(worktree, { recursive: true });
-    const add = await this.#run(["-C", cache, "worktree", "add", "--force", "-B", branch, worktree, `origin/${defaultBranch}`], {
-      timeoutMs: 600_000,
-    });
+    let add = await this.#run(addArgs(), { timeoutMs: 600_000 });
     if (add.code !== 0) {
-      // A cache without that ref (fresh partial clone, unusual default) is worth
-      // one fetch before giving up.
-      const fetch = await this.#run([...authArgs(input.creds), "-C", cache, "fetch", "--depth=1", "origin", defaultBranch], {
+      // The cache may predate the branch (created on GitHub after the clone) or
+      // predate a force-push. One fetch of that exact ref, then one retry.
+      const fetch = await this.#run([...authArgs(input.creds), "-C", cache, "fetch", "origin", `${branch}:refs/remotes/origin/${branch}`], {
         timeoutMs: 600_000,
       });
       if (fetch.code === 0) {
-        const retry = await this.#run(["-C", cache, "worktree", "add", "--force", "-B", branch, worktree, `origin/${defaultBranch}`], {
-          timeoutMs: 600_000,
-        });
-        if (retry.code === 0) {
-          progress({ phase: "done", pct: 100 });
-          return { workspace: worktree, branch, base: defaultBranch };
-        }
+        add = await this.#run(addArgs(), { timeoutMs: 600_000 });
       }
-      throw new RepoError(this.#explain("worktree", add, input.creds));
+      if (add.code !== 0) {
+        if (/couldn't find remote ref|not a valid object name|invalid reference/i.test(`${add.stderr}${fetch.stderr}`)) {
+          throw new RepoError(`the branch "${branch}" was not found on origin — pick another branch, or push it first`);
+        }
+        throw new RepoError(this.#explain("worktree", add, input.creds));
+      }
     }
     progress({ phase: "done", pct: 100 });
-    return { workspace: worktree, branch, base: defaultBranch };
+    return { workspace: worktree, branch, base: defaultBranch, localRef };
+  }
+
+  async #refExists(cache: string, ref: string): Promise<boolean> {
+    const res = await this.#run(["-C", cache, "rev-parse", "--verify", "--quiet", ref], { timeoutMs: 10_000 });
+    return res.code === 0 && Boolean(res.stdout.trim());
+  }
+
+  /** Branch names currently checked out by any worktree of this cache. */
+  async #checkedOutBranches(cache: string): Promise<string[]> {
+    const res = await this.#run(["-C", cache, "worktree", "list", "--porcelain"], { timeoutMs: 20_000 });
+    return (res.stdout ?? "")
+      .split("\n")
+      .filter((line) => line.startsWith("branch refs/heads/"))
+      .map((line) => line.slice("branch refs/heads/".length).trim())
+      .filter(Boolean);
+  }
+
+  async #localRef(workspace: string): Promise<string> {
+    const res = await this.#run(["-C", workspace, "rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 20_000 });
+    return res.code === 0 ? res.stdout.trim() : "";
   }
 
   async #defaultBranch(cache: string): Promise<string | null> {
@@ -251,26 +313,45 @@ export class RepoManager {
   }
 
   /**
-   * Commit, push a `sc/*` branch, open a PR.
+   * Commit, push, open a PR.
    *
-   * Refusals, in order: a protected base branch as the target, no changes, and a
-   * missing token. Never force-pushes, never pushes to the base branch itself.
+   * The session works on the branch the user picked. Publishing follows that
+   * branch — with one exception that keeps the default branch safe:
+   *
+   *   working on `feature/x` → push `feature/x`,    PR `feature/x → main`
+   *   working on `main`      → push `sc/<slug>`,     PR `sc/<slug>  → main`
+   *
+   * Pushing straight to the default branch is how a person loses a repository,
+   * and most repositories refuse it anyway. So the commits made *on* `main`
+   * locally are pushed to a session branch at the same commit; `main` on GitHub
+   * never moves without a pull request. Nothing here force-pushes.
    */
   async publish(input: {
     workspace: string;
     repo: string;
+    /** The branch this session continues — what the user chose. */
     branch: string;
+    /** The pull-request target: the repository's default branch. */
     base: string;
     title: string;
     body?: string;
     draft?: boolean;
     creds: GithubCreds | null;
     commit?: boolean;
+    /** Used to name the push branch when the session works on the base branch. */
+    sessionKey?: string;
   }): Promise<PublishResult> {
     const { workspace } = input;
     if (!input.creds?.token) throw new RepoError("GitHub is not connected — connect it, then publish.");
-    if (!/^sc\//.test(input.branch)) throw new RepoError(`refusing to publish "${input.branch}" — only sc/* branches are pushed from a session`);
-    if (input.branch === input.base) throw new RepoError(`refusing to push to the base branch ${input.base}`);
+    if (!input.branch) throw new RepoError("this session has no branch to publish");
+    if (!input.base) throw new RepoError("this session has no base branch to open a pull request against");
+    if (!isPlainBranchName(input.branch) || !isPlainBranchName(input.base)) {
+      throw new RepoError(`refusing to publish "${input.branch}" — that is not a plain branch name`);
+    }
+    // The branch that receives the commits. Working on the base branch is
+    // allowed; pushing to it is not.
+    const pushBranch = publishBranchFor(input.branch, input.base, input.sessionKey, workspace);
+    if (pushBranch === input.base) throw new RepoError(`refusing to push to the base branch ${input.base}`);
 
     const status = await this.status(workspace);
     if (status.clean) throw new RepoError("nothing to publish — this session has no changes");
@@ -289,29 +370,39 @@ export class RepoManager {
 
     const basic = Buffer.from(`x-access-token:${input.creds.token}`).toString("base64");
     const push = await this.#run(
-      ["-C", workspace, "-c", `http.https://${this.#host}/.extraheader=AUTHORIZATION: basic ${basic}`, "push", "-u", "origin", input.branch],
+      [
+        "-C",
+        workspace,
+        "-c",
+        `http.https://${this.#host}/.extraheader=AUTHORIZATION: basic ${basic}`,
+        "push",
+        "origin",
+        `HEAD:refs/heads/${pushBranch}`,
+      ],
       { timeoutMs: 600_000 },
     );
     if (push.code !== 0) {
       const why = redact(push.stderr.trim() || push.stdout.trim(), input.creds.token);
       throw new RepoError(
         /protected branch|GH006/i.test(why)
-          ? `GitHub refused the push: ${input.branch} is protected. Publish creates sc/* branches, so check the branch rules.`
-          : `push failed — ${why}`,
+          ? `GitHub refused the push: ${pushBranch} is protected. Check the branch rules.`
+          : /non-fast-forward|fetch first|rejected/i.test(why)
+            ? `${pushBranch} moved on GitHub since this session started — pull it in and publish again. Nothing was overwritten.`
+            : `push failed — ${why}`,
       );
     }
 
     const pr = await githubCreatePull({
       token: input.creds.token,
       repo: input.repo,
-      head: input.branch,
+      head: pushBranch,
       base: input.base,
       title: input.title,
       body: input.body,
       draft: input.draft !== false,
       host: this.#host,
     });
-    return { branch: input.branch, prNumber: pr.number, prUrl: pr.url, draft: pr.draft };
+    return { branch: pushBranch, prNumber: pr.number, prUrl: pr.url, draft: pr.draft };
   }
 
   /** Remove a worktree. Dirty work is refused unless the caller insists. */

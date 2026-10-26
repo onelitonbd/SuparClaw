@@ -40,8 +40,10 @@ export interface TuiDeps {
   setModel(model: string): Promise<string | null>;
   /** Repositories available to connect, `owner/name` first (Task 35). */
   repos?(): Promise<string[]>;
-  /** Start a new session — chat, or code bound to `repo`. */
-  newSession?(spec: { kind: "chat" | "code"; repo?: string }): void;
+  /** Branches of one repository, default first (Task 36). */
+  branches?(repo: string): Promise<string[]>;
+  /** Start a new session — chat, or code bound to `repo` + `branch`. */
+  newSession?(spec: { kind: "chat" | "code"; repo?: string; branch?: string }): void;
   quit(): void;
 }
 
@@ -481,10 +483,11 @@ export class TuiApp {
   }
 
   /**
-   * `ctrl-g` — the same question the web sheet asks (Task 35): chat, or a
-   * repository. Chat is one keystroke away (`enter` on the first row); code
-   * asks for a repo from the connected account, so the overlay is never a dead
-   * end even on a fresh machine (it says how to connect instead).
+   * `ctrl-g` — the same question the web sheet asks (Task 35, extended in 36):
+   * chat, or a repository *and a branch*. Chat is one keystroke away (`enter` on
+   * the first row); code asks for a repo from the connected account, then which
+   * of its branches to continue, so the overlay is never a dead end even on a
+   * fresh machine (it says how to connect instead).
    */
   #newSessionOverlay(): void {
     void this.#pick("new session", ["chat — talk, research, files", "code — pick a repository, work on a branch, open a PR"], (option) => {
@@ -505,7 +508,22 @@ export class TuiApp {
           });
           return;
         }
-        void this.#pick("repository", repos, (repo) => this.deps.newSession?.({ kind: "code", repo: repo.split(/\s+/)[0] ?? repo }));
+        void this.#pick("repository", repos, (repo) => {
+          const name = repo.split(/\s+/)[0] ?? repo;
+          // Task 36: the branch is the second half of the decision — the session
+          // continues it rather than creating one.
+          void (async () => {
+            const branches = (await this.deps.branches?.(name)) ?? [];
+            if (branches.length === 0) {
+              this.deps.newSession?.({ kind: "code", repo: name });
+              return;
+            }
+            void this.#pick("branch", branches, (line) => {
+              const branch = line.replace(/^[●*]\s*/, "").split(/\s+/)[0];
+              this.deps.newSession?.({ kind: "code", repo: name, branch: branch || undefined });
+            });
+          })();
+        });
       })();
     });
   }
