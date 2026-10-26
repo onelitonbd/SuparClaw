@@ -55,6 +55,13 @@ export interface MessageRow {
   role: string;
   content: string;
   created_at: number;
+  /**
+   * JSON `{ usage: <provider numbers>, model: <profile id>, label: <label> }`
+   * on assistant rows (Task 23). The reply footer is rebuilt from this on every
+   * history read — it used to be decoration on the live event only, so any
+   * refresh dropped the line. Null for rows written before the column existed.
+   */
+  usage?: string | null;
 }
 
 export interface JobRow {
@@ -388,6 +395,14 @@ export class Store {
     if (!runCols.has("model")) {
       db.exec("ALTER TABLE runs ADD COLUMN model TEXT");
     }
+    // Reply-usage on the transcript row (Task 23): the footer is re-rendered
+    // from these numbers after every reload, so they have to outlive the run.
+    const msgCols = new Set(
+      (db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (!msgCols.has("usage")) {
+      db.exec("ALTER TABLE messages ADD COLUMN usage TEXT");
+    }
     // Cron timezones + delivery (P2 #14): per-job tz / delivery_mode /
     // delivery_to / suppress-empty columns, same PRAGMA-guarded pattern.
     const jobCols = new Set(
@@ -523,11 +538,18 @@ export class Store {
   }
 
   // ---- messages ---------------------------------------------------------
-  appendMessage(sessionId: string, role: string, content: string, runId?: string): number {
+  appendMessage(
+    sessionId: string,
+    role: string,
+    content: string,
+    runId?: string,
+    /** JSON usage blob for an assistant row (see MessageRow.usage). */
+    usage?: string | null,
+  ): number {
     const now = Date.now();
     const res = this.db
-      .prepare("INSERT INTO messages(session_id, run_id, role, content, created_at) VALUES(?, ?, ?, ?, ?)")
-      .run(sessionId, runId ?? null, role, content, now);
+      .prepare("INSERT INTO messages(session_id, run_id, role, content, created_at, usage) VALUES(?, ?, ?, ?, ?, ?)")
+      .run(sessionId, runId ?? null, role, content, now, usage ?? null);
     const id = Number(res.lastInsertRowid);
     this.db.prepare("UPDATE sessions SET last_msg_at = ? WHERE id = ?").run(now, sessionId);
     if (this.fts) {
@@ -543,6 +565,32 @@ export class Store {
       .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?")
       .all(sessionId, limit)
       .reverse() as unknown as MessageRow[];
+  }
+
+  /** Newest `user` row (regenerate re-runs exactly this prompt). */
+  lastUserMessage(sessionId: string): MessageRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1")
+      .get(sessionId) as MessageRow | undefined;
+  }
+
+  /** Drop every row after `afterId` — one turn's worth for regenerate. */
+  deleteMessagesAfter(sessionId: string, afterId: number): number {
+    const ids = this.db
+      .prepare("SELECT id FROM messages WHERE session_id = ? AND id > ?")
+      .all(sessionId, afterId) as { id: number }[];
+    if (ids.length === 0) return 0;
+    this.db.prepare("DELETE FROM messages WHERE session_id = ? AND id > ?").run(sessionId, afterId);
+    if (this.fts) {
+      const del = this.db.prepare("DELETE FROM fts_messages WHERE message_id = ?");
+      for (const row of ids) del.run(row.id);
+    }
+    // The session's own clock follows what is still there.
+    const last = this.db
+      .prepare("SELECT created_at FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1")
+      .get(sessionId) as { created_at: number } | undefined;
+    if (last) this.db.prepare("UPDATE sessions SET last_msg_at = ? WHERE id = ?").run(last.created_at, sessionId);
+    return ids.length;
   }
 
   // ---- context compaction (P1 A2) ------------------------------------------

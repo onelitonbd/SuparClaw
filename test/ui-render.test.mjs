@@ -209,7 +209,10 @@ test("reload groups a turn into ONE bubble: thinking → tools → answer (the m
   const toolIdx = items.findIndex((el) => el.classList.contains("agent-trace__item--tool"));
   assert.ok(thoughtIdx >= 0 && toolIdx >= 0, "both thinking and tool steps present");
   assert.ok(thoughtIdx < toolIdx, "thinking above tools (live order)");
-  assert.ok(kids.at(-1).includes("msg__body"), "body last");
+  // Task 23 moved the tail: Copy/Regenerate trail the answer, so the body is
+  // the last CONTENT block and the action row is the last child.
+  assert.ok(kids.at(-1).includes("msg__actions"), "action row trails the turn");
+  assert.ok(kids.at(-2).includes("msg__body"), "body is the last content block");
 });
 
 test("live: thinking that arrives before the bubble opens moves inside it", async () => {

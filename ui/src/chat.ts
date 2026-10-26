@@ -62,6 +62,8 @@ export interface StagedAttachment {
 
 export interface ChatHandlers {
   send(text: string, attachments?: StagedAttachment[]): void;
+  /** Re-run the newest answer (server truncates the turn first). */
+  regenerate(): void;
   abort(): void;
   approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
@@ -125,6 +127,56 @@ interface Live {
 interface LiveBody {
   root: HTMLElement;
   body: HTMLElement;
+}
+
+/** Clipboard write with the plain-http fallback (`navigator.clipboard` is
+ *  unavailable outside secure contexts, and this UI is served over the LAN). */
+function copyText(text: string): void {
+  const fallback = (): boolean => {
+    try {
+      const area = el("textarea", { class: "visually-hidden" }) as HTMLTextAreaElement;
+      area.value = text;
+      document.body.append(area);
+      area.select();
+      const ok = typeof document.execCommand === "function" ? document.execCommand("copy") : false;
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+  const done = (ok: boolean): void => toast(ok ? "copied to clipboard" : "copy failed", ok ? "ok" : "err");
+  const write = navigator.clipboard?.writeText(text);
+  if (!write) {
+    done(fallback());
+    return;
+  }
+  void write.then(() => done(true), () => done(fallback()));
+}
+
+/** The usage line for a turn (Task 23) — its own element, never in the body. */
+function usageLine(footer: string): HTMLElement {
+  return el("div", { class: "msg__usage" }, [footer]);
+}
+
+/** Copy + Regenerate for an assistant turn (Task 23). */
+function actionRow(onRegenerate: (() => void) | null): HTMLElement {
+  const row = el("div", { class: "msg__actions" });
+  const copy = el("button", { class: "msg__act", type: "button", "data-copy": "", "aria-label": "Copy answer" }, ["Copy"]);
+  row.append(copy);
+  if (onRegenerate) {
+    const regen = el(
+      "button",
+      { class: "msg__act", type: "button", "data-regen": "", "aria-label": "Regenerate answer" },
+      ["Regenerate"],
+    );
+    regen.addEventListener("click", (e) => {
+      e.preventDefault();
+      onRegenerate();
+    });
+    row.append(regen);
+  }
+  return row;
 }
 
 export class Chat {
@@ -270,17 +322,19 @@ export class Chat {
       requestAnimationFrame(step);
     };
 
-    // copy a message
+    // copy a message — the ORIGINAL Markdown (their rule: copy hands back the
+    // source, not the rendered text). Every body carries its markdown in
+    // `data-md`; the fallback covers old nodes and user bubbles.
     this.stack.addEventListener("click", (e) => {
       const target = e.target as HTMLElement;
       const copy = target.closest<HTMLElement>("[data-copy]");
       if (!copy) return;
       const msg = copy.closest<HTMLElement>(".msg");
-      const text = msg?.querySelector<HTMLElement>(".msg__body, .bubble")?.innerText ?? "";
-      void navigator.clipboard?.writeText(text).then(
-        () => toast("copied to clipboard", "ok"),
-        () => toast("copy failed", "err"),
-      );
+      const bodies = Array.from(msg?.querySelectorAll<HTMLElement>(".msg__body") ?? []);
+      const text = bodies.length > 0
+        ? bodies.map((b) => b.dataset["md"] ?? b.innerText ?? "").filter((t) => t.length > 0).join("\n\n")
+        : msg?.querySelector<HTMLElement>(".bubble")?.innerText ?? "";
+      copyText(text);
     });
   }
 
@@ -432,7 +486,7 @@ export class Chat {
    *  their anchor after a thread reload. Rebuilt on every replaceThread. */
   readonly anchorMap = new Map<number, HTMLElement>();
 
-  replaceThread(rows: { role: string; content: string; id?: number; ts?: number }[]): number {
+  replaceThread(rows: { role: string; content: string; id?: number; ts?: number; footer?: string }[]): number {
     const live = this.#live;
     const liveText = this.#streamText;
     this.stack.innerHTML = "";
@@ -465,6 +519,10 @@ export class Chat {
     const tsOf = (row: { ts?: number }, index: number): number =>
       realClock && typeof row.ts === "number" ? row.ts : 1000 + index * 100;
 
+    /** Every assistant turn drawn, in order — actions land after the loop so
+     *  only the newest one offers Regenerate (a mid-thread regenerate would
+     *  delete the turns after it). */
+    const turnWraps: HTMLElement[] = [];
     let turnTrace: AgentTrace | null = null;
     let turnWrap: HTMLElement | null = null;
     let turnStart = 0;
@@ -500,6 +558,7 @@ export class Chat {
           wrap.append(traceRoot);
           this.stack.append(wrap);
           turnWrap = wrap;
+          turnWraps.push(wrap);
           turnTrace = new AgentTrace(traceRoot, { scrollRoot: this.#thread, jump: false });
           // A run starts when its prompt arrived, so the header reports the
           // real turnaround instead of a zero-length turn.
@@ -513,7 +572,11 @@ export class Chat {
         if (row.role === "assistant" && row.content) {
           const body = el("div", { class: "msg__body" });
           body.innerHTML = renderMarkdown(row.content);
+          body.dataset["md"] = row.content;
           wrap.append(body);
+          // The footer the live reply showed, rebuilt by the gateway from the
+          // usage stored on the row — this is the line that used to vanish.
+          if (row.footer) wrap.append(usageLine(row.footer));
           markAnchor(row.id);
           rendered++;
         } else if (row.role === "tool" && row.content) {
@@ -569,6 +632,10 @@ export class Chat {
       }
     }
     flushTurn();
+    turnWraps.forEach((wrap, i) => {
+      if (!wrap.querySelector(".msg__body")) return; // tool-only turn: nothing to copy
+      wrap.append(actionRow(i === turnWraps.length - 1 ? () => this.#handlers.regenerate() : null));
+    });
     if (rendered === 0) this.#renderEmpty();
     if (live) {
       this.assistantStart();
@@ -647,9 +714,9 @@ export class Chat {
     this.#scheduleStreamRender();
   }
 
-  finish(text?: string): void {
+  finish(text?: string, footer?: string): void {
     if (!this.#live) {
-      if (text) this.assistant(text);
+      if (text) this.assistant(text, footer);
       return;
     }
     if (text !== undefined) this.#streamText = text;
@@ -657,8 +724,14 @@ export class Chat {
     if (this.#streamText.trim()) {
       const body = el("div", { class: "msg__body" });
       body.innerHTML = renderMarkdown(this.#streamText);
+      body.dataset["md"] = this.#streamText;
       this.#liveWrap!.append(body);
     }
+    // The footer is a field on the final event, not text inside it: the body
+    // stays the model's own Markdown (copy, search, next-turn context) and the
+    // line gets its own element — the same shape a reload produces.
+    if (footer) this.#liveWrap!.append(usageLine(footer));
+    if (this.#liveWrap) this.#liveWrap.append(actionRow(() => this.#handlers.regenerate()));
     const t = this.#liveTrace;
     if (t) t.push({ type: "run_end", ts: Date.now(), status: "done" });
     this.#live = null;
@@ -685,11 +758,16 @@ export class Chat {
     this.#scrollToBottom();
   }
 
-  assistant(text: string): void {
+  assistant(text: string, footer?: string): void {
     this.#clearEmpty();
+    const wrap = el("div", { class: "msg msg--assistant" });
     const body = el("div", { class: "msg__body" });
     body.innerHTML = renderMarkdown(text);
-    this.stack.append(body);
+    body.dataset["md"] = text;
+    wrap.append(body);
+    if (footer) wrap.append(usageLine(footer));
+    wrap.append(actionRow(() => this.#handlers.regenerate()));
+    this.stack.append(wrap);
     this.#scrollToBottom();
   }
 

@@ -24,7 +24,12 @@ export type RunEvent =
   | { type: "reasoning"; text: string }
   | { type: "tool"; callId: string; name: string; status: "running" | "done" | "error" | "skipped"; detail?: string; ms?: number }
   | { type: "retry"; model: string; attempt: number; max: number; error: string }
-  | { type: "final"; runId: string; text: string; usage?: Record<string, number> }
+  /**
+   * `text` is the answer as the model wrote it. `footer` is the /usage line for
+   * the current mode — a field, not text, so a UI can draw it separately and a
+   * reload can rebuild it from the transcript row (Task 23).
+   */
+  | { type: "final"; runId: string; text: string; usage?: Record<string, number>; footer?: string }
   | { type: "error"; runId: string; message: string }
   | { type: "approval"; callId: string; tool: string; args: Record<string, unknown>; exec?: { mode: string; mintable: boolean; reason: string } }
   /** Message accepted into the queue (or the steer inbox), not yet consumed. */
@@ -913,7 +918,15 @@ export class AgentLoop {
         finalText = "Waiting for the sub-agent(s) to finish — the results arrive as my next turn.";
         this.markYieldWait(sessionKey);
       }
-      this.deps.store.appendMessage(session.id, "assistant", finalText, runId);
+      // The numbers ride the transcript row: the footer is re-rendered from them
+      // after a reload (they used to exist only on the live event's text, so a
+      // refresh lost the line). Profile id + label, so a rename or a price card
+      // still resolves at read time.
+      const storedUsage =
+        usage && Object.keys(usage).length > 0
+          ? JSON.stringify({ usage, model: runProfile.id, label: runProfile.label })
+          : null;
+      this.deps.store.appendMessage(session.id, "assistant", finalText, runId, storedUsage);
       this.deps.store.finishRun(runId, "done", usage, undefined, lastModelRef || undefined);
       onEvent({ type: "final", runId, text: finalText, usage });
     } catch (err) {

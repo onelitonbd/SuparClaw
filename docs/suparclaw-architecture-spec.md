@@ -115,7 +115,10 @@ graph weight, not Node itself.
 6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec follows
    `tools.exec.mode` (default `full` — no prompt).
 7. Stream events → channel adapter renders (Telegram typing indicator, message edits optional).
-8. Persist transcript + usage; emit `final`. `NO_REPLY` = intentional silence (copy semantics).
+8. Persist transcript + usage; emit `final`. The `/usage` footer is a field on that event and is
+   re-rendered from the numbers stored on the assistant row, so a reload or a restart keeps it
+   (`chat.regenerate` drops the newest turn before re-running its prompt). `NO_REPLY` = intentional
+   silence (copy semantics).
 
 ### 4.3 Channels
 
@@ -174,7 +177,8 @@ meta(key TEXT PRIMARY KEY, value TEXT);
 sessions(id TEXT PK, key TEXT UNIQUE, agent_id TEXT, name TEXT,
          created_at INT, last_msg_at INT, meta JSON);
 messages(id INTEGER PK AUTOINCREMENT, session_id TEXT, run_id TEXT,
-         role TEXT, content JSON, created_at INT);
+         role TEXT, content JSON, created_at INT,
+         usage TEXT);  -- assistant rows: {usage, model, label} for footer replay
 runs(id TEXT PK, session_id TEXT, status TEXT, started_at INT,
      ended_at INT, error TEXT, usage JSON);
 jobs(id TEXT PK, kind TEXT, schedule TEXT, payload JSON, enabled INT,

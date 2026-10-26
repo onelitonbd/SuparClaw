@@ -14,13 +14,14 @@ import {
   validateModelRef,
 } from "../config/providers.js";
 import { redactSecrets, resolveRedacted, resolveRedactedDeep } from "../config/redact.js";
-import { CONFIG_SCHEMA, modelProfiles, parseConfig } from "../config/schema.js";
+import { CONFIG_SCHEMA, modelProfile, modelProfiles, parseConfig } from "../config/schema.js";
 import { readSkillBody, skillSlug, writeSkill } from "../agent/skills.js";
 import { workspaceDir } from "../util/paths.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { handleHooksRequest, type HookService } from "./webhooks.js";
 import { handleOpenAiRequest, type OpenAiService } from "./openai-http.js";
 import { errFrame, eventFrame, okFrame, parseFrame, type ClientFrame } from "./protocol.js";
+import { historyPayload } from "../agent/history.js";
 
 // The thinking ladder the UI renders. OpenClaw keeps this provider-profile
 // driven; SuparClaw has one OpenAI-compatible transport, so one ladder is the
@@ -209,6 +210,7 @@ export class Gateway {
       "status",
       "chat.send",
       "chat.history",
+      "chat.regenerate",
       "chat.abort",
       "chat.approval",
       "approvals.get",
@@ -373,16 +375,21 @@ export class Gateway {
               ? service.store.messagesAround(session.id, anchor, Number(params["limit"] ?? 40))
               : service.store.recentMessages(session.id, Number(params["limit"] ?? 40))
             : [];
+          // Footer replay (Task 23): rows carry the usage the run recorded, and
+          // the line is rebuilt for the CURRENT /usage mode + price card — the
+          // live footer used to be decoration on the event text, so a reload
+          // lost it entirely.
           send(
             okFrame(id, {
               sessionKey,
               anchor: anchor ?? null,
-              messages: rows.map((m) => ({
-                id: m.id,
-                role: m.role,
-                content: m.content,
-                createdAt: m.created_at,
-              })),
+              messages: historyPayload(rows, {
+                mode: service.usageModeFor(sessionKey),
+                profile: (ref) => {
+                  const prof = modelProfile(service.config, ref);
+                  return { label: prof.label, pricing: prof.pricing };
+                },
+              }),
             }),
           );
           return;
@@ -413,6 +420,18 @@ export class Gateway {
             }),
           );
           return;
+        case "chat.regenerate": {
+          // Task 23: drop the newest turn's rows and re-run its prompt. Refuses
+          // while a run is active, before it touches a single message.
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          const result = service.regenerate(sessionKey);
+          if (!result.ok) {
+            send(errFrame(id, "regenerate_refused", result.error));
+            return;
+          }
+          send(okFrame(id, { regenerated: true, text: result.text, dropped: result.deleted }));
+          return;
+        }
         case "queue.set": {
           // Per-session /queue override (mode + optional debounce/cap/drop).
           const sessionKey = String(params["sessionKey"] ?? "main:main");

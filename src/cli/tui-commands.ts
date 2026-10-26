@@ -176,7 +176,9 @@ export async function tuiLocal(): Promise<number> {
         app.markDirty();
         break;
       case "final":
-        app.completeAssistant(e.text);
+        // The usage line rides `footer`, not the text (Task 23) — the web chat
+        // draws it in its own element, the TUI keeps it inline.
+        app.completeAssistant(e.footer ? `${e.text}\n\n${e.footer}` : e.text);
         app.tokenHint = e.usage ? `${e.usage["total_tokens"] ?? 0}` : app.tokenHint;
         app.busy = false;
         app.setStatus("idle");
@@ -229,6 +231,8 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
         tool?: string;
         args?: Record<string, unknown>;
         exec?: { mode: string; mintable: boolean; reason: string };
+        /** /usage line for the final reply (a field, not text — Task 23). */
+        footer?: string;
       };
     };
     if (data.sessionKey && data.sessionKey !== sessionKey) return;
@@ -249,7 +253,9 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
         app?.markDirty();
         break;
       case "final":
-        app?.completeAssistant(String(e.text ?? ""));
+        app?.completeAssistant(
+          e?.footer ? `${String(e.text ?? "")}\n\n${String(e.footer)}` : String(e.text ?? ""),
+        );
         if (app) app.busy = false;
         break;
       case "error":

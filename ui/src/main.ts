@@ -74,6 +74,37 @@ const chat = new Chat(document.body, {
         toast((err as Error).message, "err");
       });
   },
+  // Regenerate the newest answer (Task 23): the SERVER drops the turn's rows
+  // and re-runs the prompt — a client-side re-send would append a second answer
+  // and the model would read both next turn. After the ack, reload so the old
+  // answer disappears before the new one streams in.
+  regenerate: () => {
+    // Destructive: the current answer is deleted before the re-run. Their rule
+    // for deletes is the app's own dialog, never a silent drop.
+    modal({
+      title: "Regenerate this answer?",
+      body: el("div", {}, [
+        el("p", {}, ["The current answer is removed and the prompt is run again."]),
+        el("p", { class: "hint" }, ["Anything the answer did with tools may happen again."]),
+      ]),
+      confirmLabel: "Regenerate",
+      danger: true,
+      onConfirm: async () => {
+        busy = true;
+        chat.setBusy(true);
+        try {
+          await gateway.request("chat.regenerate", { sessionKey });
+          // Reload so the old answer disappears before the new one streams in.
+          await loadHistory();
+        } catch (err) {
+          busy = false;
+          chat.setBusy(false);
+          toast((err as Error).message, "err");
+          chat.notice(`regenerate failed: ${(err as Error).message}`, "notice--error");
+        }
+      },
+    });
+  },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
   approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
   // Remove just that queued message (their chat.abort runId parity).
@@ -183,7 +214,9 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       }
       const usage = e.usage as Record<string, number> | undefined;
       if (usage?.["total_tokens"]) chat.setTokenHint(`${usage["total_tokens"]} tokens`);
-      chat.finish(String(e.text ?? ""));
+      // The footer is a field now, not text inside the reply — it draws in its
+      // own element and survives the next reload the same way.
+      chat.finish(String(e.text ?? ""), typeof e.footer === "string" && e.footer ? e.footer : undefined);
       busy = false;
       break;
     }
@@ -680,6 +713,8 @@ async function loadHistory(anchorMid?: number): Promise<void> {
           // Real per-message clock: history traces replay on it so a turn
           // shows an honest "Worked for …" instead of epoch-minus-zero.
           ts: typeof m.createdAt === "number" && m.createdAt > 0 ? m.createdAt : undefined,
+          // The /usage line rebuilt from the row's stored numbers (Task 23).
+          footer: typeof m.footer === "string" && m.footer ? m.footer : undefined,
         })),
       );
       if (anchorMid !== undefined) {

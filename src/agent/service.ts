@@ -15,6 +15,7 @@ import { assertWebhookUrl, postWebhook, webhookPayload, resolveDelivery, isEmpty
 import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
 import type { SurfaceFacts } from "./surfaces.js";
+import { truncateLastTurn } from "./history.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
@@ -450,6 +451,11 @@ export class Service {
       error += ` — api.telegram.org is reachable${via ? ` through "${via}"` : ""}, so the credential itself is the problem; paste a fresh @BotFather token (or /revoke + re-issue) and retry`;
     }
     return { ok: false, error };
+  }
+
+  /** Effective reply-usage mode for a session: /usage override → config default. */
+  usageModeFor(sessionKey: string): UsageMode {
+    return (this.store.getMeta(`usage:${sessionKey}`) as UsageMode | undefined) ?? this.config.agents.defaults.usage;
   }
 
   /** Re-arm cron jobs changed outside the daemon (sc cron add, other tools). */
@@ -1358,6 +1364,30 @@ export class Service {
     return { reply: `unknown command ${cmd} — try /commands` };
   }
 
+  /**
+   * Regenerate the newest answer (Task 23): drop the turn's rows, then re-run
+   * the prompt that produced it. Server-side because only the store can undo a
+   * turn, and refusing while busy keeps two clients from truncating a live run.
+   */
+  regenerate(sessionKey: string): { ok: true; text: string; deleted: number } | { ok: false; error: string } {
+    if (this.loop.isBusy(sessionKey)) return { ok: false, error: "a run is active in this session — wait for it to finish" };
+    const session = this.store.getSessionByKey(sessionKey);
+    if (!session) return { ok: false, error: "no such session" };
+    const plan = truncateLastTurn(this.store, session.id);
+    if (!plan.ok) return plan;
+    void this.send({
+      sessionKey,
+      text: plan.text,
+      isMainSession: true,
+      source: "gateway",
+      reply: async () => {
+        /* the answer rides the chat envelope, like chat.send */
+      },
+    });
+    this.log.info(`regenerate ${sessionKey}: dropped ${plan.deleted} row(s), re-running the prompt`);
+    return { ok: true, text: plan.text, deleted: plan.deleted };
+  }
+
   /** One entry point for every surface: TUI, WS clients, Telegram, cron. */
   async send(payload: ChatPayload): Promise<void> {
     // ask_user text-reply interception (P2 #8; their "before queueing" rule):
@@ -1414,15 +1444,16 @@ export class Service {
       // Channel (durable-ingress style) inputs never coalesce in collect mode.
       exclusive: payload.source === "telegram",
       onEvent: (event) => {
-        // Reply-usage footer (P2 #15): SURFACE-ONLY decoration on the final
-        // text — the transcript row stays clean, and the same footed text
-        // reaches the WS broadcast, onFinal and the channel reply alike.
-        let out = event;
+        // Reply-usage footer (P2 #15 / Task 23): a FIELD on the final event, not
+        // text baked into the reply. The transcript row carries the numbers and
+        // re-renders this same line on every history read, so a refresh no longer
+        // loses it; plain-text surfaces compose it below.
+        let out: RunEvent = event;
+        let footer = "";
         if (event.type === "final") {
-          const mode = (this.store.getMeta(`usage:${payload.sessionKey}`) as UsageMode | undefined) ?? this.config.agents.defaults.usage;
           const prof = modelProfile(this.config, payload.model ?? "");
-          const foot = usageFooter(mode, event.usage, prof.label, prof.pricing);
-          if (foot) out = { ...event, text: `${event.text}\n\n${foot}` };
+          footer = usageFooter(this.usageModeFor(payload.sessionKey), event.usage, prof.label, prof.pricing);
+          if (footer) out = { ...event, footer };
         }
         this.events.emit("event", { type: "chat", sessionKey: payload.sessionKey, event: out } satisfies ServiceEvent);
         // Auto-title fires once the reply settles: non-blocking, best-effort.
@@ -1431,8 +1462,11 @@ export class Service {
         else if (out.type === "tool") void payload.onTool?.(out);
         else if (out.type === "approval") void payload.onApproval?.(out);
         else if (out.type === "final") {
-          void payload.onFinal?.(out.text, out.usage);
-          void payload.reply(out.text);
+          // Telegram / TUI / the OpenAI-compatible endpoint get one string;
+          // the web chat draws the line in its own element from `footer`.
+          const composed = footer ? `${out.text}\n\n${footer}` : out.text;
+          void payload.onFinal?.(composed, out.usage);
+          void payload.reply(composed);
         }
         else if (out.type === "error") void payload.reply(`⚠ ${out.message}`);
       },
