@@ -1,5 +1,5 @@
 // SuparClaw identity for CLI surfaces: the same mark, palette and voice the
-// installer uses. /// claw swipes + 🦀 + "your phone is the machine."
+// installer uses — the claw as half-block art, the wordmark, the tagline, 🦀.
 // Truecolor like the installer; NO_COLOR/TERM=dumb degrade to plain text.
 
 export const BRAND = {
@@ -14,20 +14,59 @@ const useColor =
 
 const c = (code: string) => (useColor ? (s: string) => `\x1b[${code}m${s}\x1b[0m` : (s: string) => s);
 
+// Colours are the product palette (ui/styles.css), not an invented terminal
+// theme: a terminal is a dark surface, so it uses the dark-theme accent and ink.
+// Semantic colours (ok/warn/error) stay semantic. `brand-mark.test.mjs` keeps
+// brand/info in step with the stylesheet.
+export const PALETTE = {
+  accent: "38;2;142;160;255", // #8EA0FF  --accent (dark)
+  accentBright: "38;2;237;237;240", // #EDEDF0  --ink (dark)
+  success: "38;2;52;211;153", // mint    #34d399
+  warn: "38;2;251;191;36", // amber   #fbbf24
+  error: "38;2;248;113;113", // red     #f87171
+  info: "38;2;148;163;184", // slate   #94a3b8
+  muted: "38;2;143;143;153", // #8F8F99  --ink3 (dark)
+  bold: "1",
+} as const;
+
 export const fg = {
-  accent: c("38;2;167;139;250"), // violet  #a78bfa
-  accentBright: c("38;2;196;181;253"),
-  success: c("38;2;52;211;153"), // mint    #34d399
-  warn: c("38;2;251;191;36"), // amber   #fbbf24
-  error: c("38;2;248;113;113"), // red     #f87171
-  info: c("38;2;148;163;184"), // slate   #94a3b8
-  muted: c("38;2;100;116;139"),
-  bold: c("1"),
+  accent: c(PALETTE.accent),
+  accentBright: c(PALETTE.accentBright),
+  success: c(PALETTE.success),
+  warn: c(PALETTE.warn),
+  error: c(PALETTE.error),
+  info: c(PALETTE.info),
+  muted: c(PALETTE.muted),
+  bold: c(PALETTE.bold),
 };
 
-/** `/// suparclaw` — the compact banner used at command tops. */
-export function brandLine(suffix = ""): string {
-  return `  ${fg.accentBright(BRAND.mark)}  ${fg.bold(fg.accent(BRAND.name))}${suffix ? ` ${fg.muted(suffix)}` : ""}`;
+/**
+ * The claw, as terminal art: 30 columns × 9 rows, half blocks.
+ *
+ * Generated from the same geometry as every other mark in the repo — never
+ * hand-typed. Regenerate with `node brand/tools/ascii.mjs` after changing
+ * brand/tools/claw.mjs (brand-mark.test.mjs fails if this drifts).
+ */
+export const CLAW_ART: readonly string[] = [
+  "                  ▄▄███████▄▄",
+  "          ▄▄███████████▀▀▀▀▀",
+  "        ▄███████████",
+  "    ▄▄▄█████████████",
+  "  ▄█████████████████",
+  "▄██████████████████▀",
+  "▀███████████████████▄▄",
+  "  ▀██████████████████████▄▄",
+  "    ▀██▀         ▀▀▀██████▀▀▀",
+];
+
+/**
+ * The full banner: the claw, the wordmark, the tagline. Printed once per
+ * command — `sc init` and `sc gateway` — so it never spams a log.
+ */
+export function banner(suffix = ""): string {
+  const art = CLAW_ART.map((line) => `  ${fg.accent(line)}`);
+  const word = `  ${fg.bold(fg.accentBright(BRAND.name))}${suffix ? `  ${fg.muted(`· ${suffix}`)}` : ""}`;
+  return [...art, "", word, `  ${fg.muted(BRAND.tagline)}`].join("\n");
 }
 
 /** The tagline card (open right edge — safe at phone widths). */

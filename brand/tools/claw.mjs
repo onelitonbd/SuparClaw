@@ -135,9 +135,13 @@ export function fitMark(preset, box = BOX, pad = PAD) {
     ...sample(palm.m, palm.c).map((p) => rotatePoint(p, angle, pivot)),
     ...[palm.m, ...palm.c.map((c) => c[2])].map((p) => rotatePoint(p, angle, pivot)),
   ];
-  // fingers are straight lines from r1 to r2 through mid, so tip+r1+r2 suffice
+  // fingers are two cubics each (tip→r1 along the outside, r2→tip along the
+  // inside); sampling both is what keeps the fit centred — tip/r1/r2 alone
+  // under-measure the outward bulge of the blade.
   for (const f of [upper, lower]) {
-    for (const p of [f.tip, f.r1, f.r2]) pts.push(rotatePoint(p, angle, pivot));
+    const outer = sample(f.tip, [[f.o1, f.o2, f.r1]]);
+    const inner = sample(f.r2, [[f.i1, f.i2, f.tip]]);
+    for (const p of [...outer, ...inner]) pts.push(rotatePoint(p, angle, pivot));
   }
   for (const p of [...rectCorners(wrist), ...slashes.flatMap(rectCorners)]) {
     pts.push(rotatePoint(rotatePoint(p, arm, armPivot), angle, pivot));
@@ -155,24 +159,39 @@ export function fitMark(preset, box = BOX, pad = PAD) {
 
 /* -------------------------------------------------------------- emit ----- */
 
-export function clawMark({ variant = "claw", color = "#EDEDF0", cut = "#17171A", wristColor = null, preset: override = null } = {}) {
+export function clawMark({
+  variant = "claw",
+  color = "#EDEDF0",
+  cut = "#17171A",
+  wristColor = null,
+  slashes = true,
+  preset: override = null,
+} = {}) {
   const preset = override ?? PRESETS[variant] ?? PRESETS.claw;
   const { scale, tx, ty } = fitMark(preset);
   const w = preset.wrist;
-  const slashes = preset.slashes
+  const slashesMarkup = preset.slashes
     .map((s) => `<rect x="${n(s.x)}" y="${n(s.y)}" width="${n(s.w)}" height="${n(s.h)}" rx="${n(s.h / 2)}"/>`)
     .join("");
   return `<g transform="translate(${n(tx)} ${n(ty)}) scale(${scale.toFixed(5)})">
     <g transform="rotate(${preset.angle} ${preset.pivot[0]} ${preset.pivot[1]})">
       <g transform="rotate(${preset.arm} ${preset.armPivot[0]} ${preset.armPivot[1]})">
         <rect x="${w.x}" y="${w.y}" width="${w.w}" height="${w.h}" rx="${w.r}" fill="${wristColor ?? color}"/>
-        <g fill="${cut}">${slashes}</g>
+        ${slashes ? `<g fill="${cut}">${slashesMarkup}</g>` : ""}
       </g>
       <path d="${pathData(preset.palm.m, preset.palm.c)}" fill="${color}"/>
       <path d="${finger(preset.upper)}" fill="${color}"/>
       <path d="${finger(preset.lower)}" fill="${color}"/>
     </g>
   </g>`;
+}
+
+/**
+ * The mark as an inline icon: no plate, no slashes, `currentColor`, so the UI can
+ * drop it in wherever it has text colour. `size` is the rendered px.
+ */
+export function clawGlyph({ size = 24, cls = "" } = {}) {
+  return `<svg${cls ? ` class="${cls}"` : ""} aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 ${BOX} ${BOX}" fill="currentColor">${clawMark({ color: "currentColor", slashes: false })}</svg>`;
 }
 
 export function markSvg({ variant = "claw", size = 512, bg = "#17171A", color = "#EDEDF0" } = {}) {
@@ -185,5 +204,6 @@ ${bg ? `  <rect width="${BOX}" height="${BOX}" fill="${bg}"/>\n` : ""}  ${clawMa
 if (process.argv[1] && process.argv[1].endsWith("claw.mjs")) {
   const { writeFileSync } = await import("node:fs");
   for (const v of Object.keys(PRESETS)) writeFileSync(`/tmp/claw-${v}.svg`, markSvg({ variant: v }));
-  console.log("wrote", Object.keys(PRESETS).map((v) => `/tmp/claw-${v}.svg`).join(" "));
+  writeFileSync("/tmp/claw-glyph.svg", clawGlyph({ size: 64 }));
+  console.log("wrote /tmp/claw-glyph.svg and", Object.keys(PRESETS).map((v) => `/tmp/claw-${v}.svg`).join(" "));
 }

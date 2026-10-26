@@ -1397,11 +1397,24 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 6px 0 18px;
+  padding: 0 6px 0 12px;
   border-bottom: 1px solid var(--line);
   font-weight: 600;
   font-size: 15px;
 }
+
+.drawer__mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.drawer__mark svg { display: block; }
 
 .drawer__title { flex: 1; min-width: 0; }
 

@@ -7,7 +7,23 @@
 <meta name="theme-color" content="#F4F3EF" />
 <title>SuparClaw</title>
 <link rel="stylesheet" href="./styles.css" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232B50F0'/%3E%3Cpath d='M8 20l4-10 4 6 4-6 4 10' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<meta name="application-name" content="SuparClaw" />
+<meta name="apple-mobile-web-app-title" content="SuparClaw" />
+<meta name="description" content="Your phone is the machine — a personal AI gateway that runs natively on Termux." />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="SuparClaw" />
+<meta property="og:title" content="SuparClaw" />
+<meta property="og:description" content="Your phone is the machine." />
+<meta property="og:image" content="./og-image.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="SuparClaw" />
+<meta name="twitter:description" content="Your phone is the machine." />
+<meta name="twitter:image" content="./og-image.png" />
 <style>
   /* First paint before styles.css arrives: never flash the wrong theme. */
   html { background: #F4F3EF; }
@@ -165,6 +181,7 @@
     <button class="overlay__scrim" id="drawer-scrim" type="button" aria-label="Close sessions"></button>
     <aside class="drawer" id="drawer" aria-label="Sessions" tabindex="-1">
       <div class="drawer__head">
+        <span class="drawer__mark" aria-hidden="true"><svg aria-hidden="true" width="21" height="21" viewBox="0 0 1024 1024" fill="currentColor"><g transform="translate(539.03 556.16) scale(0.83531)"><g transform="rotate(-8 -80 0)"><g transform="rotate(-34 -330 40)"><rect x="-486" y="-160" width="300" height="330" rx="44" fill="currentColor"/></g><path d="M -330 -46 C -322 -156 -248 -240 -136 -286 C -26 -322 86 -306 150 -262 C 188 -228 178 -120 150 -14 C 120 76 60 130 -8 160 C -150 216 -284 186 -330 118 Z" fill="currentColor"/><path d="M 544 -222 C 334 -406 110 -330 -30 -206 L -8 -169 L 14 -132 C 344 -248 298 -212 544 -222 Z" fill="currentColor"/><path d="M 466 266 C 288 220 240 112 -42 0 L -59 80 L -76 160 C 66 280 286 340 466 266 Z" fill="currentColor"/></g></g></svg></span>
         <span class="drawer__title">Sessions</span>
         <span class="drawer__count" id="sessions-count" aria-live="polite"></span>
         <button class="ibtn drawer__close" id="drawer-close" type="button" aria-label="Close sessions">

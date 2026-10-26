@@ -1246,8 +1246,10 @@ export class Chat {
 
 function mark(): HTMLElement {
   const node = el("div", { class: "empty__mark" });
+  // The claw, inline: same generator as brand/tools/claw.mjs (see
+  // brand/tools/claw.mjs → clawGlyph). A test keeps this in sync with the mark.
   node.innerHTML =
-    '<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h5l3-8 3 16 3-8h4"/></svg>';
+    '<svg aria-hidden="true" width="34" height="34" viewBox="0 0 1024 1024" fill="currentColor"><g transform="translate(539.03 556.16) scale(0.83531)"><g transform="rotate(-8 -80 0)"><g transform="rotate(-34 -330 40)"><rect x="-486" y="-160" width="300" height="330" rx="44" fill="currentColor"/></g><path d="M -330 -46 C -322 -156 -248 -240 -136 -286 C -26 -322 86 -306 150 -262 C 188 -228 178 -120 150 -14 C 120 76 60 130 -8 160 C -150 216 -284 186 -330 118 Z" fill="currentColor"/><path d="M 544 -222 C 334 -406 110 -330 -30 -206 L -8 -169 L 14 -132 C 344 -248 298 -212 544 -222 Z" fill="currentColor"/><path d="M 466 266 C 288 220 240 112 -42 0 L -59 80 L -76 160 C 66 280 286 340 466 266 Z" fill="currentColor"/></g></g></svg>';
   return node;
 }
 

@@ -17,21 +17,23 @@ MIN_NODE_MAJOR=24
 MIN_NODE_MINOR=16
 
 # ---------------------------------------------------------------- brand
-# /// suparclaw · your phone is the machine.
-# A clawed-up installer should feel like the product: violet, mint, snippy.
+# The claw, the wordmark, your phone is the machine. The art is the product mark
+# rendered to half blocks (brand/tools/ascii.mjs) — the same silhouette as the
+# app icon, the favicon and `sc init`. Colour is the product palette: the
+# terminal is a dark surface, so it uses the dark-theme accent.
 USE_COLOR=1
 if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-dumb}" = "dumb" ] || [ ! -t 1 ]; then
   USE_COLOR=0
 fi
 if [ "$USE_COLOR" = "1" ]; then
   BOLD=$'\033[1m'
-  ACCENT=$'\033[38;2;167;139;250m'      # violet  #a78bfa
-  ACCENT_BRIGHT=$'\033[38;2;196;181;253m' # #c4b5fd
+  ACCENT=$'\033[38;2;142;160;255m'      # #8EA0FF  --accent (dark)
+  ACCENT_BRIGHT=$'\033[38;2;237;237;240m' # #EDEDF0  --fg (dark)
   SUCCESS=$'\033[38;2;52;211;153m'      # mint    #34d399
   WARN=$'\033[38;2;251;191;36m'         # amber   #fbbf24
   ERROR=$'\033[38;2;248;113;113m'       # red     #f87171
   INFO=$'\033[38;2;148;163;184m'        # slate   #94a3b8
-  MUTED=$'\033[38;2;100;116;139m'       # #64748b
+  MUTED=$'\033[38;2;143;143;153m'       # #8F8F99  --ink3 (dark)
   NC=$'\033[0m'
 else
   BOLD=""; ACCENT=""; ACCENT_BRIGHT=""; SUCCESS=""; WARN=""; ERROR=""; INFO=""; MUTED=""; NC=""
@@ -59,11 +61,30 @@ card() { # card <border-color> <line>...
   printf '  %s└────────────────────────────────────────────%s\n' "$border" "$NC"
 }
 
+# The mark, one line per row. Keep the leading spaces: they are the silhouette.
+claw_art() {
+  local line
+  while IFS= read -r line; do
+    printf '  %s%s%s\n' "$ACCENT" "$line" "$NC"
+  done <<'CLAW'
+                  ▄▄███████▄▄
+          ▄▄███████████▀▀▀▀▀
+        ▄███████████
+    ▄▄▄█████████████
+  ▄█████████████████
+▄██████████████████▀
+▀███████████████████▄▄
+  ▀██████████████████████▄▄
+    ▀██▀         ▀▀▀██████▀▀▀
+CLAW
+}
+
 banner() {
   echo ""
-  printf '  %s///%s  %sSUPARCLAW%s\n' "$ACCENT_BRIGHT" "$NC" "$BOLD$ACCENT" "$NC"
-  printf '      %s%s%s\n' "$INFO" "$TAGLINE" "$NC"
-  printf '      %s%s%s\n\n' "$MUTED" "$INSTALLER_HINT" "$NC"
+  claw_art
+  printf '\n  %s%s%s\n' "$BOLD" "suparclaw" "$NC"
+  printf '  %s%s%s\n' "$MUTED" "$TAGLINE" "$NC"
+  printf '  %s%s%s\n\n' "$MUTED" "$INSTALLER_HINT" "$NC"
 }
 
 celebrate() { # celebrate <line>
@@ -97,7 +118,7 @@ is_termux() { case "${PREFIX:-}" in *com.termux*) return 0 ;; *) return 1 ;; esa
 
 uninstall() {
   echo ""
-  printf '  %s///%s  %sSUPARCLAW%s  %suninstall%s\n\n' "$ACCENT_BRIGHT" "$NC" "$BOLD$ACCENT" "$NC" "$INFO" "$NC"
+  printf '  %s%s%s  %suninstall%s\n\n' "$BOLD" "suparclaw" "$NC" "$INFO" "$NC"
   for bin_dir in "${PREFIX:-}/bin" "${HOME}/.local/bin" "${HOME}/bin"; do
     [ -n "$bin_dir" ] || continue
     rm -f "$bin_dir/sc" "$bin_dir/suparclaw" 2>/dev/null || true

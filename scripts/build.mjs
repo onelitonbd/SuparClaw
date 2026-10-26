@@ -59,6 +59,15 @@ if (watch) {
 }
 
 // --- Control UI: browser bundle + static assets, committed to dist/ui -------
+/** Static files served next to index.html (icons, share card, manifest). */
+const UI_ASSETS = [
+  "favicon.svg",
+  "apple-touch-icon.png",
+  "icon-192.png",
+  "icon-512.png",
+  "og-image.png",
+  "manifest.webmanifest",
+];
 const uiOut = join(root, "dist/ui");
 await mkdir(uiOut, { recursive: true });
 {
@@ -79,6 +88,13 @@ await mkdir(uiOut, { recursive: true });
     metafile: true,
   });
   await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
+  // Brand assets the page links to: the favicon, the home-screen icons, the
+  // share card and the web app manifest. They live in ui/ and are copied by
+  // name — a missing one is a 404 in the browser, so brand-mark.test.mjs checks
+  // that every href/src in the built index.html resolves.
+  for (const asset of UI_ASSETS) {
+    await copyFile(join(root, "ui", asset), join(uiOut, asset));
+  }
   // Settings interior: a separate light file loaded lazily by the app shell.
   await mkdir(join(uiOut, "interior"), { recursive: true });
   await copyFile(join(root, "ui/interior/settings.html"), join(uiOut, "interior", "settings.html"));

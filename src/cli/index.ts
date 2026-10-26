@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configPath, ensureDirs, readTextSafe, webUiRoot, dbPath } from "../util/paths.js";
-import { brandLine, card, celebrate, checklist, fg, kv, voiceLine } from "./brand.js";
+import { banner, card, celebrate, checklist, fg, kv, voiceLine } from "./brand.js";
 
 // Service, the store and the agent runtime load per command, so `sc version`
 // and `sc help` never pay for node:sqlite, tools or the model client.
@@ -217,7 +217,7 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 async function init(): Promise<number> {
-  console.log(`\n${brandLine("· " + "your phone is the machine.")}\n`);
+  console.log(`\n${banner()}\n`);
   ensureDirs();
   const madeConfig = !existsSync(configPath());
   if (madeConfig) {
@@ -891,7 +891,7 @@ async function gateway(args: string[], GatewayCtor: typeof import("../gateway/se
   (await import("./service.js")).writePid(service.config.gateway.port);
   const auth = service.config.gateway.auth;
   const uiHost = gw.address.replace("0.0.0.0", "127.0.0.1");
-  console.log(`\n${brandLine("gateway")}`);
+  console.log(`\n${banner("gateway")}`);
   console.log(`  ${fg.muted("ws")}       ws://${gw.address}/ws`);
   console.log(`  ${fg.muted("web ui")}   http://${uiHost}/`);
   console.log(`  ${fg.muted("health")}   http://${uiHost}/health`);

@@ -1,5 +1,5 @@
 import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
-import{a as l}from"./chunk-ZUBGA32Y.js";import{a as S,b as k,c as v,d as m,e as w,f as y}from"./chunk-547RLRPI.js";import{e as R}from"./chunk-DP7N4MKE.js";import{a as _}from"./chunk-6FMFH3K6.js";import{a as $,d as N}from"./chunk-YLPL3IHV.js";var E=N(_(),1);import{existsSync as x,readFileSync as O}from"node:fs";var b=`usage: sc secrets <subcommand> [options]
+import{a as l}from"./chunk-BARRNHX4.js";import{a as S,b as k,c as v,d as m,e as w,f as y}from"./chunk-547RLRPI.js";import{e as R}from"./chunk-DP7N4MKE.js";import{a as _}from"./chunk-6FMFH3K6.js";import{a as $,d as N}from"./chunk-YLPL3IHV.js";var E=N(_(),1);import{existsSync as x,readFileSync as O}from"node:fs";var b=`usage: sc secrets <subcommand> [options]
 
 subcommands:
   audit [--check] [--json]   scan the active config for plaintext credentials

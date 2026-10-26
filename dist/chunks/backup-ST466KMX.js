@@ -1,5 +1,5 @@
 import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);
-import{c as d,d as p,e as w,f as v}from"./chunk-G7RHPLYJ.js";import{a as t}from"./chunk-ZUBGA32Y.js";import"./chunk-DP7N4MKE.js";import{a as f}from"./chunk-YLPL3IHV.js";import{resolve as u}from"node:path";var y=`usage: sc backup <subcommand> [options]
+import{c as d,d as p,e as w,f as v}from"./chunk-G7RHPLYJ.js";import{a as t}from"./chunk-BARRNHX4.js";import"./chunk-DP7N4MKE.js";import{a as f}from"./chunk-YLPL3IHV.js";import{resolve as u}from"node:path";var y=`usage: sc backup <subcommand> [options]
 
 subcommands:
   create [--output <dir>] [--no-include-workspace] [--only-config] [--dry-run] [--verify] [--json]
