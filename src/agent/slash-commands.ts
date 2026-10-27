@@ -12,6 +12,15 @@ import type { Service } from "./service.js";
 import { readTextSafe, workspaceDir } from "../util/paths.js";
 import { modelProfile } from "../config/schema.js";
 
+/**
+ * The effort levels a session can be pinned to, in order.
+ *
+ * One list, used by the `/think` text form and by Telegram's buttons (Task
+ * 54b) — the card offering a level the command would reject is the drift this
+ * constant exists to prevent.
+ */
+export const SESSION_THINKING_LEVELS = ["off", "low", "medium", "high", "xhigh", "max"] as const;
+
 export const SLASH_CATALOG: { cmd: string; summary: string }[] = [
   { cmd: "/help", summary: "short help summary" },
   { cmd: "/commands", summary: "full command catalog" },
@@ -62,7 +71,7 @@ export function slashHelp(): string {
     ...SLASH_CATALOG.map((c) => `  ${c.cmd.padEnd(36)} ${c.summary}`),
     "",
     "surface-local: /exit /quit /clear /session <key> /model [--save] (TUI) · /new (TUI, web, Telegram)",
-    "Telegram-only: /model · /provider [list|add|remove|test] · /whoami",
+    "Telegram-only: /new · /sessions [session] · /model · /provider [list|add|remove|test] · /whoami — every picker is buttons",
   ].join("\n");
 }
 
@@ -134,9 +143,16 @@ export async function handleSlashExtension(
       const comp = service.compactionStats(payload.sessionKey);
       // Task 54: a conversation can be pinned to its own model; `/status` must
       // answer "what will the next turn use", not "what is the default".
-      const pin = String(service.store.getSessionByKey(payload.sessionKey)?.model ?? "").trim();
+      const row = service.store.getSessionByKey(payload.sessionKey);
+      const pin = String(row?.model ?? "").trim();
       const pinLabel = pin ? modelProfile(cfg, pin).label || pin : "";
+      // Task 54b: after /sessions a chat can be in any of its conversations, so
+      // "which one" has to be answerable without scrolling back to the card.
+      const title = (row?.name ?? "").trim() || "untitled";
+      const fallback = cfg.agents.defaults.reasoningEffort;
+      const effort = String(row?.thinking ?? "").trim() || (fallback && fallback !== "inherit" ? `inherit (${fallback})` : "inherit");
       return [
+        `session:   ${title} · ${payload.sessionKey} · thinking: ${effort}`,
         `model:     ${pin ? `${pinLabel} (this chat) · default: ${cfg.agents.defaults.model || "(unset)"}` : cfg.agents.defaults.model || "(unset)"}${
           cfg.agents.defaults.fallbacks.length ? ` · fallbacks: ${cfg.agents.defaults.fallbacks.length}` : ""
         }`,
@@ -254,7 +270,7 @@ export async function handleSlashExtension(
     case "/think": {
       // The session column already exists and is already second in the loop's
       // reasoning chain (`#reasoningFor`) — a writer is all this needed.
-      const levels = ["off", "low", "medium", "high", "xhigh", "max"];
+      const levels: readonly string[] = SESSION_THINKING_LEVELS;
       const row = service.store.ensureSession(payload.sessionKey);
       const current = (row.thinking as string | null | undefined) ?? null;
       const want = rest.trim().toLowerCase();

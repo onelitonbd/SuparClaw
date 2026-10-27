@@ -16,10 +16,34 @@ import {
   testProvider,
 } from "../config/providers.js";
 import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
+import { modelProfile } from "../config/schema.js";
 import { buildCommandMenu, staleCommandScopes } from "./telegram-menu.js";
 import { splitForTelegram, stripHtmlTags, telegramChunks } from "./telegram-format.js";
 import { createTurnDelivery, isTransientTelegramError } from "./telegram-delivery.js";
 import { applyModelTap, currentModel, providerCard, readModelArgument, type Card } from "./telegram-model-menu.js";
+import {
+  PICKER_PAGE,
+  accountCard,
+  branchCard,
+  isSessionOfChat,
+  newSessionCard,
+  readAccountTap,
+  readBranchTap,
+  readRepoTap,
+  readSessionTap,
+  readThinkingTap,
+  relativeAge,
+  repoCard,
+  resolveActiveSession,
+  sessionTitle,
+  sessionsCard,
+  shortHash,
+  switchedCard,
+  thinkingCard,
+  thinkingSetCard,
+  unconfiguredGithubCard,
+  type AccountRow,
+} from "./telegram-pickers.js";
 
 // Telegram channel: grammY long polling, per-chat batching, one editable status
 // draft per turn, DM pairing + group allowlists + mention gating.
@@ -233,11 +257,21 @@ type GrammyBot = Awaited<ReturnType<typeof createBot>>;
  */
 export const TELEGRAM_COMMANDS: { cmd: string; summary: string }[] = [
   { cmd: "/start", summary: "what this bot is, and every command" },
+  { cmd: "/new", summary: "start a fresh session — chat, or code a repository" },
+  { cmd: "/sessions", summary: "switch to an earlier conversation in this chat" },
   { cmd: "/model", summary: "pick the model for this chat — provider, then model" },
   { cmd: "/provider [list|add|remove|test]", summary: "manage model providers" },
   { cmd: "/whoami", summary: "your Telegram id, this chat and its session" },
-  { cmd: "/new", summary: "start a fresh session (the old one is kept)" },
 ];
+
+/**
+ * Names the operator types that we answer with a shorter one.
+ *
+ * `/session` and `/thinking` are what people actually reach for; normalising
+ * here means one switch to keep in sync rather than an alias branch in every
+ * handler, and `/thinking high` still lands on `/think high`.
+ */
+export const COMMAND_ALIASES: Record<string, string> = { session: "sessions", thinking: "think" };
 
 /** Session key for a chat: the base key, plus `/new`'s rotation tag if set. */
 export function telegramSessionKey(chatId: number, tag?: string | null): string {
@@ -256,7 +290,8 @@ export interface BotCommand {
 export function parseCommand(text: string): BotCommand | null {
   const m = /^\/([A-Za-z][\w]*)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (!m) return null;
-  return { name: (m[1] as string).toLowerCase(), args: (m[2] ?? "").trim() };
+  const name = (m[1] as string).toLowerCase();
+  return { name: COMMAND_ALIASES[name] ?? name, args: (m[2] ?? "").trim() };
 }
 
 interface PendingMessage {
@@ -275,12 +310,30 @@ interface PendingMessage {
 
 export class TelegramChannel {
   #bot: GrammyBot | null = null;
-  /** chatId → the repo list behind the current `r:<page>:<slot>` buttons. */
-  #repoPages = new Map<number, { fullName: string; defaultBranch: string }[]>();
-  /** chatId → the repo picked on the way to the branch keyboard. */
-  #pickedRepo = new Map<number, { repo: string; base: string }>();
-  /** chatId → the branch list behind the current `b:<index>` buttons. */
-  #branchPages = new Map<number, string[]>();
+  /**
+   * chatId → the repository list the `r:` buttons index.
+   *
+   * GitHub returns 100 rows a page and we show 10, so the picker accumulates
+   * API pages on demand: `items` is everything fetched so far, `done` says
+   * whether GitHub has more, and the header can therefore be honest about the
+   * page count instead of promising one it has not seen.
+   */
+  #repoLists = new Map<
+    number,
+    {
+      items: { fullName: string; private: boolean; defaultBranch: string }[];
+      done: boolean;
+      /** Next GitHub page to pull (1-based). */
+      apiPage: number;
+      account: AccountRow;
+    }
+  >();
+  /** chatId → the repo picked on the way to the branch keyboard (Task 36). */
+  #pickedRepo = new Map<number, { repo: string; base: string; account: AccountRow }>();
+  /** chatId → the accounts behind the `a:` buttons (the card that drew them). */
+  #accountPages = new Map<number, AccountRow[]>();
+  /** chatId → the branch list behind the `b:` buttons. */
+  #branchLists = new Map<number, { items: { name: string; default?: boolean; protected?: boolean }[]; done: boolean; apiPage: number }>();
   #pending = new Map<string, PendingMessage>();
   #username = "";
   #botId = 0;
@@ -440,72 +493,163 @@ export class TelegramChannel {
       return;
     }
 
+    const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
+
+    if (kind === "s") {
+      // Sessions: `s:<page>:<slot>:<hash>` enters, `s:p:<page>` pages, `s:n` is
+      // the same rotation `/new` runs.
+      const tap = readSessionTap(data);
+      if (!tap) return;
+      if (tap.kind === "new") {
+        await ctx.answerCallbackQuery({ text: "new session" }).catch(() => {});
+        await this.#startNew(chatId, ctx);
+        return;
+      }
+      if (tap.kind === "page") {
+        await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
+        await this.#sendSessionsCard(chatId, tap.page, ctx);
+        return;
+      }
+      const active = this.#sessionKeyFor(chatId);
+      const target = this.#chatSessions(chatId)[tap.slot];
+      if (!target || shortHash(target.key) !== tap.hash) {
+        await ctx.answerCallbackQuery({ text: "This picker expired — send /sessions again", show_alert: true }).catch(() => {});
+        return;
+      }
+      if (target.key === active) {
+        await ctx.answerCallbackQuery({ text: "You are already here" }).catch(() => {});
+        return;
+      }
+      // Switching away mid-turn would deliver the running answer to a
+      // transcript the user is no longer looking at.
+      if (this.service.loop.isBusy(active)) {
+        await ctx.answerCallbackQuery({ text: "Still working — /stop first, then switch", show_alert: true }).catch(() => {});
+        return;
+      }
+      const card = await this.#enterSession(chatId, target.key);
+      await ctx.answerCallbackQuery({ text: "switched" }).catch(() => {});
+      await this.#editCard(ctx, card);
+      return;
+    }
+
+    if (kind === "t") {
+      // Thinking effort: seven answers, one column, the same writer the text
+      // form uses.
+      const tap = readThinkingTap(data);
+      if (!tap) return;
+      if (tap.kind === "open") {
+        await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
+        await this.#sendThinkingCard(chatId, isGroup, ctx);
+        return;
+      }
+      this.service.store.setSessionThinking(this.#sessionKeyFor(chatId), tap.level);
+      await ctx.answerCallbackQuery({ text: tap.level ? `thinking ${tap.level}` : "thinking default" }).catch(() => {});
+      await this.#editCard(
+        ctx,
+        thinkingSetCard({ level: tap.level, fallback: this.service.config.agents.defaults.reasoningEffort, group: isGroup }),
+      );
+      return;
+    }
+
+    if (kind === "a") {
+      // Account: `a:<index>:<hash of the source>`, so a list that changed under
+      // the card cannot bind with a login the user did not pick.
+      const idx = readAccountTap(data);
+      if (idx === null) return;
+      const account = this.#accountPages.get(chatId)?.[idx];
+      if (!account || parts[2] !== shortHash(account.source)) {
+        await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: `@${account.login}`.slice(0, 180) }).catch(() => {});
+      this.#repoLists.set(chatId, { items: [], done: false, apiPage: 1, account });
+      await this.#sendRepos(chatId, 0, ctx);
+      return;
+    }
+
     if (kind === "n") {
-      // Chat or code. `n:c` rotates the tag and starts the chat immediately;
-      // `n:k` rotates the same way, then shows the repo picker for the *new*
-      // tag, so the binding lands on the session the user just created.
+      // Chat or code. `n:c` starts the chat that `/new` already rotated to;
+      // `n:k` asks which GitHub account before anything is listed or cloned.
       const choice = parts[1];
       if (choice !== "c" && choice !== "k") return;
-      // `/new` already rotated the tag, so this reads the session the card was
-      // drawn for rather than rotating a second time on the tap.
       const key = this.#sessionKeyFor(chatId);
-      await ctx.answerCallbackQuery({ text: choice === "c" ? "chat" : "pick a repo" }).catch(() => {});
+      await ctx.answerCallbackQuery({ text: choice === "c" ? "chat" : "which account?" }).catch(() => {});
       if (choice === "c") {
         await ctx.editMessageText(`💬 Chat session ${key} — say anything to begin.`).catch(() => {});
         return;
       }
-      await ctx.editMessageText(`⌘ code session ${key} — pick the repository:`).catch(() => {});
-      await this.#sendRepoPicker(chatId, 0);
+      await this.#sendAccounts(chatId, ctx);
       return;
     }
 
     if (kind === "r") {
-      // Repo picker page/slot: the slot indexes the list held for this chat, so
-      // the callback stays tiny and a stale button can never bind the wrong repo.
-      const page = Number(parts[1]);
-      const slot = parts[2] ?? "";
-      if (!Number.isFinite(page) || page < 0) return;
-      if (slot === "p") {
+      // Repositories: `r:<page>:<slot>` selects, `r:p:<page>` pages, `r:a` is
+      // the way back to the account list. The slot indexes the list held for
+      // this chat, so a callback stays tiny and never carries `owner/name`.
+      const tap = readRepoTap(data);
+      if (!tap) return;
+      if (tap.kind === "accounts") {
         await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
-        await this.#sendRepoPicker(chatId, page);
+        await this.#sendAccounts(chatId, ctx);
         return;
       }
-      const repo = this.#repoPages.get(chatId)?.[Number(slot)];
-      if (!repo) {
+      if (tap.kind === "page") {
+        await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
+        await this.#sendRepos(chatId, tap.page, ctx);
+        return;
+      }
+      const list = this.#repoLists.get(chatId);
+      const repo = list?.items[tap.slot];
+      if (!list || !repo) {
         await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
         return;
       }
       // Task 36: one more question — which branch to continue — before anything
       // is cloned, so the worktree is checked out on the right branch first time.
-      this.#pickedRepo.set(chatId, { repo: repo.fullName, base: repo.defaultBranch });
+      this.#pickedRepo.set(chatId, { repo: repo.fullName, base: repo.defaultBranch, account: list.account });
+      this.#branchLists.set(chatId, { items: [], done: false, apiPage: 1 });
       await ctx.answerCallbackQuery({ text: repo.fullName.slice(0, 180) }).catch(() => {});
-      await ctx.editMessageText(`⌘ ${repo.fullName} — which branch should the agent continue?`).catch(() => {});
-      await this.#sendBranchPicker(chatId, 0);
+      await this.#sendBranches(chatId, 0, ctx);
       return;
     }
 
     if (kind === "b") {
-      // Branch keyboard: `b:<index>` selects, `b:p:<page>` pages. Two bytes of
-      // verb and an integer — a branch name never rides a callback.
+      // Branches: `b:<page>:<slot>` binds, `b:p:<page>` pages, `b:r` goes back.
+      const tap = readBranchTap(data);
+      if (!tap) return;
       const pick = this.#pickedRepo.get(chatId);
       if (!pick) {
         await ctx.answerCallbackQuery({ text: "Pick a repository first — /code", show_alert: true }).catch(() => {});
         return;
       }
-      if (parts[1] === "p") {
+      if (tap.kind === "repos") {
         await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
-        await this.#sendBranchPicker(chatId, Number(parts[2] ?? 0) || 0);
+        await this.#sendRepos(chatId, 0, ctx);
         return;
       }
-      const branch = this.#branchPages.get(chatId)?.[Number(parts[1])];
+      if (tap.kind === "page") {
+        await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
+        await this.#sendBranches(chatId, tap.page, ctx);
+        return;
+      }
+      const branch = this.#branchLists.get(chatId)?.items[tap.slot];
       if (!branch) {
         await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
         return;
       }
-      await ctx.answerCallbackQuery({ text: branch.slice(0, 180) }).catch(() => {});
+      await ctx.answerCallbackQuery({ text: branch.name.slice(0, 180) }).catch(() => {});
       const key = this.#sessionKeyFor(chatId);
-      const bound = await this.service.bindRepo({ sessionKey: key, repo: pick.repo, base: pick.base, branch });
+      const bound = await this.service.bindRepo({
+        sessionKey: key,
+        repo: pick.repo,
+        base: pick.base,
+        branch: branch.name,
+        // The login the list came from — never a different one than the user saw.
+        source: pick.account.source,
+      });
       this.#pickedRepo.delete(chatId);
+      this.#branchLists.delete(chatId);
+      this.#repoLists.delete(chatId);
       await ctx
         .editMessageText(bound.ok ? `${this.#boundLine(bound)}\nAsk for a change, then /diff to review and /pr to publish.` : bound.error)
         .catch(() => {});
@@ -780,32 +924,26 @@ export class TelegramChannel {
         );
       }
 
-      case "new": {
-        // A rotation tag, never a delete: the old transcript stays in Sessions.
-        // Rotation happens on the command (unchanged since Task 27), so both
-        // buttons act on a session that already exists; the ids are 3 bytes and
-        // comfortably inside the 64-byte callback cap.
-        const previous = this.#sessionKeyFor(scope.chatId);
-        // Task 54: the model is a choice about THIS CHAT, so a fresh session in
-        // the same chat keeps it. Losing it on /new would read as the pin
-        // silently reverting, which is exactly the surprise /model exists to
-        // avoid. `/model default` is the way back.
-        const carried = this.#pinFor(scope.chatId);
-        this.service.store.setMeta(`telegram:sess:${scope.chatId}`, Date.now().toString(36));
-        const key = this.#sessionKeyFor(scope.chatId);
-        if (carried) this.service.store.setSessionModel(key, carried);
-        await this.#requireBot().api
-          .sendMessage(scope.chatId, `New session ${key}\nThe previous one is kept — ${previous} is still in Sessions.\n\nChat, or code a repository?`, {
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: "💬 Chat", callback_data: "n:c" },
-                  { text: "⌘ Code", callback_data: "n:k" },
-                ],
-              ],
-            },
-          })
-          .catch((err: unknown) => this.log.warn(`telegram: new-session card failed: ${(err as Error).message}`));
+      case "new":
+        return this.#startNew(scope.chatId);
+
+      case "sessions": {
+        // Task 54b: the chat can look at any of its own conversations. The
+        // pointer lives in meta, so this is a switch, not a copy. The card
+        // opens on the page that holds the current one — a ✓ on page 4 is a ✓
+        // nobody sees.
+        const active = this.#sessionKeyFor(scope.chatId);
+        const at = this.#chatSessions(scope.chatId).findIndex((row) => row.key === active);
+        await this.#sendSessionsCard(scope.chatId, at > 0 ? Math.floor(at / PICKER_PAGE) : 0);
+        return true;
+      }
+
+      case "think": {
+        // No argument: the levels as buttons. With one: `false`, so `/think
+        // high` reaches the shared router and the text form stays the single
+        // implementation for every surface.
+        if (sub) return false;
+        await this.#sendThinkingCard(scope.chatId, scope.isGroup);
         return true;
       }
 
@@ -827,7 +965,9 @@ export class TelegramChannel {
           });
           return reply(bound.ok ? this.#boundLine(bound) : bound.error);
         }
-        return this.#sendRepoPicker(scope.chatId, 0);
+        // Task 54b: the coding flow now starts by asking *which account*, since
+        // the repositories, the branches and the clone all depend on it.
+        return this.#startCode(scope.chatId);
       }
 
       case "pr": {
@@ -933,79 +1073,185 @@ export class TelegramChannel {
    * The slot indexes a list we hold per chat, so a gateway restart expires the
    * buttons rather than binding the wrong repository.
    */
-  async #sendRepoPicker(chatId: number, page: number): Promise<boolean> {
-    let repos: { fullName: string; private: boolean; defaultBranch?: string }[] = [];
-    try {
-      repos = await this.service.githubRepos({ page: page + 1 });
-    } catch (err) {
-      await this.#requireBot().api
-        .sendMessage(chatId, `GitHub is not connected — ${(err as Error).message}\n\nOn the gateway: sc github adopt-gh (or sc github connect)`)
-        .catch(() => {});
-      return true;
-    }
-    if (!repos.length) {
-      await this.#requireBot().api
-        .sendMessage(chatId, page === 0 ? "no repositories on this account" : "no more repositories")
-        .catch(() => {});
-      return true;
-    }
-    this.#repoPages.set(chatId, repos.map((r) => ({ fullName: r.fullName, defaultBranch: r.defaultBranch ?? "main" })));
-    const rows = repos.slice(0, 8).map((r, i) => [
-      { text: `${r.private ? "🔒 " : ""}${r.fullName}`.slice(0, 60), callback_data: `r:${page}:${i}` },
-    ]);
-    const nav: { text: string; callback_data: string }[] = [];
-    if (page > 0) nav.push({ text: "‹ Back", callback_data: `r:${page - 1}:p` });
-    nav.push({ text: "More ›", callback_data: `r:${page + 1}:p` });
-    rows.push(nav);
-    await this.#requireBot().api
-      .sendMessage(chatId, "Pick a repository — it becomes this chat's workspace.", { reply_markup: { inline_keyboard: rows } })
-      .catch((err: unknown) => this.log.warn(`telegram: repo picker failed: ${(err as Error).message}`));
-    return true;
+  /** Send a card (a command asked for it, so there is no message to edit). */
+  async #postCard(chatId: number, card: Card): Promise<void> {
+    const api = this.#requireBot().api;
+    const body = card.text.slice(0, 4000);
+    const sent = card.keyboard
+      ? api.sendMessage(chatId, body, { reply_markup: { inline_keyboard: card.keyboard }, link_preview_options: { is_disabled: true } })
+      : api.sendMessage(chatId, body, { link_preview_options: { is_disabled: true } });
+    await sent.catch((err: unknown) => this.log.warn(`telegram: card failed: ${(err as Error).message}`));
   }
 
   /**
-   * One page of the branch keyboard (Task 36). The default branch is first and
-   * marked, because "continue the default branch" is the common answer; the
-   * indices are absolute, so paging never has to renumber a callback.
+   * `/new` — rotate to a fresh session, then ask chat-or-code.
+   *
+   * The rotation is the only thing that creates sessions (unchanged since Task
+   * 27), which is why the sessions card's `＋ New session` button calls this and
+   * not its own copy. The model pin is carried over: it is a choice about the
+   * chat, not about one transcript.
    */
-  async #sendBranchPicker(chatId: number, page: number): Promise<boolean> {
-    const pick = this.#pickedRepo.get(chatId);
-    if (!pick) return true;
-    let branches: { name: string; default?: boolean; protected?: boolean }[] = [];
-    try {
-      branches = await this.service.githubBranches({ repo: pick.repo, base: pick.base });
-    } catch (err) {
-      await this.#requireBot().api
-        .sendMessage(chatId, `could not list branches — ${(err as Error).message}`)
-        .catch(() => {});
-      return true;
-    }
-    if (!branches.length) {
-      await this.#requireBot().api
-        .sendMessage(chatId, `${pick.repo} has no branches yet — nothing to continue.`)
-        .catch(() => {});
-      return true;
-    }
-    this.#branchPages.set(chatId, branches.map((b) => b.name));
-    const perPage = 8;
-    const start = Math.max(0, page) * perPage;
-    const slice = branches.slice(start, start + perPage);
-    const rows = slice.map((b, i) => [
-      {
-        text: `${b.default ? "★ " : ""}${b.name}${b.protected ? " 🔒" : ""}`.slice(0, 60),
-        callback_data: `b:${start + i}`,
-      },
-    ]);
-    const nav: { text: string; callback_data: string }[] = [];
-    if (page > 0) nav.push({ text: "‹ Back", callback_data: `b:p:${page - 1}` });
-    if (start + perPage < branches.length) nav.push({ text: "More ›", callback_data: `b:p:${page + 1}` });
-    if (nav.length) rows.push(nav);
-    await this.#requireBot().api
-      .sendMessage(chatId, `${pick.repo} · ★ = default branch. The agent continues the branch you pick.`, {
-        reply_markup: { inline_keyboard: rows },
-      })
-      .catch((err: unknown) => this.log.warn(`telegram: branch picker failed: ${(err as Error).message}`));
+  async #startNew(chatId: number, ctx?: Context): Promise<boolean> {
+    const previous = this.#sessionKeyFor(chatId);
+    const carried = this.#pinFor(chatId);
+    this.service.store.setMeta(`telegram:sess:${chatId}`, Date.now().toString(36));
+    // The pointer would otherwise keep the chat in the session it was looking
+    // at, and `/new` would appear to do nothing.
+    this.service.store.setMeta(`telegram:active:${chatId}`, "");
+    const key = this.#sessionKeyFor(chatId);
+    if (carried) this.service.store.setSessionModel(key, carried);
+    const card = newSessionCard({ key, previous });
+    // A tap has a message to edit (one bubble for the whole flow); the command
+    // has none, so it posts.
+    if (ctx) await this.#editCard(ctx, card);
+    else await this.#postCard(chatId, card);
     return true;
+  }
+
+  /** `/sessions` and its pages: every conversation this chat has had. */
+  async #sendSessionsCard(chatId: number, page: number, ctx?: Context): Promise<void> {
+    const active = this.#sessionKeyFor(chatId);
+    const card = sessionsCard({ sessions: this.#chatSessions(chatId), active, page, now: Date.now() });
+    if (ctx) await this.#editCard(ctx, card);
+    else await this.#postCard(chatId, card);
+  }
+
+  /** `/think` (alias `/thinking`) with no argument: the levels as buttons. */
+  async #sendThinkingCard(chatId: number, isGroup: boolean, ctx?: Context): Promise<void> {
+    const key = this.#sessionKeyFor(chatId);
+    const row = this.service.store.getSessionByKey(key);
+    const card = thinkingCard({
+      current: (row?.thinking as string | null | undefined) ?? null,
+      fallback: this.service.config.agents.defaults.reasoningEffort,
+      group: isGroup,
+    });
+    if (ctx) await this.#editCard(ctx, card);
+    else await this.#postCard(chatId, card);
+  }
+
+  /**
+   * Enter a session: write the pointer, and say which one — with the model and
+   * the effort that session will actually use, so the answer is not a surprise.
+   */
+  async #enterSession(chatId: number, key: string): Promise<Card> {
+    this.service.store.setMeta(`telegram:active:${chatId}`, key);
+    const row = this.service.store.getSessionByKey(key);
+    const pin = String(row?.model ?? "").trim();
+    const label = (value: string): string => (value ? modelProfile(this.service.config, value).label || value : "");
+    const model = pin ? `${label(pin)} (this session)` : `${label(this.service.config.agents.defaults.model) || "(unset)"} (default)`;
+    const effort = String(row?.thinking ?? "").trim();
+    return switchedCard({ title: sessionTitle({ key, name: row?.name ?? null }), key, model, thinking: effort || "inherit" });
+  }
+
+  // ── coding: account → repositories → branches ───────────────────────────
+
+  /** First question of the coding flow: which login? */
+  async #sendAccounts(chatId: number, ctx?: Context): Promise<void> {
+    let accounts: AccountRow[] = [];
+    try {
+      accounts = await this.service.githubAccounts();
+    } catch (err) {
+      await this.#postCard(chatId, unconfiguredGithubCard((err as Error).message));
+      return;
+    }
+    if (accounts.length === 0) {
+      await this.#postCard(chatId, unconfiguredGithubCard("no usable login was found"));
+      return;
+    }
+    this.#accountPages.set(chatId, accounts);
+    const card = accountCard({ accounts, current: this.#pickedRepo.get(chatId)?.account.source ?? null });
+    if (ctx) await this.#editCard(ctx, card);
+    else await this.#postCard(chatId, card);
+  }
+
+  /** Start the flow, from `/code` or from the Chat/Code card. */
+  async #startCode(chatId: number): Promise<boolean> {
+    await this.#sendAccounts(chatId);
+    return true;
+  }
+
+  /** Pull GitHub pages until `need` rows are in hand (or GitHub runs out). */
+  async #ensureRepos(chatId: number, need: number): Promise<string | null> {
+    const list = this.#repoLists.get(chatId);
+    if (!list) return "This picker expired — send /code again";
+    while (!list.done && list.items.length < need) {
+      try {
+        const rows = await this.service.githubRepos({ page: list.apiPage, perPage: 100, source: list.account.source });
+        const seen = new Set(list.items.map((r) => r.fullName));
+        for (const row of rows) if (!seen.has(row.fullName)) list.items.push({ fullName: row.fullName, private: row.private, defaultBranch: row.defaultBranch });
+        list.apiPage += 1;
+        if (rows.length < 100) list.done = true;
+      } catch (err) {
+        return `could not list repositories — ${(err as Error).message}`;
+      }
+    }
+    return null;
+  }
+
+  /** The repository page, ten at a time. */
+  async #sendRepos(chatId: number, page: number, ctx?: Context): Promise<void> {
+    const list = this.#repoLists.get(chatId);
+    if (!list) {
+      if (ctx) await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
+      return;
+    }
+    const problem = await this.#ensureRepos(chatId, (page + 1) * PICKER_PAGE);
+    if (problem) {
+      await this.#postCard(chatId, { text: problem, keyboard: [[{ text: "‹ Accounts", callback_data: "r:a" }]] });
+      return;
+    }
+    const card = repoCard({
+      repos: list.items,
+      account: list.account,
+      page,
+      total: list.items.length,
+      done: list.done,
+    });
+    if (ctx) await this.#editCard(ctx, card);
+    else await this.#postCard(chatId, card);
+  }
+
+  /** Pull branch pages until `need` rows are in hand (or GitHub runs out). */
+  async #ensureBranches(chatId: number, need: number): Promise<string | null> {
+    const list = this.#branchLists.get(chatId);
+    const pick = this.#pickedRepo.get(chatId);
+    if (!list || !pick) return "This picker expired — send /code again";
+    while (!list.done && list.items.length < need) {
+      try {
+        const rows = await this.service.githubBranches({
+          repo: pick.repo,
+          base: pick.base,
+          page: list.apiPage,
+          perPage: 100,
+          source: pick.account.source,
+        });
+        const seen = new Set(list.items.map((b) => b.name));
+        for (const row of rows) if (!seen.has(row.name)) list.items.push(row);
+        list.apiPage += 1;
+        if (rows.length < 100) list.done = true;
+      } catch (err) {
+        return `could not list branches — ${(err as Error).message}`;
+      }
+    }
+    return null;
+  }
+
+  /** The branch page — the branch the session will *continue*. */
+  async #sendBranches(chatId: number, page: number, ctx?: Context): Promise<void> {
+    const pick = this.#pickedRepo.get(chatId);
+    if (!pick) {
+      if (ctx) await ctx.answerCallbackQuery({ text: "Pick a repository first — /code", show_alert: true }).catch(() => {});
+      return;
+    }
+    const problem = await this.#ensureBranches(chatId, (page + 1) * PICKER_PAGE);
+    if (problem) {
+      await this.#postCard(chatId, { text: problem, keyboard: [[{ text: "‹ Repos", callback_data: "b:r" }]] });
+      return;
+    }
+    const list = this.#branchLists.get(chatId)!;
+    const card = branchCard({ repo: pick.repo, branches: list.items, page, total: list.items.length, done: list.done, base: pick.base });
+    if (ctx) await this.#editCard(ctx, card);
+    else await this.#postCard(chatId, card);
   }
 
   /** The one sentence every surface says after a bind. */
@@ -1015,10 +1261,30 @@ export class TelegramChannel {
       : `⌘ working in ${bound.repo} · ${bound.branch} (from ${bound.base})`;
   }
 
-  /** `/new` rotates the tag, so the next message opens a fresh session while
-   *  every earlier transcript stays exactly where it is. */
+  /**
+   * Which session this chat is in.
+   *
+   * Two mechanisms, in priority order: the **pointer** `/sessions` writes (an
+   * absolute key, honoured only while that row still exists and belongs to this
+   * chat) and the **rotation tag** `/new` writes. One resolver, because `/diff`,
+   * `/pr`, `/status`, media and the repo binding all ask this question — a
+   * switch implemented at the message site would leave them on the old session.
+   */
   #sessionKeyFor(chatId: number): string {
-    return telegramSessionKey(chatId, this.service.store.getMeta(`telegram:sess:${chatId}`));
+    const active = this.service.store.getMeta(`telegram:active:${chatId}`);
+    return resolveActiveSession(chatId, {
+      active,
+      tag: this.service.store.getMeta(`telegram:sess:${chatId}`),
+      exists: (key) => Boolean(this.service.store.getSessionByKey(key)),
+    });
+  }
+
+  /** This chat's sessions, newest first — the card and a tap must agree. */
+  #chatSessions(chatId: number): ReturnType<Service["store"]["listSessions"]> {
+    return this.service.store
+      .listSessions(500)
+      .filter((row: { key: string }) => isSessionOfChat(row.key, chatId))
+      .sort((a: { last_msg_at?: number | null }, b: { last_msg_at?: number | null }) => Number(b.last_msg_at ?? 0) - Number(a.last_msg_at ?? 0));
   }
 
   /** Task 54: the model pinned to this chat's session ("" = the default). */

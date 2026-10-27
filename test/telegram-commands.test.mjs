@@ -101,7 +101,9 @@ test("spellings normalise both ways: export_session ⇄ export-session, skill_cr
 test("/new rotates the session key instead of deleting anything", () => {
   assert.equal(telegramSessionKey(12345), "telegram:12345");
   assert.equal(telegramSessionKey(12345, "m3x9"), "telegram:12345:m3x9");
-  assert.match(TG_SRC, /setMeta\(`telegram:sess:\$\{scope\.chatId\}`, Date\.now\(\)\.toString\(36\)\)/);
+  // Task 54b: the rotation moved into `#startNew` (the sessions card's button
+  // runs the same code), so the key is the chat id rather than the scope object.
+  assert.match(TG_SRC, /setMeta\(`telegram:sess:\$\{chatId\}`, Date\.now\(\)\.toString\(36\)\)/);
 });
 
 test("Telegram falls through instead of refusing unknown commands", () => {

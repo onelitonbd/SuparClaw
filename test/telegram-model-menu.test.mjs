@@ -104,13 +104,14 @@ test("more than a page is pages, with a way forward and back", () => {
     cfg.models[`m${i}`] = { ref: `big/model-${String(i).padStart(2, "0")}`, label: `Model ${String(i).padStart(2, "0")}`, enabled: true };
   }
   const first = modelCard({ config: cfg, provider: "big", page: 0 });
-  assert.equal(labels(first).filter((t) => /^Model /.test(t)).length, MODEL_PAGE_SIZE, "eight rows a page");
+  assert.equal(MODEL_PAGE_SIZE, 10, "one page size for every Telegram list (Task 54b)");
+  assert.equal(labels(first).filter((t) => /^Model /.test(t)).length, MODEL_PAGE_SIZE, "ten rows a page");
   assert.ok(datas(first).includes("m:o:0:1"), "More › points at the next page");
 
-  const last = modelCard({ config: cfg, provider: "big", page: 2 });
-  assert.equal(labels(last).filter((t) => /^Model /.test(t)).length, 4, "20 models = 8 + 8 + 4");
-  assert.ok(datas(last).includes("m:o:0:1"), "Back › returns a page");
-  assert.ok(!datas(last).some((d) => d === "m:o:0:3"), "and stops at the last page");
+  const last = modelCard({ config: cfg, provider: "big", page: 1 });
+  assert.equal(labels(last).filter((t) => /^Model /.test(t)).length, 10, "20 models = 10 + 10");
+  assert.ok(datas(last).includes("m:o:0:0"), "‹ Back returns a page");
+  assert.ok(!datas(last).some((d) => d === "m:o:0:2"), "and stops at the last page");
 
   // A page number past the end clamps instead of rendering an empty card.
   const past = modelCard({ config: cfg, provider: "big", page: 99 });

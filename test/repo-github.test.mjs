@@ -25,6 +25,9 @@ const {
   readStoredGithub,
   clearGithubCreds,
   resolveGithubCreds,
+  resolveGithubCredsFor,
+  githubCredentialSources,
+  accountLabel,
   githubApiBase,
   githubRequest,
   githubIdentity,
@@ -96,6 +99,31 @@ test("resolution order is env → gh CLI → stored token", () => {
   assert.equal(fromEnv?.source, "env", "an explicit env var beats every on-disk credential");
   assert.equal(fromEnv?.token, "env-token");
   delete process.env["GITHUB_TOKEN"];
+  clearGithubCreds();
+});
+
+test("each source can be named on its own, for the /code account step", () => {
+  // Task 54b: the picker asks *which account*, so a source has to be
+  // addressable — but naming one must never silently fall back to another, or
+  // the card would say "gh CLI" while cloning with the stored token.
+  clearGithubCreds();
+  saveGithubCreds({ token: "stored-token-123", login: "stored", host: "github.com", scopes: [] });
+  process.env["GITHUB_TOKEN"] = "env-token-123";
+
+  const sources = githubCredentialSources("github.com");
+  assert.deepEqual(sources.map((s) => s.source).slice(0, 1), ["env"], "same priority order the default resolver uses");
+  assert.ok(sources.some((s) => s.source === "token"));
+
+  assert.equal(resolveGithubCredsFor("token")?.token, "stored-token-123", "a named source resolves to itself");
+  assert.equal(resolveGithubCredsFor("token")?.login, "stored", "and keeps the login the file remembers");
+  assert.equal(resolveGithubCredsFor("env")?.token, "env-token-123");
+
+  delete process.env["GITHUB_TOKEN"];
+  assert.equal(resolveGithubCredsFor("env"), null, "a source that is gone resolves to nothing, not to another login");
+
+  assert.equal(accountLabel("gh"), "gh CLI");
+  assert.equal(accountLabel("token"), "this device");
+  assert.equal(accountLabel("env"), "GITHUB_TOKEN");
   clearGithubCreds();
 });
 

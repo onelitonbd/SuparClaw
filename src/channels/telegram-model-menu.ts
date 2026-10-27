@@ -25,9 +25,15 @@
 // instead of pinning a different model than the one on the button.
 
 import { modelProfile, modelProfiles, type SuparClawConfig } from "../config/schema.js";
+import { PICKER_PAGE, type Card, type KeyboardRow } from "./telegram-pickers.js";
 
-/** Rows per page. Eight buttons on a phone is a scroll; ten is a wall. */
-export const MODEL_PAGE_SIZE = 8;
+/**
+ * Rows per page. One number for every picker in Telegram (Task 54b) — the
+ * session, repository and branch lists the operator asked for are ten a page,
+ * and a model list that paged differently would be a second rule to remember.
+ */
+export const MODEL_PAGE_SIZE = PICKER_PAGE;
+export type { Card, KeyboardRow };
 /** Telegram rejects a button label over 64 chars; leave slack for the ✓ prefix. */
 const LABEL_MAX = 56;
 
@@ -38,17 +44,6 @@ export interface ModelChoice {
   label: string;
   /** The provider this choice belongs to (the first segment of its ref). */
   provider: string;
-}
-
-export interface KeyboardRow {
-  text: string;
-  callback_data: string;
-}
-
-export interface Card {
-  text: string;
-  /** `null` means "send without a keyboard" (nothing to choose). */
-  keyboard: KeyboardRow[][] | null;
 }
 
 /**

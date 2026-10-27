@@ -44,16 +44,21 @@ import { deviceLogin } from "../agent/oauth-device.js";
 import { RepoManager } from "../repo/manager.js";
 import { bindSessionRepo, publishRequested, unbindSessionRepo } from "../repo/session.js";
 import {
+  accountLabel,
   connectGithub,
   clearGithubCreds,
+  githubCredentialSources,
   githubIdentity,
   githubListBranches,
   githubListRepos,
   orderBranches,
   readStoredGithub,
   resolveGithubCreds,
+  resolveGithubCredsFor,
   saveGithubCreds,
+  type GithubAccount,
   type GithubCreds,
+  type GithubSource,
 } from "../repo/github.js";
 import type { RepoCtl } from "./tools.js";
 import { fetchModels } from "../config/providers.js";
@@ -488,20 +493,53 @@ export class Service {
    * front here, once, so every surface lists "continue the default" first —
    * three pickers each sorting differently is three different products.
    */
-  async githubBranches(opts: { repo: string; base?: string; page?: number }) {
-    const creds = this.githubCreds();
-    if (!creds) throw new Error("GitHub is not connected");
+  async githubBranches(opts: { repo: string; base?: string; page?: number; perPage?: number; source?: GithubSource }) {
     const host = this.config.addons?.github?.host ?? "github.com";
-    const rows = await githubListBranches(creds.token, { repo: opts.repo, host, page: opts.page });
+    const creds = opts.source ? resolveGithubCredsFor(opts.source, { host }) : this.githubCreds();
+    if (!creds) throw new Error("GitHub is not connected");
+    const rows = await githubListBranches(creds.token, { repo: opts.repo, host, page: opts.page, perPage: opts.perPage });
     // Ordering is a pure function so the picker's shape is tested, not implied.
     return orderBranches(rows, opts.base ?? "");
   }
 
-  async githubRepos(opts: { filter?: string; page?: number } = {}) {
-    const creds = this.githubCreds();
-    if (!creds) throw new Error("GitHub is not connected");
+  /**
+   * The logins this machine can act as, for the `/code` account step.
+   *
+   * GitHub has no "list accounts" endpoint — an account is a *token* — so the
+   * candidates are the three places a token can live, each resolved to a login
+   * with one `/user` call. Same token twice (`gh` and a stored copy of it) is
+   * one row, not two, and a token GitHub rejects is dropped rather than offered
+   * as a button that would fail two taps later. Cached for a minute because the
+   * step is re-entered by going back.
+   */
+  #githubAccounts: { at: number; rows: GithubAccount[] } | null = null;
+  async githubAccounts(opts: { refresh?: boolean } = {}): Promise<GithubAccount[]> {
     const host = this.config.addons?.github?.host ?? "github.com";
-    const rows = await githubListRepos(creds.token, { host, filter: opts.filter, page: opts.page });
+    if (!opts.refresh && this.#githubAccounts && Date.now() - this.#githubAccounts.at < 60_000) {
+      return this.#githubAccounts.rows;
+    }
+    const rows: GithubAccount[] = [];
+    const seen = new Set<string>();
+    for (const candidate of githubCredentialSources(host)) {
+      if (seen.has(candidate.token)) continue;
+      seen.add(candidate.token);
+      try {
+        const who = await githubIdentity(candidate.token, { host });
+        if (!who.login) continue;
+        rows.push({ source: candidate.source, login: who.login, label: accountLabel(candidate.source) });
+      } catch {
+        // An expired token is not an account we can bind a repository with.
+      }
+    }
+    this.#githubAccounts = { at: Date.now(), rows };
+    return rows;
+  }
+
+  async githubRepos(opts: { filter?: string; page?: number; perPage?: number; source?: GithubSource } = {}) {
+    const host = this.config.addons?.github?.host ?? "github.com";
+    const creds = opts.source ? resolveGithubCredsFor(opts.source, { host }) : this.githubCreds();
+    if (!creds) throw new Error("GitHub is not connected");
+    const rows = await githubListRepos(creds.token, { host, filter: opts.filter, page: opts.page, perPage: opts.perPage });
     return rows;
   }
 
@@ -516,8 +554,17 @@ export class Service {
     base?: string;
     /** The branch to continue (Task 36); defaults to the base branch. */
     branch?: string;
+    /** Which login to clone with; the picker passes the one the list came from. */
+    source?: GithubSource;
   }): Promise<{ ok: true; repo: string; branch: string; base: string; workspace: string } | { ok: false; error: string }> {
-    const creds = this.githubCreds();
+    const host = this.config.addons?.github?.host ?? "github.com";
+    const creds = opts.source ? resolveGithubCredsFor(opts.source, { host }) : this.githubCreds();
+    if (!creds) {
+      return {
+        ok: false,
+        error: opts.source ? "that GitHub login is gone — /code to pick another" : "GitHub is not connected — sc github adopt-gh",
+      };
+    }
     const res = await bindSessionRepo({
       store: this.store,
       manager: this.repos,

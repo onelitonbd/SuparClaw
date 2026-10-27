@@ -15,62 +15,78 @@ const TG = readFileSync(join(ROOT, "src/channels/telegram.ts"), "utf8");
 const SERVICE = readFileSync(join(ROOT, "src/agent/service.ts"), "utf8");
 
 test("callback ids are short and indexed, never a repo name", () => {
-  // The three new namespaces, read straight out of the source.
-  assert.match(TG, /callback_data: "n:c"/, "chat answer");
-  assert.match(TG, /callback_data: "n:k"/, "code answer");
-  assert.match(TG, /callback_data: `r:\$\{page\}:\$\{i\}`/, "repo slot, indexed");
-  assert.match(TG, /callback_data: `r:\$\{page \+ 1\}:p`/, "next page");
-  assert.match(TG, /callback_data: `r:\$\{page - 1\}:p`/, "previous page");
-  assert.match(TG, /callback_data: `b:\$\{start \+ i\}`/, "branch slot, indexed");
-  assert.match(TG, /callback_data: `b:p:\$\{page - 1\}`/, "branch back");
-  assert.match(TG, /callback_data: `b:p:\$\{page \+ 1\}`/, "branch more");
+  // Task 54b moved the list cards into `telegram-pickers.ts`, so the cap is
+  // checked over both files: a callback that only fits in one of them still
+  // breaks the same way.
+  const PICKERS = readFileSync(join(ROOT, "src/channels/telegram-pickers.ts"), "utf8");
+  assert.match(PICKERS, /callback_data: "n:c"/, "chat answer");
+  assert.match(PICKERS, /callback_data: "n:k"/, "code answer");
   assert.match(TG, /callback_data: "p:d"/);
   assert.match(TG, /callback_data: "p:o"/);
   assert.match(TG, /callback_data: "p:x"/);
 
-  // No callback in the file may carry a repository path — an org/repo pair of
-  // 40 characters would leave no room for the verb.
-  const datas = [...TG.matchAll(/callback_data: (`[^`]+`|"[^"]+")/g)].map((m) => m[1]);
-  assert.ok(datas.length > 8);
-  for (const raw of datas) {
-    const literal = raw.slice(1, -1);
-    assert.ok(literal.length <= 64, `callback ${literal} is over Telegram's 64-byte cap`);
-    assert.ok(!literal.includes("owner/name"), "never a literal repo path");
+  let seen = 0;
+  for (const src of [TG, PICKERS]) {
+    const datas = [...src.matchAll(/callback_data: (`[^`]+`|"[^"]+")/g)].map((m) => m[1]);
+    seen += datas.length;
+    for (const raw of datas) {
+      const literal = raw.slice(1, -1);
+      // The *rendered* length is what Telegram caps; these literals are the
+      // blueprint, so an interpolated value must be small by construction.
+      assert.ok(literal.length <= 64, `callback ${literal} is over Telegram's 64-byte cap`);
+      assert.ok(!literal.includes("owner/name"), "never a literal repo path");
+      assert.ok(!/\$\{[^}]*fullName[^}]*\}/.test(literal), "a repository name never rides a callback");
+      assert.ok(!/\$\{[^}]*\.key\}[^}]*\}/.test(literal) || literal.includes("shortHash"), "a session key rides callbacks only as a hash");
+    }
   }
+  assert.ok(seen > 12, "the scan actually found the callbacks");
 });
 
-test("the picker stores the page in memory and expires instead of guessing", () => {
-  // Task 36: the row now carries the default branch, because the next question
-  // is which branch to continue and the answer needs a base.
-  assert.match(TG, /#repoPages = new Map<number, \{ fullName: string; defaultBranch: string \}\[\]>\(\)/);
-  assert.match(TG, /this\.#repoPages\.set\(chatId, repos\.map\(\(r\) => \(\{ fullName: r\.fullName, defaultBranch: r\.defaultBranch \?\? "main" \}\)\)\)/);
-  assert.match(TG, /#branchPages = new Map<number, string\[\]>\(\)/);
-  assert.match(TG, /#pickedRepo = new Map<number, \{ repo: string; base: string \}>\(\)/);
-  assert.match(TG, /if \(!repo\) \{[\s\S]{0,160}This picker expired — send \/code again/);
+test("the coding lists are held per chat and expire instead of guessing", () => {
+  // Task 54b: the account, repository and branch lists live for the pick, in
+  // this chat's memory, keyed by the chat that drew the card. The repo entry
+  // still carries the default branch (Task 36) and now the account too, because
+  // the clone must use the login the list came from.
+  assert.match(TG, /#repoLists = new Map</);
+  assert.match(TG, /#branchLists = new Map</);
+  assert.match(TG, /#accountPages = new Map<number, AccountRow\[\]>\(\)/);
+  assert.match(TG, /#pickedRepo = new Map<number, \{ repo: string; base: string; account: AccountRow \}>\(\)/);
+  assert.match(TG, /if \(!account \|\| parts\[2\] !== shortHash\(account\.source\)\)/, "an account tap is checked against the row it claims");
+  assert.match(TG, /if \(!target \|\| shortHash\(target\.key\) !== tap\.hash\)/, "so is a session tap");
+  assert.match(TG, /if \(!list \|\| !repo\) \{[\s\S]{0,160}This picker expired — send \/code again/);
   assert.match(TG, /if \(!branch\) \{[\s\S]{0,160}This picker expired — send \/code again/);
   assert.ok(TG.includes("show_alert: true"), "a stale tap explains itself in a modal, not a silent no-op");
 });
 
 test("/new asks chat-or-code and keeps its rotation semantics", () => {
-  assert.match(TG, /New session \$\{key\}/);
-  assert.match(TG, /Chat, or code a repository\?/);
-  assert.match(TG, /The previous one is kept/);
+  const PICKERS = readFileSync(join(ROOT, "src/channels/telegram-pickers.ts"), "utf8");
+  assert.match(PICKERS, /New session \$\{opts\.key\}/);
+  assert.match(PICKERS, /Chat, or code a repository\?/);
+  assert.match(PICKERS, /The previous one is kept/);
   // The rotation is still this exact call — the test that pinned it in Task 27
-  // must keep passing, because /new is still non-destructive.
-  assert.match(TG, /setMeta\(`telegram:sess:\$\{scope\.chatId\}`, Date\.now\(\)\.toString\(36\)\)/);
+  // must keep passing, because /new is still non-destructive. Task 54b moved it
+  // into `#startNew`, which the sessions card calls too.
+  const start = TG.slice(TG.indexOf("async #startNew"), TG.indexOf("async #sendSessionsCard"));
+  assert.match(start, /setMeta\(`telegram:sess:\$\{chatId\}`, Date\.now\(\)\.toString\(36\)\)/);
+  assert.match(start, /setMeta\(`telegram:active:\$\{chatId\}`, ""\)/, "and the pointer is cleared, or /new looks like a no-op");
 });
 
 test("a repo tap asks for a branch, and the branch tap binds the session", () => {
   const repo = TG.slice(TG.indexOf('if (kind === "r")'), TG.indexOf('if (kind === "b")'));
-  assert.match(repo, /which branch should the agent continue\?/, "one more question before anything is cloned");
-  assert.match(repo, /this\.#pickedRepo\.set\(chatId, \{ repo: repo\.fullName, base: repo\.defaultBranch \}\)/);
-  assert.match(repo, /this\.#sendBranchPicker\(chatId, 0\)/);
+  assert.match(repo, /this\.#pickedRepo\.set\(chatId, \{ repo: repo\.fullName, base: repo\.defaultBranch, account: list\.account \}\)/);
+  assert.match(repo, /await this\.#sendBranches\(chatId, 0, ctx\)/, "one more question before anything is cloned");
 
   const handler = TG.slice(TG.indexOf('if (kind === "b")'), TG.indexOf('if (kind === "p")'));
   assert.match(handler, /this\.#sessionKeyFor\(chatId\)/, "the tag is read at tap time, for the chat that drew the card");
-  assert.match(handler, /this\.service\.bindRepo\(\{ sessionKey: key, repo: pick\.repo, base: pick\.base, branch \}\)/, "the branch the user tapped is the branch that is continued");
+  assert.match(handler, /branch: branch\.name/, "the branch the user tapped is the branch that is continued");
+  assert.match(handler, /source: pick\.account\.source,/, "and the clone uses the login the list came from");
   assert.match(handler, /this\.#pickedRepo\.delete\(chatId\)/, "the pick is consumed, so a double tap cannot bind twice");
   assert.match(TG, /Ask for a change, then \/diff to review and \/pr to publish/, "the confirmation names the next two commands");
+
+  // The branch question itself is the pure card, so it is asserted by shape
+  // there rather than by string-matching a template inside this file.
+  const PICKERS = readFileSync(join(ROOT, "src/channels/telegram-pickers.ts"), "utf8");
+  assert.match(PICKERS, /which branch\?/);
 });
 
 test("/code binds directly or opens the picker; a busy run is refused", () => {
@@ -78,7 +94,7 @@ test("/code binds directly or opens the picker; a busy run is refused", () => {
   assert.match(block, /if \(target\)/, "an argument binds immediately");
   assert.match(block, /usage: \/code owner\/name \[branch\]/, "a malformed argument says the shape, branch included");
   assert.match(block, /isBusy\(/, "never rebind under a running turn");
-  assert.match(block, /#sendRepoPicker\(scope\.chatId, 0\)/, "no argument opens the picker");
+  assert.match(block, /#startCode\(scope\.chatId\)/, "no argument starts the account step (Task 54b)");
   assert.match(block, /branch: rest\[0\]/, "an optional second argument is the branch to continue");
 });
 
@@ -131,16 +147,17 @@ test("controls act on the chat, not on the person who tapped", () => {
   const region = TG.slice(TG.indexOf("async #onCallbackQuery"), TG.indexOf("#groupAllowed"));
   assert.match(region, /const chatId = ctx\.chat\?\.id \?\? fromId/, "one source for the chat");
   assert.match(region, /this\.#sessionKeyFor\(chatId\)/, "the session belongs to the chat");
-  for (const bucket of ["#repoPages", "#pickedRepo", "#branchPages"]) {
+  for (const bucket of ["#repoLists", "#pickedRepo", "#branchLists", "#accountPages"]) {
     assert.match(region, new RegExp(`this\\.${bucket}\\.(get|set|delete)\\(chatId`), `${bucket} is keyed by the chat`);
     assert.ok(!new RegExp(`this\\.${bucket}\\.(get|set|delete)\\(fromId`).test(region), `${bucket} never uses the user id`);
   }
   assert.ok(!/#sessionKeyFor\(fromId\)/.test(region), "no session lookup by user id left");
   // Pairing is the opposite rule, on purpose: it is about the person.
   assert.match(region, /this\.#paired\(fromId\)/);
-  // And the picker that used to be DM'd to the user now goes to the chat.
+  // And the pickers that used to be DM'd to the user now go to the chat.
   assert.ok(!/#sendRepoPicker\(fromId/.test(TG));
-  assert.match(TG, /#sendRepoPicker\(chatId,/);
+  assert.match(TG, /#sendAccounts\(chatId/);
+  assert.match(TG, /#sendSessionsCard\(chatId/);
 });
 
 test("/model is a card: current model, providers, then models, then a pin", () => {
@@ -167,8 +184,8 @@ test("/new keeps the chat's model, because the choice is about the chat", () => 
   // silently drop it and the very next answer would come from a different
   // model than the one the card said "this chat". The fix is to read the pin
   // before the tag rotates and write it onto the new key.
-  const block = TG.slice(TG.indexOf('case "new":'), TG.indexOf('case "provider":'));
-  const carriedAt = block.indexOf("const carried = this.#pinFor(scope.chatId)");
+  const block = TG.slice(TG.indexOf("async #startNew"), TG.indexOf("async #sendSessionsCard"));
+  const carriedAt = block.indexOf("const carried = this.#pinFor(chatId)");
   const rotateAt = block.indexOf("setMeta(`telegram:sess:");
   assert.ok(carriedAt !== -1, "the old session's pin is read first");
   assert.ok(rotateAt !== -1, "the rotation still happens");

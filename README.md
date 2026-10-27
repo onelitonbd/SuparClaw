@@ -208,12 +208,12 @@ One router answers `/…` on every surface (`src/agent/slash-commands.ts` + `#co
 `/skill` behave the same wherever they are typed. `/help` and `/commands` print that same
 catalog — the list, the help text and the menu cannot drift apart.
 
-Telegram additionally owns `/model`, `/provider`, `/whoami` and `/new`; anything else falls
-through to the shared router (it used to answer "unknown command" instead).
+Telegram additionally owns `/new`, `/sessions`, `/model`, `/provider` and `/whoami`; anything
+else falls through to the shared router (it used to answer "unknown command" instead).
 
 **`/model` is a card, not a guess.** It prints the model this chat is on and one button per
 provider in the provider system; tapping a provider shows *that provider's selected models*
-(the Settings → Models list), paged eight at a time, and tapping one pins it **to this chat
+(the Settings → Models list), paged ten at a time, and tapping one pins it **to this chat
 only** — the web UI and the TUI keep their own model. `Use default` clears the pin, `Make
 default` promotes it to `agents.defaults.model` for every surface, and the typed forms still
 work: `/model <provider/model>` pins by name, `/model default` clears. The pin lives in
@@ -221,6 +221,29 @@ work: `/model <provider/model>` pins by name, `/model default` clears. The pin l
 carries it onto the fresh session, because the model is a choice about the chat, not about
 one transcript. A pin whose model was deleted falls back to the default with a warning
 instead of failing the turn.
+
+**`/sessions` goes back.** A chat can hold any number of sessions (every `/new` keeps the old
+transcript) and `/sessions` lists them — ten a page, `✓` on the one you are in, the
+AI-generated title and how long ago, `⌘` for a coding session. A tap **enters** that session:
+it becomes the conversation the next message, `/diff`, `/pr` and `/status` all act on, and the
+card says which model and effort will answer. The switch is a pointer in `meta`
+(`telegram:active:<chatId>`) — nothing is copied, renamed or deleted, and a pointer whose
+session no longer exists falls back to the newest one instead of swallowing a message. A
+switch is refused while the current session is running: the answer in flight would land on a
+transcript you are no longer looking at. `/session` and `/thinking` are accepted as aliases.
+
+**`/think` is seven buttons.** `/think` with no argument shows Default, Off, Low, Medium,
+High, XHigh and Max, with the current one marked; a tap writes `sessions.thinking`, the same
+column `/think high` writes, so the card and the command can never disagree. `/think` *with*
+an argument still goes to the shared router, which is why the web and the TUI keep working.
+
+**`/new` asks one question, then the coding flow asks three.** Chat or Code; picking Code asks
+**which GitHub account** first (`gh` CLI, this device's login, or `GITHUB_TOKEN`, one button
+each, de-duplicated by token and labelled with the login GitHub reports). Then repositories —
+ten a page with `‹ Prev` / `Next ›` and `‹ Accounts` to go back — then branches, same shape,
+default branch first, and the clone uses the login the list came from. Every list accumulates
+GitHub's 100-row pages as you page through them, so the header can say `page 1/3 · 34` once
+the end is known instead of promising a count it has not fetched.
 
 **The `/` menu is stored on the bot token, not in this app.** A token that ran another build
 keeps showing that build's command list until something replaces it. Telegram stores that list

@@ -1,6 +1,6 @@
 # Telegram controls: model, session, thinking, coding
 
-**Task 54 candidate — research; capability #1 shipped as Task 54a.**
+**Task 54 — all four capabilities shipped (54a: model, 54b: sessions, thinking, coding).**
 
 The ask, in the operator's words: *"i want to be able to change model from telegram,
 go to a different session and select level of thinging and also start a coding
@@ -11,17 +11,19 @@ So four things, all from the phone:
 | # | Capability | Exists today? | Real gap |
 |---|---|---|---|
 | 1 | Change **model** | ✅ **shipped (54a)** — card + per-session pin | was: global, no picker, retargeted every surface |
-| 2 | Go to a **different session** | only one-way (`/new` rotates forward) | no way to see or return to an earlier session |
-| 3 | Choose **thinking level** | `/think <level>` — **yes** | no buttons, no visibility, awkward wording |
-| 4 | Start a **coding session** | `/new` → `⌘ Code` → repo → branch | two steps, buried, and it binds *this* session |
+| 2 | Go to a **different session** | ✅ **shipped (54b)** — `/sessions`, 10/page, AI titles | was: only one-way (`/new` rotates forward) |
+| 3 | Choose **thinking level** | ✅ **shipped (54b)** — `/think` buttons | was: text only, no visibility |
+| 4 | Start a **coding session** | ✅ **shipped (54b)** — account → repo → branch | was: two steps, no account step |
 
 Three of the four already work if you know the exact command. The task is
 **discoverability, the missing half of #2, and the wrong scope of #1** — plus one
 real bug that makes all of it unreliable in groups.
 
-**Status:** #1 is **built** (Task 54a) — `/model` is a two-level card
-(providers → that provider's selected models, paged, all buttons) backed by a
-per-session model pin (`sessions.model`). Options #2–#4 are still research. The
+**Status:** all four are **built**. 54a: `/model` is a two-level card (providers
+→ that provider's selected models, paged, all buttons) backed by a per-session
+model pin (`sessions.model`). 54b: `/sessions` enters an earlier conversation,
+`/think` is seven buttons over the same column the text form writes, and
+`/new` → Code walks account → repositories → branches, ten rows a page. The
 sections below are kept as the record of what was considered and why; the shipped
 shape is marked *Shipped*.
 
@@ -165,26 +167,38 @@ The flow works end to end. Two usability changes:
 
 ---
 
-## 3. Recommended shape (one task, if approved)
+## 3. The shape that shipped
 
 Four commands, each with a keyboard, each self-cleaning (the card is edited to
 the chosen value, so no stale buttons and no "status" style messages — the thing
 Task 53 removed):
 
 ```
-/model      [ opus-4 · sonnet-4 · gemini-3 · … ]   ← 8 per page, provider groups
+/model      [ provider … ]  →  [ model … ]        ← 10 per page, both levels
             [ Use default ]  [ Make default ]
-/think      [ auto ][ off ][ low ][ medium ]
-            [ high ][ xhigh ][ max ]
+/think      [ Default (medium) ]
+            [ Off ][ Low ][ Medium ]
+            [ High ][ XHigh ][ Max ]
 /sessions   [ ✓ 💬 Deploy script   2h ago ]
-            [   ⌘ suparclaw      5m ago ]
-            [   💬 Random chat   1d ago ]
-            [ ＋ New chat ]  [ ⌘ New code ]  [ 🌐 All ]
-/code       (unchanged picker; adds "new vs bind this one")
+            [ ⌘ suparclaw          5m ago ]
+            [ 💬 Random chat       1d ago ]
+            [ ‹ Prev ][ Next › ]
+            [ ＋ New session ]
+/new        [ 💬 Chat ]  [ ⌘ Code ]
+   ⌘ Code → [ @onelitonbd · gh CLI ]              ← account first
+            → [ 🔒 onelitonbd/SuparClaw ] ×10      ← 10/page, ‹ Accounts
+            → [ main · default ] ×10               ← 10/page, ‹ Repos
 ```
 
-Plus: `/status` grows one line (`model: X (pinned) · thinking: high · session:
-Deploy script`), and every control keys off the **chat** so groups stop breaking.
+Plus: `/status` grew a line (`session: <title> · <key> · thinking: …` above the
+model line), and every control keys off the **chat** so groups stop breaking.
+
+Two deviations from the draft, both deliberate: `🌐 All` is gone (the list is
+this chat's sessions — switching a Telegram chat onto a web session would make
+two surfaces write one transcript with different UI assumptions, and that is a
+feature, not a picker), and `＋ New chat` / `⌘ New code` collapsed into one
+`＋ New session` button that runs `/new`'s rotation and then asks chat-or-code,
+because two buttons that both rotate are two places to keep in sync.
 
 ### Shape of the change
 
@@ -196,24 +210,51 @@ Deploy script`), and every control keys off the **chat** so groups stop breaking
 | `src/agent/loop.ts` | **done (part 1):** one `#modelFor()` — per-run → pin → default |
 | `src/gateway/server.ts` | **done (part 1):** `sessions.patch { model }` |
 | `src/agent/slash-commands.ts` | **done (part 1):** `/status` prints the pin |
-| `src/channels/telegram.ts` (`/think`, `/sessions`) | **next:** the other two pickers |
+| `src/channels/telegram-pickers.ts` | **done (part 2):** the session, thinking, account, repo and branch cards |
+| `src/channels/telegram.ts` (`/think`, `/sessions`, account step) | **done (part 2):** chained cards, the `telegram:active` pointer |
+| `src/agent/service.ts` | **done (part 2):** `githubAccounts()`, `{source}` on repos/branches/bind |
 | `ui/src/main.ts` | later: the model chip honours the pin |
 | `docs`, `README` | **done (part 1):** README Telegram section, spec M3 |
 
 Tests that must exist before this ships (the same standard as T53):
 
 - a tap on any picker resolves against **the chat**, proven with a group-shaped
-  update (`from.id !== chat.id`);
+  update (`from.id !== chat.id`); — `test/telegram-code.test.mjs`
 - `/model` pins **that session only** — a second session still runs the default;
   `/model default` clears it; a pin naming a deleted model falls back and warns;
+  — `test/session-model.test.mjs`
 - `/sessions` lists this chat's sessions with the current one marked, switches,
   refuses a busy target, and leaves the old session intact;
+  — `test/session-switch.test.mjs` + the source contracts
 - `/think` buttons write the same column the text form writes;
-- the coding flow still works from both entries (`/code` and `⌘ New code`), and
-  `⌘ New code` creates a *new* session instead of converting the current one;
+  — `test/telegram-pickers.test.mjs`
+- the coding flow still works from both entries (`/code` and `/new` → Code);
+  — `test/telegram-code.test.mjs`, `test/github-accounts.test.mjs`
 - web chat and TUI see the session pin (no surface lies about the model).
+  Partly: `sessions.patch { model }` is exposed, the chip is still a follow-up.
 
 ---
+
+## 3b. What shipped, and the three things it deliberately does not do
+
+| Shipped | Where |
+|---|---|
+| `/model` → provider → model, 10/page, per-session pin, `Use default` / `Make default` | `telegram-model-menu.ts`, `sessions.model` |
+| `/sessions` (alias `/session`) → this chat's conversations, AI titles, ages, 10/page, tap to enter | `telegram-pickers.ts`, meta `telegram:active:<chatId>` |
+| `/think` (alias `/thinking`) → seven levels, tap to write `sessions.thinking` | `telegram-pickers.ts` |
+| `/new` → Chat/Code → **account** → repositories (10/page) → branches (10/page) → bind | `telegram.ts`, `service.githubAccounts()` |
+| `/status` names the session, its key and its effort; `/whoami` names the session | `slash-commands.ts` |
+
+Deliberately out of scope, and why:
+
+- **`🌐 All` (sessions from other surfaces).** Two clients writing one
+  transcript is a product decision with an authority model behind it, not a
+  picker. A Telegram chat switches between *its own* conversations.
+- **A topic as a session.** `message_thread_id` is not part of the session key,
+  so every topic in a forum group shares one conversation. Making topics
+  sessions would change keys everywhere (`surfaces.ts`, cron targets).
+- **A Telegram mini-app control panel.** It needs the gateway reachable over
+  HTTPS from Telegram's servers; a phone-hosted daemon behind NAT is not.
 
 ## 4. Caveats worth knowing before choosing
 
@@ -236,7 +277,12 @@ Tests that must exist before this ships (the same standard as T53):
   "current session" must be visible without asking (`/status`, and the header of
   every picker card).
 
-## 5. Questions for the operator
+## 5. Questions for the operator (all answered)
+
+**Answered by the shipped work:** model scope = this chat (with `Make default`
+for the global one); session scope = this chat only (`🌐 All` dropped, see §3);
+discovery = one command per control, each with its own card (no `/menu` hub);
+thinking chain = session → profile → global, unchanged.
 
 1. **Model scope** — is `/model` on Telegram "this chat", or "everything"
    (today's behaviour)? Recommendation: this chat, with a `Make default` button.

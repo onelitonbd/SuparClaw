@@ -86,6 +86,34 @@ export {
   type TapEffect,
   type TapEnvironment,
 } from "./channels/telegram-model-menu.js";
+export {
+  PICKER_PAGE,
+  accountCard,
+  branchCard,
+  clampPage,
+  isSessionOfChat,
+  newSessionCard,
+  pageCount,
+  readAccountTap,
+  readBranchTap,
+  readRepoTap,
+  readSessionTap,
+  readThinkingTap,
+  relativeAge,
+  repoCard,
+  resolveActiveSession,
+  sessionTitle,
+  sessionsCard,
+  shortHash,
+  slicePage,
+  switchedCard,
+  thinkingCard,
+  thinkingSetCard,
+  unconfiguredGithubCard,
+  type AccountRow,
+  type KeyboardRow,
+  type SessionLabel,
+} from "./channels/telegram-pickers.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
 export { Subagents } from "./agent/subagents.js";
@@ -347,6 +375,9 @@ export {
   readStoredGithub,
   clearGithubCreds,
   resolveGithubCreds,
+  resolveGithubCredsFor,
+  githubCredentialSources,
+  accountLabel,
   githubApiBase,
   githubRequest,
   githubIdentity,
@@ -356,6 +387,8 @@ export {
   githubCreatePull,
   connectGithub,
   type GithubCreds,
+  type GithubSource,
+  type GithubAccount,
   type GithubRepo,
   type GithubBranch,
 } from "./repo/github.js";

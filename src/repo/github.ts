@@ -27,6 +27,21 @@ export interface GithubCreds {
   savedAt?: number;
 }
 
+/** Which of the three places a token can live. */
+export type GithubSource = "env" | "gh" | "token";
+
+/** One login the machine can act as, for the `/code` account step. */
+export interface GithubAccount {
+  source: GithubSource;
+  login: string;
+  label: string;
+}
+
+/** Human name for a token source — the same words in the card and the log. */
+export function accountLabel(source: GithubSource): string {
+  return source === "gh" ? "gh CLI" : source === "env" ? "GITHUB_TOKEN" : "this device";
+}
+
 export interface GithubRepo {
   fullName: string;
   private: boolean;
@@ -114,18 +129,42 @@ export function ghCliAvailable(): boolean {
 }
 
 /**
- * Resolve the token without touching the network.
- * `env` first so CI can override a stale stored login, `gh` second so a
+ * Every token this machine can offer, in priority order, without touching the
+ * network. `env` first so CI can override a stale stored login, `gh` second so a
  * developer's existing login just works, the stored token last.
  */
+export function githubCredentialSources(host = "github.com"): { source: "env" | "gh" | "token"; token: string }[] {
+  const out: { source: "env" | "gh" | "token"; token: string }[] = [];
+  const env = process.env["GITHUB_TOKEN"] ?? process.env["GH_TOKEN"] ?? "";
+  if (env.trim().length > 8) out.push({ source: "env", token: env.trim() });
+  const gh = ghCliToken();
+  if (gh) out.push({ source: "gh", token: gh });
+  const stored = readStoredGithub();
+  if (stored) out.push({ source: "token", token: stored.token });
+  return out;
+}
+
+/** One named source, for the picker that lets you choose which login to use. */
+export function resolveGithubCredsFor(
+  source: "env" | "gh" | "token",
+  opts: { host?: string } = {},
+): GithubCreds | null {
+  const host = opts.host || "github.com";
+  const hit = githubCredentialSources(host).find((c) => c.source === source);
+  if (!hit) return null;
+  const stored = source === "token" ? readStoredGithub() : null;
+  return { token: hit.token, login: stored?.login ?? "", source, host, scopes: stored?.scopes ?? [] };
+}
+
 export function resolveGithubCreds(opts: { host?: string } = {}): GithubCreds | null {
   const host = opts.host || "github.com";
-  const env = process.env["GITHUB_TOKEN"] ?? process.env["GH_TOKEN"] ?? "";
-  if (env.trim().length > 8) return { token: env.trim(), login: "", source: "env", host };
-  const gh = ghCliToken();
-  if (gh) return { token: gh, login: "", source: "gh", host };
-  const stored = readStoredGithub();
-  return stored ? { ...stored, host } : null;
+  const hit = githubCredentialSources(host)[0];
+  if (!hit) return null;
+  if (hit.source === "token") {
+    const stored = readStoredGithub();
+    return stored ? { ...stored, host } : null;
+  }
+  return { token: hit.token, login: "", source: hit.source, host };
 }
 
 /** API base for a host: github.com is api.github.com, GHES is /api/v3. */
