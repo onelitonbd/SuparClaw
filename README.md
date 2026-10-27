@@ -391,8 +391,10 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
   `gateway.allowedOrigins`; hostile pages cannot open `ws://127.0.0.1:…` (CSWSH).
 - **Token auth is fail-closed** — an empty token never authorizes anyone; this
   device's own browser is exempt only on loopback (`auth.loopbackBypass`).
-- **Secrets never travel on the wire** — `config.get` returns sentinels
-  (`__redacted__:…`), `config.set` maps them back to the stored values.
+- **Config secrets are never returned on the wire** — `config.get` returns sentinels
+  (`__redacted__:…`), `config.set` maps them back to the stored values. The task vault's
+  explicit Settings save sends a value over the authenticated gateway connection, but the
+  RPC response contains only its name and configured status.
 - **exec is on by default and never asks** — a permission prompt is a wall on every surface
   without a keyboard, and the agent answers it by telling you to run the commands yourself.
   What is left is a **policy**: `sc approvals mode deny|allowlist|ask|full`. `deny` refuses,
@@ -403,6 +405,16 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
   a `proot` jail) is gone in Task 57: on a phone `proot` aborts before the command exists, and
   `env -i` hides `$PREFIX/bin`, so it produced "killed by the sandbox" rather than protection.
   `tools.exec.sandbox` still parses for old configs and does nothing; `sc doctor` says so.
+- **Task/tool vault (Settings → System → Secrets)** — define names with the agent's `vault`
+  tool, then enter or replace values through Settings (the agent cannot submit a value in chat).
+  Values are encrypted in the state directory
+  with scrypt-derived AES-256-GCM; the master passphrase is never stored and the daemon starts
+  locked after restart. The agent sees names, descriptions and configured/missing status, never a
+  value. A one-shot `exec` call opts in with `vaultEnv: ["SERVICE_API_KEY"]`; a self-tool declares
+  the needed names in its exported `vault` array. Only those values are injected, and exact-value
+  echoes are redacted from returned output. Persistent `terminal` injection and global environment
+  injection are not supported. **This is not a sandbox:** unrestricted same-user Termux code can
+  deliberately read, transform or exfiltrate a value it receives.
 - **`terminal` is the same power with memory** — a persistent shell (or several) the agent
   drives and you watch live in the web UI; the same policy as exec, no sandbox by design.
   `tools.terminals.max` / `scrollbackKb` / `waitMs` bound the resources, not the permissions.

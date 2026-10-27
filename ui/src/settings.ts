@@ -7497,6 +7497,168 @@ export class Settings {
     ]));
     void loadBackups();
 
+    /* ---------------- User-managed task vault ---------------- */
+    const vaultHost = el("div", {});
+    const vaultStrip = this.#statusStrip();
+    vaultStrip.set("loading", "", "Reading encrypted vault metadata from the daemon.");
+    const vaultNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, ["Loading vault status…"]);
+    const refreshVault = async (): Promise<void> => {
+      vaultHost.innerHTML = "";
+      try {
+        const status: any = await gateway.request("vault.status", {});
+        if (vaultNote.textContent === "Loading vault status…") vaultNote.textContent = `Status loaded at ${stamp()}.`;
+        const entries: any[] = Array.isArray(status?.entries) ? status.entries : [];
+        const controls: HTMLElement[] = [];
+        const setNote = (text: string): void => { vaultNote.textContent = text; };
+        const actionButton = (label: string, run: () => Promise<void>, danger = false): HTMLButtonElement => {
+          const button = el("button", { class: danger ? "btn btn--danger" : "btn", type: "button" }, [label]) as HTMLButtonElement;
+          button.onclick = async () => {
+            button.disabled = true;
+            try { await run(); }
+            finally { button.disabled = false; }
+          };
+          return button;
+        };
+        const passInput = (placeholder: string): HTMLInputElement => el("input", {
+          class: "inp mono", type: "password", placeholder, autocomplete: "off", spellcheck: "false",
+        }) as HTMLInputElement;
+        const row = (label: string, input: HTMLElement): HTMLElement => el("div", { class: "setfield" }, [
+          el("label", { class: "lbl" }, [label]), input,
+        ]);
+        const explanation = el("p", { class: "hint" }, [
+          "Task/tool values are encrypted in the state directory. The master passphrase is never saved; after a daemon restart, unlock again. Values are supplied only to explicitly selected one-shot exec/self-tools. Unrestricted Termux code can intentionally read or exfiltrate injected values; this vault is not a sandbox.",
+        ]);
+        vaultStrip.set(
+          status?.unlocked ? "unlocked" : status?.initialized ? "locked" : status?.error ? "unreadable" : "not initialized",
+          status?.unlocked ? "is-ok" : status?.initialized ? "is-warn" : status?.error ? "is-err" : "",
+          status?.error ? String(status.error) : status?.unlocked ? "Values are available only through explicit runtime injection." : status?.initialized ? "Unlock to add, replace or use values." : "Create an encrypted vault with a master passphrase.",
+        );
+        controls.push(explanation);
+
+        if (!status?.initialized && status?.error) {
+          const resetConfirm = el("input", { class: "inp mono", type: "text", placeholder: "Type RESET VAULT", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+          controls.push(el("p", { class: "hint" }, ["The existing vault file could not be read. Reset it to remove the damaged file before creating a new vault."]));
+          controls.push(row("Recovery confirmation", resetConfirm));
+          controls.push(actionButton("Remove unreadable vault", async () => {
+            const result: any = await gateway.request("vault.reset", { confirm: resetConfirm.value });
+            resetConfirm.value = "";
+            if (!result?.ok) { setNote(String(result?.error ?? "Could not reset vault.")); return; }
+            setNote("Unreadable vault removed.");
+            await refreshVault();
+          }, true));
+        } else if (!status?.initialized) {
+          const pass = passInput("At least 10 characters");
+          const confirm = passInput("Repeat master passphrase");
+          controls.push(row("Master passphrase", pass), row("Confirm passphrase", confirm));
+          controls.push(actionButton("Create encrypted vault", async () => {
+            if (!pass.value || pass.value !== confirm.value) { setNote("Passphrases do not match."); return; }
+            let result: any;
+            try { result = await gateway.request("vault.initialize", { passphrase: pass.value }); }
+            finally { pass.value = ""; confirm.value = ""; }
+            if (!result?.ok) { setNote(String(result?.error ?? "Could not initialize vault.")); return; }
+            setNote("Vault created and unlocked. The passphrase was not saved.");
+            await refreshVault();
+          }));
+        } else if (!status?.unlocked) {
+          const pass = passInput("Master passphrase");
+          controls.push(row("Unlock vault", pass));
+          controls.push(actionButton("Unlock", async () => {
+            let result: any;
+            try { result = await gateway.request("vault.unlock", { passphrase: pass.value }); }
+            finally { pass.value = ""; }
+            if (!result?.ok) { setNote(String(result?.error ?? "Could not unlock vault.")); return; }
+            setNote("Vault unlocked in daemon memory.");
+            await refreshVault();
+          }));
+        } else {
+          controls.push(actionButton("Lock vault", async () => {
+            await gateway.request("vault.lock", {});
+            setNote("Vault locked.");
+            await refreshVault();
+          }));
+        }
+
+        if (status?.initialized) {
+          const nameInput = el("input", { class: "inp mono", type: "text", placeholder: "SERVICE_API_KEY", autocomplete: "off", autocapitalize: "characters", spellcheck: "false" }) as HTMLInputElement;
+          const descInput = el("input", { class: "inp", type: "text", placeholder: "What should the user enter, and what uses it?", autocomplete: "off" }) as HTMLInputElement;
+          const kind = el("select", { class: "inp" }, [el("option", { value: "secret" }, ["Secret"]), el("option", { value: "variable" }, ["Variable"])]) as HTMLSelectElement;
+          controls.push(this.#section("Add a named entry", "name + description", [
+            row("Name (uppercase environment style)", nameInput), row("Kind", kind), row("Description", descInput),
+            actionButton("Add name", async () => {
+              const name = nameInput.value.trim();
+              const result: any = await gateway.request("vault.define", { name, kind: kind.value, description: descInput.value });
+              if (!result?.ok) { setNote(String(result?.error ?? "Could not add entry.")); return; }
+              nameInput.value = ""; descInput.value = "";
+              setNote(`Added ${name}. Enter its value below.`);
+              await refreshVault();
+            }),
+          ]));
+          if (entries.length) {
+            const entryRows = entries.map((entry: any) => {
+              const value = el("input", {
+                class: "inp mono", type: entry.kind === "secret" ? "password" : "text",
+                placeholder: entry.configured ? "Enter a replacement value" : "Enter value",
+                autocomplete: "off", spellcheck: "false",
+              }) as HTMLInputElement;
+              const configured = entry.configured ? "value set" : "value needed";
+              const usable = entry.configured && !entry.usable ? " · locked" : "";
+              const save = actionButton(entry.configured ? "Replace value" : "Save value", async () => {
+                if (!value.value) { setNote("Enter a non-empty value first."); return; }
+                let result: any;
+                try { result = await gateway.request("vault.set", { name: entry.name, value: value.value }); }
+                finally { value.value = ""; }
+                if (!result?.ok) { setNote(String(result?.error ?? "Could not save value.")); return; }
+                setNote(`${entry.name} saved. The field was cleared; the value was not returned.`);
+                await refreshVault();
+              });
+              const remove = actionButton("Delete", async () => {
+                const result: any = await gateway.request("vault.delete", { name: entry.name, confirm: entry.name });
+                if (!result?.ok) { setNote(String(result?.error ?? "Could not delete entry.")); return; }
+                setNote(`${entry.name} deleted.`);
+                await refreshVault();
+              }, true);
+              return el("div", { class: "setfield vault-entry" }, [
+                el("div", { class: "setcard__head" }, [el("strong", {}, [`${entry.name} · ${entry.kind}`]), el("p", { class: "hint" }, [`${entry.description} · ${configured}${usable}`])]),
+                value,
+                el("div", { class: "setfoot" }, [el("span", { class: "setfoot__note" }, ["Input clears after save."]), save, remove]),
+              ]);
+            });
+            controls.push(this.#section("Named entries", plural(entries.length, "entry", "entries"), entryRows));
+          } else {
+            controls.push(el("p", { class: "hint" }, ["No named entries yet. The agent can define names with the vault tool; values are entered here."]));
+          }
+          const resetConfirm = el("input", { class: "inp mono", type: "text", placeholder: "Type RESET VAULT", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
+          controls.push(this.#section("Delete the entire vault", "irreversible", [
+            el("p", { class: "hint" }, ["This irreversibly removes all encrypted values and metadata. Unlock is not required; the exact confirmation text is." ]),
+            row("Confirmation", resetConfirm),
+            actionButton("Reset vault", async () => {
+              const result: any = await gateway.request("vault.reset", { confirm: resetConfirm.value });
+              resetConfirm.value = "";
+              if (!result?.ok) { setNote(String(result?.error ?? "Could not reset vault.")); return; }
+              setNote("Vault removed.");
+              await refreshVault();
+            }, true),
+          ]));
+        }
+        vaultHost.append(el("div", { class: "settings__stack" }, controls));
+      } catch (err) {
+        vaultHost.append(el("p", { class: "hint" }, [`Could not read vault status: ${(err as Error).message}`]));
+        vaultNote.textContent = `Status failed at ${stamp()}.`;
+      }
+    };
+    const refreshVaultButton = el("button", { class: "btn", type: "button" }, ["Refresh status"]) as HTMLButtonElement;
+    refreshVaultButton.onclick = async () => {
+      refreshVaultButton.disabled = true;
+      try { await refreshVault(); vaultNote.textContent = `Refreshed at ${stamp()}.`; }
+      finally { refreshVaultButton.disabled = false; }
+    };
+    body.append(card("sys-task-vault", "Task & tool vault", "User-managed named values, separate from provider authentication and config SecretRefs.", [
+      vaultStrip.node,
+      vaultHost,
+      foot(vaultNote, [refreshVaultButton]),
+    ]));
+    void refreshVault();
+
     /* ---------------- Secrets ---------------- */
 
     // Three states, and they are the three the wire protocol can actually carry:

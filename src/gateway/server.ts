@@ -347,6 +347,14 @@ export class Gateway {
       "system.update.check",
       "system.update.apply",
       "secrets.audit",
+      "vault.status",
+      "vault.initialize",
+      "vault.unlock",
+      "vault.lock",
+      "vault.set",
+      "vault.define",
+      "vault.delete",
+      "vault.reset",
       "backup.create",
       "backup.list",
       "backup.verify",
@@ -1811,6 +1819,53 @@ case "sessions.rename": {
           // refs + invalid SecretRef shapes from the raw config file.
           const { auditSecretsFile } = await import("../cli/secrets.js");
           send(okFrame(id, auditSecretsFile(service.configSvc.path)));
+          return;
+        }
+        case "vault.status": {
+          // Metadata only: the value map and derived key never leave the daemon.
+          send(okFrame(id, service.vault.status()));
+          return;
+        }
+        case "vault.initialize": {
+          const result = await service.vault.initialize(String(params["passphrase"] ?? ""));
+          send(okFrame(id, result.ok ? { ok: true, status: service.vault.status() } : result));
+          return;
+        }
+        case "vault.unlock": {
+          const result = await service.vault.unlock(String(params["passphrase"] ?? ""));
+          send(okFrame(id, result.ok ? { ok: true, status: service.vault.status() } : result));
+          return;
+        }
+        case "vault.lock": {
+          service.vault.lock();
+          send(okFrame(id, { ok: true, status: service.vault.status() }));
+          return;
+        }
+        case "vault.set": {
+          const name = String(params["name"] ?? "");
+          const result = await service.vault.setValue(name, String(params["value"] ?? ""));
+          // Do not echo the value, even on failure; only its name/status crosses the socket.
+          send(okFrame(id, result.ok ? { ok: true, name, configured: true } : result));
+          return;
+        }
+        case "vault.define": {
+          const result = service.vault.define({
+            name: String(params["name"] ?? ""),
+            kind: String(params["kind"] ?? "secret") as "variable" | "secret",
+            description: String(params["description"] ?? ""),
+          });
+          send(okFrame(id, result.ok ? { ok: true, entry: result.entry } : result));
+          return;
+        }
+        case "vault.delete": {
+          const name = String(params["name"] ?? "");
+          const result = service.vault.remove(name, String(params["confirm"] ?? ""));
+          send(okFrame(id, result.ok ? { ok: true, name } : result));
+          return;
+        }
+        case "vault.reset": {
+          const result = service.vault.reset(String(params["confirm"] ?? ""));
+          send(okFrame(id, result.ok ? { ok: true, status: service.vault.status() } : result));
           return;
         }
         case "backup.list": {

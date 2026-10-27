@@ -11,6 +11,7 @@ import { codeModeEngages, CodeMode, codeModeSurface, type CodeModeConfig, type G
 import { describeDelivery, resolveAnnounceTarget, NO_SURFACES, type SurfaceFacts } from "./surfaces.js";
 import { describeSettings, type SettingsCtl } from "./self.js";
 import { selfToolSpecs, toolsmithSpec } from "./self-tools.js";
+import { vaultToolSpec, type VaultCtl } from "./vault.js";
 
 export interface JsonSchema {
   type: "object";
@@ -44,6 +45,8 @@ export interface ToolContext {
   refreshTools?: () => void;
   /** Set by anything that changed the tool list mid-turn (see refreshTools). */
   toolsChanged?: boolean;
+  /** Secret manager: tools get only metadata + per-call resolver, never a value read API. */
+  vault?: VaultCtl;
   /** Session this tool call belongs to (set by the agent loop). */
   sessionKey?: string;
   /** One-shot text completion bound to the run's client (P3 #22 pdf analysis). */
@@ -180,6 +183,8 @@ export interface ToolSpec {
   needsApproval?: boolean;
   /** Internal marker: the loop replaces these when toolsmith changes the set. */
   selfAuthored?: boolean;
+  /** Dynamic infrastructure entry rebuilt alongside self-authored tools. */
+  dynamic?: boolean;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
 }
 
@@ -1078,7 +1083,11 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         "Run a shell command. Nothing asks permission: the operator cannot approve from a phone, so exec always runs (Task 55). Report what happened, never pretend it ran.",
       parameters: {
         type: "object",
-        properties: { command: str("Command line to run"), timeoutMs: int("Timeout in ms") },
+        properties: {
+          command: str("Command line to run"),
+          timeoutMs: int("Timeout in ms"),
+          vaultEnv: { type: "array", items: str("Vault entry name to inject into this one-shot command's environment"), description: "Optional names only; values are injected at runtime and never belong in command text. Define missing names with vault; the user fills them in Settings. This is not hidden from deliberate same-user shell code." },
+        },
         required: ["command"],
       },
       // `needsApproval` is a POLICY marker, not a prompt (Task 55): it tells the
@@ -1091,6 +1100,14 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         const command = String(args["command"] ?? "").trim();
         if (!command) return "error: the command is empty — give exec a command line to run";
         const { execFile } = await import("node:child_process");
+        const vaultNames = Array.isArray(args["vaultEnv"]) ? [...new Set(args["vaultEnv"].map(String))] : [];
+        const resolvedVault = ctx.vault?.resolveForUse(vaultNames);
+        if (vaultNames.length > 0 && !resolvedVault?.ok) {
+          return resolvedVault?.missing?.length
+            ? `error: vault entries need values: ${resolvedVault.missing.join(", ")} — the user enters them in Settings → System → Secrets`
+            : `error: ${resolvedVault?.error ?? "vault service is not available"}`;
+        }
+        const safeOutput = (text: string): string => ctx.vault?.redact(text) ?? text;
         // Task 38: 30 minutes for every command, and a per-call request can
         // not exceed it. `npm install`/a test suite on a phone is not "hung".
         // A junk request must never poison the call: Number("5s") is NaN and
@@ -1104,7 +1121,8 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         // sandbox"), and none of them was a boundary: the daemon already runs
         // as the operator, inside Android's per-app sandbox.
         const shell = findShell();
-        const planned = { argv: [shell, "-lc", command], env: process.env, wrappers: [] as string[] };
+        const childEnv: NodeJS.ProcessEnv = { ...process.env, ...(resolvedVault?.env ?? {}) };
+        const planned = { argv: [shell, "-lc", command], env: childEnv, wrappers: [] as string[] };
         const note = sandboxIgnoredNote(config.tools.exec) + (timeoutNote ? `${timeoutNote}\n` : "");
         // Allowlist/safe-bin verdicts run argv-direct — the policy matched
         // literal tokens, so no shell may re-interpret them (globs, $PATH
@@ -1116,9 +1134,10 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             const result = await runDirectChain(ctx.execVerdict.segments, ctx.execVerdict.ops, {
               cwd: ctx.workspace,
               timeoutMs,
+              env: childEnv,
             });
-            const body = result.output.slice(0, 60_000);
-            return note + (body || "(no output)");
+            const body = safeOutput(result.output).slice(0, 60_000);
+            return safeOutput(note + (body || "(no output)"));
           }
           const spawnOpts = { cwd: ctx.workspace, timeoutMs, cmdline: command };
           // Task 56: the shell itself can die before the command starts
@@ -1142,11 +1161,11 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             };
           });
           const where = fallbackNote(result, attempts[0]!);
-          return (note + (where ? `${where}\n` : "") + result.output).slice(0, 60_000);
+          return safeOutput(note + (where ? `${where}\n` : "") + result.output).slice(0, 60_000);
         } catch (err) {
           // Never let exec throw into the loop: an unexplained rejection reads
           // to the model as "the tool is broken". Say what happened instead.
-          return `error: exec could not start: ${(err as Error).message}`;
+          return safeOutput(`error: exec could not start: ${(err as Error).message}`);
         }
       },
     });
@@ -1508,7 +1527,8 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   // functions with the same name is an invalid request to every provider), and
   // the reserved set is the finished built-in list: `create` refuses a
   // collision with it by name instead of half-registering something.
-  const builtinNames = new Set([...tools.map((t) => t.name), "toolsmith"]);
+  const builtinNames = new Set([...tools.map((t) => t.name), "toolsmith", "vault"]);
+  tools.push(vaultToolSpec());
   if (config.tools.selfTools.enabled) {
     tools.push(toolsmithSpec(config, () => builtinNames));
     tools.push(...selfToolSpecs(config, builtinNames));
@@ -1536,8 +1556,8 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       // main execution surface: they are explicitly persisted, schema-backed
       // tools, and toolsmith must remain reachable so the agent can extend its
       // toolbox. Other built-ins stay behind the Code Mode guest bridge.
-      const selfAuthored = tools.filter((t) => t.selfAuthored);
-      const hidden = tools.filter((t) => t.name !== "exec" && t.name !== "wait" && !t.selfAuthored);
+      const dynamic = tools.filter((t) => t.selfAuthored || t.dynamic);
+      const hidden = tools.filter((t) => t.name !== "exec" && t.name !== "wait" && !t.selfAuthored && !t.dynamic);
       let callCtx: ToolContext | null = null;
       const engine = new CodeMode(
         () => {
@@ -1579,7 +1599,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       }
       // their session-history transparency: the cell's source lands as
       // "// Code Mode\n" + code on the tool-call record (their rule)
-      return [...surface, ...hidden.filter((t) => cmc.directOnly.includes(t.name)), ...selfAuthored];
+      return [...surface, ...hidden.filter((t) => cmc.directOnly.includes(t.name)), ...dynamic];
     }
   }
 

@@ -8,6 +8,7 @@ import { repoPromptBlock } from "../repo/session.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
 import { buildRegistry, toolsToSchema, type RepoCtl, type SubagentCtl, type TerminalCtl, type ToolContext, type ToolSpec } from "./tools.js";
 import { selfToolSpecs, toolsmithSpec } from "./self-tools.js";
+import { vaultToolSpec } from "./vault.js";
 import { LlmClient, isVisionUnsupportedError, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
 import { historyBudget, fallbackTuning } from "./context-budget.js";
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
@@ -140,6 +141,8 @@ export interface LoopDeps {
   repoCtl?: RepoCtl;
   /** Persistent terminals (Task 52). Owned by the service, shared by every run. */
   terminals?: TerminalCtl;
+  /** User-managed encrypted variable/secret vault (Task 59). */
+  vault?: ToolContext["vault"];
   /**
    * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
    * immediately and side-generate no UI. When a human must decide, the
@@ -248,7 +251,7 @@ export class AgentLoop {
     // Split the registry once: the built-ins stay put, the self-tools are the
     // ones that can appear and disappear while the daemon runs (Task 58).
     const all = deps.tools ?? buildRegistry(deps.config);
-    this.baseTools = all.filter((t) => !t.selfAuthored);
+    this.baseTools = all.filter((t) => !t.selfAuthored && !t.dynamic);
     this.tools = all;
     this.refreshSkills();
     this.llm =
@@ -289,9 +292,12 @@ export class AgentLoop {
    */
   refreshTools(): void {
     const reserved = new Set(this.baseTools.map((t) => t.name));
-    const fresh = this.deps.config.tools.selfTools.enabled
-      ? [toolsmithSpec(this.deps.config, () => reserved), ...selfToolSpecs(this.deps.config, reserved)]
-      : [];
+    const fresh = [
+      vaultToolSpec(),
+      ...(this.deps.config.tools.selfTools.enabled
+        ? [toolsmithSpec(this.deps.config, () => reserved), ...selfToolSpecs(this.deps.config, reserved)]
+        : []),
+    ];
     this.tools = [...this.baseTools, ...fresh];
   }
 
@@ -738,6 +744,7 @@ export class AgentLoop {
         publishAllowed: input.publishAllowed === true,
         repoCtl: this.deps.repoCtl,
         terminals: this.deps.terminals,
+        vault: this.deps.vault,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
         store: this.deps.store,

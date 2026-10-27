@@ -180,16 +180,16 @@ const open = async (opts = {}) => {
   return settings;
 };
 
-test("five cards on the shared shell, one footer action each, no leftovers", async () => {
+test("six cards on the shared shell, one footer action each, no leftovers", async () => {
   await open();
-  assert.deepEqual(heads(), ["System checks", "Security audit", "Software update", "Backup & restore", "Secrets"]);
+  assert.deepEqual(heads(), ["System checks", "Security audit", "Software update", "Backup & restore", "Task & tool vault", "Secrets"]);
   for (const card of $$(".settings__stack > .card")) {
     assert.equal(card.querySelectorAll(".setcard__head h3").length, 1, "one title per card");
     assert.ok(text(card.querySelector(".setcard__head .hint")).length > 20, "every card says what it covers");
   }
-  assert.equal($$(".settings__stack > .card > .setfoot").length, 5, "every card ends on its commit bar");
+  assert.equal($$(".settings__stack > .card > .setfoot").length, 6, "every card ends on its commit bar");
   for (const f of $$(".setfoot")) assert.equal(f.querySelectorAll("button").length, 1, "one action per footer");
-  assert.equal($$(".settings__stack > .card > .setcard__head + .setcard__status").length, 5, "every card opens on the same state line");
+  assert.equal($$(".settings__stack > .card > .setcard__head + .setcard__status").length, 6, "every card opens on the same state line");
   assert.equal($$(".tiles, .tile").length, 0);
   assert.equal($$("select").length, 0, "no native dropdown");
   assert.equal($$("[style]").length, 0, "no inline styles");

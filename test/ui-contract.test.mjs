@@ -141,6 +141,24 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   const hello = await waitFrame((f) => f.type === "hello-ok");
   assert.ok(hello.payload.version, "hello-ok carries a version");
   assert.ok(hello.payload.methods.includes("config.set"), "config.set is advertised");
+  assert.ok(hello.payload.methods.includes("vault.status"), "the Settings UI can read vault metadata");
+  assert.ok(hello.payload.methods.includes("vault.define"), "the Settings UI can define names without values");
+  const vaultBefore = await request("vault.status");
+  assert.equal(vaultBefore.initialized, false);
+  const vaultInit = await request("vault.initialize", { passphrase: "gateway vault passphrase" });
+  assert.equal(vaultInit.ok, true);
+  assert.equal(JSON.stringify(vaultInit).includes("gateway vault passphrase"), false, "the passphrase is never returned by RPC");
+  const vaultEntry = await request("vault.define", { name: "GATEWAY_TEST_TOKEN", kind: "secret", description: "gateway test value" });
+  assert.equal(vaultEntry.ok, true);
+  const vaultSet = await request("vault.set", { name: "GATEWAY_TEST_TOKEN", value: "gateway-value-must-not-echo" });
+  assert.deepEqual(vaultSet, { ok: true, name: "GATEWAY_TEST_TOKEN", configured: true });
+  assert.equal(JSON.stringify(vaultSet).includes("gateway-value-must-not-echo"), false);
+  const vaultMetadata = await request("vault.status");
+  assert.equal(vaultMetadata.entries[0].configured, true);
+  assert.equal(JSON.stringify(vaultMetadata).includes("gateway-value-must-not-echo"), false);
+  await request("vault.lock");
+  assert.equal((await request("vault.status")).unlocked, false);
+  await request("vault.unlock", { passphrase: "gateway vault passphrase" });
 
   // metadata the header/sidebar render
   const status = await request("status");

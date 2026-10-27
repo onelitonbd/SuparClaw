@@ -36,6 +36,7 @@ import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { JsonSchema, ToolContext, ToolSpec } from "./tools.js";
 import type { SuparClawConfig } from "../config/schema.js";
+import { validVaultName, type VaultCtl } from "./vault.js";
 import { execModeOf } from "../config/schema.js";
 import { toolsDir } from "../util/paths.js";
 
@@ -52,6 +53,8 @@ export interface SelfToolManifest {
   name: string;
   description: string;
   parameters: JsonSchema;
+  /** Named vault entries the module is allowed to receive in its worker env. */
+  vault: string[];
   /** ISO timestamps — `list` shows them, `update` keeps `created`. */
   created: string;
   updated: string;
@@ -109,6 +112,8 @@ function validManifest(value: unknown): value is SelfToolManifest {
   if (typeof m.description !== "string" || !m.description.trim()) return false;
   const p = m.parameters as JsonSchema | undefined;
   if (!p || typeof p !== "object" || p.type !== "object" || typeof p.properties !== "object") return false;
+  // T58 manifests predate the vault field; treat them as declaring no values.
+  if (m.vault !== undefined && (!Array.isArray(m.vault) || m.vault.some((name) => !validVaultName(name)))) return false;
   return true;
 }
 
@@ -145,12 +150,13 @@ export function listSelfTools(): { tools: SelfToolRecord[]; problems: string[] }
       problems.push(`${entry}: not a valid manifest (needs name, description and an object \`parameters\`)`);
       continue;
     }
-    const code = selfToolFile(parsed.name);
+    const manifest: SelfToolManifest = { ...parsed, vault: parsed.vault ?? [] };
+    const code = selfToolFile(manifest.name);
     if (!existsSync(code)) {
-      problems.push(`${parsed.name}: manifest exists but ${parsed.name}.mjs is missing — recreate it or delete it`);
+      problems.push(`${manifest.name}: manifest exists but ${manifest.name}.mjs is missing — recreate it or delete it`);
       continue;
     }
-    tools.push({ manifest: parsed, file: code, manifestFile: file });
+    tools.push({ manifest, file: code, manifestFile: file });
   }
   // A crash between the module and manifest renames can leave code with no
   // contract. Do not silently pretend it was saved; list it as repairable.
@@ -220,7 +226,7 @@ for (const level of ["log", "info", "warn", "error", "debug"]) {
       parentPort.postMessage({
         ok: true,
         logs,
-        meta: { name: tool.name, description: tool.description, parameters: tool.parameters },
+        meta: { name: tool.name, description: tool.description, parameters: tool.parameters, vault: tool.vault ?? [] },
       });
       return;
     }
@@ -243,7 +249,15 @@ export interface SelfToolCall {
   error?: string;
   stack?: string;
   logs?: string[];
-  meta?: { name?: unknown; description?: unknown; parameters?: unknown };
+  meta?: { name?: unknown; description?: unknown; parameters?: unknown; vault?: unknown };
+}
+
+/** The self-tool worker does not inherit provider/API secrets from the daemon. */
+function selfToolEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const allowed = ["PATH", "HOME", "PREFIX", "TMPDIR", "TMP", "TEMP", "TERM", "TERMUX_VERSION", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME", "SHELL", "SUPARCLAW_HOME"];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of allowed) if (process.env[key] !== undefined) env[key] = process.env[key];
+  return { ...env, ...extra };
 }
 
 /** Run one module in its own thread and wait for its single answer. */
@@ -253,6 +267,7 @@ export function runSelfToolWorker(
   args: Record<string, unknown>,
   ctx: { workspace?: string; stateDir?: string; sessionKey?: string },
   timeoutMs: number,
+  extraEnv: Record<string, string> = {},
 ): Promise<SelfToolCall> {
   return new Promise((resolve) => {
     let settled = false;
@@ -276,8 +291,11 @@ export function runSelfToolWorker(
       worker = new Worker(WORKER_SOURCE, {
         eval: true,
         workerData: { file: pathToFileURL(file).href, mode, args, ctx },
-        // A tool has no business mutating the daemon's process state; it gets
-        // the defaults (its own isolate) and talks back over one message.
+        // Pass a minimal, deliberate environment. Provider keys in the daemon's
+        // process.env are not inherited; only manifest-declared vault entries
+        // are added for a run. This reduces accidental access, not same-user
+        // filesystem/process attacks (the module is not a sandbox).
+        env: selfToolEnv(extraEnv),
         stdout: true,
         stderr: true,
       });
@@ -299,7 +317,7 @@ interface Described {
   ok: boolean;
   error?: string;
   stack?: string;
-  manifest?: { name: string; description: string; parameters: JsonSchema };
+  manifest?: { name: string; description: string; parameters: JsonSchema; vault: string[] };
 }
 
 /**
@@ -326,7 +344,7 @@ async function describeCode(code: string, timeoutMs: number): Promise<Described>
 }
 
 /** Shape rules the registry and every provider will hold the manifest to. */
-function validateShape(meta: { name?: unknown; description?: unknown; parameters?: unknown }): { name: string; description: string; parameters: JsonSchema } {
+function validateShape(meta: { name?: unknown; description?: unknown; parameters?: unknown; vault?: unknown }): { name: string; description: string; parameters: JsonSchema; vault: string[] } {
   const name = typeof meta.name === "string" ? meta.name.trim() : "";
   if (!name) throw new Error("the module's `name` must be a non-empty string");
   if (!SELF_TOOL_NAME.test(name)) {
@@ -350,7 +368,12 @@ function validateShape(meta: { name?: unknown; description?: unknown; parameters
       if (!(key in p.properties)) throw new Error(`\`parameters.required\` names "${key}", which is not in \`properties\``);
     }
   }
-  return { name, description, parameters: { type: "object", properties: p.properties as Record<string, unknown>, ...(required ? { required } : {}) } };
+  const vaultRaw = meta.vault === undefined ? [] : meta.vault;
+  if (!Array.isArray(vaultRaw) || vaultRaw.some((item) => !validVaultName(item))) {
+    throw new Error("optional `vault` must be an array of declared uppercase vault entry names");
+  }
+  const vault = [...new Set(vaultRaw as string[])];
+  return { name, description, parameters: { type: "object", properties: p.properties as Record<string, unknown>, ...(required ? { required } : {}) }, vault };
 }
 
 /* ------------------------------------------------------------ create/update --- */
@@ -431,6 +454,7 @@ export async function saveSelfTool(opts: {
     name,
     description: described.manifest.description,
     parameters: described.manifest.parameters,
+    vault: described.manifest.vault,
     created: previous?.created ?? now,
     updated: now,
     ...(previous?.testedAt ? { testedAt: previous.testedAt } : {}),
@@ -477,19 +501,35 @@ export async function runSelfTool(
   ctx: { workspace?: string; stateDir?: string; sessionKey?: string },
   config: SuparClawConfig,
   override?: { timeoutMs?: number },
+  vault?: VaultCtl,
 ): Promise<RunOutcome> {
   const refused = checkEnabled(config);
   if (refused) return { ok: false, output: refused };
   const { record, error } = readSelfTool(name);
   if (!record) return { ok: false, output: `error: ${error}` };
   const timeoutMs = Math.min(override?.timeoutMs ?? record.manifest.timeoutMs ?? config.tools.selfTools.timeoutMs, 300_000);
-  const result = await runSelfToolWorker(record.file, "run", args, ctx, timeoutMs);
+  const resolved = record.manifest.vault.length
+    ? vault?.resolveForUse(record.manifest.vault)
+    : { ok: true as const, env: {} };
+  if (!resolved?.ok) {
+    return { ok: false, output: resolved?.missing?.length
+      ? `error: ${name} needs configured vault entries: ${resolved.missing.join(", ")} — the user enters them in Settings → System → Secrets`
+      : `error: ${resolved?.error ?? "vault service is not available"}` };
+  }
+  const result = await runSelfToolWorker(record.file, "run", args, ctx, timeoutMs, resolved.env ?? {});
   if (!result.ok) {
     const stack = result.stack ? `\n${result.stack.split("\n").slice(0, 6).join("\n")}` : "";
-    return { ok: false, output: withLogs(`error: ${name} failed — ${result.error ?? "no answer from the tool"}${stack}`, result.logs) };
+    const safeLogs = result.logs?.map((line) => vault?.redact(line) ?? line);
+    const failed = withLogs(`error: ${name} failed — ${result.error ?? "no answer from the tool"}${stack}`, safeLogs);
+    const safeFailure = vault?.redact(failed) ?? failed;
+    return { ok: false, output: safeFailure.slice(0, MAX_OUTPUT) };
   }
-  const text = (result.output ?? "").slice(0, MAX_OUTPUT) || "(no output)";
-  return { ok: true, output: withLogs(text, result.logs) };
+  const rawText = result.output ?? "";
+  const text = (vault?.redact(rawText) ?? rawText).slice(0, MAX_OUTPUT) || "(no output)";
+  const safeLogs = result.logs?.map((line) => vault?.redact(line) ?? line);
+  const output = withLogs(text, safeLogs);
+  const redacted = vault?.redact(output) ?? output;
+  return { ok: true, output: redacted.slice(0, MAX_OUTPUT) };
 }
 
 /* ------------------------------------------------------------------ specs --- */
@@ -514,7 +554,9 @@ export function selfToolSpecs(config: SuparClawConfig, reserved: Set<string> = n
     specs.push({
       name: manifest.name,
       selfAuthored: true,
-      description: manifest.description,
+      description: manifest.vault.length
+        ? `${manifest.description} Uses vault entries: ${manifest.vault.join(", ")}. Their values are never shown in the tool list.`
+        : manifest.description,
       parameters: manifest.parameters,
       async run(args, ctx: ToolContext) {
         const outcome = await runSelfTool(
@@ -522,6 +564,8 @@ export function selfToolSpecs(config: SuparClawConfig, reserved: Set<string> = n
           args,
           { workspace: ctx.workspace, stateDir: ctx.stateDir, sessionKey: ctx.sessionKey },
           ctx.config,
+          undefined,
+          ctx.vault,
         );
         return outcome.output;
       },
@@ -547,12 +591,13 @@ export async function testSelfTool(
   ctx: { workspace?: string; stateDir?: string; sessionKey?: string },
   config: SuparClawConfig,
   override?: { timeoutMs?: number },
+  vault?: VaultCtl,
 ): Promise<{ ok: boolean; output: string }> {
   const { record, error } = readSelfTool(name);
   if (!record) return { ok: false, output: `error: ${error}` };
 
   const started = Date.now();
-  const outcome = await runSelfTool(name, args, ctx, config, override);
+  const outcome = await runSelfTool(name, args, ctx, config, override, vault);
   const ms = Date.now() - started;
 
   const timeoutMs = override?.timeoutMs ?? record.manifest.timeoutMs ?? config.tools.selfTools.timeoutMs;
@@ -575,6 +620,7 @@ export async function testSelfTool(
   } else if (described.manifest) {
     next.description = described.manifest.description;
     next.parameters = described.manifest.parameters;
+    next.vault = described.manifest.vault;
   }
   // A run that failed is the headline: `list` must show the tool that rotted,
   // not the one that "was tested". Keep the first line — the manifest is a
@@ -623,7 +669,7 @@ function formatList(config: SuparClawConfig): string {
         ? `tested ${manifest.testedAt.slice(0, 16).replace("T", " ")}`
         : "never tested — run `test` before you rely on it";
     const fields = Object.keys(manifest.parameters.properties ?? {}).join(", ") || "no arguments";
-    lines.push(`- ${manifest.name} (${fields}) · ${manifest.description} · ${tested}`);
+    lines.push(`- ${manifest.name} (${fields})${manifest.vault.length ? ` · vault: ${manifest.vault.join(", ")}` : ""} · ${manifest.description} · ${tested}`);
   }
   if (problems.length > 0) {
     lines.push("", "files that could not be loaded:");
@@ -642,7 +688,8 @@ export function toolsmithSpec(config: SuparClawConfig, reserved: () => Set<strin
       "again and code does it better than prose: parsing a file, arithmetic, an API shape, a format conversion, " +
       "a check you keep repeating. A created tool joins your own tool list immediately, so you can call it " +
       "like any other tool in the same turn — and `run`/`test` calls it directly. " +
-      "The module you write is ESM: `export default { name, description, parameters, run }` where `run(args, ctx)` " +
+      "The module you write is ESM: `export default { name, description, parameters, run, vault? }` where `run(args, ctx)` " +
+      "may use `vault: [\"SERVICE_API_KEY\"]` to request named values; the user enters those only in Settings. " +
       "returns a string and may be async. `parameters` is a JSON Schema object (`{ type: \"object\", properties: {...} }`). " +
       "The description you give it is what future-you reads in the tool list, so write when to use it there. " +
       "Actions: create (name + code), update (name + code), test (name + args — runs it and re-records its manifest), " +
@@ -715,6 +762,7 @@ export function toolsmithSpec(config: SuparClawConfig, reserved: () => Set<strin
             `${action === "create" ? "Created" : "Updated"} self-tool ${name}.`,
             `description: ${saved.manifest?.description}`,
             `arguments: ${fields.length > 0 ? fields.join(", ") : "(none)"}`,
+            `vault entries: ${saved.manifest?.vault.length ? saved.manifest.vault.join(", ") : "none"}`,
             `file: ${selfToolFile(name)}`,
             "",
             "Next: call it once with realistic arguments — `toolsmith test` with `args` — and read what comes back. " +
@@ -724,13 +772,13 @@ export function toolsmithSpec(config: SuparClawConfig, reserved: () => Set<strin
 
         case "test": {
           if (!name) return "error: name is required";
-          const result = await testSelfTool(name, parsed.args, toolCtx, config, override);
+          const result = await testSelfTool(name, parsed.args, toolCtx, config, override, ctx.vault);
           return result.output;
         }
 
         case "run": {
           if (!name) return "error: name is required";
-          const result = await runSelfTool(name, parsed.args, toolCtx, config, override);
+          const result = await runSelfTool(name, parsed.args, toolCtx, config, override, ctx.vault);
           return result.output;
         }
 

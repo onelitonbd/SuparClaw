@@ -15,6 +15,7 @@ import { assertWebhookUrl, postWebhook, webhookPayload, resolveDelivery, isEmpty
 import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
 import { TerminalManager } from "./terminals.js";
+import { VaultManager } from "./vault.js";
 import type { SurfaceFacts } from "./surfaces.js";
 import { rewindToPrompt, truncateLastTurn } from "./history.js";
 import { settingsCtlFrom, type SelfRuntime, type SettingsCtl } from "./self.js";
@@ -141,6 +142,7 @@ export class Service {
   readonly repos = new RepoManager({ log: (m) => this.log.warn(m) });
   /** Task 52: the persistent shells the `terminal` tool drives and the UI watches. */
   readonly terminals: TerminalManager;
+  readonly vault: VaultManager;
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
@@ -294,6 +296,7 @@ export class Service {
     this.configSvc = new ConfigService(this.log, configPathOverride);
     this.store = Store.open(dbPath());
     this.store.setMeta("state_dir", stateDir());
+    this.vault = new VaultManager();
     const config = this.configSvc.current;
     // Auth-profile binding: providers resolve credentials from the stored
     // profiles (literal keys untouched); health outcomes flow back to the
@@ -334,6 +337,7 @@ export class Service {
       selfRuntime: (key) => this.#selfRuntime(key),
       repoCtl: this.#repoCtl(),
       terminals: this.terminals,
+      vault: this.vault,
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are
@@ -2341,6 +2345,7 @@ export class Service {
     // Shells die with the daemon — say so plainly rather than pretending a
     // terminal survives a restart.
     this.terminals.stop();
+    this.vault.close();
     await this.#telegram?.stop();
     this.store.close();
     this.log.info("service stopped");

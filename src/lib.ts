@@ -1,5 +1,5 @@
 // Test surface: internals are exported so the test suite can import the built bundle.
-export { readTextSafe, workspaceDir, stateDir, ensureDirs } from "./util/paths.js";
+export { readTextSafe, workspaceDir, stateDir, vaultPath, ensureDirs } from "./util/paths.js";
 export { Screen, clipToWidth, rule } from "./tui/renderer.js";
 export { renderMarkdown, renderInline } from "./tui/markdown.js";
 export { palette, theme, detectLightMode, markdownTheme } from "./tui/theme.js";
@@ -54,6 +54,7 @@ export {
 } from "./agent/memory-search.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
 export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout, findShell, runPlan, sandboxIgnoredNote } from "./agent/tools.js";
+export { VaultManager, validVaultName, vaultToolSpec, type VaultEntry, type VaultStatus, type VaultCtl } from "./agent/vault.js";
 export {
   Terminal,
   TerminalManager,

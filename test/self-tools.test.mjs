@@ -103,6 +103,17 @@ test("create saves code + a manifest derived from the code, not from the request
   void config;
 });
 
+test("T58 manifests without a vault field remain valid and declare no injected entries", () => {
+  const file = join(TOOLS, "shout.json");
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  delete saved.vault;
+  writeFileSync(file, JSON.stringify(saved, null, 2) + String.fromCharCode(10));
+  const legacy = listSelfTools().tools.find((tool) => tool.manifest.name === "shout");
+  assert.ok(legacy, "existing self-tool remains available after upgrade");
+  assert.deepEqual(legacy.manifest.vault, [], "legacy code receives no vault variables by default");
+  writeFileSync(file, JSON.stringify({ ...saved, vault: [] }, null, 2) + String.fromCharCode(10));
+});
+
 test("the manager and made tools stay visible when Code Mode owns the exec surface", () => {
   const config = parseConfig({ tools: { codeMode: { enabled: "true" } } }).config;
   const tools = buildRegistry(config);

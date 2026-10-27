@@ -37,6 +37,10 @@ export function skillsDir(): string {
 export function toolsDir(): string {
   return join(stateDir(), "tools");
 }
+/** Encrypted values + public names for the Settings-only vault (Task 59). */
+export function vaultPath(): string {
+  return join(stateDir(), "vault.json");
+}
 export function logsDir(): string {
   return join(stateDir(), "logs");
 }

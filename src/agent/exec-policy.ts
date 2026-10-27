@@ -841,7 +841,7 @@ export interface DirectExecResult {
 export async function runDirectChain(
   segments: SegmentPlan[],
   ops: ChainOp[],
-  opts: { cwd: string; timeoutMs: number; maxBuffer?: number },
+  opts: { cwd: string; timeoutMs: number; maxBuffer?: number; env?: NodeJS.ProcessEnv },
 ): Promise<DirectExecResult> {
   const { execFile } = await import("node:child_process");
   const parts: string[] = [];
@@ -868,7 +868,7 @@ export async function runDirectChain(
         // Same 16 MB budget as the shell route: the direct route is not a
         // second-class runner, and a buffered-out command must not look like a
         // crash with no output.
-        { cwd: opts.cwd, timeout: opts.timeoutMs, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024 },
+        { cwd: opts.cwd, timeout: opts.timeoutMs, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024, env: opts.env },
         (err, out, serr) => {
           const stdoutText = out ?? "";
           const stderrText = serr ?? "";
