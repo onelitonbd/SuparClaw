@@ -693,6 +693,24 @@ export const CONFIG_SCHEMA: SchemaNode = {
             },
           },
         },
+        // Terminals: a persistent shell the agent drives and the operator
+        // watches (see src/agent/terminals.ts). Full power by design — no
+        // sandbox wrapper — so the limits here are about resources on a phone,
+        // not about confinement.
+        terminals: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: true },
+            // Concurrent shells. 8 is enough for a build, a server and a tail;
+            // a runaway 500 would take the device down.
+            max: { t: "int", min: 1, max: 32, default: 8 },
+            // Scrollback kept per terminal, in KB.
+            scrollbackKb: { t: "int", min: 8, max: 2048, default: 200 },
+            // How long `terminal run` waits before answering "still running".
+            waitMs: { t: "int", min: 1000, max: 1800000, default: 60000 },
+          },
+        },
         exec: {
           t: "object",
           default: {},
@@ -1024,6 +1042,8 @@ export interface SuparClawConfig {
     fs: boolean;
     memory: boolean;
     loopDetection: { enabled: boolean };
+    /** Persistent terminals (src/agent/terminals.ts). */
+    terminals: { enabled: boolean; max: number; scrollbackKb: number; waitMs: number };
     // P3 #22 — media understanding (their tools.media).
     media: {
       concurrency: number;

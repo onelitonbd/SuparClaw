@@ -5236,3 +5236,262 @@ html[data-theme-mode='dark'] .settings select.inp {
   .sheet { max-height: 90dvh; }
   .sheet__row--tall { min-height: 58px; }
 }
+
+/* --------------------------------------------------- terminals (Task 52) ----
+   The agent's shells. Phone: the panel owns the whole screen — a terminal with
+   20 columns is not a sidebar. Desktop (≥900px): docked to the right so the
+   conversation and the build log are readable at the same time. */
+
+.term {
+  position: absolute;
+  inset: 0;
+  /* Above the chat, below every overlay (drawer/sheet/modal are z 30): a
+     dialog opened while the terminal is up must not slide underneath it. */
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: fadeIn .16s ease both;
+}
+
+.term[hidden] { display: none; }
+
+.term__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--rail-h);
+  padding: 0 6px 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.term__mark {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  flex: none;
+}
+
+.term__title {
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -.01em;
+  flex: none;
+}
+
+.term__tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0 4px;
+}
+
+.term__tabs::-webkit-scrollbar { display: none; }
+
+.term__tab {
+  flex: none;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink2);
+  font: 500 12.5px/1 var(--mono);
+  max-width: 190px;
+}
+
+.term__tab.is-active {
+  background: var(--accsoft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.term__tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ink3);
+  opacity: .55;
+}
+
+.term__dot.is-busy {
+  background: var(--ok);
+  opacity: 1;
+  animation: pulse 1.6s infinite;
+}
+
+.term__dot.is-dead { background: var(--err); opacity: 1; }
+
+.term__actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex: none;
+}
+
+.term__btn { width: 38px; height: 38px; color: var(--ink2); }
+.term__btn:hover { color: var(--ink); }
+
+.term__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.term__meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 7px 14px;
+  font: 500 11.5px/1.4 var(--mono);
+  color: var(--ink3);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.term__meta b { color: var(--ink); font-weight: 600; }
+.term__sep { opacity: .5; }
+
+/* The running command, when the agent is the one typing. Truncated from the
+   left so the *end* of a long path/argument stays readable. */
+.term__cmd {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--inline);
+  color: var(--ink2);
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.term__out {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 14px 16px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 12.5px/1.55 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+.term__out:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.term__out[hidden] { display: none; }
+
+html[data-theme-mode='dark'] .term__out { background: #0B0B0E; }
+
+.term__empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  color: var(--ink3);
+  text-align: center;
+  font-size: 13.5px;
+}
+
+.term__empty[hidden] { display: none; }
+.term__empty-hint { max-width: 34ch; line-height: 1.5; }
+
+.term__form {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+
+.term__form[hidden] { display: none; }
+
+.term__prompt {
+  color: var(--accent);
+  font: 600 13px/1 var(--mono);
+  flex: none;
+}
+
+.term__input {
+  flex: 1;
+  min-width: 0;
+  height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 14px/1 var(--mono);
+}
+
+.term__input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.term__send { flex: none; height: var(--tap); }
+
+/* The rail button: a dot appears (and pulses) while any shell is running, so
+   the operator knows there is something to watch without opening the panel. */
+.ibtn--live { position: relative; }
+.ibtn--live::after {
+  content: "";
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 2px var(--panel);
+  animation: pulse 1.6s infinite;
+}
+
+@media (min-width: 900px) {
+  .term {
+    top: var(--rail-h);
+    left: auto;
+    right: 0;
+    bottom: 0;
+    width: min(560px, 46vw);
+    border-left: 1px solid var(--line);
+    box-shadow: -10px 0 28px rgba(20, 20, 30, .10);
+    padding-bottom: 0;
+  }
+  .term__title { display: none; }
+  .term__out { font-size: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term, .term__dot.is-busy, .ibtn--live::after { animation: none; }
+}
+
+/* Empty state headline: the sentence, then the offer, then the button. */
+.term__empty-title { font-weight: 600; font-size: 14px; color: var(--ink); }

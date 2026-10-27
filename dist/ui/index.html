@@ -61,6 +61,11 @@
     <button class="ibtn" id="subagents-btn" type="button" aria-label="Sub-agents">
       <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
     </button>
+    <!-- The live dot (ibtn--live) is added by main.ts only while a shell is
+         actually running: a permanent green pulse would be a lie. -->
+    <button class="ibtn" id="terminal-btn" type="button" aria-label="Terminals" title="Watch the agent's terminal">
+      <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M7 9.5l3 2.5-3 2.5"/><path d="M13 14.5h4"/></svg>
+    </button>
     <button class="ibtn" id="settings-btn" type="button" aria-label="Settings">
       <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg>
     </button>
@@ -247,6 +252,11 @@
       <div class="sheet__foot" id="new-session-foot"></div>
     </div>
   </div>
+
+  <!-- Task 52: the agent's terminals. Full-screen on a phone, docked to the
+       right from 900px up (see .term in styles.css). Its contents are built by
+       ui/src/terminal.ts, so this stays one stable node. -->
+  <section class="term" id="terminal-panel" aria-label="Terminals" hidden></section>
 
   <!-- Toasts -->
   <div class="toasts" id="toasts" aria-live="polite"></div>

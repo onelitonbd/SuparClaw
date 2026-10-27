@@ -196,6 +196,11 @@ test("the Control UI bundle boots and every element it looks up exists", async (
     "modal-body", "modal-foot", "toasts", "settings-view", "settings-body",
     "settings-back", "settings-btn", "theme-btn", "session-btn", "session-title", "conn-dot",
     "conn-label",
+    // Task 52 — the rail button and the panel node. The panel's inner ids are
+    // built at boot by ui/src/terminal.ts (so they are not in index.html); this
+    // boot importing app.js is what proves the panel constructs. Its contents
+    // are asserted in test/ui-terminal-panel.test.mjs.
+    "terminal-btn", "terminal-panel",
   ];
   const missing = required.filter((id) => !ids.has(id));
   assert.deepEqual(missing, [], `index.html is missing: ${missing.join(", ")}`);

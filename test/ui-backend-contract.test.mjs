@@ -19,9 +19,11 @@ function uiCalls() {
   const out = new Map();
   for (const file of readdirSync(join(ROOT, "ui/src")).filter((f) => f.endsWith(".ts"))) {
     const src = readFileSync(join(ROOT, "ui/src", file), "utf8");
-    // `gateway.request("x")` directly, and `grab("x")` (settings.ts wraps the
-    // call for pages that must survive one failed read) — both are real calls.
-    for (const re of [/gateway\.request\(\s*"([^"]+)"/g, /\bgrab\(\s*"([^"]+)"/g]) {
+    // `gateway.request("x")` directly, `grab("x")` (settings.ts wraps the call
+    // for pages that must survive one failed read), and `transport.request("x")`
+    // (Task 52's terminal panel takes its socket by injection so it can be
+    // rendered in a test) — all three are real calls.
+    for (const re of [/gateway\.request\(\s*"([^"]+)"/g, /\bgrab\(\s*"([^"]+)"/g, /transport\.request\(\s*"([^"]+)"/g]) {
       for (const m of src.matchAll(re)) {
         if (!out.has(m[1])) out.set(m[1], new Set());
         out.get(m[1]).add(file);

@@ -347,6 +347,9 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
 - **exec is on by default, approved without a prompt** — an agent that has to ask before
   every command cannot act on its own. Tighten it with `sc approvals mode ask` (prompt
   per command) or `allowlist` (safe bins only); `sc security audit` reports the mode.
+- **`terminal` is the same power with memory** — a persistent shell (or several) the agent
+  drives and you watch live in the web UI; same approval mode as exec, no sandbox by design.
+  `tools.terminals.max` / `scrollbackKb` / `waitMs` bound the resources, not the permissions.
 
 Run `sc security audit` after any config change.
 

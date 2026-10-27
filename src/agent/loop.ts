@@ -6,7 +6,7 @@ import type { Logger } from "../util/log.js";
 import { loadWorkspaceContext, todayStamp } from "./workspace.js";
 import { repoPromptBlock } from "../repo/session.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
-import { buildRegistry, toolsToSchema, type RepoCtl, type SubagentCtl, type ToolContext, type ToolSpec } from "./tools.js";
+import { buildRegistry, toolsToSchema, type RepoCtl, type SubagentCtl, type TerminalCtl, type ToolContext, type ToolSpec } from "./tools.js";
 import { LlmClient, isVisionUnsupportedError, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
 import { historyBudget, fallbackTuning } from "./context-budget.js";
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
@@ -126,6 +126,8 @@ export interface LoopDeps {
   selfRuntime?: (sessionKey: string) => SelfRuntime;
   /** Repo operations for a code session (Task 35): status, diff, publish. */
   repoCtl?: RepoCtl;
+  /** Persistent terminals (Task 52). Owned by the service, shared by every run. */
+  terminals?: TerminalCtl;
   /**
    * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
    * immediately and side-generate no UI. When a human must decide, the
@@ -642,6 +644,7 @@ export class AgentLoop {
         repo: repo ? { repo: repo.repo, base: repo.base, branch: repo.branch, workspace: repo.workspace } : null,
         publishAllowed: input.publishAllowed === true,
         repoCtl: this.deps.repoCtl,
+        terminals: this.deps.terminals,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
         store: this.deps.store,

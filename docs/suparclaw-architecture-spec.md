@@ -139,7 +139,7 @@ graph weight, not Node itself.
 ### 4.4 Tools (MVP set)
 
 `fs.read/write/list` (workspace-scoped by default), `exec` (on by default in mode `full`;
-`sc approvals mode` gates it),
+`sc approvals mode` gates it), `terminal` (persistent shells, §4.4),
 `web.fetch`, `web.search` (DuckDuckGo HTML), `memory.journal` + `memory.search` (SQLite FTS),
 `time`, and the automation family `cron_list/add/update/remove` — the same `jobs` rows the
 gateway's `cron.*` and `sc cron` write, so the agent can schedule its own work and re-arm it
@@ -160,6 +160,41 @@ so Homebrew/nvm/asdf/nix installs still work while dotfiles and user-local bins 
 (`ENOENT`/`EACCES`/`ENOEXEC`/`EPERM`) the command is retried once without it, and the output says
 the jail was not applied. `sc doctor` runs one real command through this exact path and reports
 the layer that broke, so "exec fails on everything" comes with a cause.
+
+**Terminals (Task 52).** `exec` is one command in a throwaway process: state dies with it.
+The `terminal` tool is the opposite — a **persistent shell the daemon owns**, addressed by id:
+
+```
+terminal {action:"run", command:"cd ~/proj && export NODE_ENV=dev && npm run dev", terminal:"t2"}
+```
+
+Every later call on `t2` starts in `~/proj`, sees `NODE_ENV`, and can read what the dev server
+printed. `create` opens another shell (up to `tools.terminals.max`), `read` shows the tail (also
+while a command is still running), `interrupt` sends SIGINT to the command's *descendants* and
+keeps the shell alive, `restart` replaces a shell that exited, `clear` empties the scrollback,
+`kill` closes it. Terminals die with the daemon; nothing survives a restart, and the UI says so.
+
+The implementation is pipes plus a sentinel, **not a PTY** (src/agent/terminals.ts): after each
+command line the shell is told to print `\n__sc:<token>:%d\t%s` with `$?` and `$PWD`. That gives the
+exit code, the new working directory and an exact end-of-output marker, while stderr is merged into
+stdout once (`exec 2>&1`) so ordering is the terminal's ordering. A PTY was tried and rejected: it
+echoes every command, prints an ANSI prompt and would need a full terminal emulator in a phone
+panel. Consequences, stated rather than hidden: the panel is **plain text** (ANSI and `\r` redraws
+are stripped server-side), full-screen programs (`vim`, `htop`) will not render — they are not what
+an agent drives a shell for — and tests are the honest way to see them. Output is held in a ring
+(`tools.terminals.scrollbackKb`, default 200 KB) with a monotonic sequence, so the web panel asks
+for "everything after N" and never re-renders the whole log.
+
+`terminal` goes through the **same approval path as `exec`** (`needsApproval`), which under the
+default `mode=full` is auto-approved. There is no sandbox wrapper on either surface: the shell has
+the daemon's permissions and the workspace's cwd — by design (T52: "the ai can go anywhere and do
+anything").
+
+The operator **watches the same shells**: `terminals.list|create|run|send|read|interrupt|restart|
+kill|clear` are gateway methods, and every output/state/create/remove change is broadcast as one
+`terminal` event on the normal event stream. The Control UI's rail button (id `terminal-btn`) opens
+a panel that is full-screen on a phone and docked to the right from 900 px up; it shows one tab per
+terminal, a dot while a command runs, the live output, and a prompt you can type into yourself.
 
 ### 4.5 Skills
 

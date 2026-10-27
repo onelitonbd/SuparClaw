@@ -37,6 +37,18 @@ export {
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
 export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout, findShell, runPlan } from "./agent/tools.js";
 export {
+  Terminal,
+  TerminalManager,
+  TERMINAL_DEFAULTS,
+  cleanTerminalText,
+  stripProtocol,
+  findMarker,
+  visibleBeforeMarker,
+  descendants,
+  findTerminalShell,
+  splitIncompleteEscape,
+} from "./agent/terminals.js";
+export {
   surfacesPromptLine,
   resolveAnnounceTarget,
   describeDelivery,

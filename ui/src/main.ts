@@ -7,6 +7,7 @@ import { friendlyModelName } from "./model-name.js";
 import { groupSessions, sessionRow, searchView, rowTitle, placeholderTitle, type SessionRow } from "./sessions.js";
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
+import { TerminalPanel } from "./terminal.js";
 import { onGatewayEvent } from "./notifications.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -211,6 +212,12 @@ gateway.on((event, payload) => {
     // Auto-title landed on a session row — re-render the list so the name
     // shows up (in any open UI) without a reload.
     void refresh();
+    return;
+  }
+  if (event === "terminal") {
+    // Output deltas, create/remove and state changes for every shell. Routed even
+    // when the panel is closed so its rail dot stays honest.
+    terminalPanel.handleEvent((payload ?? {}) as Record<string, unknown>);
     return;
   }
   if (event === "approvals.updated") {
@@ -1243,6 +1250,28 @@ function openSubagentsPanel(): void {
 }
 
 $("subagents-btn").onclick = () => openSubagentsPanel();
+
+/* ---------------- terminals (Task 52) ---------------- */
+// The shells live in the daemon; this panel is the operator's window. Events
+// arrive on the gateway stream whether or not the panel is open, so the rail
+// dot can show "something is running" without opening anything.
+const terminalPanel = new TerminalPanel($("terminal-panel"), {
+  transport: { request: <T,>(method: string, params?: Record<string, unknown>) => gateway.request(method, params) as Promise<T> },
+  sessionKey: () => sessionKey,
+  toast: (text, tone) => toast(text, tone),
+});
+terminalPanel.onStatus = (st) => {
+  const btn = $("terminal-btn");
+  btn.classList.toggle("ibtn--live", st.busy > 0);
+  btn.title =
+    st.open === 0
+      ? "Watch the agent's terminal"
+      : st.busy > 0
+        ? `${st.busy} of ${st.open} terminal${st.open === 1 ? "" : "s"} running`
+        : `${st.open} terminal${st.open === 1 ? "" : "s"} open`;
+  btn.setAttribute("aria-label", `Terminals — ${st.open} open${st.busy > 0 ? `, ${st.busy} running` : ""}`);
+};
+$("terminal-btn").onclick = () => void terminalPanel.toggle();
 $("session-btn").onclick = () => { void loadHistory(); };
 
 /* ---------------- routing ---------------- */

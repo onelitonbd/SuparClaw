@@ -236,6 +236,18 @@ export class Gateway {
     ws.on("error", () => this.#clients.delete(ws));
   }
 
+  /** Resolve a terminal id from a frame; sends the error frame itself when it cannot. */
+  #terminal(raw: unknown, send: (frame: unknown) => void, id: string): import("../agent/terminals.js").Terminal | null {
+    const name = String(raw ?? "").trim();
+    const term = name ? this.service.terminals.get(name) : undefined;
+    if (!term) {
+      const open = this.service.terminals.list().map((t) => t.id);
+      send(errFrame(id, "not_found", `no terminal "${name}" — ${open.length ? `open: ${open.join(", ")}` : "none are open yet"}`));
+      return null;
+    }
+    return term;
+  }
+
   #methods(): string[] {
     return [
       "health",
@@ -262,6 +274,18 @@ export class Gateway {
       "queue.status",
       "subagents.list",
       "subagents.cancel",
+      // Task 52 — the operator's window into the agent's shells. Listed here so
+      // `sc status`/clients can discover them; every call is the operator
+      // acting on their own machine, so no approval gate applies to these.
+      "terminals.list",
+      "terminals.create",
+      "terminals.run",
+      "terminals.send",
+      "terminals.read",
+      "terminals.interrupt",
+      "terminals.restart",
+      "terminals.kill",
+      "terminals.clear",
       "sessions.list",
       "sessions.search",
       "sessions.patch",
@@ -848,6 +872,86 @@ export class Gateway {
           // the diary never feeds back into memory.
           send(okFrame(id, service.dreamDiary()));
           return;
+        // ----- terminals (Task 52) -------------------------------------------
+        case "terminals.list":
+          send(
+            okFrame(id, {
+              terminals: service.terminals.list(),
+              max: service.terminals.max,
+            }),
+          );
+          return;
+        case "terminals.create": {
+          try {
+            const term = service.terminals.create({
+              name: typeof params["name"] === "string" ? params["name"] : undefined,
+              cwd: typeof params["cwd"] === "string" && params["cwd"].trim() ? params["cwd"] : undefined,
+              owner: typeof params["sessionKey"] === "string" ? params["sessionKey"] : "operator",
+            });
+            send(okFrame(id, { terminal: term.info() }));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
+          return;
+        }
+        case "terminals.send": {
+          const term = this.#terminal(params["terminal"], send, id);
+          if (!term) return;
+          const res = term.send(String(params["command"] ?? ""));
+          if (!res.started) send(errFrame(id, "busy", res.reason ?? "the terminal is busy"));
+          else send(okFrame(id, { started: true, terminal: term.info() }));
+          return;
+        }
+        case "terminals.run": {
+          const term = this.#terminal(params["terminal"], send, id);
+          if (!term) return;
+          const asked = Number(params["waitMs"]);
+          const waitMs = Number.isFinite(asked) && asked >= 0 ? asked : service.terminals.defaultWaitMs;
+          const res = await term.run(String(params["command"] ?? ""), waitMs);
+          send(okFrame(id, { ...res, terminal: term.info() }));
+          return;
+        }
+        case "terminals.read": {
+          const term = this.#terminal(params["terminal"], send, id);
+          if (!term) return;
+          const since = Number(params["since"]);
+          const { text, seq } = term.output(Number.isFinite(since) && since > 0 ? since : 0);
+          // A first open gets the whole ring, clipped: 200 KB of text is fine to
+          // keep, but not to push through one websocket frame on a phone.
+          const MAX = 64 * 1024;
+          const clipped = text.length > MAX ? text.slice(text.length - MAX) : text;
+          send(okFrame(id, { text: clipped, seq, truncated: clipped.length !== text.length, terminal: term.info() }));
+          return;
+        }
+        case "terminals.interrupt": {
+          const term = this.#terminal(params["terminal"], send, id);
+          if (!term) return;
+          send(okFrame(id, { ...(await term.interrupt()), terminal: term.info() }));
+          return;
+        }
+        case "terminals.restart": {
+          const term = this.#terminal(params["terminal"], send, id);
+          if (!term) return;
+          term.restart();
+          send(okFrame(id, { terminal: term.info() }));
+          return;
+        }
+        case "terminals.clear": {
+          const term = this.#terminal(params["terminal"], send, id);
+          if (!term) return;
+          term.clear();
+          send(okFrame(id, { terminal: term.info() }));
+          return;
+        }
+        case "terminals.kill": {
+          const target = String(params["terminal"] ?? "").trim();
+          if (!target || !service.terminals.kill(target)) {
+            send(errFrame(id, "not_found", `no terminal "${target}" — ${service.terminals.list().map((t) => t.id).join(", ") || "none are open"}`));
+            return;
+          }
+          send(okFrame(id, { killed: target }));
+          return;
+        }
         case "sessions.list":
           send(
             okFrame(id, {

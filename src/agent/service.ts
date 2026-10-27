@@ -14,6 +14,7 @@ import { matchTextReply, type AskUserQuestion, type AskUserResult } from "./ask-
 import { assertWebhookUrl, postWebhook, webhookPayload, resolveDelivery, isEmptySummary, errorStreak, shouldAlert } from "../cron/delivery.js";
 import type { JobRow } from "../state/db.js";
 import { Subagents } from "../agent/subagents.js";
+import { TerminalManager } from "./terminals.js";
 import type { SurfaceFacts } from "./surfaces.js";
 import { rewindToPrompt, truncateLastTurn } from "./history.js";
 import { settingsCtlFrom, type SelfRuntime, type SettingsCtl } from "./self.js";
@@ -94,7 +95,13 @@ export type ServiceEvent =
   | { type: "presence"; online: boolean }
   | { type: "tick"; at: number }
   /** Session row changed (auto-title landed) — UIs refresh their list. */
-  | { type: "session.updated"; sessionKey: string; name: string };
+  | { type: "session.updated"; sessionKey: string; name: string }
+  /**
+   * Terminal traffic (Task 52): output deltas, state changes, create/remove.
+   * One channel for both the agent's tool and the operator's panel — the panel
+   * is watching the daemon's real shells, not a replay of the tool calls.
+   */
+  | { type: "terminal"; kind: "output" | "state" | "created" | "removed"; id: string; [k: string]: unknown };
 
 export type ApprovalDecision = "once" | "always" | "deny";
 
@@ -118,6 +125,8 @@ export class Service {
   readonly startedAt = Date.now();
   /** Task 35: clone cache + per-session worktrees. */
   readonly repos = new RepoManager({ log: (m) => this.log.warn(m) });
+  /** Task 52: the persistent shells the `terminal` tool drives and the UI watches. */
+  readonly terminals: TerminalManager;
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
@@ -281,6 +290,17 @@ export class Service {
       (info) => this.log.warn(`llm retry ${info.model} #${info.attempt}: ${info.error}`),
       this.#authHooks(),
     );
+    // Full power by design: these are the daemon's own shells — no sandbox
+    // wrapper, no cwd jail. The limits are resource limits (how many shells,
+    // how much scrollback), not confinement.
+    this.terminals = new TerminalManager({
+      max: config.tools.terminals.max,
+      scrollbackKb: config.tools.terminals.scrollbackKb,
+      waitMs: config.tools.terminals.waitMs,
+      log: this.log,
+    });
+    // One bus for the panel: the same event stream that carries chat.
+    this.terminals.onEvent((payload) => this.events.emit("event", payload as ServiceEvent));
     this.loop = new AgentLoop({
       config,
       store: this.store,
@@ -299,6 +319,7 @@ export class Service {
       settings: this.settingsCtl(),
       selfRuntime: (key) => this.#selfRuntime(key),
       repoCtl: this.#repoCtl(),
+      terminals: this.terminals,
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
     // Boot recovery: children still "running" when the gateway restarted are
@@ -527,6 +548,9 @@ export class Service {
     const config = this.config;
     this.loop.setConfig(config);
     this.loop.llm.setConfig(this.#authProviders().providers, config.agents.defaults, this.#authHooks());
+    // Live shells survive a config edit; only their limits move (the `terminal`
+    // tool registration follows the loop's new config on the next turn).
+    this.terminals.configure(config.tools.terminals);
     this.log.info(`config applied — model ${config.agents.defaults.model || "(unset)"}`);
     this.#reconcileTelegram(config);
   }
@@ -2251,6 +2275,9 @@ export class Service {
     this.#cron?.stop();
     this.#heartbeat?.stop();
     this.#dream?.stop();
+    // Shells die with the daemon — say so plainly rather than pretending a
+    // terminal survives a restart.
+    this.terminals.stop();
     await this.#telegram?.stop();
     this.store.close();
     this.log.info("service stopped");

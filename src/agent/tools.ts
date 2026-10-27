@@ -68,6 +68,44 @@ export interface ToolContext {
   publishAllowed?: boolean;
   /** Repo operations wired by the service (publish/status/diff). */
   repoCtl?: RepoCtl;
+  /**
+   * Persistent terminals (Task 52). Wired by the service on every run — a
+   * terminal belongs to the daemon, so a sub-agent can drive the same shell a
+   * main run opened. Undefined only in tests that do not need one.
+   */
+  terminals?: TerminalCtl;
+}
+
+/**
+ * The slice of TerminalManager the tool needs. Kept structural so the tool can
+ * be unit-tested with a plain object and so `tools.ts` never imports the
+ * process-spawning module at load time.
+ */
+export interface TerminalCtl {
+  defaultWaitMs: number;
+  max: number;
+  create(input: { name?: string; cwd?: string; owner?: string }): TerminalHandle;
+  get(id: string): TerminalHandle | undefined;
+  require(id: string): TerminalHandle;
+  list(): import("./terminals.js").TerminalInfo[];
+  defaultFor(sessionKey: string, cwd: string): TerminalHandle;
+  defaultId(sessionKey: string): string | null;
+  kill(id: string): boolean;
+}
+
+/** One shell, as the tool sees it. */
+export interface TerminalHandle {
+  readonly id: string;
+  readonly cwd: string;
+  readonly busy: boolean;
+  readonly status: "idle" | "running" | "exited";
+  info(): import("./terminals.js").TerminalInfo;
+  run(command: string, waitMs?: number): Promise<import("./terminals.js").RunResult>;
+  interrupt(): Promise<{ killed: number; restarted: boolean; output: string }>;
+  kill(): void;
+  clear(): void;
+  restart(): void;
+  tail(lines?: number): string;
 }
 
 /** The repo operations a code session exposes to the agent (Task 35). */
@@ -352,6 +390,32 @@ export function findShell(): string {
 // Shared across registry rebuilds (config hot-reload) so the query cache survives.
 let searchCache: WebSearchCache | null = null;
 let searchCacheTtl = -1;
+
+/**
+ * A tool result is context the model pays for on every later turn. Keep the
+ * *end* of a long log (that is where the error is) and say what was dropped.
+ */
+const MAX_TOOL_OUTPUT = 60_000;
+function capToolOutput(text: string): string {
+  if (text.length <= MAX_TOOL_OUTPUT) return text;
+  const dropped = text.length - MAX_TOOL_OUTPUT;
+  return `[… ${dropped} earlier characters omitted; \`terminal read\` shows the tail]\n` + text.slice(-MAX_TOOL_OUTPUT);
+}
+
+/** `t1 (dev server)` — never `t1 (t1)` when no name was given. */
+const termLabel = (id: string, name?: string): string => (name && name !== id ? `${id} (${name})` : id);
+
+/** The "what is open" block, shared by list/create. */
+function openList(mgr: TerminalCtl): string {
+  const all = mgr.list();
+  if (!all.length) return "no terminals are open — action=run or action=create starts one";
+  return all
+    .map((t) => {
+      const kb = t.bytes < 1024 ? "<1" : String(Math.round(t.bytes / 1024));
+      return `${termLabel(t.id, t.name)} · ${t.status}${t.busy ? "/busy" : ""} · cwd ${t.cwd} · ${kb} KB`;
+    })
+    .join("\n");
+}
 
 export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   const tools: ToolSpec[] = [];
@@ -1013,6 +1077,134 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             // to the model as "the tool is broken". Say what happened instead.
             return `error: exec could not start: ${(err as Error).message}`;
           }
+      },
+    });
+  }
+
+  // ----- terminal (Task 52) -------------------------------------------------
+  // A shell that outlives one call: `cd` and `export` stick, a long build can
+  // be started and checked later, and the operator watches the same stream in
+  // the web panel. Full power on purpose — no sandbox, no allowlist of its own;
+  // it goes through the same approval path as exec.
+  if (config.tools.terminals.enabled) {
+    tools.push({
+      name: "terminal",
+      description:
+        "A persistent shell you own. Unlike exec (one command, one process, state gone), this shell keeps its working " +
+        "directory, environment variables, functions and background jobs between calls. Use it to work step by step: " +
+        "`cd` into a project, `export` a variable, start a server, then `read` what it printed. Multiple terminals can " +
+        "be open at once (`create`, then pass its id) — use a second one for a server you want to keep running while " +
+        "you keep working. The operator watches every terminal live in the web UI. There is no sandbox: the shell is " +
+        "the real one, with the same permissions as the daemon.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["run", "create", "list", "read", "interrupt", "kill", "clear", "restart"],
+            description:
+              "run: send a command line and wait for it. create: open another terminal. list: what is open. " +
+              "read: the recent output of one terminal (works while it is still running). interrupt: Ctrl-C the " +
+              "running command, keeping the shell. kill: close the terminal for good. clear: empty its scrollback. " +
+              "restart: start a fresh shell in the same terminal (same id, cwd reset to the workspace).",
+          },
+          command: str("For run: the command line, exactly as you would type it in a terminal"),
+          terminal: str("Terminal id (from list/create). Omit to use this session's terminal"),
+          name: str("For create: a short label shown in the UI, e.g. \"dev server\""),
+          cwd: str("For create: directory to start in (defaults to the session workspace)"),
+          lines: int("For read: how many trailing lines (default 80, max 1000)"),
+          waitMs: int("For run: how long to wait before answering \"still running\" (default from config, max 30 min)"),
+        },
+        required: ["action"],
+      },
+      needsApproval: true,
+      async run(args, ctx) {
+        const mgr = ctx.terminals;
+        if (!mgr) return "error: terminals are not available in this runtime";
+        if (!ctx.approved) return "error: terminals need approval — ask the user to approve, then retry";
+        const action = String(args["action"] ?? "").trim().toLowerCase();
+        const requested = String(args["terminal"] ?? "").trim();
+        // The session's default terminal is created lazily, so a first `run`
+        // with no id "just works" and the operator sees it appear in the panel.
+        const pick = (): TerminalHandle => {
+          if (requested) return mgr.require(requested);
+          if (!ctx.sessionKey) return mgr.require(mgr.list()[0]?.id ?? "");
+          return mgr.defaultFor(ctx.sessionKey, ctx.workspace);
+        };
+        try {
+          switch (action) {
+            case "create": {
+              const term = mgr.create({
+                name: args["name"] ? String(args["name"]).slice(0, 40) : undefined,
+                cwd: args["cwd"] ? String(args["cwd"]) : ctx.workspace,
+                owner: ctx.sessionKey,
+              });
+              const i = term.info();
+              return `created ${termLabel(i.id, i.name)} in ${term.cwd}\nshell: ${i.shell}\n${openList(mgr)}`;
+            }
+            case "list":
+              return openList(mgr);
+            case "read": {
+              const term = pick();
+              const lines = Math.max(1, Math.min(1000, Number(args["lines"]) || 80));
+              const body = capToolOutput(term.tail(lines));
+              const head =
+                `${termLabel(term.id, term.info().name)} · ${term.status}` +
+                `${term.busy ? " — a command is running" : ""} · cwd ${term.cwd}`;
+              return `${head}\n${body ? body.replace(/\n$/, "") : "(nothing printed yet)"}`;
+            }
+            case "interrupt": {
+              const term = pick();
+              const res = await term.interrupt();
+              if (res.restarted) return `${term.id}: nothing was running — the shell did not answer, so it was restarted (cwd back to ${term.cwd})`;
+              return `${term.id}: sent Ctrl-C${res.killed ? ` to ${res.killed} process${res.killed === 1 ? "" : "es"}` : ""} — the shell itself is still alive, cwd ${term.cwd}`;
+            }
+            case "kill": {
+              const id = requested || (ctx.sessionKey ? mgr.defaultId(ctx.sessionKey) : null) || mgr.list()[0]?.id;
+              if (!id) return "error: no terminal is open — nothing to kill";
+              const name = mgr.get(id)?.info().name;
+              if (!mgr.kill(id)) return `error: no terminal "${id}" — ${mgr.list().map((t) => t.id).join(", ") || "none are open"}`;
+              return `closed ${id}${name ? ` (${name})` : ""} — it can be recreated with action=create`;
+            }
+            case "clear": {
+              const term = pick();
+              term.clear();
+              return `${term.id}: scrollback cleared (the shell, its cwd and its variables are untouched)`;
+            }
+            case "restart": {
+              const term = pick();
+              term.restart();
+              return `${term.id}: fresh shell started in ${term.cwd}`;
+            }
+            case "run":
+            case "": {
+              const command = String(args["command"] ?? "").trim();
+              if (!command) return "error: the command is empty — pass {action:\"run\", command:\"…\"}";
+              const term = pick();
+              const { TERMINAL_DEFAULTS } = await import("./terminals.js");
+              const asked = Number(args["waitMs"]);
+              const waitMs = Number.isFinite(asked) && asked > 0
+                ? Math.min(Math.max(asked, 1000), TERMINAL_DEFAULTS.maxWaitMs)
+                : mgr.defaultWaitMs;
+              const res = await term.run(command, waitMs);
+              const head = termLabel(term.id, term.info().name);
+              // Same honesty rule as exec: an exit code with no text is still
+              // an answer, and a silent success is never mistaken for a no-op.
+              const body = capToolOutput(res.output.replace(/\n$/, ""));
+              const status = res.running
+                ? `[still running after ${waitMs} ms — \`terminal read ${term.id}\` to see more, \`terminal interrupt\` to stop it]`
+                : res.shellExited
+                  ? `[the shell exited (${res.exitCode === null ? "killed" : `exit ${res.exitCode}`}) — \`terminal restart\` for a fresh one]`
+                  : `[exit ${res.exitCode ?? "?"} in ${res.ms} ms · cwd ${res.cwd}]`;
+              return `${head}\n${body || (res.running ? "(no output yet)" : "(no output)")}\n${status}`;
+            }
+            default:
+              return `error: unknown action "${action}" — use run, create, list, read, interrupt, kill, clear or restart`;
+          }
+        } catch (err) {
+          // A dead shell, a full limit and a bad id are all answers, not crashes.
+          return `error: ${(err as Error).message}`;
+        }
       },
     });
   }
