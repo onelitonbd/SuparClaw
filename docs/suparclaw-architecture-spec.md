@@ -146,6 +146,13 @@ gateway's `cron.*` and `sc cron` write, so the agent can schedule its own work a
 through the scheduler. Tools run in-process — no subprocess per call (except `exec` itself,
 inherently).
 
+`exec` never fails silently. Every non-zero result is labelled with its cause and the
+command that ran — `[exit N] cmd` (plus "printed nothing" when it was quiet),
+`[cannot run] cmd — <binary / working directory>` for a spawn failure, `[timeout] cmd — killed
+after N ms` at the `tools.exec.timeoutMs` cap (30 min, Task 38), `[signal]` for a kill. A model
+that sends a nonsense `timeoutMs` gets the configured cap and a note, never an exception: the
+value is clamped to 100 ms–1 800 000 ms before `execFile` sees it.
+
 ### 4.5 Skills
 
 - `SKILL.md` markdown with frontmatter (`name`, `summary`, `read_when`) — same convention OpenClaw

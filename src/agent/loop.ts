@@ -14,6 +14,7 @@ import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
 import { surfacesFromConfig, surfacesPromptLine, type SurfaceFacts } from "./surfaces.js";
 import { selfFactsFrom, selfPromptLine, type SelfRuntime, type SettingsCtl } from "./self.js";
+import { isToolFailure } from "./exec-policy.js";
 import { ToolLoopDetector, loopGuardNudge, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
 import type { AskUserQuestion, AskUserResult } from "./ask-user.js";
 
@@ -983,7 +984,10 @@ export class AgentLoop {
           // to skip persistence entirely and vanish on refresh; the header
           // carries the duration so a reload can replay the exact pill.
           this.deps.store.appendMessage(session.id, "tool", `→ ${call.name} · ${ms}ms\n${output.slice(0, 4000)}`, runId);
-          const failed = output.startsWith("error");
+          // A declined call starts with "error:"; a failed command carries the
+          // tag explainExecError() wrote. Both must show as a red pill — a
+          // command that exited 1 is not "done".
+          const failed = isToolFailure(output);
           onEvent({
             type: "tool",
             callId: call.id,

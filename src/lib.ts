@@ -35,7 +35,7 @@ export {
   type TranscriptRow,
 } from "./agent/memory-search.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
-export { buildRegistry, toolsToSchema, safePath } from "./agent/tools.js";
+export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout } from "./agent/tools.js";
 export {
   surfacesPromptLine,
   resolveAnnounceTarget,
@@ -215,6 +215,8 @@ export {
   safeBinCheck,
   inlineEvalCarrier,
   runDirectChain,
+  explainExecError,
+  isToolFailure,
   emptyApprovalsDoc,
   loadApprovalsDoc,
   saveApprovalsDoc,

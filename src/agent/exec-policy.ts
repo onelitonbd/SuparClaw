@@ -747,6 +747,85 @@ export function evaluateExec(input: EvalInput): ExecVerdict {
   };
 }
 
+// ---------- failure wording (shared by the shell and direct routes) ----------
+
+/**
+ * What a failed child process gets told to the model.
+ *
+ * The reason this exists: Node reports four completely different failures with
+ * almost the same shape. A missing binary, a missing working directory and a
+ * killed process all arrive as an error with no stdout and no stderr, so any
+ * caller that only prints `err.code` says "[exit 1]" and nothing else — the
+ * model then reports "exec is broken" with no way to find out why.
+ */
+export interface ExecFailureContext {
+  cwd: string;
+  timeoutMs: number;
+  /** The command as the operator/model wrote it. */
+  cmdline: string;
+  /** Did the child print anything at all (stdout or stderr)? */
+  hadOutput: boolean;
+}
+
+/** The shape Node's child_process callbacks hand back on failure. */
+interface ChildError {
+  code?: string | number | null;
+  killed?: boolean;
+  signal?: string | null;
+  path?: string;
+  message?: string;
+}
+
+/**
+ * One line per failure, always naming the command. `null` means "not a failure
+ * we can describe better than the caller already did" (i.e. plain success).
+ */
+export function explainExecError(err: ChildError | null | undefined, ctx: ExecFailureContext): string | null {
+  if (!err) return null;
+  const cmd = ctx.cmdline;
+  // Node reports a missing cwd as ENOENT *on the binary*, which reads as "the
+  // shell is gone" — check the directory first so the cause is never mislabelled.
+  if (!existsSync(ctx.cwd)) {
+    return `[cannot run] ${cmd} — the working directory ${ctx.cwd} does not exist (deleted, moved, or the session's workspace is stale)`;
+  }
+  if (err.killed && err.signal) {
+    return `[timeout] ${cmd} — killed after ${ctx.timeoutMs} ms (the cap is tools.exec.timeoutMs; raise it or split the work)`;
+  }
+  if (typeof err.code === "string" && err.code) {
+    switch (err.code) {
+      case "ENOENT":
+        return `[cannot run] ${cmd} — ${err.path ? `${err.path} was not found` : "the program was not found"} (check PATH: the sandboxed child may not see the same binaries as your shell)`;
+      case "EACCES":
+        return `[cannot run] ${cmd} — ${err.path ?? "the program"} is not executable (permission denied)`;
+      case "ENOEXEC":
+        return `[cannot run] ${cmd} — ${err.path ?? "the program"} is not an executable program (bad interpreter line?)`;
+      case "ERR_CHILD_PROCESS_STDIO_MAXBUFFER":
+        return `[output too large] ${cmd} — the child wrote more than the 16 MB buffer; send it to a file and read the part you need`;
+      default:
+        return `[cannot run] ${cmd} — ${err.code}${err.message ? `: ${err.message}` : ""}`;
+    }
+  }
+  if (err.signal) return `[signal] ${cmd} — killed by ${err.signal}`;
+  if (typeof err.code === "number") {
+    const code = err.code;
+    return ctx.hadOutput
+      ? `[exit ${code}] ${cmd}`
+      : `[exit ${code}] ${cmd} — the command printed nothing`;
+  }
+  return `[cannot run] ${cmd} — ${err.message || "unknown failure"}`;
+}
+
+/**
+ * The loop's red-pill test: declined calls start with `error:`, failed commands
+ * carry a tag from explainExecError. One place, so the transcript and the model
+ * cannot disagree about whether a call failed.
+ */
+const FAILURE_TAG = /(?:^|\n)\[(?:exit [1-9]\d*|cannot run|timeout|signal|output too large)\]/;
+
+export function isToolFailure(output: string): boolean {
+  return output.startsWith("error") || FAILURE_TAG.test(output);
+}
+
 // ---------- direct (no-shell) execution of allowlist-matched chains ----------
 
 export interface DirectExecResult {
@@ -766,6 +845,9 @@ export async function runDirectChain(
 ): Promise<DirectExecResult> {
   const { execFile } = await import("node:child_process");
   const parts: string[] = [];
+  let failed = false;
+  // An empty chain is not a command that exited 1 — nothing ran.
+  if (segments.length === 0) return { output: "error: the command is empty — nothing ran" };
   let exit = 0;
   for (let i = 0; i < segments.length; i++) {
     const op = i === 0 ? null : (ops[i - 1] ?? ";");
@@ -773,16 +855,33 @@ export async function runDirectChain(
     if (op === "||" && exit === 0) break;
     const seg = segments[i]!;
     const bin = seg.resolvedPath || seg.argv0;
-    const { code, stdout, stderr } = await new Promise<{ code: number; stdout: string; stderr: string }>((resolveRun) => {
+    const cmdline = [bin, ...seg.argv.slice(1)].join(" ");
+    const { code, stdout, stderr, failure } = await new Promise<{
+      code: number;
+      stdout: string;
+      stderr: string;
+      failure: string | null;
+    }>((resolveRun) => {
       execFile(
         bin,
         seg.argv.slice(1),
-        { cwd: opts.cwd, timeout: opts.timeoutMs, maxBuffer: opts.maxBuffer ?? 1_000_000 },
+        // Same 16 MB budget as the shell route: the direct route is not a
+        // second-class runner, and a buffered-out command must not look like a
+        // crash with no output.
+        { cwd: opts.cwd, timeout: opts.timeoutMs, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024 },
         (err, out, serr) => {
+          const stdoutText = out ?? "";
+          const stderrText = serr ?? "";
           resolveRun({
             code: typeof err?.code === "number" ? err.code : err ? 1 : 0,
-            stdout: out ?? "",
-            stderr: serr ?? "",
+            stdout: stdoutText,
+            stderr: stderrText,
+            failure: explainExecError(err, {
+              cwd: opts.cwd,
+              timeoutMs: opts.timeoutMs,
+              cmdline,
+              hadOutput: Boolean(stdoutText || stderrText),
+            }),
           });
         },
       );
@@ -790,9 +889,16 @@ export async function runDirectChain(
     exit = code;
     if (stdout) parts.push(stdout);
     if (stderr) parts.push(`[stderr] ${stderr}`);
+    if (failure) {
+      parts.push(failure);
+      failed = true;
+    }
   }
-  const finalSeg = segments[segments.length - 1];
-  if (exit !== 0) parts.push(`[exit ${exit}]`);
-  if (!finalSeg) parts.push("[exit 1] empty command");
+  if (!failed && exit !== 0) {
+    // Defensive: a non-zero exit without a described failure still says which
+    // command it was.
+    const last = segments[segments.length - 1]!;
+    parts.push(`[exit ${exit}] ${[last.resolvedPath || last.argv0, ...last.argv.slice(1)].join(" ")}`);
+  }
   return { output: (parts.join("\n").slice(0, 60_000) || "(no output)").slice(0, 60_000) };
 }

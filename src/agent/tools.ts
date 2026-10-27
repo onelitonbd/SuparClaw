@@ -18,7 +18,7 @@ export interface JsonSchema {
   additionalProperties?: boolean;
 }
 
-import type { ExecVerdict } from "./exec-policy.js";
+import { explainExecError, type ExecVerdict } from "./exec-policy.js";
 import type { WebSearchCache } from "./web-search.js";
 
 export interface ToolContext {
@@ -217,6 +217,54 @@ const factsOf = (ctx: ToolContext): SurfaceFacts => ctx.surfaces ?? NO_SURFACES;
 function targetOf(ctx: ToolContext, to: string, mode: string | null): { target: string; note?: string; error?: string } {
   if (mode !== "announce") return { target: to };
   return resolveAnnounceTarget(to, ctx.sessionKey ?? "", factsOf(ctx));
+}
+
+/** The 30-minute cap (Task 38) and the floor below which a timeout is a typo. */
+export const EXEC_TIMEOUT_MAX_MS = 1_800_000;
+export const EXEC_TIMEOUT_MIN_MS = 100;
+
+/**
+ * Turn whatever the model put in `timeoutMs` into a number `execFile` accepts.
+ *
+ * `Number("5s")` is NaN and Node's execFile throws ERR_OUT_OF_RANGE on NaN —
+ * synchronously, before any child exists — so one bad argument used to make
+ * every exec call fail with a stack trace instead of a command result. Junk
+ * now falls back to the configured cap; anything else is clamped, and the note
+ * tells the model what actually applied.
+ */
+export function resolveExecTimeout(
+  requested: unknown,
+  configured: unknown,
+): { ms: number; note: string | null } {
+  const configuredMs =
+    typeof configured === "number" && Number.isFinite(configured) && configured > 0
+      ? Math.min(Math.round(configured), EXEC_TIMEOUT_MAX_MS)
+      : EXEC_TIMEOUT_MAX_MS;
+  const raw =
+    typeof requested === "number"
+      ? requested
+      : typeof requested === "string" && requested.trim() !== ""
+        ? Number(requested)
+        : Number.NaN;
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return {
+      ms: configuredMs,
+      note:
+        requested === undefined || requested === null
+          ? null
+          : `[timeout: ${JSON.stringify(requested)} is not a positive number of milliseconds — using ${configuredMs} ms]`,
+    };
+  }
+  const ms = Math.min(Math.max(Math.round(raw), EXEC_TIMEOUT_MIN_MS), EXEC_TIMEOUT_MAX_MS);
+  return {
+    ms,
+    note:
+      ms === Math.round(raw)
+        ? null
+        : raw > EXEC_TIMEOUT_MAX_MS
+          ? `[timeout: ${Math.round(raw)} ms requested — capped at ${EXEC_TIMEOUT_MAX_MS} ms]`
+          : `[timeout: ${Math.round(raw)} ms requested — raised to the ${EXEC_TIMEOUT_MIN_MS} ms floor]`,
+  };
 }
 
 /** Termux bash first, then ordinary shells — exec must work off-phone too. */
@@ -847,48 +895,69 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           if (!ctx.approved) {
             return "error: execution needs approval — ask the user to approve, then retry";
           }
+          const command = String(args["command"] ?? "").trim();
+          if (!command) return "error: the command is empty — give exec a command line to run";
           const { execFile } = await import("node:child_process");
           // Task 38: 30 minutes for every command, and a per-call request can
           // not exceed it. `npm install`/a test suite on a phone is not "hung".
-          const timeoutMs = Math.min(Number(args["timeoutMs"] ?? config.tools.exec.timeoutMs), 1_800_000);
+          // A junk request must never poison the call: Number("5s") is NaN and
+          // execFile throws ERR_OUT_OF_RANGE synchronously, which used to make
+          // *every* command fail until the model stopped sending it.
+          const { ms: timeoutMs, note: timeoutNote } = resolveExecTimeout(args["timeoutMs"], config.tools.exec.timeoutMs);
           // Sandbox plan (P2 #9): off = legacy argv env; strict = env scrub +
           // prlimit caps (+ proot jail on Termux when enabled). The note is
           // prepended to output so audits see what actually ran.
           const { planSandbox } = await import("./exec-sandbox.js");
-          const plan = planSandbox([findShell(), "-lc", String(args["command"])], ctx.workspace, config.tools.exec);
-          const note = config.tools.exec.sandbox === "strict" ? `[${plan.note}]\n` : "";
+          const plan = planSandbox([findShell(), "-lc", command], ctx.workspace, config.tools.exec);
+          const note =
+            (config.tools.exec.sandbox === "strict" ? `[${plan.note}]\n` : "") +
+            (timeoutNote ? `${timeoutNote}\n` : "");
           // Allowlist/safe-bin verdicts run argv-direct — the policy matched
           // literal tokens, so no shell may re-interpret them (globs, $PATH
           // lookups, re-quoting all stay off). Full/shell verdicts keep the
           // login shell exactly as before.
-          if (ctx.execVerdict?.route === "direct") {
-            const { runDirectChain } = await import("./exec-policy.js");
-            const result = await runDirectChain(ctx.execVerdict.segments, ctx.execVerdict.ops, {
-              cwd: ctx.workspace,
-              timeoutMs,
+          try {
+            if (ctx.execVerdict?.route === "direct") {
+              const { runDirectChain } = await import("./exec-policy.js");
+              const result = await runDirectChain(ctx.execVerdict.segments, ctx.execVerdict.ops, {
+                cwd: ctx.workspace,
+                timeoutMs,
+              });
+              const body = result.output.slice(0, 60_000);
+              return note + (body || "(no output)");
+            }
+            return await new Promise<string>((resolvePromise) => {
+              const [bin, ...rest] = plan.argv;
+              execFile(
+                bin!,
+                rest,
+                // 16 MB: the model reads the first 60k characters either way, but a
+                // chatty command must be truncated for it, not failed outright with
+                // "stdout maxBuffer length exceeded" (Task 38).
+                { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: plan.env },
+                (err, stdout, stderr) => {
+                  const parts: string[] = [];
+                  if (stdout) parts.push(stdout);
+                  if (stderr) parts.push(`[stderr] ${stderr}`);
+                  // Same wording as the direct route: one command, one kind of
+                  // answer, whichever runner executed it.
+                  const failure = explainExecError(err, {
+                    cwd: ctx.workspace,
+                    timeoutMs,
+                    cmdline: command,
+                    hadOutput: parts.length > 0,
+                  });
+                  if (failure) parts.push(failure);
+                  const body = parts.join("\n").slice(0, 60_000);
+                  resolvePromise(note + (body || "(no output)"));
+                },
+              );
             });
-            const body = result.output.slice(0, 60_000);
-            return note + (body || "(no output)");
+          } catch (err) {
+            // Never let exec throw into the loop: an unexplained rejection reads
+            // to the model as "the tool is broken". Say what happened instead.
+            return `error: exec could not start: ${(err as Error).message}`;
           }
-          return await new Promise<string>((resolvePromise) => {
-            const [bin, ...rest] = plan.argv;
-            execFile(
-              bin!,
-              rest,
-            // 16 MB: the model reads the first 60k characters either way, but a
-            // chatty command must be truncated for it, not failed outright with
-            // "stdout maxBuffer length exceeded" (Task 38).
-            { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: plan.env },
-            (err, stdout, stderr) => {
-              const parts: string[] = [];
-              if (stdout) parts.push(stdout);
-              if (stderr) parts.push(`[stderr] ${stderr}`);
-              if (err) parts.push(`[exit ${typeof err.code === "number" ? err.code : 1}] ${err.message}`);
-              const body = parts.join("\n").slice(0, 60_000);
-              resolvePromise(note + (body || "(no output)"));
-            },
-          );
-        });
       },
     });
   }
