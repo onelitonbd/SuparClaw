@@ -640,7 +640,7 @@ export function evaluateExec(input: EvalInput): ExecVerdict {
     return { ...base, decision: mode === "allowlist" ? "deny" : "ask", reason };
   }
   if (chain.ops.includes("|")) {
-    const reason = "pipes need a human decision in this build — not allowlist-evaluable";
+    const reason = "pipes are not allowlist-evaluable in this build";
     return { ...base, decision: mode === "allowlist" ? "deny" : "ask", reason };
   }
 

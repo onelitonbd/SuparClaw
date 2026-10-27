@@ -412,7 +412,7 @@ export class TelegramChannel {
     bot.on("message", (ctx) => {
       void this.#onMessage(ctx).catch((err) => this.log.error(`telegram message failed: ${(err as Error).message}`));
     });
-    // ask_user + approval buttons (P2 #8/#17): shared callback-query router.
+    // ask_user and picker buttons (P2 #8, Tasks 54/55): one callback router.
     bot.on("callback_query:data", (ctx) => {
       void this.#onCallbackQuery(ctx).catch((err) => this.log.error(`telegram callback failed: ${(err as Error).message}`));
     });
@@ -454,8 +454,8 @@ export class TelegramChannel {
 
   /**
    * Button taps: `qu:<setId>:<qid>:<n|other|skip>` (ask_user, P2 #8) and
-   * later approval cards share one router — only PAIRED users resolve
-   * (their approval-surface rule), the card gets edited to the outcome.
+   * pickers share one router — only PAIRED users may tap, and the card is
+   * edited in place to the outcome (Task 55: no approval cards remain).
    */
   async #onCallbackQuery(ctx: Context): Promise<void> {
     const data = ctx.callbackQuery?.data ?? "";
@@ -475,21 +475,11 @@ export class TelegramChannel {
     const parts = data.split(":");
     const kind = parts[0];
 
+    // `appr:` used to resolve an exec card. Task 55 removed the cards (and the
+    // wait behind them), so a stale one in an old chat must not resurrect a
+    // decision: answer that it is obsolete instead of resolving anything.
     if (kind === "appr") {
-      // Exec approval cards (P2 #17): resolveApproval is a no-op the second
-      // time (their "later taps are stale") and the card replaces itself with
-      // the outcome so nobody double-approves by accident.
-      const [, callId, decision] = parts;
-      if (!callId || (decision !== "once" && decision !== "always" && decision !== "deny")) return;
-      const resolved = this.service.resolveApproval(callId, decision);
-      if (!resolved) {
-        await ctx.answerCallbackQuery({ text: "Already resolved" }).catch(() => {});
-        return;
-      }
-      const marks: Record<string, string> = { once: "✔ approved once", always: "⚡ always allowed (this directory)", deny: "✖ denied" };
-      await ctx.answerCallbackQuery({ text: marks[decision]! }).catch(() => {});
-      const original = (ctx.callbackQuery?.message?.text ?? "").split("\n\n✦")[0] ?? "approval";
-      await ctx.editMessageText(`${original}\n\n✦ ${marks[decision]}`).catch(() => {});
+      await ctx.answerCallbackQuery({ text: "Approvals are no longer used — the agent just runs" }).catch(() => {});
       return;
     }
 
@@ -1512,22 +1502,11 @@ export class TelegramChannel {
       onTool: async () => {
         typing.onTool();
       },
-      onApproval: async (event) => {
-        // Approval card with buttons (P2 #17): one tap resolves; the card
-        // rewrites itself to ✔/⚡/✖; stale taps get "Already resolved".
-        const cmd = event.tool === "exec" ? String((event.args as Record<string, unknown>)?.command ?? "") : JSON.stringify(event.args ?? {});
-        const body =
-          `🛡 ${event.tool} wants approval\n\n${cmd.slice(0, 500)}` +
-          (event.exec ? `\n\n${event.exec.reason} · mode ${event.exec.mode}` : "");
-        const row: { text: string; callback_data: string }[] = [
-          { text: "✔ Approve once", callback_data: `appr:${event.callId}:once` },
-          { text: "✖ Deny", callback_data: `appr:${event.callId}:deny` },
-        ];
-        if (event.exec?.mintable) row.splice(1, 0, { text: "⚡ Always (this dir)", callback_data: `appr:${event.callId}:always` });
-        await bot.api
-          .sendMessage(chatId, body, { reply_markup: { inline_keyboard: [row] } })
-          .catch((err) => this.log.warn(`telegram: approval card failed: ${(err as Error).message}`));
-      },
+      // Task 55 — no approval card, ever. The operator's rule: "let the ai work
+      // on any command without my permission … i cant give permission from
+      // telegram". A card here is a wall: the turn does not continue until it is
+      // tapped, and a swipe away from it looks exactly like the agent refusing
+      // to run anything at all.
       reply: async (finalText) => {
         typing.stop();
         // P3 #26: heartbeat target:"last" follows this conversation.

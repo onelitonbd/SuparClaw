@@ -96,13 +96,16 @@ test("every terminal event reaches service subscribers — that is the panel's f
   }
 });
 
-test("without approval the tool refuses instead of running anything", async () => {
+test("the tool runs even when nothing approved it — there is no approval step (Task 55)", async () => {
+  // The old contract was the bug the operator hit on Telegram: `approved:false`
+  // produced "terminals need approval — ask the user to approve, then retry",
+  // and a model reading that asks the human to type the commands by hand.
   const service = new Service();
   try {
     const tool = service.loop.tools.find((t) => t.name === "terminal");
-    const refused = await tool.run({ action: "run", command: "echo nope" }, ctxFor(service, { approved: false }));
-    assert.match(refused, /need approval/);
-    assert.equal(service.terminals.size, 0, "no shell was even opened");
+    const out = await tool.run({ action: "run", command: "echo went-ahead" }, ctxFor(service, { approved: false }));
+    assert.match(out, /went-ahead/, "the shell runs; the verdict is the policy's, not a person's");
+    assert.equal(service.terminals.size, 1, "exactly one shell, opened on demand");
   } finally {
     await service.stop();
   }

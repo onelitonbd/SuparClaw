@@ -1932,7 +1932,11 @@ export class Service {
         let out: RunEvent = event;
         let footer = "";
         if (event.type === "final") {
-          const prof = modelProfile(this.config, payload.model ?? "");
+          // The model that answered, not the configured default: a session pin
+          // (or a per-run pick) makes those two different, and showing the
+          // default under a pinned answer is exactly the lie this fixes.
+          const answered = event.model ?? payload.model ?? "";
+          const prof = modelProfile(this.config, answered);
           footer = usageFooter(this.usageModeFor(payload.sessionKey), event.usage, prof.label, prof.pricing);
           if (footer) out = { ...event, footer };
         }
@@ -1991,6 +1995,21 @@ export class Service {
     }
   }
 
+  /**
+   * Decide whether a tool may run. **Nothing here waits for a person.**
+   *
+   * Task 55, in the operator's words: *"let the ai work on any command without
+   * my permission … i cant give permission from telegram … no tool ok"*. The
+   * old shape asked a human and fell back to `deny` when nobody answered, so a
+   * phone chat turned the whole shell off and the model, seeing "declined",
+   * told the operator to run the commands by hand and paste the output.
+   *
+   * What is left is a **policy**, not a permission prompt: `deny` still denies,
+   * `allowlist` still restricts, and `ask` — which used to mean "wait for a
+   * human" — now means "run and log who allowed it", because there is nobody
+   * on the other end of a chat to press a button. Every auto-decision lands in
+   * the log and in the transcript, so the operator can read what happened.
+   */
   private requestApproval(
     callId: string,
     tool: string,
@@ -1999,23 +2018,19 @@ export class Service {
   ): Promise<boolean | { approved: boolean; execVerdict?: ExecVerdict }> {
     const sessionKey = ctx?.sessionKey ?? "";
     const workspace = ctx?.workspace ?? workspaceDir();
+    void callId;
 
-    if (tool !== "exec") {
-      // Non-exec approvals stay boolean prompts (rare; configured tools).
-      this.log.info(`approval requested: ${tool} ${JSON.stringify(args).slice(0, 200)}`);
-      // Telegram cards (P2 #17) count as a surface for their own sessions.
-      if (!this.#approvalSurface() && !this.#approvalHooks.has(sessionKey)) return Promise.resolve(false);
-      ctx?.onPrompt?.({});
-      return new Promise<{ approved: boolean }>((resolve) => {
-        this.#approvals.set(callId, {
-          sessionKey,
-          workspace,
-          resolve: (decision) => resolve({ approved: decision === "once" || decision === "always" }),
-        });
-      });
+    // Only a shell command has a policy to consult. `terminal` is the same
+    // power with memory, so a `run` goes through the identical evaluator.
+    const action = String(args.action ?? "").toLowerCase();
+    const command =
+      tool === "exec" ? String(args.command ?? "") : tool === "terminal" && action === "run" ? String(args.command ?? "") : "";
+    if (!command) {
+      // A tool that is not a shell command has nothing to weigh. It runs.
+      this.log.info(`tool ${tool}: allowed without a prompt (no approval step)`);
+      return Promise.resolve({ approved: true });
     }
 
-    const command = String(args.command ?? "");
     const doc = loadApprovalsDoc(this.store);
     const exec = this.configSvc.current.tools.exec;
     const verdict = evaluateExec({
@@ -2026,17 +2041,12 @@ export class Service {
       pathEnv: process.env.PATH ?? "/bin:/usr/bin",
       sessionMode: (this.#sessionExecModes.get(sessionKey) ?? undefined) as import("../config/schema.js").ExecMode | undefined,
     });
-    this.log.info(`exec approval: mode=${verdict.mode} decision=${verdict.decision} reason=${verdict.reason} cmd=${command.slice(0, 120)}`);
+    this.log.info(`exec policy: mode=${verdict.mode} decision=${verdict.decision} reason=${verdict.reason} cmd=${command.slice(0, 120)}`);
 
-    if (verdict.decision === "allow") {
-      this.#stampExecUsage(verdict, command);
-      return Promise.resolve({ approved: true, execVerdict: verdict });
-    }
     if (verdict.decision === "deny") return Promise.resolve({ approved: false, execVerdict: verdict });
 
-    // Unattended sources (P2 #10): cron/webhook runs never get a surface —
-    // the tools.exec.unattended policy decides INSTEAD of askFallback, and
-    // every auto-decision lands in the log AND the session transcript.
+    // Unattended sources (P2 #10): cron/webhook runs have their own policy for
+    // exactly this question and it still applies — nobody is watching either.
     const src = this.#sessionSources.get(sessionKey) ?? "";
     if (src === "cron" || src === "webhook") {
       const mode = (exec.unattended ?? "deny") as UnattendedMode;
@@ -2048,59 +2058,16 @@ export class Service {
       return Promise.resolve({ approved: decision.allowed, execVerdict: verdict });
     }
 
-    // ask: nobody watching → askFallback verdict (deny keeps silent for cron).
-    // A telegram card sitting in the chat IS someone watching (P2 #17).
-    if (!this.#approvalSurface() && !this.#approvalHooks.has(sessionKey)) {
-      const fb = exec.askFallback ?? "deny";
-      if (fb === "deny") {
-        this.log.info(`exec ask with no surface: askFallback=deny (${verdict.reason})`);
-        return Promise.resolve({ approved: false, execVerdict: verdict });
-      }
-      // allowlist/full fallback: re-decide under that mode
-      const fbVerdict = evaluateExec({
-        config: this.configSvc.current,
-        doc,
-        command,
-        cwd: workspace,
-        pathEnv: process.env.PATH ?? "/bin:/usr/bin",
-        sessionMode: fb,
-      });
-      this.log.info(`exec ask with no surface: askFallback=${fb} → ${fbVerdict.decision}`);
-      if (fbVerdict.decision === "allow") this.#stampExecUsage(fbVerdict, command);
-      return Promise.resolve({ approved: fbVerdict.decision === "allow", execVerdict: fbVerdict });
+    if (verdict.decision === "ask") {
+      // There is no card, no button and no wait. An `ask` policy means "a
+      // human would have been asked" — say so in the transcript and run.
+      const sess = this.store.getSessionByKey(sessionKey);
+      if (sess) this.store.appendMessage(sess.id, "tool", `[allowed automatically: ${verdict.reason} — approvals are not interactive]\n$ ${command.slice(0, 500)}`);
+      this.log.info(`exec ask ⇒ run (approvals are not interactive): ${verdict.reason}`);
     }
 
-    ctx?.onPrompt?.({ exec: { mode: verdict.mode, mintable: verdict.mintable, reason: verdict.reason } });
-    return new Promise<{ approved: boolean; execVerdict: ExecVerdict }>((resolve) => {
-      this.#approvals.set(callId, {
-        sessionKey,
-        workspace,
-        execVerdict: verdict,
-        resolve: (decision) => {
-          if (decision === "always") {
-            // Mint the durable grant exactly at this boundary (allow-always =
-            // exact argv + cwd; nothing mints for carriers/unparseable input).
-            try {
-              const plan = verdict.segments[0];
-              if (verdict.mintable && plan) {
-                mintAlwaysEntry(this.store, {
-                  argv0: plan.argv0,
-                  argv: plan.argv,
-                  cwd: workspace,
-                  resolvedPath: plan.resolvedPath,
-                  command,
-                });
-                this.#broadcastApprovalsChanged();
-              }
-            } catch (err) {
-              this.log.warn(`allow-always mint failed: ${(err as Error).message}`);
-            }
-          }
-          if (decision !== "deny") this.#stampExecUsage(verdict, command);
-          resolve({ approved: decision !== "deny", execVerdict: verdict });
-        },
-      });
-    });
+    this.#stampExecUsage(verdict, command);
+    return Promise.resolve({ approved: true, execVerdict: verdict });
   }
 
   /** Resolve a pending decision. Legacy boolean accepted everywhere. */

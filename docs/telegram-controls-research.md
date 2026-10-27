@@ -296,3 +296,56 @@ thinking chain = session → profile → global, unchanged.
    its own effort (`Profile.reasoningEffort`). With a session picker, the chain
    becomes session → profile → global. Keep that order? Recommendation: yes —
    an explicit choice at the chat beats a per-model default.
+
+## 6. Task 55 — the approval wall and the lying footer
+
+Two reports came out of one Telegram session: *"the sandbox is blocking all
+shell commands … you check your GitHub yourself and paste the list"*, and
+*"`/model` says it changed but the answers are the default"*. Neither was a
+Telegram problem. Both were the runtime telling the truth about the wrong
+thing.
+
+### 6.1 The wall: the loop asked before the policy spoke
+
+`AgentLoop` gated on `spec.needsApproval && deps.requestApproval` **before**
+`evaluateExec` was consulted (`loop.ts:1006`). With `tools.exec.mode = "full"`
+(the default, "runs without prompts") the policy would have said `allow` — but
+it never got the question. The prompt then went to `Service.requestApproval`,
+which, with no surface able to answer, fell back to `askFallback: "deny"`
+(`schema.ts:730`) and returned a silent decline. The model received
+`error: user declined this action`, and a model with no other tool for the job
+does the honest-sounding thing: it tells the human to run the shell themselves.
+
+The fix removes the person from the loop, not the policy:
+
+| | before | after |
+|---|---|---|
+| `mode: full` | prompt → `askFallback` deny → nothing runs | `allow`, runs |
+| `mode: ask` | prompt, waits for a tap nobody will make | runs, transcripts `[allowed automatically: …]` |
+| `mode: deny` | denied (but reported as "the user declined") | denied, with the policy reason in the tool result |
+| Telegram card | posted and awaited | never posted (`onApproval` hook removed, `appr:` answers "no longer used") |
+| tool text | "needs approval — ask the user to approve, then retry" | tool descriptions say the opposite |
+
+`needsApproval` survives as a **marker** — it routes the call through
+`evaluateExec` (which is how `deny` and `allowlist` still bite) instead of
+routing it through a human.
+
+### 6.2 The lie: the footer named the default, and the pin was not strict
+
+The `/usage` footer was built from `payload.model` — the *per-run* override,
+which a Telegram turn never sets — instead of from the model the run used. The
+pin itself worked (the loop's `#modelFor` reads `sessions.model`; the request
+carried the pinned ref), so the chat answered with the pinned model and then
+signed the answer with the default's name.
+
+Two changes:
+
+- `final` events now carry `model` (the ref the loop actually resolved),
+  and the footer is built from it.
+- A **chosen** model — a per-chat pin or a per-run `--model` — no longer rides
+  the fallback chain. Silent substitution was the other way this looked like
+  "it didn't change": the pinned call failed, the chain answered from the
+  default, and nothing said so. A choice now fails visibly, with the reason and
+  the one command that undoes it (`/model default`).
+
+The default model keeps its chain. Only a choice is strict.

@@ -113,7 +113,8 @@ graph weight, not Node itself.
 5. Model call: OpenAI-compatible first (covers most local/remote providers); streaming; retries with
    backoff; model fallback chain; idle watchdog; separate quick `agent.wait` timeout (30s, wait-only).
 6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec follows
-   `tools.exec.mode` (default `full` — no prompt).
+   `tools.exec.mode` (default `full`). The decision is a **policy**, never a person: no tool
+   opens an approval prompt, `ask` runs and logs the allowance, `deny` refuses with the reason.
 7. Stream events → channel adapter renders (Telegram: typing indicator while a turn runs, then one message per finished answer block — no status draft).
 8. Persist transcript + usage; emit `final`. The `/usage` footer is a field on that event and is
    re-rendered from the numbers stored on the assistant row, so a reload or a restart keeps it
@@ -185,8 +186,8 @@ an agent drives a shell for — and tests are the honest way to see them. Output
 (`tools.terminals.scrollbackKb`, default 200 KB) with a monotonic sequence, so the web panel asks
 for "everything after N" and never re-renders the whole log.
 
-`terminal` goes through the **same approval path as `exec`** (`needsApproval`), which under the
-default `mode=full` is auto-approved. There is no sandbox wrapper on either surface: the shell has
+`terminal` goes through the **same policy as `exec`** (`needsApproval` marks the call for the
+evaluator; it is not a prompt) — `full` runs it, `deny` refuses it, and no surface ever waits. There is no sandbox wrapper on either surface: the shell has
 the daemon's permissions and the workspace's cwd — by design (T52: "the ai can go anywhere and do
 anything").
 
@@ -353,7 +354,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | **M1** | Gateway daemon (WS protocol, state DB, logs, service) | Daemon survives 24 h on phone; reconnect works; idle RSS < 120 MB |
 | **M2** | Agent core + `sc chat` | Streaming reply in terminal; transcript persisted; turn overhead < 150 ms; compaction at threshold |
 | **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn; answers only (no status/tool lines), multi-block answers posted as they are written |
-| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full) with an opt-in approval flow; 5 bundled skills; FTS recall |
+| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full), governed by a policy with no interactive approvals; 5 bundled skills; FTS recall |
 | **M5** | Cron + hooks + polish | Scheduled job fires after reboot-era restarts; hot config reload; backup command; all §6 targets met |
 
 ---

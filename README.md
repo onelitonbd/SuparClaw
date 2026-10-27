@@ -377,11 +377,13 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
   device's own browser is exempt only on loopback (`auth.loopbackBypass`).
 - **Secrets never travel on the wire** — `config.get` returns sentinels
   (`__redacted__:…`), `config.set` maps them back to the stored values.
-- **exec is on by default, approved without a prompt** — an agent that has to ask before
-  every command cannot act on its own. Tighten it with `sc approvals mode ask` (prompt
-  per command) or `allowlist` (safe bins only); `sc security audit` reports the mode.
+- **exec is on by default and never asks** — a permission prompt is a wall on every surface
+  without a keyboard, and the agent answers it by telling you to run the commands yourself.
+  What is left is a **policy**: `sc approvals mode deny|allowlist|ask|full`. `deny` refuses,
+  `allowlist` allows only listed binaries, and `ask` runs but records who allowed it — nobody
+  is ever asked to tap anything. `sc security audit` reports the mode.
 - **`terminal` is the same power with memory** — a persistent shell (or several) the agent
-  drives and you watch live in the web UI; same approval mode as exec, no sandbox by design.
+  drives and you watch live in the web UI; the same policy as exec, no sandbox by design.
   `tools.terminals.max` / `scrollbackKb` / `waitMs` bound the resources, not the permissions.
 
 Run `sc security audit` after any config change.

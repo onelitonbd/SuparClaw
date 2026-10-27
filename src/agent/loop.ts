@@ -43,7 +43,7 @@ export type RunEvent =
    * the current mode — a field, not text, so a UI can draw it separately and a
    * reload can rebuild it from the transcript row (Task 23).
    */
-  | { type: "final"; runId: string; text: string; usage?: Record<string, number>; footer?: string }
+  | { type: "final"; runId: string; text: string; usage?: Record<string, number>; footer?: string; model?: string }
   | { type: "error"; runId: string; message: string }
   | { type: "approval"; callId: string; tool: string; args: Record<string, unknown>; exec?: { mode: string; mintable: boolean; reason: string } }
   /** Message accepted into the queue (or the steer inbox), not yet consumed. */
@@ -344,18 +344,33 @@ export class AgentLoop {
    * never cost someone an answer.
    */
   #modelFor(input: { model?: string }, sessionKey: string): string {
+    return this.#modelChoice(input, sessionKey).model;
+  }
+
+  /**
+   * The model this run will use, and whether the user chose it.
+   *
+   * `chosen` is the important half. A configured default rides the fallback
+   * chain; a model the operator picked — the per-chat pin `/model` writes, or a
+   * per-run override from the TUI — does **not**. Mixing the two is how a phone
+   * says "Model: Claude Opus" and then answers from the default: the pinned
+   * call failed, the chain quietly substituted another model, and nothing in
+   * the reply said so. Upstream makes a user selection strict for the same
+   * reason. `/model default` is one tap away when a pinned model is down.
+   */
+  #modelChoice(input: { model?: string }, sessionKey: string): { model: string; chosen: boolean } {
     const typed = String(input.model ?? "").trim();
-    if (typed) return typed;
+    if (typed) return { model: typed, chosen: true };
     const pin = String(this.deps.store.getSessionByKey(sessionKey)?.model ?? "").trim();
-    if (!pin) return "";
+    if (!pin) return { model: "", chosen: false };
     const config = this.deps.config;
-    if (modelProfiles(config).some((m) => m.id === pin && m.enabled)) return pin;
+    if (modelProfiles(config).some((m) => m.id === pin && m.enabled)) return { model: pin, chosen: true };
     // A hand-typed `provider/model` ref is honoured while its provider exists —
     // that is the same freedom `/model <ref>` has always had.
     const provider = pin.includes("/") ? pin.slice(0, pin.indexOf("/")) : "";
-    if (provider && (config.providers ?? {})[provider]) return pin;
+    if (provider && (config.providers ?? {})[provider]) return { model: pin, chosen: true };
     this.deps.log.warn(`session ${sessionKey}: pinned model "${pin}" is no longer configured — using the default`);
-    return "";
+    return { model: "", chosen: false };
   }
 
   /**
@@ -658,6 +673,8 @@ export class AgentLoop {
     let usage: Record<string, number> | undefined;
     /** Last wire model this run streamed with — stamped on the runs row (P2 #15). */
     let lastModelRef = "";
+    /** The model the operator explicitly chose this turn (pin or per-run). */
+    let chosenModel: string | null = null;
     let finishStatus: "done" | "error" | "aborted" = "done";
     let yieldedWait = false;
     try {
@@ -808,13 +825,19 @@ export class AgentLoop {
         let replayExtraContent: Record<string, unknown> | undefined;
         // A request may name a curated profile id or a bare provider ref; the
         // profile contributes its wire ref plus per-model tuning.
-        const profile = modelProfile(this.deps.config, this.#modelFor(input, sessionKey));
+        const choice = this.#modelChoice(input, sessionKey);
+        chosenModel = choice.chosen ? choice.model : null;
+        const profile = modelProfile(this.deps.config, choice.model);
         lastModelRef = profile.ref || lastModelRef;
         // Fallbacks may also name profile ids — resolve each to its wire ref
-        // (10+ entries supported, tried in order).
-        const fallbackRefs = (this.deps.config.agents.defaults.fallbacks ?? [])
-          .map((f) => modelProfile(this.deps.config, f).ref)
-          .filter((r): r is string => Boolean(r) && r !== profile.ref);
+        // (10+ entries supported, tried in order). A user's choice rides none of
+        // them: substituting a model behind "Model: X — this chat" is the bug
+        // this branch exists to kill.
+        const fallbackRefs = choice.chosen
+          ? []
+          : (this.deps.config.agents.defaults.fallbacks ?? [])
+              .map((f) => modelProfile(this.deps.config, f).ref)
+              .filter((r): r is string => Boolean(r) && r !== profile.ref);
         // Per-model tuning for every model in the chain: a fallback attempt must
         // run on ITS temperature/cap/effort, not the primary's (and a 0 cap on a
         // fallback must omit max_tokens rather than inherit a bigger model's).
@@ -1017,9 +1040,14 @@ export class AgentLoop {
           let output: string;
           try {
             const callCtx: ToolContext = { ...ctx, approved: true, execVerdict };
+            // A policy refusal, never "the user declined": the model used to
+            // read that as a person saying no and answer "the sandbox blocks
+            // you, run it yourself" (Task 55). Say who refused and why.
             output = approved
               ? await spec.run(args, callCtx)
-              : "error: user declined this action";
+              : `error: policy denied ${call.name}${execVerdict?.reason ? ` — ${execVerdict.reason}` : ""}. ` +
+                "This is a configuration decision, not a refusal anyone can grant in this chat: " +
+                "say plainly what is switched off instead of asking the user to allow it or to run the command themselves.";
             // Turn-shaping flags set by the tool (sessions_yield) ride their
             // per-call context copy; merge them back into the turn context.
             if (callCtx.yieldArmed) ctx.yieldArmed = true;
@@ -1113,7 +1141,10 @@ export class AgentLoop {
       // a failed `finishRun` (a busy or locked database on a small box) used to
       // sit between the transcript row and the `final` event, so the answer was
       // saved and visible in the web UI while the chat never received it.
-      onEvent({ type: "final", runId, text: finalText, usage });
+      // `model` is what actually answered — the footer and the usage line read
+      // it instead of re-deriving the default, which is what made a pinned chat
+      // look like it was still on the default model.
+      onEvent({ type: "final", runId, text: finalText, usage, model: lastModelRef || undefined });
       try {
         this.deps.store.finishRun(runId, "done", usage, undefined, lastModelRef || undefined);
       } catch (err) {
@@ -1128,8 +1159,14 @@ export class AgentLoop {
         this.deps.log.error(`run ${runId} failed: ${message}`);
         // Persist the failure as its own transcript row — error bubbles were
         // live-only and disappeared on every refresh.
-        this.deps.store.appendMessage(session.id, "error", message, runId);
-        onEvent({ type: "error", runId, message });
+        // A chosen model failing is not the same event as the default failing:
+        // the chain will not rescue it (by design), so say why it stopped.
+        const hint = chosenModel
+          ? `\n\n(model "${chosenModel}" was picked for this session — no fallback is tried for a choice. /model default to go back.)`
+          : "";
+        const shown = `${message}${hint}`;
+        this.deps.store.appendMessage(session.id, "error", shown, runId);
+        onEvent({ type: "error", runId, message: shown });
       }
     } finally {
       // Fenced cleanup: only the run that still owns the slot may clear it.

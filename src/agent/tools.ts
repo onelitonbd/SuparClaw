@@ -1015,68 +1015,70 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     tools.push({
       name: "exec",
       description:
-        "Run a shell command. On by default and approved automatically in the default policy; if the operator set an approval mode, a declined call comes back as an error — report it, never pretend it ran.",
+        "Run a shell command. Nothing asks permission: the operator cannot approve from a phone, so exec always runs (Task 55). Report what happened, never pretend it ran.",
       parameters: {
         type: "object",
         properties: { command: str("Command line to run"), timeoutMs: int("Timeout in ms") },
         required: ["command"],
       },
+      // `needsApproval` is a POLICY marker, not a prompt (Task 55): it tells the
+      // service to weigh this call against `tools.exec` before it runs. Nothing
+      // in the decision waits for a human any more — the operator cannot tap
+      // "approve" from a phone, and a chat that answers "ask the user to
+      // approve, then retry" is what made the agent hand shell work back to him.
       needsApproval: true,
-        async run(args, ctx) {
-          if (!ctx.approved) {
-            return "error: execution needs approval — ask the user to approve, then retry";
+      async run(args, ctx) {
+        const command = String(args["command"] ?? "").trim();
+        if (!command) return "error: the command is empty — give exec a command line to run";
+        const { execFile } = await import("node:child_process");
+        // Task 38: 30 minutes for every command, and a per-call request can
+        // not exceed it. `npm install`/a test suite on a phone is not "hung".
+        // A junk request must never poison the call: Number("5s") is NaN and
+        // execFile throws ERR_OUT_OF_RANGE synchronously, which used to make
+        // *every* command fail until the model stopped sending it.
+        const { ms: timeoutMs, note: timeoutNote } = resolveExecTimeout(args["timeoutMs"], config.tools.exec.timeoutMs);
+        // Sandbox plan (P2 #9): off = legacy argv env; strict = env scrub +
+        // prlimit caps (+ proot jail on Termux when enabled). The note is
+        // prepended to output so audits see what actually ran.
+        const { planSandbox } = await import("./exec-sandbox.js");
+        const plan = planSandbox([findShell(), "-lc", command], ctx.workspace, config.tools.exec);
+        const note =
+          (config.tools.exec.sandbox === "strict" ? `[${plan.note}]\n` : "") +
+          (timeoutNote ? `${timeoutNote}\n` : "");
+        // Allowlist/safe-bin verdicts run argv-direct — the policy matched
+        // literal tokens, so no shell may re-interpret them (globs, $PATH
+        // lookups, re-quoting all stay off). Full/shell verdicts keep the
+        // login shell exactly as before.
+        try {
+          if (ctx.execVerdict?.route === "direct") {
+            const { runDirectChain } = await import("./exec-policy.js");
+            const result = await runDirectChain(ctx.execVerdict.segments, ctx.execVerdict.ops, {
+              cwd: ctx.workspace,
+              timeoutMs,
+            });
+            const body = result.output.slice(0, 60_000);
+            return note + (body || "(no output)");
           }
-          const command = String(args["command"] ?? "").trim();
-          if (!command) return "error: the command is empty — give exec a command line to run";
-          const { execFile } = await import("node:child_process");
-          // Task 38: 30 minutes for every command, and a per-call request can
-          // not exceed it. `npm install`/a test suite on a phone is not "hung".
-          // A junk request must never poison the call: Number("5s") is NaN and
-          // execFile throws ERR_OUT_OF_RANGE synchronously, which used to make
-          // *every* command fail until the model stopped sending it.
-          const { ms: timeoutMs, note: timeoutNote } = resolveExecTimeout(args["timeoutMs"], config.tools.exec.timeoutMs);
-          // Sandbox plan (P2 #9): off = legacy argv env; strict = env scrub +
-          // prlimit caps (+ proot jail on Termux when enabled). The note is
-          // prepended to output so audits see what actually ran.
-          const { planSandbox } = await import("./exec-sandbox.js");
-          const plan = planSandbox([findShell(), "-lc", command], ctx.workspace, config.tools.exec);
-          const note =
-            (config.tools.exec.sandbox === "strict" ? `[${plan.note}]\n` : "") +
-            (timeoutNote ? `${timeoutNote}\n` : "");
-          // Allowlist/safe-bin verdicts run argv-direct — the policy matched
-          // literal tokens, so no shell may re-interpret them (globs, $PATH
-          // lookups, re-quoting all stay off). Full/shell verdicts keep the
-          // login shell exactly as before.
-          try {
-            if (ctx.execVerdict?.route === "direct") {
-              const { runDirectChain } = await import("./exec-policy.js");
-              const result = await runDirectChain(ctx.execVerdict.segments, ctx.execVerdict.ops, {
-                cwd: ctx.workspace,
-                timeoutMs,
-              });
-              const body = result.output.slice(0, 60_000);
-              return note + (body || "(no output)");
-            }
-            const spawnOpts = { cwd: ctx.workspace, timeoutMs, cmdline: command };
-            const first = await runPlan(execFile as unknown as ExecFileFn, plan.argv, plan.env, spawnOpts);
-            // A sandbox wrapper that exists but cannot run must not brick the
-            // tool: that is the "every command fails" report. Retry once
-            // without the jail, and say in the output that it was not applied.
-            if (first.failedPath && plan.wrappers.includes(first.failedPath)) {
-              const retry = await runPlan(execFile as unknown as ExecFileFn, plan.plainArgv, plan.env, spawnOpts);
-              const why = `${first.failedPath} could not be started (${first.failedCode})`;
-              return (
-                note +
-                `[sandbox: ${why} — retried WITHOUT the jail; this command is not confined]\n` +
-                retry.output
-              ).slice(0, 60_000);
-            }
-            return note + first.output;
-          } catch (err) {
-            // Never let exec throw into the loop: an unexplained rejection reads
-            // to the model as "the tool is broken". Say what happened instead.
-            return `error: exec could not start: ${(err as Error).message}`;
+          const spawnOpts = { cwd: ctx.workspace, timeoutMs, cmdline: command };
+          const first = await runPlan(execFile as unknown as ExecFileFn, plan.argv, plan.env, spawnOpts);
+          // A sandbox wrapper that exists but cannot run must not brick the
+          // tool: that is the "every command fails" report. Retry once
+          // without the jail, and say in the output that it was not applied.
+          if (first.failedPath && plan.wrappers.includes(first.failedPath)) {
+            const retry = await runPlan(execFile as unknown as ExecFileFn, plan.plainArgv, plan.env, spawnOpts);
+            const why = `${first.failedPath} could not be started (${first.failedCode})`;
+            return (
+              note +
+              `[sandbox: ${why} — retried WITHOUT the jail; this command is not confined]\n` +
+              retry.output
+            ).slice(0, 60_000);
           }
+          return note + first.output;
+        } catch (err) {
+          // Never let exec throw into the loop: an unexplained rejection reads
+          // to the model as "the tool is broken". Say what happened instead.
+          return `error: exec could not start: ${(err as Error).message}`;
+        }
       },
     });
   }
@@ -1085,7 +1087,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   // A shell that outlives one call: `cd` and `export` stick, a long build can
   // be started and checked later, and the operator watches the same stream in
   // the web panel. Full power on purpose — no sandbox, no allowlist of its own;
-  // it goes through the same approval path as exec.
+  // it goes through the same policy as exec (never a prompt).
   if (config.tools.terminals.enabled) {
     tools.push({
       name: "terminal",
@@ -1117,11 +1119,12 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         },
         required: ["action"],
       },
+      // Same rule as exec: a terminal is the agent's own shell, weighed by the
+      // same policy and never turned into a permission prompt.
       needsApproval: true,
       async run(args, ctx) {
         const mgr = ctx.terminals;
         if (!mgr) return "error: terminals are not available in this runtime";
-        if (!ctx.approved) return "error: terminals need approval — ask the user to approve, then retry";
         const action = String(args["action"] ?? "").trim().toLowerCase();
         const requested = String(args["terminal"] ?? "").trim();
         // The session's default terminal is created lazily, so a first `run`
