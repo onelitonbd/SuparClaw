@@ -274,8 +274,15 @@ export class Chat {
   #scrollingToBottom = false;
   #toolStart = new Map<string, number>();
   #pendingApprovals = new Map<string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }>();
-  /** ask_user card state (P2 #8): picked[qid] = chosen options/custom text. */
-  #pendingQuestion: { id: string; questions: { id: string; question: string; options: string[]; multi: boolean }[]; picked: Record<string, string[]> } | null = null;
+  /** ask_user card state: one visible question; prior answers stay local until submit. */
+  #pendingQuestion: {
+    id: string;
+    questions: { id: string; question: string; options: string[]; multi: boolean }[];
+    index: number;
+    picked: Record<string, string[]>;
+    answers: Record<string, string[]>;
+    otherOpen: boolean;
+  } | null = null;
 
   /** One AgentTrace card per assistant turn; only the live one is mutable. */
   #liveTrace: AgentTrace | null = null;
@@ -1128,7 +1135,7 @@ export class Chat {
   /** ---- ask_user (P2 #8): option card over the composer ---- */
 
   question(id: string, questions: { id: string; question: string; options: string[]; multi: boolean }[]): void {
-    this.#pendingQuestion = { id, questions, picked: {} };
+    this.#pendingQuestion = { id, questions, index: 0, picked: {}, answers: {}, otherOpen: false };
     this.#renderQuestion();
   }
 
@@ -1144,48 +1151,112 @@ export class Chat {
     const body = document.getElementById("question-body") as HTMLElement;
     body.innerHTML = "";
     const st = this.#pendingQuestion;
-    for (const q of st.questions) {
-      body.append(el("div", { class: "approval__why" }, [q.question]));
-      const row = el("div", { class: "chips" });
-      for (const opt of q.options) {
-        const on = (st.picked[q.id] ?? []).includes(opt);
-        const chip = el("button", { class: `chip${on ? " chip--on" : ""}`, type: "button" }, [opt]);
-        chip.onclick = () => {
-          const cur = st.picked[q.id] ?? [];
-          if (q.multi) {
-            st.picked[q.id] = on ? cur.filter((o) => o !== opt) : [...cur, opt];
-          } else {
-            st.picked[q.id] = [opt];
-          }
-          this.#renderQuestion();
-        };
-        row.append(chip);
-      }
-      // Other — free-text capture (always present; their doc's rule).
-      const other = el("button", { class: "chip", type: "button" }, ["Other…"]);
-      other.onclick = () => {
-        const text = window.prompt(`${q.question} — your own answer:`);
-        if (text && text.trim()) {
-          st.picked[q.id] = [text.trim()];
-          this.#renderQuestion();
+    const q = st.questions[st.index];
+    if (!q) return;
+    const selected = st.picked[q.id] ?? [];
+    const progress = document.getElementById("question-progress") as HTMLElement | null;
+    if (progress) progress.textContent = `Question ${st.index + 1} of ${st.questions.length}`;
+
+    body.append(el("div", { class: "question__text" }, [q.question]));
+    body.append(el("p", { class: "hint question__hint" }, [q.multi ? "Choose all that apply, then continue." : "Choose one answer, then continue."]));
+    const row = el("div", { class: "chips question__choices" });
+    for (const opt of q.options) {
+      const on = selected.includes(opt);
+      const chip = el("button", {
+        class: `chip${on ? " chip--on" : ""}`,
+        type: "button",
+        "aria-pressed": String(on),
+      }, [opt]);
+      chip.onclick = () => {
+        const cur = st.picked[q.id] ?? [];
+        if (q.multi) {
+          st.picked[q.id] = on ? cur.filter((o) => o !== opt) : [...cur, opt];
+        } else {
+          st.picked[q.id] = [opt];
         }
+        st.otherOpen = false;
+        this.#renderQuestion();
       };
-      row.append(other);
-      body.append(row);
+      row.append(chip);
     }
-    (document.getElementById("question-answer") as HTMLElement).onclick = () => this.#resolveQuestion(false);
-    (document.getElementById("question-skip") as HTMLElement).onclick = () => this.#resolveQuestion(true);
+
+    const other = el("button", {
+      class: `chip${st.otherOpen ? " chip--on" : ""}`,
+      type: "button",
+      "aria-expanded": String(st.otherOpen),
+    }, ["Other…"]);
+    other.onclick = () => {
+      st.otherOpen = !st.otherOpen;
+      this.#renderQuestion();
+      if (st.otherOpen) (document.getElementById("question-other-input") as HTMLInputElement | null)?.focus();
+    };
+    row.append(other);
+    body.append(row);
+
+    const custom = selected.filter((value) => !q.options.includes(value));
+    if (custom.length > 0) {
+      body.append(el("p", { class: "question__custom", "aria-live": "polite" }, [`Your answer: ${custom.join(", ")}`]));
+    }
+
+    if (st.otherOpen) {
+      const input = el("input", {
+        id: "question-other-input",
+        class: "inp question__other-input",
+        type: "text",
+        placeholder: "Type your answer",
+        autocomplete: "off",
+      }) as HTMLInputElement;
+      const add = el("button", { class: "btn", type: "button" }, ["Use this answer"]);
+      const saveOther = (): void => {
+        const value = input.value.trim();
+        if (!value) { input.focus(); return; }
+        const cur = st.picked[q.id] ?? [];
+        st.picked[q.id] = q.multi ? [...cur.filter((x) => !q.options.includes(x)), value] : [value];
+        st.otherOpen = false;
+        this.#renderQuestion();
+      };
+      add.onclick = saveOther;
+      input.onkeydown = (event) => {
+        if (event.key === "Enter") { event.preventDefault(); saveOther(); }
+      };
+      body.append(el("div", { class: "question__other" }, [input, add]));
+    }
+
+    const answer = document.getElementById("question-answer") as HTMLButtonElement;
+    answer.textContent = st.index === st.questions.length - 1 ? "Submit answers" : "Next question";
+    answer.disabled = selected.length === 0;
+    answer.onclick = () => this.#advanceQuestion(false);
+    (document.getElementById("question-skip-one") as HTMLButtonElement).onclick = () => this.#advanceQuestion(true);
+    (document.getElementById("question-skip") as HTMLButtonElement).onclick = () => this.#resolveQuestion(true);
   }
 
-  #resolveQuestion(skip: boolean): void {
+  #advanceQuestion(skipCurrent: boolean): void {
+    const st = this.#pendingQuestion;
+    if (!st) return;
+    const q = st.questions[st.index];
+    if (!q) return;
+    st.answers[q.id] = skipCurrent ? [] : [...(st.picked[q.id] ?? [])];
+    if (st.index + 1 < st.questions.length) {
+      st.index += 1;
+      st.otherOpen = false;
+      this.#renderQuestion();
+      this.notice(skipCurrent ? "question skipped" : "answer saved — next question");
+      return;
+    }
+    this.#resolveQuestion(false);
+  }
+
+  #resolveQuestion(skipAll: boolean): void {
     const st = this.#pendingQuestion;
     if (!st) return;
     const answers: Record<string, string[]> = {};
-    for (const q of st.questions) answers[q.id] = skip ? [] : (st.picked[q.id] ?? []);
+    for (const q of st.questions) {
+      answers[q.id] = skipAll ? [] : (st.answers[q.id] ?? []);
+    }
     this.#pendingQuestion = null;
     this.#renderQuestion();
     this.#handlers.questionAnswer(st.id, answers);
-    this.notice(skip ? "question skipped" : "answers sent");
+    this.notice(skipAll ? "questions skipped" : "answers sent");
   }
 
   /** ---- internals ---- */

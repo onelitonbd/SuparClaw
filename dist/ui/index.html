@@ -109,12 +109,14 @@
       <div class="approval" id="question" role="alert" hidden>
         <div class="approval__head">
           <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .3c0 1.7-2.5 2-2.5 3.7"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          <span><b>The agent is asking</b> <span class="approval__what">— answer to continue</span></span>
+          <span><b>The agent is asking</b> <span class="approval__what">— one question at a time</span></span>
+          <span class="question__progress" id="question-progress" aria-live="polite"></span>
         </div>
         <div id="question-body"></div>
-        <div class="approval__row">
-          <button class="btn" id="question-skip" type="button">Skip</button>
-          <button class="btn pri" id="question-answer" type="button">Answer</button>
+        <div class="approval__row question__actions">
+          <button class="btn" id="question-skip" type="button">Skip all</button>
+          <button class="btn" id="question-skip-one" type="button">Skip this question</button>
+          <button class="btn pri" id="question-answer" type="button" disabled>Next question</button>
         </div>
       </div>
 

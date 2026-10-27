@@ -331,6 +331,37 @@ textarea:focus-visible {
 
 .chip:hover { background: var(--hover); }
 
+/* ask_user: progressive one-question-at-a-time card */
+.question__progress {
+  flex: none;
+  margin-left: auto;
+  color: var(--ink3);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.question__text {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.question__hint { margin: 0; }
+.question__choices .chip { justify-content: flex-start; text-align: left; white-space: normal; }
+.question__custom { margin: 0; color: var(--ink2); font-size: 13px; overflow-wrap: anywhere; }
+.question__other { display: flex; gap: 8px; align-items: center; }
+.question__other-input { flex: 1 1 auto; min-width: 0; }
+.question__actions { flex-wrap: wrap; }
+.question__actions .btn { flex: 1 1 120px; min-width: 0; }
+.question__actions .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+@media (max-width: 520px) {
+  .question__other { align-items: stretch; flex-direction: column; }
+  .question__other .btn { width: 100%; }
+  .question__actions .btn { flex-basis: 100px; padding-inline: 8px; font-size: 12px; }
+}
+
 /* ask_user picked option (P2 #8) */
 .chip--on {
   background: var(--accent-bg, var(--hover));
