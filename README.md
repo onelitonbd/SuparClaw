@@ -211,6 +211,12 @@ catalog — the list, the help text and the menu cannot drift apart.
 Telegram additionally owns `/new`, `/sessions`, `/model`, `/provider` and `/whoami`; anything
 else falls through to the shared router (it used to answer "unknown command" instead).
 
+**"Did the update land?" is answerable from the chat.** `/whoami` prints the answering model
+with the exact ref that goes on the wire, the exec mode, and this daemon's build stamp
+(`0.1.0+<source hash>`, hashed over `src/` and `package.json` at build time) — so a report like
+"the model switch still doesn't work" can be checked against the bundle that is actually
+running instead of guessed at. Two builds of the same source print the same stamp.
+
 **`/model` is a card, not a guess.** It prints the model this chat is on and one button per
 provider in the provider system; tapping a provider shows *that provider's selected models*
 (the Settings → Models list), paged ten at a time, and tapping one pins it **to this chat
@@ -385,6 +391,12 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
 - **`terminal` is the same power with memory** — a persistent shell (or several) the agent
   drives and you watch live in the web UI; the same policy as exec, no sandbox by design.
   `tools.terminals.max` / `scrollbackKb` / `waitMs` bound the resources, not the permissions.
+- **A dead shell is not a dead end** — when the login shell dies before the command prints
+  anything (a broken rc, a stale `LD_PRELOAD` after a Termux update, a wrapper that will not
+  start), exec retries with a plainer shell and a clean environment, and says which road worked.
+- **GitHub work needs no shell** — the `github` tool lists repositories, archives/unarchives,
+  and deletes (only with the exact `owner/name` repeated), so "which repos can I archive" is
+  answered by the API even when `gh` is not installed and no terminal works.
 
 Run `sc security audit` after any config change.
 

@@ -16,7 +16,8 @@ import {
   testProvider,
 } from "../config/providers.js";
 import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
-import { modelProfile } from "../config/schema.js";
+import { execModeOf, modelProfile } from "../config/schema.js";
+import { BUILD_STAMP } from "../util/build-stamp.js";
 import { buildCommandMenu, staleCommandScopes } from "./telegram-menu.js";
 import { splitForTelegram, stripHtmlTags, telegramChunks } from "./telegram-format.js";
 import { createTurnDelivery, isTransientTelegramError } from "./telegram-delivery.js";
@@ -259,7 +260,7 @@ export const TELEGRAM_COMMANDS: { cmd: string; summary: string }[] = [
   { cmd: "/start", summary: "what this bot is, and every command" },
   { cmd: "/new", summary: "start a fresh session — chat, or code a repository" },
   { cmd: "/sessions", summary: "switch to an earlier conversation in this chat" },
-  { cmd: "/model", summary: "pick the model for this chat — provider, then model" },
+  { cmd: "/model", summary: "pick the model for this chat — provider, then model (one tap)" },
   { cmd: "/provider [list|add|remove|test]", summary: "manage model providers" },
   { cmd: "/whoami", summary: "your Telegram id, this chat and its session" },
 ];
@@ -909,6 +910,15 @@ export class TelegramChannel {
             `you:    ${from ?? "?"}${ctx.from?.username ? ` (@${ctx.from.username})` : ""}`,
             `chat:   ${scope.chatId}${scope.isGroup ? " (group)" : " (dm)"}`,
             `session: ${this.#sessionKeyFor(scope.chatId)}`,
+            // What is actually answering, and which build is doing it. Two
+            // questions that used to be unanswerable from a phone (Task 56):
+            // "did the model change?" and "did the update land?".
+            `model:  ${(() => {
+              const cur = currentModel(this.service.config, this.#pinFor(scope.chatId));
+              return cur.pin ? `${cur.label} — this chat\n        ref: ${cur.ref}` : `default — ${cur.label}`;
+            })()}`,
+            `exec:   ${execModeOf(this.service.config.tools.exec)} — nothing asks for permission`,
+            `build:  ${BUILD_STAMP}`,
             `paired: ${from !== undefined && this.#paired(from) ? "yes" : `no — sc pair approve ${from ?? "?"}`}`,
           ].join("\n"),
         );

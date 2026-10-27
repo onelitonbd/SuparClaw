@@ -115,6 +115,7 @@ export {
   type SessionLabel,
 } from "./channels/telegram-pickers.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
+export { execAttempts, fallbackNote, runWithFallback, scrubLoaderEnv, shouldRetryAfter, posixShells, describeOutcome, LOADER_ENV } from "./agent/exec-fallback.js";
 export { AgentLoop } from "./agent/loop.js";
 export { Subagents } from "./agent/subagents.js";
 export { Service } from "./agent/service.js";export { renderMarkdown as renderUiMarkdown, escapeHtml } from "../ui/src/markdown.js";
@@ -391,6 +392,8 @@ export {
   type GithubAccount,
   type GithubRepo,
   type GithubBranch,
+  githubDeleteRepo,
+  githubSetArchived,
 } from "./repo/github.js";
 export {
   RepoManager,

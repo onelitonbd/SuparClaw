@@ -192,3 +192,25 @@ test("/new keeps the chat's model, because the choice is about the chat", () => 
   assert.ok(carriedAt < rotateAt, "read before the tag rotates, or it reads the empty new session");
   assert.match(block, /if \(carried\) this\.service\.store\.setSessionModel\(key, carried\)/, "and copied onto the new key");
 });
+
+test("/whoami answers the two questions a phone cannot otherwise settle", () => {
+  // Task 56. "It says it changed the model but the answers are the default" and
+  // "I updated it and nothing changed" were both unanswerable from Telegram:
+  // the chat could not print the wire ref that would appear in the answer's
+  // footer, nor the build the daemon was running.
+  const block = TG.slice(TG.indexOf('case "whoami"'), TG.indexOf('case "new"'));
+  assert.match(block, /currentModel\(this\.service\.config, this\.#pinFor\(scope\.chatId\)\)/, "the model is read per chat, like the picker");
+  assert.match(block, /ref: \$\{cur\.ref\}/, "and printed as the wire ref, so the footer can be checked against it");
+  assert.match(block, /execModeOf\(this\.service\.config\.tools\.exec\)/, "the exec mode is visible, not guessable");
+  assert.match(block, /BUILD_STAMP/, "and the build stamp says which code is running");
+});
+
+test("the build stamp is a source hash, not a promise", () => {
+  // scripts/build.mjs bakes it in; a bundle built without the define says
+  // "unknown" rather than inventing a version.
+  const build = readFileSync(join(ROOT, "scripts/build.mjs"), "utf8");
+  assert.match(build, /__BUILD_STAMP__/, "passed to esbuild as a define");
+  assert.match(build, /await walk\(join\(root, "src"\)\)/, "hashed over src/");
+  assert.match(build, /hash\.update\(`version:\$\{version\}\\n`\)/, "and the package version");
+  assert.match(SERVICE, /build: BUILD_STAMP,/, "health() reports it");
+});

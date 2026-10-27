@@ -349,3 +349,49 @@ Two changes:
   the one command that undoes it (`/model default`).
 
 The default model keeps its chain. Only a choice is strict.
+
+## 7. Task 56 — the shell died, and there was no other road
+
+The reply that started this: *"killed by the sandbox (SIGABRT) … run `gh auth
+status` and `gh repo list` on your phone and paste the output."* Two separate
+failures had to line up for the agent to say that.
+
+### 7.1 A SIGABRT before any output is the environment, not the command
+
+`exec` had exactly one strategy: `findShell()` → `<shell> -lc <command>`, then
+`explainExecError()` turned whatever happened into a line. On a phone that is
+not enough, because the shell can die **before the command starts**:
+
+| cause | what the child does |
+|---|---|
+| a `.bashrc`/`.profile` that sources something missing | aborts during startup |
+| `LD_PRELOAD`/`LD_LIBRARY_PATH` naming a library that moved (Termux after an update sets `libtermux-exec.so`) | Android's linker aborts before `main()` |
+| `prlimit`/`proot` present per `existsSync` but not runnable | never reaches the shell |
+
+All three look identical from the daemon's seat: `SIGABRT`, no stdout. The old
+code reported that as the command's failure and stopped, so the model concluded
+"nothing on this device can run commands" — which is a true statement about the
+old code, not about the device.
+
+`exec-fallback.ts` is the ladder: the planned invocation, then the same shell
+without its login files, then each POSIX shell that exists (`/system/bin/sh`
+first on Android) with `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*`/`PYTHON*`
+scrubbed. The retry rule is narrow on purpose: **only when the child printed
+nothing**, and never after a timeout (retrying a timeout repeats the work). A
+command that ran, printed, and failed keeps its own failure.
+
+When a rung other than the first works, the tool says so and tells the model the
+environment was the problem — not to ask the human to run anything.
+
+### 7.2 The only road to GitHub was `gh`
+
+There was no GitHub tool. `repo_status`/`github_publish` exist but both need a
+*bound repository*, so "show me my repos and tell me what to archive" had no
+route except a shell command. Adding `github` (list / whoami / archive /
+unarchive / delete) removes the dependency on a working shell *and* on `gh`
+being installed. Delete is latched: the model must repeat the exact
+`owner/name`, because on a phone there is no second pair of eyes.
+
+With both changes the honest answer to a dead shell is another route, and the
+only remaining sentence the agent may use is "this device cannot start a shell
+right now — here is the line" plus whatever another tool can do instead.

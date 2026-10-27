@@ -110,6 +110,8 @@ export interface CurrentModel {
   def: string;
   /** What the next turn will actually ask for. */
   requested: string;
+  /** The wire ref the next turn will send (what the footer will name). */
+  ref: string;
   /** One line to print. */
   label: string;
   /** The configured default, resolved to a label (what "default:" should say). */
@@ -142,6 +144,7 @@ export function currentModel(config: SuparClawConfig, pin: string | null | undef
     def,
     defLabel,
     requested,
+    ref,
     label,
     stale,
     provider: slash > 0 ? ref.slice(0, slash) : "",
@@ -246,8 +249,13 @@ export function modelCard(opts: CardOptions & { provider: string }): Card {
  */
 export function pinnedCard(opts: { config: SuparClawConfig; pin: string | null }): Card {
   const cur = currentModel(opts.config, opts.pin);
+  // The wire ref is printed on purpose: it is what the next answer's footer
+  // will show, so "it said it changed but didn't" is checkable at a glance
+  // instead of a feeling (Task 56).
   const text = cur.pin
-    ? `✅ Model: ${cur.label} — this chat.\ndefault: ${cur.defLabel || "(unset)"}\n/model to change · this chat only`
+    ? cur.stale
+      ? `⚠️ Model: ${cur.requested} — pinned to this chat, but it is no longer configured.\nanswers use ${cur.defLabel || "the default"}; /model to pick another`
+      : `✅ Model: ${cur.label} — this chat.\nref: ${cur.ref}\ndefault: ${cur.defLabel || "(unset)"}\n/model to change · this chat only`
     : `✅ Model: default${cur.def ? ` (${cur.label})` : ""} — this chat follows the configured default.`;
   const rows: KeyboardRow[][] = [[{ text: "Change", callback_data: "m:p:0" }]];
   if (cur.pin) rows[0]!.push({ text: "Use default", callback_data: "m:d" });

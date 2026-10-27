@@ -49,8 +49,10 @@ import {
   clearGithubCreds,
   githubCredentialSources,
   githubIdentity,
+  githubDeleteRepo,
   githubListBranches,
   githubListRepos,
+  githubSetArchived,
   orderBranches,
   readStoredGithub,
   resolveGithubCreds,
@@ -61,6 +63,7 @@ import {
   type GithubSource,
 } from "../repo/github.js";
 import type { RepoCtl } from "./tools.js";
+import { BUILD_STAMP } from "../util/build-stamp.js";
 import { fetchModels } from "../config/providers.js";
 import { TelegramChannel, describeError, probeTelegramApi, telegramProxy } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
@@ -395,7 +398,45 @@ export class Service {
   /** Per-session overrides the prompt block quotes (`## Your configuration`). */
   /** The repo surface the agent's tools call (Task 35). */
   #repoCtl(): RepoCtl {
+    // Task 56: the same controller also carries the account-level GitHub calls,
+    // so the `github` tool can list/archive/delete without a shell.
+    const host = () => this.config.addons?.github?.host ?? "github.com";
+    const token = (): string => {
+      const creds = this.githubCreds();
+      if (!creds) throw new Error("GitHub is not connected on this device — connect it in Settings → Connections");
+      return creds.token;
+    };
     return {
+      github: {
+        whoami: async () => {
+          const creds = this.githubCreds();
+          if (!creds) throw new Error("GitHub is not connected on this device — connect it in Settings → Connections");
+          // A `gh`/env token carries no stored login; ask the API rather than
+          // inventing one from the machine's git config.
+          const me = await githubIdentity(creds.token, { host: creds.host });
+          return { login: me.login, source: creds.source, scopes: creds.scopes ?? [] };
+        },
+        repos: async ({ filter, page, perPage } = {}) => {
+          const creds = this.githubCreds();
+          if (!creds) throw new Error("GitHub is not connected on this device — connect it in Settings → Connections");
+          const me = creds.login ? { login: creds.login } : await githubIdentity(creds.token, { host: creds.host });
+          const repos = await githubListRepos(creds.token, { host: creds.host, filter, page, perPage });
+          return {
+            login: me.login,
+            hasMore: repos.length > 0 && repos.length >= (perPage ?? 30),
+            repos: repos.map((r) => ({
+              fullName: r.fullName,
+              private: r.private,
+              archived: r.archived === true,
+              defaultBranch: r.defaultBranch,
+              pushedAt: r.pushedAt,
+              description: r.description,
+            })),
+          };
+        },
+        setArchived: (repo, archived) => githubSetArchived(token(), { repo, archived, host: host() }),
+        remove: (repo) => githubDeleteRepo(token(), { repo, host: host() }),
+      },
       status: async (sessionKey: string) => {
         const binding = this.store.getSessionRepo(sessionKey);
         if (!binding) throw new Error("this session is not bound to a repository");
@@ -2152,10 +2193,11 @@ export class Service {
     return () => this.events.off("event", listener);
   }
 
-  health(): { ok: boolean; version: string; uptimeMs: number; sessions: number; busy: string[] } {
+  health(): { ok: boolean; version: string; build: string; uptimeMs: number; sessions: number; busy: string[] } {
     return {
       ok: true,
       version: "0.1.0",
+      build: BUILD_STAMP,
       uptimeMs: Date.now() - this.startedAt,
       sessions: this.store.listSessions(200).length,
       busy: this.loop.busySessions(),

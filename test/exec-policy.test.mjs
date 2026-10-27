@@ -99,9 +99,12 @@ test("globMatcher: *, **, ? semantics", () => {
 
 // ---- mode matrix + legacy mapping ----
 
-test("execModeOf: explicit mode wins; legacy bool maps", () => {
+test("execModeOf: explicit mode wins; a legacy config can no longer ask", () => {
+  // Task 56: `approvals: true` used to mean "ask a human", and a config written
+  // before `mode` existed therefore turned every command into a prompt nobody
+  // on a phone could answer. With approvals gone, an unset mode is "full".
   assert.equal(execModeOf({ approvals: false }), "full");
-  assert.equal(execModeOf({ approvals: true }), "ask");
+  assert.equal(execModeOf({ approvals: true }), "full");
   assert.equal(execModeOf({ approvals: false, mode: "deny" }), "deny");
   assert.equal(execModeOf({ approvals: true, mode: "allowlist" }), "allowlist");
 });

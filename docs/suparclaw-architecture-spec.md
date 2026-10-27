@@ -140,7 +140,9 @@ graph weight, not Node itself.
 ### 4.4 Tools (MVP set)
 
 `fs.read/write/list` (workspace-scoped by default), `exec` (on by default in mode `full`;
-`sc approvals mode` gates it), `terminal` (persistent shells, §4.4),
+`sc approvals mode` gates it, and a shell that dies before printing is retried down a ladder of
+plainer shells), `terminal` (persistent shells, §4.4), `github` (repos/archive/delete over the
+REST API, so no shell or `gh` binary is needed),
 `web.fetch`, `web.search` (DuckDuckGo HTML), `memory.journal` + `memory.search` (SQLite FTS),
 `time`, and the automation family `cron_list/add/update/remove` — the same `jobs` rows the
 gateway's `cron.*` and `sc cron` write, so the agent can schedule its own work and re-arm it
@@ -354,7 +356,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | **M1** | Gateway daemon (WS protocol, state DB, logs, service) | Daemon survives 24 h on phone; reconnect works; idle RSS < 120 MB |
 | **M2** | Agent core + `sc chat` | Streaming reply in terminal; transcript persisted; turn overhead < 150 ms; compaction at threshold |
 | **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn; answers only (no status/tool lines), multi-block answers posted as they are written |
-| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full), governed by a policy with no interactive approvals; 5 bundled skills; FTS recall |
+| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full), governed by a policy with no interactive approvals and a shell fallback ladder; GitHub repo management via the API; 5 bundled skills; FTS recall |
 | **M5** | Cron + hooks + polish | Scheduled job fires after reboot-era restarts; hot config reload; backup command; all §6 targets met |
 
 ---
@@ -397,7 +399,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | M0 scaffold + doctor + config | done | `sc init`, `sc doctor` (11 checks), strict JSON5 schema, 19 tests green |
 | M1 gateway daemon | done | http+ws on one port, token auth (bad token → close 4401), `/health`, static Control UI |
 | M2 agent core + `sc chat` | done | streaming SSE client, tool loop, SQLite transcripts, pure-JS TUI (local + remote) |
-| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, answers-only delivery (no status draft), and the four pickers — `/model` (provider → model), `/sessions` (enter an earlier conversation), `/think` (effort buttons), `/new` → Code (account → repository → branch) — all ten rows a page, all command-requested cards edited in place; needs a bot token to exercise |
+| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, answers-only delivery (no status draft), and the four pickers — `/model` (provider → model, pinned to this chat), `/sessions` (enter an earlier conversation), `/think` (effort buttons), `/new` → Code (account → repository → branch) — all ten rows a page, all command-requested cards edited in place; `/status` and `/whoami` name the answering model's wire ref and the build stamp; needs a bot token to exercise |
 | M4 tools + skills + memory | done | 11 built-in tools, 5 bundled skills, workspace files, FTS search |
 | M5 cron + hooks | partial | croner scheduler + `sc cron` CLI; hooks not yet implemented |
 

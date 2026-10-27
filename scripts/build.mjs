@@ -12,6 +12,38 @@ const dev = watch || process.argv.includes("--dev");
 await rm(join(root, "dist"), { recursive: true, force: true });
 await mkdir(join(root, "dist"), { recursive: true });
 
+/**
+ * What this bundle IS, baked in at build time.
+ *
+ * "Did the fix reach my phone?" was unanswerable: the daemon reported a
+ * hardcoded "0.1.0" no matter which code it was built from, so a report like
+ * "the model switch still doesn't work" could not be checked against the build
+ * that was actually running (`/whoami` now prints this).
+ *
+ * It is a hash of the SOURCE, not a commit sha: a build artifact that stamped
+ * its own commit would have to know the sha of the commit that contains it,
+ * which cannot exist. Two builds of the same files produce the same stamp, and
+ * the build is derived from `src/` + `package.json` only — so `dist/` churn
+ * never changes it.
+ */
+async function buildStamp() {
+  const { createHash } = await import("node:crypto");
+  const hash = createHash("sha256");
+  const version = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;
+  hash.update(`version:${version}\n`);
+  const walk = async (dir) => {
+    for (const name of (await readdir(dir)).sort()) {
+      const full = join(dir, name);
+      const info = await stat(full);
+      if (info.isDirectory()) await walk(full);
+      else hash.update(`${full.slice(root.length)}\n${await readFile(full)}\n`);
+    }
+  };
+  await walk(join(root, "src"));
+  return `${version}+${hash.digest("hex").slice(0, 7)}`;
+}
+const stamp = await buildStamp();
+
 /** @type {import("esbuild").BuildOptions} */
 const common = {
   bundle: true,
@@ -32,6 +64,7 @@ const common = {
   outdir: join(root, "dist"),
   chunkNames: "chunks/[name]-[hash]",
   banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" },
+  define: { __BUILD_STAMP__: JSON.stringify(stamp) },
 };
 
 const entries = {

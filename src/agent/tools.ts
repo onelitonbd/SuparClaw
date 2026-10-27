@@ -19,6 +19,7 @@ export interface JsonSchema {
 }
 
 import { explainExecError, type ExecVerdict } from "./exec-policy.js";
+import { execAttempts, fallbackNote, runWithFallback } from "./exec-fallback.js";
 import type { WebSearchCache } from "./web-search.js";
 
 export interface ToolContext {
@@ -109,10 +110,31 @@ export interface TerminalHandle {
 }
 
 /** The repo operations a code session exposes to the agent (Task 35). */
+/**
+ * GitHub account work without a shell (Task 56).
+ *
+ * The operator asked for a repo list and got "run `gh repo list` and paste the
+ * output" — because `gh` was the only route the agent had, and the shell under
+ * it was dying. Every one of these is a REST call the daemon can make itself:
+ * list, archive (reversible), delete (irreversible), and who am I.
+ */
+export interface GithubCtl {
+  whoami(): Promise<{ login: string; source: string; scopes: string[] }>;
+  repos(opts: { filter?: string; page?: number; perPage?: number }): Promise<{
+    login: string;
+    repos: { fullName: string; private: boolean; archived: boolean; defaultBranch: string; pushedAt: number; description?: string }[];
+    hasMore: boolean;
+  }>;
+  setArchived(repo: string, archived: boolean): Promise<{ fullName: string; archived: boolean }>;
+  remove(repo: string): Promise<{ fullName: string }>;
+}
+
 export interface RepoCtl {
   status(sessionKey: string): Promise<{ repo: string; branch: string; base: string; clean: boolean; files: { path: string; added: number; removed: number }[]; added: number; removed: number }>;
   diff(sessionKey: string, path?: string): Promise<string>;
   publish(input: { sessionKey: string; title: string; body?: string; draft?: boolean }): Promise<{ url: string; number: number; branch: string; draft: boolean }>;
+  /** Undefined in harnesses that do not wire GitHub; the tool says so plainly. */
+  github?: GithubCtl;
 }
 
 /** The sub-agent operations the session family of tools can invoke. */
@@ -317,6 +339,12 @@ interface ChildProcessError {
 
 export interface PlanRun {
   output: string;
+  /** stdout alone: the fallback ladder retries only when nothing was printed. */
+  stdout: string;
+  signal?: string | null;
+  exitCode?: number | null;
+  /** We killed it at the time cap (as opposed to the shell dying on its own). */
+  timedOut?: boolean;
   /** The binary we could not start, when the failure was a spawn (ENOENT/EACCES/…). */
   failedPath?: string;
   failedCode?: string | null;
@@ -364,6 +392,10 @@ export function runPlan(
           ["ENOENT", "EACCES", "ENOEXEC", "EPERM"].includes(err.code);
         resolveRun({
           output: parts.join("\n").slice(0, 60_000) || "(no output)",
+          stdout: stdout ?? "",
+          signal: typeof err?.signal === "string" ? err.signal : null,
+          exitCode: typeof err?.code === "number" ? err.code : err ? null : 0,
+          timedOut: Boolean(err?.killed && err?.signal),
           failedPath: spawnFailed ? err.path : undefined,
           failedCode: spawnFailed && typeof err.code === "string" ? err.code : null,
         });
@@ -1041,7 +1073,8 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         // prlimit caps (+ proot jail on Termux when enabled). The note is
         // prepended to output so audits see what actually ran.
         const { planSandbox } = await import("./exec-sandbox.js");
-        const plan = planSandbox([findShell(), "-lc", command], ctx.workspace, config.tools.exec);
+        const shell = findShell();
+        const plan = planSandbox([shell, "-lc", command], ctx.workspace, config.tools.exec);
         const note =
           (config.tools.exec.sandbox === "strict" ? `[${plan.note}]\n` : "") +
           (timeoutNote ? `${timeoutNote}\n` : "");
@@ -1060,20 +1093,28 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             return note + (body || "(no output)");
           }
           const spawnOpts = { cwd: ctx.workspace, timeoutMs, cmdline: command };
-          const first = await runPlan(execFile as unknown as ExecFileFn, plan.argv, plan.env, spawnOpts);
-          // A sandbox wrapper that exists but cannot run must not brick the
-          // tool: that is the "every command fails" report. Retry once
-          // without the jail, and say in the output that it was not applied.
-          if (first.failedPath && plan.wrappers.includes(first.failedPath)) {
-            const retry = await runPlan(execFile as unknown as ExecFileFn, plan.plainArgv, plan.env, spawnOpts);
-            const why = `${first.failedPath} could not be started (${first.failedCode})`;
-            return (
-              note +
-              `[sandbox: ${why} — retried WITHOUT the jail; this command is not confined]\n` +
-              retry.output
-            ).slice(0, 60_000);
-          }
-          return note + first.output;
+          // Task 56: the shell itself can die before the command starts
+          // (SIGABRT from a login rc or a stale LD_PRELOAD is the phone case).
+          // Walk the ladder instead of reporting the environment as the
+          // command's failure — the old shape tried one shell and, when it
+          // aborted, left the agent asking the human to run it by hand.
+          const attempts = execAttempts({ shell, command, planned: plan });
+          const result = await runWithFallback(attempts, async (attempt) => {
+            const run = await runPlan(execFile as unknown as ExecFileFn, attempt.argv, attempt.env, spawnOpts);
+            return {
+              outcome: {
+                stdout: run.stdout,
+                signal: run.signal ?? null,
+                exitCode: run.exitCode ?? null,
+                spawnFailed: Boolean(run.failedPath),
+                spawnDetail: run.failedPath ? `${run.failedPath} could not be started (${run.failedCode})` : undefined,
+                timedOut: run.timedOut === true,
+              },
+              output: run.output,
+            };
+          });
+          const where = fallbackNote(result, attempts[0]!);
+          return (note + (where ? `${where}\n` : "") + result.output).slice(0, 60_000);
         } catch (err) {
           // Never let exec throw into the loop: an unexplained rejection reads
           // to the model as "the tool is broken". Say what happened instead.
@@ -1495,6 +1536,74 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       return [...surface, ...hidden.filter((t) => cmc.directOnly.includes(t.name))];
     }
   }
+
+  // Task 56 — the GitHub tool. The operator asked for his repositories and the
+  // agent answered "you run `gh repo list` and paste it": `gh` was the only road,
+  // and the shell under it was dying with SIGABRT. This tool exists so the road
+  // is the API, which works with no shell, no clone, and no `gh` binary.
+  tools.push({
+      name: "github",
+      description:
+        "GitHub account work — list repositories, archive or unarchive one, delete one, or check who is signed in. Use THIS instead of `gh` or any shell command: it is a direct API call, so it works even when the shell does not.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["repos", "whoami", "archive", "unarchive", "delete"],
+            description: "repos = list (paged), whoami = the signed-in login, archive/unarchive/delete = one repo",
+          },
+          repo: str("For archive/unarchive/delete: owner/name"),
+          filter: str("For repos: match in the name (optional)"),
+          page: int("For repos: 1-based page (default 1)"),
+          confirm: str("For delete ONLY: repeat the exact owner/name — a deletion cannot be undone"),
+        },
+        required: ["action"],
+      },
+      async run(args, ctx) {
+        const api = ctx.repoCtl?.github;
+        if (!api) return "error: GitHub is not connected on this device — connect it in Settings → Connections, then retry";
+        const action = String(args["action"] ?? "").trim().toLowerCase();
+        try {
+          if (action === "whoami") {
+            const me = await api.whoami();
+            return `${me.login || "(login not exposed by this token)"} · via ${me.source}${me.scopes.length ? ` · scopes ${me.scopes.join(", ")}` : ""}`;
+          }
+          if (action === "repos") {
+            const res = await api.repos({
+              filter: args["filter"] === undefined ? undefined : String(args["filter"]),
+              page: Number.isFinite(Number(args["page"])) && Number(args["page"]) > 0 ? Math.floor(Number(args["page"])) : 1,
+              perPage: 30,
+            });
+            if (res.repos.length === 0) return `no repositories${args["filter"] ? ` matching "${String(args["filter"])}"` : ""} for ${res.login || "this account"}`;
+            const rows = res.repos.map((r) => {
+              const ago = r.pushedAt > 0 ? `${Math.max(1, Math.round((Date.now() - r.pushedAt) / 86_400_000))}d ago` : "never pushed";
+              return `${r.fullName} · ${r.private ? "private" : "public"} · ${r.archived ? "ARCHIVED" : "active"} · pushed ${ago} · ${r.defaultBranch}`;
+            });
+            const more = res.hasMore ? `\n(more on page ${Number(args["page"] ?? 1) + 1})` : "";
+            return `${res.login || "this account"} · ${res.repos.length} repo(s) on this page\n${rows.join("\n")}${more}`;
+          }
+          const repo = String(args["repo"] ?? "").trim();
+          if (!repo) return `error: ${action} needs repo="owner/name"`;
+          if (action === "archive" || action === "unarchive") {
+            const res = await api.setArchived(repo, action === "archive");
+            return `${res.fullName} is now ${res.archived ? "archived (read-only, still recoverable)" : "active again"}`;
+          }
+          if (action === "delete") {
+            // The latch: the model must repeat the name. Losing a repository to a
+            // plausible-sounding sentence is not a risk worth taking on a phone.
+            if (String(args["confirm"] ?? "").trim() !== repo) {
+              return `error: deleting ${repo} needs confirm="${repo}" exactly — say which repository you are deleting and get the user's word before calling again`;
+            }
+            const res = await api.remove(repo);
+            return `${res.fullName} deleted. This cannot be undone (GitHub keeps recoverable forks/deleted-repo history for 90 days only for some cases).`;
+          }
+          return `error: unknown action "${action}" — use repos, whoami, archive, unarchive, or delete`;
+        } catch (err) {
+          return `error: ${(err as Error).message}`;
+        }
+      },
+  });
 
   // Task 35 — repo tools. Present in every registry (they refuse with a sentence
   // outside a code session), so the model can discover them without the schema

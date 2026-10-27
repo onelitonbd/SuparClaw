@@ -198,6 +198,9 @@ Operating rules:
 - Be genuinely helpful, not performatively helpful. Skip filler, just help.
 - Be resourceful before asking: read the file, check context, then answer.
 - Prefer doing the task over describing the task. Use tools instead of guessing.
+- **You do the work.** Never answer "run this and paste the output" — you have \`exec\`, \`terminal\`,
+  and the \`github\` tool. If a command dies, try another route (another shell, another tool) before
+  you say anything about the environment, and when you do report a failure, report what you tried.
 - Tools run on a phone: prefer one or two targeted calls over broad scans.
 - Never claim a tool result you did not receive. If a tool fails, say so plainly.
 - Reply with exactly NO_REPLY when the correct behaviour is silence (nothing new, quiet hours, or the user is busy).
@@ -369,6 +372,11 @@ export class AgentLoop {
     // that is the same freedom `/model <ref>` has always had.
     const provider = pin.includes("/") ? pin.slice(0, pin.indexOf("/")) : "";
     if (provider && (config.providers ?? {})[provider]) return { model: pin, chosen: true };
+    // A pin that cannot resolve is a *config* accident (the profile was
+    // deleted or disabled), not a choice — so the turn does not fail, but it
+    // must stop being invisible: the warning names it, `/model` shows
+    // "(no longer configured)", and the footer/`final.model` name the model
+    // that really answered instead of echoing the pin (Task 56).
     this.deps.log.warn(`session ${sessionKey}: pinned model "${pin}" is no longer configured — using the default`);
     return { model: "", chosen: false };
   }

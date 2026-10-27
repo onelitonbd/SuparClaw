@@ -1227,7 +1227,12 @@ export type ExecAskFallback = "deny" | "allowlist" | "full";
 export function execModeOf(exec: { approvals?: boolean; mode?: string }): ExecMode {
   const mode = exec.mode && exec.mode.trim() ? exec.mode.trim() : null;
   if (mode === "deny" || mode === "allowlist" || mode === "ask" || mode === "full") return mode;
-  return exec.approvals === false ? "full" : "ask";
+  // A config written before `mode` existed only carries the legacy
+  // `approvals: true`, which used to mean "ask". Nothing is interactive any
+  // more (Task 55: the operator cannot approve from a phone), so an unset mode
+  // means the permissive one — a stale config must never resurrect a prompt.
+  void exec.approvals;
+  return "full";
 }
 
 export function emptyConfig(): SuparClawConfig {

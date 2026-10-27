@@ -45,6 +45,8 @@ export function accountLabel(source: GithubSource): string {
 export interface GithubRepo {
   fullName: string;
   private: boolean;
+  /** Archived repos are read-only on GitHub — the difference between "keep" and "put away". */
+  archived?: boolean;
   defaultBranch: string;
   pushedAt: number;
   description?: string;
@@ -321,6 +323,43 @@ export function orderBranches(rows: GithubBranch[], base: string): GithubBranch[
   return all
     .sort((a, b) => (a.name === wanted ? -1 : b.name === wanted ? 1 : a.name.localeCompare(b.name)))
     .map((b) => ({ ...b, default: b.name === wanted }));
+}
+
+/**
+ * Archive / unarchive one repository (Task 56).
+ *
+ * The user's question was "what do I keep, archive, or trash" — and archive is
+ * the reversible half of that answer. It is a single PATCH, so it never needs a
+ * shell, a clone, or a `gh` binary on the device.
+ */
+export async function githubSetArchived(
+  token: string,
+  opts: { repo: string; archived: boolean; host?: string; fetchFn?: FetchLike },
+): Promise<{ fullName: string; archived: boolean }> {
+  const repo = opts.repo.trim();
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) throw new Error(`"${repo}" is not owner/name`);
+  const raw = await githubRequest<{ full_name?: string; archived?: boolean }>(`/repos/${repo}`, {
+    token,
+    host: opts.host,
+    method: "PATCH",
+    body: { archived: opts.archived },
+    fetchFn: opts.fetchFn,
+  });
+  return { fullName: String(raw.full_name ?? repo), archived: raw.archived === true };
+}
+
+/**
+ * Delete one repository. Irreversible, so the caller has to prove it meant this
+ * one — the tool requires the exact `owner/name` twice (Task 56).
+ */
+export async function githubDeleteRepo(
+  token: string,
+  opts: { repo: string; host?: string; fetchFn?: FetchLike },
+): Promise<{ fullName: string }> {
+  const repo = opts.repo.trim();
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) throw new Error(`"${repo}" is not owner/name`);
+  await githubRequest(`/repos/${repo}`, { token, host: opts.host, method: "DELETE", fetchFn: opts.fetchFn });
+  return { fullName: repo };
 }
 
 export async function githubListBranches(
