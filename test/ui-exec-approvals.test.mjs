@@ -7,9 +7,11 @@
 // that silently clamped, and no grant ever shown a command or used twice.
 //
 // This drives the real page and asserts the parts that have to hold: one draft,
-// one write, the mode ladder (with the legacy flag revealed only when the mode
-// follows it), dependencies expressed in the UI, refusal instead of clamping,
-// and a grant list you can actually read and revoke.
+// one write, the mode ladder, refusal instead of clamping, and a grant list you
+// can actually read and revoke. Task 55/57 removed the last two things that
+// claimed a permission step existed: the legacy approvals switch and the
+// sandbox controls. Both are asserted *absent* here, so neither can come back
+// as a UI-only promise.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -198,17 +200,17 @@ test("one section, one save: the old two-card split is gone", () => {
   assert.equal($$("#exec-policy-save").length, 1, "one save button");
   // Every control that writes policy is on the same draft, so none of them
   // writes config on its own.
-  const ids = ["exec-enabled", "exec-approvals", "exec-ask-fallback", "exec-unattended",
-    "exec-timeout", "exec-proot", "exec-strict-inline"];
+  const ids = ["exec-enabled", "exec-ask-fallback", "exec-unattended",
+    "exec-timeout", "exec-strict-inline"];
   for (const id of ids) assert.equal($$(`#${id}`).length, 1, `${id} appears exactly once`);
   assert.equal(sets().length, 0, "rendering writes nothing");
 });
 
-test("the mode ladder is five labelled radios, one of them checked", () => {
+test("the mode ladder is four labelled radios, one of them checked", () => {
   const group = $(".setcard__modes");
   assert.equal(group.getAttribute("role"), "radiogroup");
   assert.equal(group.getAttribute("aria-label"), "Exec mode");
-  const ids = ["deny", "allowlist", "ask", "full", "legacy"];
+  const ids = ["deny", "allowlist", "ask", "full"];
   for (const m of ids) assert.equal(byId(`exec-mode-${m}`).getAttribute("type"), "radio", `${m} is a radio`);
   assert.ok(byId("exec-mode-ask").checked, "the stored mode is ask");
   // Each option says what it does — the consequence, not the enum name.
@@ -226,16 +228,16 @@ test("picking a mode is a draft edit: the status line answers before the save", 
   assert.ok($('[data-mode="full"]').classList.contains("is-on"), "the chosen row is marked");
 });
 
-test("the legacy approvals switch is only revealed when the mode follows it", async () => {
-  assert.ok(byId("exec-approvals").closest(".exec__legacy").hidden, "hidden while a mode is set");
-  await choose("exec-mode-legacy");
-  assert.equal(byId("exec-approvals").closest(".exec__legacy").hidden, false, "revealed for legacy");
-  assert.equal(byId("exec-mode-legacy").checked, true);
-  assert.equal($(".setcard__status .settings__tag").textContent, "mode ask", "an on legacy switch means ask");
-  byId("exec-approvals").checked = false;
-  fire(byId("exec-approvals"), "change");
-  await settle();
-  assert.equal($(".setcard__status .settings__tag").textContent, "mode full", "an off legacy switch means full");
+test("nothing on the card offers a permission step", async () => {
+  // The switch said "on = ask, off = full" — but nothing waits for a human any
+  // more (Task 55), and `execModeOf` ignores the key (Task 56). A control that
+  // cannot do what its label says is the same bug as a wrong answer.
+  assert.equal($$("#exec-approvals").length, 0, "the legacy switch is gone");
+  assert.equal($$(".exec__legacy").length, 0);
+  assert.equal($$('[data-mode="legacy"]').length, 0, "no pseudo-mode");
+  // …and the save still writes the key, as false, so an old config migrates.
+  await click("exec-policy-save");
+  assert.equal(sets().at(-1).params.value.approvals, false);
 });
 
 test("saving writes the whole block once, merged over what is stored", async () => {
@@ -277,20 +279,18 @@ test("the timeout says what it means in minutes, and the echo tracks typing", as
   assert.equal($(".setcard__echo").textContent, "≈ 1.5 min");
 });
 
-test("the sandbox dependency is expressed: the proot jail needs strict", async () => {
-  const proot = byId("exec-proot");
-  assert.equal(proot.disabled, true, "disabled while the sandbox is off");
-  assert.ok(proot.closest(".row").classList.contains("is-off"));
-  fire($$(".seg__btn").find((b) => b.textContent === "strict"), "click");
-  await settle();
-  assert.equal(proot.disabled, false, "enabled under strict");
-  assert.equal(proot.closest(".row").classList.contains("is-off"), false);
-  proot.checked = true;
-  fire(proot, "change");
-  await settle();
+test("the card states direct Termux instead of offering a sandbox", async () => {
+  // Task 57: `proot` needs ptrace and aborts on a stock phone, and `env -i`
+  // hides $PREFIX/bin — the jail was the outage, not the boundary. The controls
+  // are gone; the keys are still written as off/false so an old config migrates
+  // on the next save.
+  assert.equal($$("#exec-proot").length, 0);
+  assert.equal($$("#exec-direct-note").length, 1);
+  assert.match($("#exec-direct-note").textContent, /directly in Termux/);
   await click("exec-policy-save");
-  assert.equal(sets().at(-1).params.value.sandbox, "strict");
-  assert.equal(sets().at(-1).params.value.sandboxProot, true);
+  const v = sets().at(-1).params.value;
+  assert.equal(v.sandbox, "off");
+  assert.equal(v.sandboxProot, false);
 });
 
 test("safe bins are chips for the six that have a profile, and the extras are labelled inert", () => {

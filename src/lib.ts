@@ -35,7 +35,7 @@ export {
   type TranscriptRow,
 } from "./agent/memory-search.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
-export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout, findShell, runPlan } from "./agent/tools.js";
+export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout, findShell, runPlan, sandboxIgnoredNote } from "./agent/tools.js";
 export {
   Terminal,
   TerminalManager,
@@ -168,7 +168,6 @@ export { parseCleanupArgs, formatCleanupReport, cmdSessionsCleanup, type Cleanup
 export { exportSlug, sessionStartDate, resolveSessionSelector, exportSessionTranscript, parseExportArgs, cmdSessionsExport } from "./cli/session-export.js";
 export { sessionBackfill, rollbackBackfill, readRemSources, remBackfill, writeDiaryBlock, ingestHash, linesFromRows } from "./agent/backfill.js";
 export { memoryCmd } from "./cli/memory-commands.js";
-export { sandboxEnv, planSandbox, findPrlimit, findProot } from "./agent/exec-sandbox.js";
 export { normalizeAskUserArgs, matchTextReply, renderQuestionText, ASK_LIMITS, type AskUserQuestion, type AskUserResult } from "./agent/ask-user.js";
 export { createLogger } from "./util/log.js";
 export { createBackup, verifyBackup, restoreBackup, listBackups, backupStamp, BACKUP_MANIFEST_VERSION, type BackupManifest, type BackupResult, type VerifyResult } from "./backup/backup.js";

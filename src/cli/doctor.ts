@@ -35,38 +35,31 @@ const C = {
  *
  * This exists because "every command fails" used to be undiagnosable: the
  * policy was healthy, the tool was enabled, and the failure was invisible until
- * an agent tried to work. One `echo` here answers it — and if a sandbox wrapper
- * (prlimit/proot) is what cannot start, it says so by name.
+ * an agent tried to work. One `echo` here answers it.
+ *
+ * Task 57 removed the sandbox, so there is no wrapper to blame any more — the
+ * probe runs exactly what the tool runs, in the operator's own shell, and a
+ * failure names the binary that would not start.
  */
 export async function execSelfTest(
-  exec: { sandbox: "off" | "strict"; sandboxProot: boolean; safeBinTrustedDirs: string[]; timeoutMs: number },
+  exec: { sandbox?: "off" | "strict"; sandboxProot?: boolean; timeoutMs: number },
 ): Promise<DoctorCheck> {
-  const { planSandbox } = await import("../agent/exec-sandbox.js");
   const { findShell, runPlan } = await import("../agent/tools.js");
   const { execFile } = await import("node:child_process");
   const ws = workspaceDir();
   const shell = findShell();
-  const plan = planSandbox([shell, "-lc", "echo sc-exec-ok"], ws, exec);
+  const argv = [shell, "-lc", "echo sc-exec-ok"];
   const started = Date.now();
   try {
-    const run = await runPlan(execFile as never, plan.argv, plan.env, {
+    const run = await runPlan(execFile as never, argv, process.env, {
       cwd: ws,
       timeoutMs: Math.min(exec.timeoutMs || 10_000, 10_000),
       cmdline: "echo sc-exec-ok",
     });
     const ms = Date.now() - started;
-    const wrapper = run.failedPath ? plan.wrappers.includes(run.failedPath) : false;
-    // A wrapper that cannot start is a degraded sandbox, not a dead tool: the
-    // run below it succeeded. Say which one it is instead of failing the check.
-    if (run.output.includes("sc-exec-ok") && (!run.failedPath || wrapper)) {
-      return run.failedPath
-        ? {
-            name: "exec run",
-            status: "warn",
-            detail: `commands run (echo round-trip in ${ms} ms) but the sandbox wrapper ${run.failedPath} cannot be started (${run.failedCode}) — every command runs WITHOUT the jail`,
-            fix: `chmod +x ${run.failedPath}, or set tools.exec.sandbox=off to make the weaker posture explicit (sc config set tools.exec.sandbox off)`,
-          }
-        : { name: "exec run", status: "ok", detail: `echo round-trip in ${ms} ms · ${plan.note} · shell ${shell}` };
+    const legacy = exec.sandbox === "strict" || exec.sandboxProot ? " · tools.exec.sandbox is ignored (removed in Task 57)" : "";
+    if (run.output.includes("sc-exec-ok") && !run.failedPath) {
+      return { name: "exec run", status: "ok", detail: `echo round-trip in ${ms} ms · direct Termux (no sandbox) · shell ${shell}${legacy}` };
     }
     if (run.failedPath) {
       return {
@@ -326,7 +319,7 @@ export async function runDoctorChecks(opts: { insideGateway?: boolean } = {}): P
     // Live check: policy is not the same as "a command runs". "exec returns
     // exit 1 on every command" was impossible to diagnose from the policy line
     // alone, so run one trivial command through the exact same path the tool
-    // uses (same shell, same sandbox plan, same env) and report what came back.
+    // uses (same shell, same env) and report what came back.
     if (exec.enabled && mode !== "deny") {
       const live = await execSelfTest(load.config.tools.exec);
       checks.push(live);

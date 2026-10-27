@@ -388,6 +388,11 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
   What is left is a **policy**: `sc approvals mode deny|allowlist|ask|full`. `deny` refuses,
   `allowlist` allows only listed binaries, and `ask` runs but records who allowed it — nobody
   is ever asked to tap anything. `sc security audit` reports the mode.
+- **There is no sandbox** — exec runs your own `$SHELL -lc <command>` with the daemon's
+  environment and the session workspace as cwd. The old `strict` mode (env scrub + `prlimit` +
+  a `proot` jail) is gone in Task 57: on a phone `proot` aborts before the command exists, and
+  `env -i` hides `$PREFIX/bin`, so it produced "killed by the sandbox" rather than protection.
+  `tools.exec.sandbox` still parses for old configs and does nothing; `sc doctor` says so.
 - **`terminal` is the same power with memory** — a persistent shell (or several) the agent
   drives and you watch live in the web UI; the same policy as exec, no sandbox by design.
   `tools.terminals.max` / `scrollbackKb` / `waitMs` bound the resources, not the permissions.

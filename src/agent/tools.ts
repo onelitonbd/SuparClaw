@@ -353,10 +353,11 @@ export interface PlanRun {
 /**
  * Run one plan (argv + env) and describe whatever happened.
  *
- * `failedPath` exists for one reason: prlimit and proot are judged present by
- * `existsSync`, which is not the same as runnable. When the *wrapper* cannot be
- * spawned the command never starts, and without this the whole tool fails on
- * every call with no way to recover.
+ * `failedPath` names a binary that `existsSync` said was there but could not be
+ * spawned — `EACCES` on a shell that lost its mode bit, a `bash` whose loader
+ * moved after an update. Without it the whole tool would fail on every call
+ * with nothing to go on; with it the ladder can move to a plainer shell and
+ * `sc doctor` can name the file.
  */
 export function runPlan(
   execFileFn: ExecFileFn,
@@ -417,6 +418,22 @@ export function findShell(): string {
     if (c && existsSync(c)) return c;
   }
   return "/bin/sh";
+}
+
+/**
+ * A config written before Task 57 can still say `sandbox: "strict"`.
+ *
+ * The jail is gone, so the honest thing is to say so once per process rather
+ * than let the setting look like it does something. Once, not per command: a
+ * running transcript that repeats a migration note is noise the model will
+ * copy.
+ */
+let saidSandboxIgnored = false;
+export function sandboxIgnoredNote(exec: { sandbox?: string; sandboxProot?: boolean }): string {
+  if (exec.sandbox !== "strict" && !exec.sandboxProot) return "";
+  if (saidSandboxIgnored) return "";
+  saidSandboxIgnored = true;
+  return "[sandbox: the jail is gone — this ran directly in Termux (Task 57)]\n";
 }
 
 // Shared across registry rebuilds (config hot-reload) so the query cache survives.
@@ -1069,15 +1086,15 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         // execFile throws ERR_OUT_OF_RANGE synchronously, which used to make
         // *every* command fail until the model stopped sending it.
         const { ms: timeoutMs, note: timeoutNote } = resolveExecTimeout(args["timeoutMs"], config.tools.exec.timeoutMs);
-        // Sandbox plan (P2 #9): off = legacy argv env; strict = env scrub +
-        // prlimit caps (+ proot jail on Termux when enabled). The note is
-        // prepended to output so audits see what actually ran.
-        const { planSandbox } = await import("./exec-sandbox.js");
+        // Task 57: exec IS the operator's shell. No prlimit, no proot, no
+        // `env -i`, no HOME rewrite — at any setting, including a config that
+        // still says `sandbox: "strict"`. On a phone those wrappers were the
+        // thing that aborted before the command existed ("killed by the
+        // sandbox"), and none of them was a boundary: the daemon already runs
+        // as the operator, inside Android's per-app sandbox.
         const shell = findShell();
-        const plan = planSandbox([shell, "-lc", command], ctx.workspace, config.tools.exec);
-        const note =
-          (config.tools.exec.sandbox === "strict" ? `[${plan.note}]\n` : "") +
-          (timeoutNote ? `${timeoutNote}\n` : "");
+        const planned = { argv: [shell, "-lc", command], env: process.env, wrappers: [] as string[] };
+        const note = sandboxIgnoredNote(config.tools.exec) + (timeoutNote ? `${timeoutNote}\n` : "");
         // Allowlist/safe-bin verdicts run argv-direct — the policy matched
         // literal tokens, so no shell may re-interpret them (globs, $PATH
         // lookups, re-quoting all stay off). Full/shell verdicts keep the
@@ -1098,7 +1115,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           // Walk the ladder instead of reporting the environment as the
           // command's failure — the old shape tried one shell and, when it
           // aborted, left the agent asking the human to run it by hand.
-          const attempts = execAttempts({ shell, command, planned: plan });
+          const attempts = execAttempts({ shell, command, planned });
           const result = await runWithFallback(attempts, async (attempt) => {
             const run = await runPlan(execFile as unknown as ExecFileFn, attempt.argv, attempt.env, spawnOpts);
             return {

@@ -20,7 +20,7 @@ test("#38 exec & tools settings: one exec card owns the whole tools.exec block",
   assert.match(src, /\.\.\.structuredClone\(x\),/);
   for (const key of [
     "enabled:", "approvals:", "mode:", "askFallback:", "strictInlineEval:", "safeBins:",
-    "safeBinTrustedDirs:", "timeoutMs:", "sandbox,", "sandboxProot:", "unattended:",
+    "safeBinTrustedDirs:", "timeoutMs:", "sandbox:", "sandboxProot:", "unattended:",
   ]) {
     assert.ok(src.includes(key), `missing merged key ${key}`);
   }
@@ -31,9 +31,15 @@ test("#38 exec & tools settings: one exec card owns the whole tools.exec block",
   assert.match(src, /timeoutMs < 1000 \|\| timeoutMs > 1800000/);
   assert.match(src, /between 1000 and 1800000 ms/);
   assert.match(src, /aria-invalid/);
-  // Dependencies stated in the UI, not discovered from a broken run.
-  assert.match(src, /strict \(scrubbed env \+ prlimit caps\)/);
-  assert.match(src, /prootCb\.disabled = sandbox !== "strict"/);
+  // Task 57: there is no sandbox control left to mislead — the jail was
+  // removed, so the page states the posture instead of offering a wrapper that
+  // cannot start on a phone.
+  assert.doesNotMatch(src, /prootCb|sandboxSeg|syncSandbox/, "the sandbox controls are gone, not hidden");
+  assert.match(src, /exec-direct-note/);
+  assert.match(src, /Commands run directly in Termux/);
+  // …and saving still writes the keys, as off/false, so an old config migrates.
+  assert.match(src, /sandbox: "off",/);
+  assert.match(src, /sandboxProot: false,/);
   assert.match(src, /unattended auto-decision is audited/);
   assert.match(src, /Only the six above have a profile/);
   // Grants are immediate and must not read as an unsaved policy change.

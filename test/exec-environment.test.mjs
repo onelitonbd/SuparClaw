@@ -1,19 +1,12 @@
-// "exec returns exit 1 with no output on EVERY command."
+// "exec returns exit 1 with no output on EVERY command." — and, later, the
+// device itself: "sandbox লাগবেই না, direct Termux use korte dao".
 //
-// The previous fix made failures explain themselves. This file is about the
-// other half of that report: the commands were genuinely failing, for two
-// reasons that live in our own sandbox — and neither was visible anywhere.
-//
-//   1. strict mode rebuilt PATH from three hard-coded directories. On any
-//      install whose tools live elsewhere (Homebrew on macOS, nvm, asdf, nix,
-//      guix, snap) every command that is not a coreutils binary dies with
-//      "command not found" — for every command, forever.
-//   2. prlimit and proot were picked by `existsSync`. A binary that exists but
-//      cannot run (not executable, missing loader) made the wrapper fail to
-//      spawn, so the command never started. Again: every command, forever.
-//
-// Both are fixed here, and `sc doctor` now runs a real command so the next
-// report of this kind comes with a cause attached.
+// The sandbox used to rebuild the invocation (env scrub, prlimit caps, a proot
+// jail). Each layer was a way for a phone to fail before the command existed,
+// and none of them was a boundary — the daemon already runs as the operator.
+// Task 57 deleted it, so this file now pins the opposite: the tool runs the
+// operator's own shell in the operator's own environment, and `sc doctor`
+// proves it with a real round-trip.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -28,12 +21,10 @@ mkdirSync(WS, { recursive: true });
 mkdirSync(join(HOME, ".suparclaw"), { recursive: true });
 
 const {
-  sandboxEnv,
-  planSandbox,
   emptyConfig,
   buildRegistry,
-  runPlan,
   findShell,
+  runPlan,
   execSelfTest,
   runDoctorChecks,
 } = await import("../dist/lib.js");
@@ -68,89 +59,67 @@ async function withPrefix(dir, fn) {
 
 /* ------------------------------------------------------------------ PATH --- */
 
-test("the sandbox keeps the PATH the install actually uses", () => {
-  const beforePath = process.env["PATH"];
-  const home = homedir();
-  process.env["PATH"] = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", `${home}/.local/bin`].join(":");
-  try {
-    const env = sandboxEnv(WS, ["/bin", "/usr/bin"]);
-    const dirs = env["PATH"].split(":");
-    assert.ok(dirs.includes("/opt/homebrew/bin"), "Homebrew tools must stay reachable — this was the bug");
-    assert.ok(dirs.includes("/usr/local/bin"));
-    assert.ok(!dirs.includes(`${home}/.local/bin`), "user-home binaries stay out of the child (that is the scrub)");
-    // trusted dirs still come first: the policy resolves safe bins from them
-    assert.deepEqual(dirs.slice(0, 2), ["/bin", "/usr/bin"]);
-    assert.equal(env["HOME"], WS, "HOME is still the workspace");
-  } finally {
-    process.env["PATH"] = beforePath;
+/* ------------------------------------------------------------- no jail --- */
+
+test("a config that still says strict runs the command plainly", async () => {
+  // The keys stay parseable (old configs load, `sc config` does not fail) but
+  // they are inert. The marker file proves no wrapper was executed: the fake
+  // prlimit/proot in $PREFIX would have written it and exited 97.
+  const prefix = fakePrefix({ prlimit: 0o755, proot: 0o755 });
+  const marker = join(HOME, "wrapper-ran.txt");
+  for (const name of ["prlimit", "proot"]) {
+    writeFileSync(join(prefix, "bin", name), `#!/bin/sh\necho ${name} >> ${marker}\nexit 97\n`);
+    chmodSync(join(prefix, "bin", name), 0o755);
   }
+  const cfg = emptyConfig();
+  cfg.tools.exec.enabled = true;
+  cfg.tools.exec.sandbox = "strict";
+  cfg.tools.exec.sandboxProot = true;
+  const exec = buildRegistry(cfg).find((t) => t.name === "exec");
+  const out = await withPrefix(prefix, () => exec.run({ command: "echo alive" }, { workspace: WS }));
+
+  assert.match(out, /alive/, "the command ran");
+  assert.ok(!existsSync(marker), "no prlimit and no proot — the jail is gone, not merely skipped");
+  assert.doesNotMatch(out, /WITHOUT the jail/, "and nothing claims a sandbox story any more");
 });
 
-test("the sandbox PATH is deduped and still has Termux's $PREFIX/bin", async () => {
-  const prefix = fakePrefix({ bash: 0o755 });
-  await withPrefix(prefix, () => {
-    // $PREFIX/bin also appears in the parent PATH here — it must appear once
-    process.env["PATH"] = `${prefix}/bin:/usr/bin:/bin`;
-    const dirs = sandboxEnv(WS, ["/bin", "/usr/bin"])["PATH"].split(":");
-    assert.equal(dirs.filter((d) => d === `${prefix}/bin`).length, 1);
-    assert.ok(dirs.includes("/bin"));
-  });
+test("the child is the operator's own environment, not a scrubbed copy", async () => {
+  // HOME=workspace + `env -i` was how `gh`, `pkg` and a user's `.bashrc` stopped
+  // existing. Direct Termux means the same HOME and the same PATH the daemon has.
+  process.env["SC_DIRECT_TEST"] = "42";
+  try {
+    const cfg = emptyConfig();
+    cfg.tools.exec.enabled = true;
+    const exec = buildRegistry(cfg).find((t) => t.name === "exec");
+    const out = await exec.run({ command: 'printf "%s|%s" "$SC_DIRECT_TEST" "$HOME"' }, { workspace: WS });
+    assert.match(out, /^42\|/, "an inherited variable arrives");
+    assert.ok(out.includes(process.env["HOME"]), "HOME is the operator's, not the workspace");
+  } finally {
+    delete process.env["SC_DIRECT_TEST"];
+  }
 });
 
 /* -------------------------------------------------------------- wrappers --- */
 
-test("a sandbox wrapper that cannot start does not kill the command", async () => {
-  const prefix = fakePrefix({ prlimit: 0o644 }); // exists, not executable
-  const cfg = emptyConfig();
-  cfg.tools.exec.enabled = true;
-  cfg.tools.exec.sandbox = "strict";
-  const exec = buildRegistry(cfg).find((t) => t.name === "exec");
-  const out = await withPrefix(prefix, () => exec.run({ command: "echo alive" }, { workspace: WS, approved: true }));
-
-  assert.match(out, /alive/, "the command still ran — every command used to fail here");
-  assert.match(out, /could not be started \(EACCES\)/);
-  assert.match(out, /WITHOUT the jail/, "and it says the sandbox was not applied");
-  assert.ok(out.includes(`${prefix}/bin/prlimit`), "naming the wrapper that broke");
-});
-
-test("the fallback runs the command exactly ONCE", async () => {
-  // The retry must fire on a broken *wrapper*, never on a failing command:
-  // running a command twice would be a far worse bug than a bad message.
-  const prefix = fakePrefix({ prlimit: 0o644 });
+test("a command that writes is still run exactly ONCE", async () => {
+  // Retrying is for a dead *environment*, never for a command — running a
+  // side effect twice would be a far worse bug than a bad message.
   const counter = join(HOME, "count.txt");
   writeFileSync(counter, "");
   const cfg = emptyConfig();
   cfg.tools.exec.enabled = true;
-  cfg.tools.exec.sandbox = "strict";
   const exec = buildRegistry(cfg).find((t) => t.name === "exec");
-  await withPrefix(prefix, () =>
-    exec.run({ command: `echo x >> ${counter}` }, { workspace: WS, approved: true }),
-  );
+  await exec.run({ command: `echo x >> ${counter}` }, { workspace: WS });
   assert.equal(readFileSync(counter, "utf8"), "x\n", "one line — one execution");
 });
 
 test("a FAILING command is not retried and does not claim a fallback", async () => {
   const cfg = emptyConfig();
   cfg.tools.exec.enabled = true;
-  cfg.tools.exec.sandbox = "strict";
   const exec = buildRegistry(cfg).find((t) => t.name === "exec");
-  const out = await exec.run({ command: "exit 9" }, { workspace: WS, approved: true });
+  const out = await exec.run({ command: "exit 9" }, { workspace: WS });
   assert.match(out, /\[exit 9\]/);
-  assert.doesNotMatch(out, /WITHOUT the jail/, "a normal failure is not a sandbox fallback");
-});
-
-test("planSandbox names its wrappers and keeps the unwrapped argv", () => {
-  const plan = planSandbox([findShell(), "-lc", "echo hi"], WS, {
-    sandbox: "strict",
-    sandboxProot: false,
-    safeBinTrustedDirs: ["/bin"],
-  });
-  assert.deepEqual(plan.plainArgv, [findShell(), "-lc", "echo hi"], "the fallback needs the plain shell");
-  for (const w of plan.wrappers) assert.ok(plan.argv.includes(w), `${w} is declared but not in argv`);
-
-  const off = planSandbox([findShell(), "-lc", "echo hi"], WS, { sandbox: "off", sandboxProot: false, safeBinTrustedDirs: [] });
-  assert.deepEqual(off.wrappers, [], "off mode adds no wrappers");
-  assert.deepEqual(off.plainArgv, off.argv);
+  assert.doesNotMatch(out, /WITHOUT the jail|\[exec:/, "a normal failure is not dressed up as an environment rescue");
 });
 
 /* ---------------------------------------------------------------- doctor --- */
@@ -162,18 +131,16 @@ test("`sc doctor` runs a real command, not just the policy", async () => {
   assert.equal(live.name, "exec run");
   assert.equal(live.status, "ok", `a healthy tree must pass: ${live.detail}`);
   assert.match(live.detail, /round-trip in \d+ ms/);
-  assert.match(live.detail, /sandbox: off|sandbox: strict/);
+  assert.match(live.detail, /direct Termux \(no sandbox\)/);
 });
 
-test("`sc doctor` names the wrapper when the sandbox degraded", async () => {
-  const prefix = fakePrefix({ prlimit: 0o644 });
+test("`sc doctor` says a legacy sandbox key is ignored", async () => {
   const cfg = emptyConfig();
   cfg.tools.exec.enabled = true;
   cfg.tools.exec.sandbox = "strict";
-  const live = await withPrefix(prefix, () => execSelfTest(cfg.tools.exec));
-  assert.equal(live.status, "warn", "commands still run — that is a warning, not a failure");
-  assert.match(live.detail, /cannot be started \(EACCES\)/);
-  assert.match(live.fix ?? "", /chmod \+x/);
+  const live = await execSelfTest(cfg.tools.exec);
+  assert.equal(live.status, "ok", "a stale key must not fail a healthy device");
+  assert.match(live.detail, /tools\.exec\.sandbox is ignored \(removed in Task 57\)/);
 });
 
 test("`sc doctor` fails, and says why, when the shell itself cannot be started", async () => {
@@ -182,7 +149,7 @@ test("`sc doctor` fails, and says why, when the shell itself cannot be started",
   // unexecutable one is exactly the "every command fails" shape without a jail.
   const prefix = fakePrefix({ bash: 0o644 });
   const live = await withPrefix(prefix, () =>
-    execSelfTest({ sandbox: "off", sandboxProot: false, safeBinTrustedDirs: [], timeoutMs: 5000 }),
+    execSelfTest({ timeoutMs: 5000 }),
   );
   assert.equal(live.status, "fail");
   assert.match(live.detail, /cannot be started \(EACCES\)/);

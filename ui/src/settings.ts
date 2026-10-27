@@ -2417,7 +2417,10 @@ export class Settings {
     const statusTag = el("span", { class: "settings__tag" });
     const statusNote = el("span", { class: "setcard__status-note", "aria-live": "polite" });
     const enabledHint = el("span", { class: "hint" });
-    const draftMode = (): string => modeValue || (legacyCb.checked ? "ask" : "full");
+    // Task 55/56: the legacy `approvals` bool no longer decides anything —
+    // `execModeOf` maps an unset mode to `full`, because nothing is
+    // interactive any more. The status line must not promise otherwise.
+    const draftMode = (): string => modeValue || "full";
     const syncStatus = (): void => {
       const on = enabledCb.checked;
       const mode = draftMode();
@@ -2437,7 +2440,6 @@ export class Settings {
     const modeRowOf = new Map<string, HTMLElement>();
     const syncMode = (): void => {
       for (const [value, row] of modeRowOf) row.classList.toggle("is-on", value === modeValue);
-      legacyRow.hidden = modeValue !== "";
       for (const [value, radio] of modeRadios) radio.checked = value === modeValue;
     };
     const pickMode = (value: string): void => {
@@ -2450,7 +2452,6 @@ export class Settings {
       { value: "allowlist", label: "allowlist", text: MODE_TEXT["allowlist"]! },
       { value: "ask", label: "ask", text: MODE_TEXT["ask"]! },
       { value: "full", label: "full", text: MODE_TEXT["full"]! },
-      { value: "", label: "follow the legacy approvals switch", text: "Legacy: switch on = ask, off = full. Kept so older configs keep working." },
     ];
     for (const m of MODES) {
       const id = `exec-mode-${m.value || "legacy"}`;
@@ -2473,17 +2474,6 @@ export class Settings {
       modeRowOf.set(m.value, row);
       modeGroup.append(row);
     }
-
-    const legacyCb = el("input", { type: "checkbox", id: "exec-approvals" }) as HTMLInputElement;
-    legacyCb.checked = x.approvals !== false;
-    legacyCb.onchange = () => { syncStatus(); mark(); };
-    const legacyRow = el("div", { class: "row exec__legacy" }, [
-      el("div", { class: "row__main" }, [
-        el("label", { class: "row__label", for: "exec-approvals" }, ["Legacy approvals switch"]),
-        el("span", { class: "hint" }, ["Only read while the mode above follows it: on = ask, off = full."]),
-      ]),
-      legacyCb,
-    ]);
 
     const strictCb = el("input", { type: "checkbox", id: "exec-strict-inline" }) as HTMLInputElement;
     strictCb.checked = Boolean(x.strictInlineEval);
@@ -2533,37 +2523,14 @@ export class Settings {
     timeoutInp.oninput = () => { syncEcho(); mark(); };
     syncEcho();
 
-    let sandbox = String(x.sandbox ?? "") === "strict" ? "strict" : "off";
-    const sandboxBtns = new Map<string, HTMLButtonElement>();
-    const sandboxSeg = el("div", { class: "seg", role: "group", "aria-label": "Sandbox" });
-    for (const opt of [
-      { value: "off", label: "off", title: "Plain: the command inherits this process's environment." },
-      { value: "strict", label: "strict", title: "strict (scrubbed env + prlimit caps)" },
-    ]) {
-      const b = el("button", { class: "seg__btn", type: "button", "aria-pressed": String(sandbox === opt.value), title: opt.title }, [opt.label]) as HTMLButtonElement;
-      b.onclick = () => {
-        sandbox = opt.value;
-        syncSandbox();
-        mark();
-      };
-      sandboxBtns.set(opt.value, b);
-      sandboxSeg.append(b);
-    }
-    const prootCb = el("input", { type: "checkbox", id: "exec-proot" }) as HTMLInputElement;
-    prootCb.checked = Boolean(x.sandboxProot);
-    prootCb.onchange = mark;
-    const prootRow = el("div", { class: "row" }, [
-      el("div", { class: "row__main" }, [
-        el("label", { class: "row__label", for: "exec-proot" }, ["Proot filesystem jail"]),
-        el("span", { class: "hint" }, ["Needs the strict sandbox and a proot binary (Termux). Ignored otherwise."]),
-      ]),
-      prootCb,
+    // Task 57: there is no sandbox to configure. The two controls that used to
+    // live here (off/strict, and the proot jail) described wrappers that are
+    // gone — offering them would be the same lie the "killed by the sandbox"
+    // report was. Saving still writes the keys as off/false so an old config
+    // migrates on the next save.
+    const sandboxNote = el("p", { class: "hint", id: "exec-direct-note" }, [
+      "Commands run directly in Termux: your shell, your PATH and HOME, no prlimit, no proot, no environment rewrite. The sandbox was removed in Task 57 — a jail that aborts before the command starts is an outage, not a boundary.",
     ]);
-    function syncSandbox(): void {
-      for (const [value, b] of sandboxBtns) b.setAttribute("aria-pressed", String(sandbox === value));
-      prootCb.disabled = sandbox !== "strict";
-      prootRow.classList.toggle("is-off", sandbox !== "strict");
-    }
 
     // Only these bins have a stdin-only profile in the evaluator. A name that
     // is not on this list does nothing at all — which is exactly the trap the
@@ -2622,15 +2589,17 @@ export class Settings {
       const block: Record<string, unknown> = {
         ...structuredClone(x),
         enabled: enabledCb.checked,
-        approvals: legacyCb.checked,
+        // Nothing asks for permission any more (Task 55); the key is written as
+        // false so a legacy config cannot drift back to `ask`.
+        approvals: false,
         mode: /^(deny|allowlist|ask|full)$/.test(chosen) ? chosen : "",
         askFallback: this.#selValue(askDd.sel),
         strictInlineEval: strictCb.checked,
         safeBins: [...bins],
         safeBinTrustedDirs: dirsInp.value.split(",").map((v) => v.trim()).filter(Boolean),
         timeoutMs: Math.round(timeoutMs),
-        sandbox,
-        sandboxProot: prootCb.checked,
+        sandbox: "off",
+        sandboxProot: false,
         unattended: this.#selValue(unatDd.sel),
       };
       saving = true;
@@ -2777,10 +2746,9 @@ export class Settings {
     const modeSection = el("div", { class: "setsec" }, [
       el("div", { class: "setsec__head" }, [
         el("span", { class: "cap" }, ["Mode"]),
-        el("span", { class: "setsec__count" }, ["4 modes + legacy"]),
+        el("span", { class: "setsec__count" }, ["4 modes"]),
       ]),
       modeGroup,
-      legacyRow,
       el("div", { class: "settings__inline exec__presets" }, [
         el("span", { class: "cap" }, ["Start from"]),
         (() => {
@@ -2814,8 +2782,8 @@ export class Settings {
 
     const limitsSection = el("div", { class: "setsec" }, [
       el("div", { class: "setsec__head" }, [
-        el("span", { class: "cap" }, ["Limits & sandbox"]),
-        el("span", { class: "setsec__count" }, ["3 settings"]),
+        el("span", { class: "cap" }, ["Limits"]),
+        el("span", { class: "setsec__count" }, ["2 settings"]),
       ]),
       el("div", { class: "setfield" }, [
         el("label", { class: "lbl", for: "exec-timeout" }, ["Timeout per command (ms)"]),
@@ -2823,11 +2791,9 @@ export class Settings {
         el("p", { class: "hint" }, ["1000–1800000 (30 min, the default). A safety cap only — a hung command cannot block a session forever."]),
       ]),
       el("div", { class: "setfield" }, [
-        el("span", { class: "lbl" }, ["Sandbox"]),
-        sandboxSeg,
-        el("p", { class: "hint" }, ["Strict scrubs the environment, caps the process tree with prlimit, and — with the jail below — binds only the workspace read-write."]),
+        el("span", { class: "lbl" }, ["Execution"]),
+        sandboxNote,
       ]),
-      prootRow,
     ]);
 
     const safeBinsSection = el("div", { class: "setsec" }, [
@@ -2850,7 +2816,6 @@ export class Settings {
     // Grants live outside the draft zone on purpose: revoking one applies
     // immediately, so it must never read as an unsaved policy change.
     syncMode();
-    syncSandbox();
     syncStatus();
 
     const grantsSection = el("div", { class: "setsec exec-grants" }, [

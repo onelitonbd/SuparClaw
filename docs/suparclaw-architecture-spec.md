@@ -156,13 +156,19 @@ after N ms` at the `tools.exec.timeoutMs` cap (30 min, Task 38), `[signal]` for 
 that sends a nonsense `timeoutMs` gets the configured cap and a note, never an exception: the
 value is clamped to 100 ms–1 800 000 ms before `execFile` sees it.
 
-The strict sandbox must not be able to create that symptom either. Its PATH is the trusted
-dirs first, then `$PREFIX/bin`, then the parent's PATH **minus** anything under the real HOME —
-so Homebrew/nvm/asdf/nix installs still work while dotfiles and user-local bins stay invisible.
-`prlimit`/`proot` are used only if they actually start: when a wrapper fails to spawn
-(`ENOENT`/`EACCES`/`ENOEXEC`/`EPERM`) the command is retried once without it, and the output says
-the jail was not applied. `sc doctor` runs one real command through this exact path and reports
-the layer that broke, so "exec fails on everything" comes with a cause.
+**There is no sandbox (Task 57).** `exec` runs `[$SHELL, "-lc", command]` with the daemon's own
+`process.env` and the session workspace as cwd — the operator's shell, their PATH, their HOME.
+The earlier `strict` mode rebuilt the invocation (env scrub + `prlimit` caps + a `proot` jail) and
+on a phone that was the failure mode, not the protection: `proot` needs `ptrace`, `prlimit` was
+picked by `existsSync`, and `env -i` removed `$PREFIX/bin`, so the reported "killed by the sandbox
+(SIGABRT)" was our own wrapper dying before the command existed. Nothing they added was a
+boundary either — the daemon already runs as the operator inside Android's per-app sandbox.
+
+What remains is about *surviving a damaged environment*, not confinement: if a login shell aborts
+before the command starts, the same command is retried with `sh -c` and then with plainer shells
+(`src/agent/exec-fallback.ts`), and a rescue is stated in the tool result. `tools.exec.sandbox`
+and `sandboxProot` still parse so old configs load, but they do nothing and say so once.
+`sc doctor` runs one real command through this exact path and names the binary if it cannot start.
 
 **Terminals (Task 52).** `exec` is one command in a throwaway process: state dies with it.
 The `terminal` tool is the opposite — a **persistent shell the daemon owns**, addressed by id:

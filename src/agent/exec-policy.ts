@@ -794,7 +794,7 @@ export function explainExecError(err: ChildError | null | undefined, ctx: ExecFa
   if (typeof err.code === "string" && err.code) {
     switch (err.code) {
       case "ENOENT":
-        return `[cannot run] ${cmd} — ${err.path ? `${err.path} was not found` : "the program was not found"} (check PATH: the sandboxed child may not see the same binaries as your shell)`;
+        return `[cannot run] ${cmd} — ${err.path ? `${err.path} was not found` : "the program was not found"} (check PATH: the child sees the daemon's PATH, which may differ from an interactive shell's)`;
       case "EACCES":
         return `[cannot run] ${cmd} — ${err.path ?? "the program"} is not executable (permission denied)`;
       case "ENOEXEC":
