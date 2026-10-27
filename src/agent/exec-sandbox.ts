@@ -8,6 +8,8 @@
 // cgroup limits), and — when sandboxProot is enabled and proot is found —
 // a real filesystem jail (workspace rw, system paths read-only).
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { sep } from "node:path";
 import type { SuparClawConfig } from "../config/schema.js";
 
 export interface SandboxPlan {
@@ -16,6 +18,14 @@ export interface SandboxPlan {
   env: NodeJS.ProcessEnv;
   /** Human note for tool_log/transcripts (their "sandbox: applied" line). */
   note: string;
+  /**
+   * Binaries this plan put in front of the shell (prlimit, proot). If one of
+   * them cannot even be spawned, the command never starts — the caller retries
+   * with `plainArgv` instead of failing every command forever.
+   */
+  wrappers: string[];
+  /** The unwrapped `shell -lc <command>` argv. */
+  plainArgv: string[];
 }
 
 const RLIMIT = ["--as=2147483648", "--nproc=256", "--nofile=1024"] as const;
@@ -45,14 +55,27 @@ export function findProot(): string | null {
 }
 
 /**
- * Scrubbed child env (their env-policy "keep only what's needed"): PATH
- * covers the same trusted dirs the exec policy's safe bins resolve from,
- * plus Termux's $PREFIX/bin. LANG/TZ pass through; HOME is the workspace so
- * agent config and user dotfiles never leak into the child.
+ * Scrubbed child env (their env-policy "keep only what's needed"): the trusted
+ * dirs the exec policy's safe bins resolve from come first, then Termux's
+ * $PREFIX/bin, then the *parent's* PATH entries that are not inside the real
+ * HOME. LANG/TZ pass through; HOME is the workspace so agent config and user
+ * dotfiles never leak into the child.
+ *
+ * Why the parent PATH is not simply thrown away: rebuilding PATH from three
+ * fixed directories ("/bin:/usr/bin:/usr/local/bin") is not a security
+ * boundary — it is a bug that makes every command fail on any install whose
+ * tools live elsewhere (Homebrew on macOS, nvm, asdf, nix, guix, snap). The
+ * scrub's promise is "no inherited secrets and no dotfiles", which is delivered
+ * by the env allowlist and HOME=workspace; $HOME-derived binaries are where
+ * per-user secrets and shadowing live, so those entries stay out.
  */
 export function sandboxEnv(workspace: string, trustedDirs: string[]): NodeJS.ProcessEnv {
   const prefixBin = process.env["PREFIX"] ? `${process.env["PREFIX"]}/bin` : "";
-  const dirs = [...trustedDirs, prefixBin, "/usr/local/bin"].filter(Boolean);
+  const home = homedir();
+  const inherited = (process.env["PATH"] ?? "")
+    .split(":")
+    .filter((dir) => dir && !(home && (dir === home || dir.startsWith(home + sep))));
+  const dirs = [...trustedDirs, prefixBin, "/usr/local/bin", ...inherited].filter(Boolean);
   return {
     PATH: [...new Set(dirs)].join(":"),
     LANG: process.env["LANG"] || "C.UTF-8",
@@ -74,24 +97,33 @@ export function planSandbox(
   cfg: Pick<SuparClawConfig["tools"]["exec"], "sandbox" | "sandboxProot" | "safeBinTrustedDirs">,
 ): SandboxPlan {
   if (cfg.sandbox !== "strict") {
-    return { argv: shellArgv, env: process.env, note: "sandbox: off" };
+    return { argv: shellArgv, env: process.env, note: "sandbox: off", wrappers: [], plainArgv: shellArgv };
   }
   const layers: string[] = ["env-scrub"];
   const env = sandboxEnv(workspace, cfg.safeBinTrustedDirs);
+  const wrappers: string[] = [];
   let argv = shellArgv;
 
   const proot = cfg.sandboxProot ? findProot() : null;
   if (proot) {
     // Workspace rw, system dirs ro — the model can break anything inside
     // its house and nothing outside it.
+    wrappers.push(proot);
     argv = [proot, "-b", `${workspace}:${workspace}`, "-b", "/bin:/bin", "-b", "/usr:/usr", "-b", "/lib:/lib", "-b", "/system:/system", "-w", workspace, "/usr/bin/env", "-i", ...Object.entries(env).map(([k, v]) => `${k}=${v}`), ...shellArgv];
     layers.unshift("proot");
   }
   // prlimit wraps whatever convoy we built (it caps the whole tree).
   const prlimit = findPrlimit();
   if (prlimit) {
+    wrappers.unshift(prlimit);
     argv = [prlimit, ...RLIMIT, "--", ...argv];
     layers.unshift("prlimit");
   }
-  return { argv, env: proot ? process.env /* proot/env -i scrubs inside */ : env, note: `sandbox: strict(${layers.join("+")})` };
+  return {
+    argv,
+    env: proot ? process.env /* proot/env -i scrubs inside */ : env,
+    note: `sandbox: strict(${layers.join("+")})`,
+    wrappers,
+    plainArgv: shellArgv,
+  };
 }

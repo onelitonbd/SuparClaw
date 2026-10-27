@@ -30,6 +30,63 @@ const C = {
 /** Structured checks (P4 #41, System tab): the same probes the CLI prints,
  *  without the printing. insideGateway skips the free-port probe — from the
  *  running daemon the port is ours, so "in use" would be a false alarm. */
+/**
+ * Run one command through the real exec path and report the result.
+ *
+ * This exists because "every command fails" used to be undiagnosable: the
+ * policy was healthy, the tool was enabled, and the failure was invisible until
+ * an agent tried to work. One `echo` here answers it — and if a sandbox wrapper
+ * (prlimit/proot) is what cannot start, it says so by name.
+ */
+export async function execSelfTest(
+  exec: { sandbox: "off" | "strict"; sandboxProot: boolean; safeBinTrustedDirs: string[]; timeoutMs: number },
+): Promise<DoctorCheck> {
+  const { planSandbox } = await import("../agent/exec-sandbox.js");
+  const { findShell, runPlan } = await import("../agent/tools.js");
+  const { execFile } = await import("node:child_process");
+  const ws = workspaceDir();
+  const shell = findShell();
+  const plan = planSandbox([shell, "-lc", "echo sc-exec-ok"], ws, exec);
+  const started = Date.now();
+  try {
+    const run = await runPlan(execFile as never, plan.argv, plan.env, {
+      cwd: ws,
+      timeoutMs: Math.min(exec.timeoutMs || 10_000, 10_000),
+      cmdline: "echo sc-exec-ok",
+    });
+    const ms = Date.now() - started;
+    const wrapper = run.failedPath ? plan.wrappers.includes(run.failedPath) : false;
+    // A wrapper that cannot start is a degraded sandbox, not a dead tool: the
+    // run below it succeeded. Say which one it is instead of failing the check.
+    if (run.output.includes("sc-exec-ok") && (!run.failedPath || wrapper)) {
+      return run.failedPath
+        ? {
+            name: "exec run",
+            status: "warn",
+            detail: `commands run (echo round-trip in ${ms} ms) but the sandbox wrapper ${run.failedPath} cannot be started (${run.failedCode}) — every command runs WITHOUT the jail`,
+            fix: `chmod +x ${run.failedPath}, or set tools.exec.sandbox=off to make the weaker posture explicit (sc config set tools.exec.sandbox off)`,
+          }
+        : { name: "exec run", status: "ok", detail: `echo round-trip in ${ms} ms · ${plan.note} · shell ${shell}` };
+    }
+    if (run.failedPath) {
+      return {
+        name: "exec run",
+        status: "fail",
+        detail: `binary ${run.failedPath} cannot be started (${run.failedCode}) — every command fails`,
+        fix: "check the path exists and is executable, or reinstall the package that provides it",
+      };
+    }
+    return {
+      name: "exec run",
+      status: "fail",
+      detail: run.output.split("\n").slice(0, 3).join(" · "),
+      fix: "run the same command in your own shell to compare; if it works there, the child env is the difference (sc config get tools.exec)",
+    };
+  } catch (err) {
+    return { name: "exec run", status: "fail", detail: `could not start the probe: ${(err as Error).message}`, fix: "report this with the output of: sc doctor" };
+  }
+}
+
 export async function runDoctorChecks(opts: { insideGateway?: boolean } = {}): Promise<Check[]> {
   const insideGateway = opts.insideGateway === true;
   const checks: Check[] = [];
@@ -264,6 +321,15 @@ export async function runDoctorChecks(opts: { insideGateway?: boolean } = {}): P
         status: "ok",
         detail: `${exec.enabled ? "enabled" : "disabled"} · mode=${mode} · askFallback=${exec.askFallback ?? "deny"} · ${entries} allowlist entries${exec.strictInlineEval ? " · strict inline eval" : ""}`,
       });
+    }
+
+    // Live check: policy is not the same as "a command runs". "exec returns
+    // exit 1 on every command" was impossible to diagnose from the policy line
+    // alone, so run one trivial command through the exact same path the tool
+    // uses (same shell, same sandbox plan, same env) and report what came back.
+    if (exec.enabled && mode !== "deny") {
+      const live = await execSelfTest(load.config.tools.exec);
+      checks.push(live);
     }
   }
 

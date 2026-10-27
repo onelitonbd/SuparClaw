@@ -153,6 +153,14 @@ after N ms` at the `tools.exec.timeoutMs` cap (30 min, Task 38), `[signal]` for 
 that sends a nonsense `timeoutMs` gets the configured cap and a note, never an exception: the
 value is clamped to 100 ms–1 800 000 ms before `execFile` sees it.
 
+The strict sandbox must not be able to create that symptom either. Its PATH is the trusted
+dirs first, then `$PREFIX/bin`, then the parent's PATH **minus** anything under the real HOME —
+so Homebrew/nvm/asdf/nix installs still work while dotfiles and user-local bins stay invisible.
+`prlimit`/`proot` are used only if they actually start: when a wrapper fails to spawn
+(`ENOENT`/`EACCES`/`ENOEXEC`/`EPERM`) the command is retried once without it, and the output says
+the jail was not applied. `sc doctor` runs one real command through this exact path and reports
+the layer that broke, so "exec fails on everything" comes with a cause.
+
 ### 4.5 Skills
 
 - `SKILL.md` markdown with frontmatter (`name`, `summary`, `read_when`) — same convention OpenClaw

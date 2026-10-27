@@ -35,7 +35,7 @@ export {
   type TranscriptRow,
 } from "./agent/memory-search.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
-export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout } from "./agent/tools.js";
+export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout, findShell, runPlan } from "./agent/tools.js";
 export {
   surfacesPromptLine,
   resolveAnnounceTarget,
@@ -50,7 +50,7 @@ export { parseWebAttachments, isImageMime, sanitizeAttachName, WEB_ATTACH_LIMITS
 export { redactSecrets, resolveRedacted, resolveRedactedDeep, isRedacted, maskSecret, REDACTED_PREFIX } from "./config/redact.js";
 export { auditConfig, type Finding } from "./cli/audit.js";
 export { cmdChannels } from "./cli/channels.js";
-export { runDoctorChecks, type DoctorCheck } from "./cli/doctor.js";
+export { runDoctorChecks, execSelfTest, type DoctorCheck } from "./cli/doctor.js";
 export { auditSecretsFile, type SecretsAuditResult } from "./cli/secrets.js";
 export { systemUpdateCheck, systemUpdateApply, type UpdateStatus, type UpdateApplyResult } from "./cli/update.js";
 export { splitForTelegram, telegramProxy, probeTelegramApi, describeError, botApiCall } from "./channels/telegram.js";

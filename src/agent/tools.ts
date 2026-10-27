@@ -267,8 +267,75 @@ export function resolveExecTimeout(
   };
 }
 
+type ExecFileFn = (file: string, args: string[], options: Record<string, unknown>, cb: (err: ChildProcessError | null, stdout: string, stderr: string) => void) => void;
+
+interface ChildProcessError {
+  code?: string | number | null;
+  killed?: boolean;
+  signal?: string | null;
+  path?: string;
+  message?: string;
+}
+
+export interface PlanRun {
+  output: string;
+  /** The binary we could not start, when the failure was a spawn (ENOENT/EACCES/…). */
+  failedPath?: string;
+  failedCode?: string | null;
+}
+
+/**
+ * Run one plan (argv + env) and describe whatever happened.
+ *
+ * `failedPath` exists for one reason: prlimit and proot are judged present by
+ * `existsSync`, which is not the same as runnable. When the *wrapper* cannot be
+ * spawned the command never starts, and without this the whole tool fails on
+ * every call with no way to recover.
+ */
+export function runPlan(
+  execFileFn: ExecFileFn,
+  argv: string[],
+  env: NodeJS.ProcessEnv,
+  opts: { cwd: string; timeoutMs: number; cmdline: string },
+): Promise<PlanRun> {
+  return new Promise<PlanRun>((resolveRun) => {
+    const [bin, ...rest] = argv;
+    execFileFn(
+      bin!,
+      rest,
+      // 16 MB: the model reads the first 60k characters either way, but a
+      // chatty command must be truncated for it, not failed outright with
+      // "stdout maxBuffer length exceeded" (Task 38).
+      { cwd: opts.cwd, timeout: opts.timeoutMs, maxBuffer: 16 * 1024 * 1024, env },
+      (err, stdout, stderr) => {
+        const parts: string[] = [];
+        if (stdout) parts.push(stdout);
+        if (stderr) parts.push(`[stderr] ${stderr}`);
+        // Same wording as the direct route: one command, one kind of answer,
+        // whichever runner executed it.
+        const failure = explainExecError(err, {
+          cwd: opts.cwd,
+          timeoutMs: opts.timeoutMs,
+          cmdline: opts.cmdline,
+          hadOutput: parts.length > 0,
+        });
+        if (failure) parts.push(failure);
+        const spawnFailed =
+          err != null &&
+          typeof err.code === "string" &&
+          ["ENOENT", "EACCES", "ENOEXEC", "EPERM"].includes(err.code);
+        resolveRun({
+          output: parts.join("\n").slice(0, 60_000) || "(no output)",
+          failedPath: spawnFailed ? err.path : undefined,
+          failedCode: spawnFailed && typeof err.code === "string" ? err.code : null,
+        });
+      },
+    );
+  });
+}
+
 /** Termux bash first, then ordinary shells — exec must work off-phone too. */
-function findShell(): string {
+export function findShell(): string {
   const candidates = [
     process.env["PREFIX"] ? `${process.env["PREFIX"]}/bin/bash` : "",
     "/data/data/com.termux/files/usr/bin/bash",
@@ -926,33 +993,21 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
               const body = result.output.slice(0, 60_000);
               return note + (body || "(no output)");
             }
-            return await new Promise<string>((resolvePromise) => {
-              const [bin, ...rest] = plan.argv;
-              execFile(
-                bin!,
-                rest,
-                // 16 MB: the model reads the first 60k characters either way, but a
-                // chatty command must be truncated for it, not failed outright with
-                // "stdout maxBuffer length exceeded" (Task 38).
-                { cwd: ctx.workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: plan.env },
-                (err, stdout, stderr) => {
-                  const parts: string[] = [];
-                  if (stdout) parts.push(stdout);
-                  if (stderr) parts.push(`[stderr] ${stderr}`);
-                  // Same wording as the direct route: one command, one kind of
-                  // answer, whichever runner executed it.
-                  const failure = explainExecError(err, {
-                    cwd: ctx.workspace,
-                    timeoutMs,
-                    cmdline: command,
-                    hadOutput: parts.length > 0,
-                  });
-                  if (failure) parts.push(failure);
-                  const body = parts.join("\n").slice(0, 60_000);
-                  resolvePromise(note + (body || "(no output)"));
-                },
-              );
-            });
+            const spawnOpts = { cwd: ctx.workspace, timeoutMs, cmdline: command };
+            const first = await runPlan(execFile as unknown as ExecFileFn, plan.argv, plan.env, spawnOpts);
+            // A sandbox wrapper that exists but cannot run must not brick the
+            // tool: that is the "every command fails" report. Retry once
+            // without the jail, and say in the output that it was not applied.
+            if (first.failedPath && plan.wrappers.includes(first.failedPath)) {
+              const retry = await runPlan(execFile as unknown as ExecFileFn, plan.plainArgv, plan.env, spawnOpts);
+              const why = `${first.failedPath} could not be started (${first.failedCode})`;
+              return (
+                note +
+                `[sandbox: ${why} — retried WITHOUT the jail; this command is not confined]\n` +
+                retry.output
+              ).slice(0, 60_000);
+            }
+            return note + first.output;
           } catch (err) {
             // Never let exec throw into the loop: an unexplained rejection reads
             // to the model as "the tool is broken". Say what happened instead.
