@@ -63,13 +63,13 @@ test("/new asks chat-or-code and keeps its rotation semantics", () => {
 test("a repo tap asks for a branch, and the branch tap binds the session", () => {
   const repo = TG.slice(TG.indexOf('if (kind === "r")'), TG.indexOf('if (kind === "b")'));
   assert.match(repo, /which branch should the agent continue\?/, "one more question before anything is cloned");
-  assert.match(repo, /this\.#pickedRepo\.set\(fromId, \{ repo: repo\.fullName, base: repo\.defaultBranch \}\)/);
-  assert.match(repo, /this\.#sendBranchPicker\(fromId, 0\)/);
+  assert.match(repo, /this\.#pickedRepo\.set\(chatId, \{ repo: repo\.fullName, base: repo\.defaultBranch \}\)/);
+  assert.match(repo, /this\.#sendBranchPicker\(chatId, 0\)/);
 
   const handler = TG.slice(TG.indexOf('if (kind === "b")'), TG.indexOf('if (kind === "p")'));
-  assert.match(handler, /this\.#sessionKeyFor\(fromId\)/, "the tag is read at tap time");
+  assert.match(handler, /this\.#sessionKeyFor\(chatId\)/, "the tag is read at tap time, for the chat that drew the card");
   assert.match(handler, /this\.service\.bindRepo\(\{ sessionKey: key, repo: pick\.repo, base: pick\.base, branch \}\)/, "the branch the user tapped is the branch that is continued");
-  assert.match(handler, /this\.#pickedRepo\.delete\(fromId\)/, "the pick is consumed, so a double tap cannot bind twice");
+  assert.match(handler, /this\.#pickedRepo\.delete\(chatId\)/, "the pick is consumed, so a double tap cannot bind twice");
   assert.match(TG, /Ask for a change, then \/diff to review and \/pr to publish/, "the confirmation names the next two commands");
 });
 
@@ -122,4 +122,56 @@ test("the shared commands exist once and are published in the menu", () => {
 test("the service, not the model, decides whether this turn may publish", () => {
   assert.match(SERVICE, /publishAllowed: payload\.publish === true \|\| publishRequested\(text\)/);
   assert.match(SERVICE, /publish\?: boolean;/, "a surface can assert the user confirmed");
+});
+
+test("controls act on the chat, not on the person who tapped", () => {
+  // The bug this pins: pickers are stored under the chat id but were read back
+  // under the user id. In a DM those are the same number, so nothing showed; in
+  // a group every tap answered "expired" (or bound the user's DM session).
+  const region = TG.slice(TG.indexOf("async #onCallbackQuery"), TG.indexOf("#groupAllowed"));
+  assert.match(region, /const chatId = ctx\.chat\?\.id \?\? fromId/, "one source for the chat");
+  assert.match(region, /this\.#sessionKeyFor\(chatId\)/, "the session belongs to the chat");
+  for (const bucket of ["#repoPages", "#pickedRepo", "#branchPages"]) {
+    assert.match(region, new RegExp(`this\\.${bucket}\\.(get|set|delete)\\(chatId`), `${bucket} is keyed by the chat`);
+    assert.ok(!new RegExp(`this\\.${bucket}\\.(get|set|delete)\\(fromId`).test(region), `${bucket} never uses the user id`);
+  }
+  assert.ok(!/#sessionKeyFor\(fromId\)/.test(region), "no session lookup by user id left");
+  // Pairing is the opposite rule, on purpose: it is about the person.
+  assert.match(region, /this\.#paired\(fromId\)/);
+  // And the picker that used to be DM'd to the user now goes to the chat.
+  assert.ok(!/#sendRepoPicker\(fromId/.test(TG));
+  assert.match(TG, /#sendRepoPicker\(chatId,/);
+});
+
+test("/model is a card: current model, providers, then models, then a pin", () => {
+  const block = TG.slice(TG.indexOf('case "model":'), TG.indexOf('case "provider":'));
+  assert.match(block, /if \(!sub\) return this\.#sendModelCard\(scope\.chatId\)/, "no argument opens the card");
+  assert.match(block, /readModelArgument\(this\.service\.config, sub\)/, "typed refs go through the same reader");
+  assert.match(block, /setSessionModel\(key, null\)/, "/model default clears the pin");
+  assert.match(block, /setSessionModel\(key, canonical\)/, "a typed ref pins this chat");
+
+  const handler = TG.slice(TG.indexOf('if (kind === "m")'), TG.indexOf('if (kind === "qu")'));
+  assert.match(handler, /applyModelTap\(/, "the decision lives in the pure module");
+  assert.match(handler, /setSessionModel\(key, model\)/, "the effect is exactly the pin");
+  assert.match(handler, /configSvc\.setPath\("agents\.defaults\.model", model\)/, "Make default writes the real default");
+  assert.match(handler, /this\.#editCard\(ctx, effect\.card\)/, "the card is edited in place, not re-sent");
+  assert.match(handler, /show_alert: true/, "a stale tap explains itself");
+
+  // The card is a reply to a command, not a status message.
+  const send = TG.slice(TG.indexOf("async #sendModelCard"), TG.indexOf("async #sendModelCard") + 600);
+  assert.match(send, /providerCard\(\{ config: this\.service\.config, pin: this\.#pinFor\(chatId\), page \}\)/);
+});
+
+test("/new keeps the chat's model, because the choice is about the chat", () => {
+  // Task 54 follow-up. The pin is stored per session, so a rotation would
+  // silently drop it and the very next answer would come from a different
+  // model than the one the card said "this chat". The fix is to read the pin
+  // before the tag rotates and write it onto the new key.
+  const block = TG.slice(TG.indexOf('case "new":'), TG.indexOf('case "provider":'));
+  const carriedAt = block.indexOf("const carried = this.#pinFor(scope.chatId)");
+  const rotateAt = block.indexOf("setMeta(`telegram:sess:");
+  assert.ok(carriedAt !== -1, "the old session's pin is read first");
+  assert.ok(rotateAt !== -1, "the rotation still happens");
+  assert.ok(carriedAt < rotateAt, "read before the tag rotates, or it reads the empty new session");
+  assert.match(block, /if \(carried\) this\.service\.store\.setSessionModel\(key, carried\)/, "and copied onto the new key");
 });

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { availableParallelism } from "node:os";
-import { modelProfile, type SuparClawConfig } from "../config/schema.js";
+import { modelProfile, modelProfiles, type SuparClawConfig } from "../config/schema.js";
 import type { Store } from "../state/db.js";
 import type { Logger } from "../util/log.js";
 import { loadWorkspaceContext, todayStamp } from "./workspace.js";
@@ -331,6 +331,34 @@ export class AgentLoop {
   }
 
   /**
+   * The model this run will actually ask for: per-run input → the session's pin
+   * → the configured default (`""`, which `modelProfile` resolves).
+   *
+   * Task 54 made the middle step real: a conversation can pick its own model
+   * from the chat, and it has to apply to the *whole* run — the profile that
+   * decides tuning, the call itself, and the history budget derived from that
+   * model's window. One function, three readers, so they cannot disagree.
+   *
+   * A pin that no longer resolves (the profile was deleted or disabled) is
+   * ignored with a warning rather than failing the turn: a stale setting must
+   * never cost someone an answer.
+   */
+  #modelFor(input: { model?: string }, sessionKey: string): string {
+    const typed = String(input.model ?? "").trim();
+    if (typed) return typed;
+    const pin = String(this.deps.store.getSessionByKey(sessionKey)?.model ?? "").trim();
+    if (!pin) return "";
+    const config = this.deps.config;
+    if (modelProfiles(config).some((m) => m.id === pin && m.enabled)) return pin;
+    // A hand-typed `provider/model` ref is honoured while its provider exists —
+    // that is the same freedom `/model <ref>` has always had.
+    const provider = pin.includes("/") ? pin.slice(0, pin.indexOf("/")) : "";
+    if (provider && (config.providers ?? {})[provider]) return pin;
+    this.deps.log.warn(`session ${sessionKey}: pinned model "${pin}" is no longer configured — using the default`);
+    return "";
+  }
+
+  /**
    * The thinking level this run will actually use: per-run input → the session's
    * choice → the model's own default → the global default. Extracted so the child
    * a sub-agent spawns inherits the same value the parent called the model with,
@@ -644,7 +672,7 @@ export class AgentLoop {
       const schema = toolsToSchema(sessionTools);
       // Resolved once for the tool context: model + the thinking level this run
       // will call the model with, so a spawned child can inherit both.
-      const runProfile = modelProfile(this.deps.config, input.model ?? "");
+      const runProfile = modelProfile(this.deps.config, this.#modelFor(input, sessionKey));
       const ctx: ToolContext = {
         surfaces: this.#surfaceFacts(),
         // A child must not rewrite global settings mid-flight (ask_user's rule).
@@ -780,7 +808,7 @@ export class AgentLoop {
         let replayExtraContent: Record<string, unknown> | undefined;
         // A request may name a curated profile id or a bare provider ref; the
         // profile contributes its wire ref plus per-model tuning.
-        const profile = modelProfile(this.deps.config, input.model ?? "");
+        const profile = modelProfile(this.deps.config, this.#modelFor(input, sessionKey));
         lastModelRef = profile.ref || lastModelRef;
         // Fallbacks may also name profile ids — resolve each to its wire ref
         // (10+ entries supported, tried in order).
@@ -1190,7 +1218,7 @@ export class AgentLoop {
     const workspace = env?.workspace ?? this.workspaceFor(sessionKey);
     const repo = env ? env.repo : this.deps.store.getSessionRepo(sessionKey);
     const publishAllowed = env?.publishAllowed === true;
-    const budget = historyBudget(this.deps.config, input.model ?? "").chars;
+    const budget = historyBudget(this.deps.config, this.#modelFor(input, sessionKey)).chars;
     // Compaction frontier: anything at or below `upto` exists only as the
     // summary; rows above it stay verbatim. Auto-sweep when the un-compacted
     // older share outgrows its slice of the budget (their near-limit trigger

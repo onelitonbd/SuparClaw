@@ -396,7 +396,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | M0 scaffold + doctor + config | done | `sc init`, `sc doctor` (11 checks), strict JSON5 schema, 19 tests green |
 | M1 gateway daemon | done | http+ws on one port, token auth (bad token → close 4401), `/health`, static Control UI |
 | M2 agent core + `sc chat` | done | streaming SSE client, tool loop, SQLite transcripts, pure-JS TUI (local + remote) |
-| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, answers-only delivery (no status draft) — needs a bot token to exercise |
+| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, answers-only delivery (no status draft), `/model` as a two-level button card backed by a per-session model pin — needs a bot token to exercise |
 | M4 tools + skills + memory | done | 11 built-in tools, 5 bundled skills, workspace files, FTS search |
 | M5 cron + hooks | partial | croner scheduler + `sc cron` CLI; hooks not yet implemented |
 

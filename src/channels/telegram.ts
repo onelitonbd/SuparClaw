@@ -10,7 +10,6 @@ import { stripStrayHeartbeatOk } from "../automation/heartbeat.js";
 import {
   addProvider,
   canonicalModelRef,
-  defaultModelLine,
   formatProviders,
   parseProviderAddArgs,
   removeProvider,
@@ -20,6 +19,7 @@ import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
 import { buildCommandMenu, staleCommandScopes } from "./telegram-menu.js";
 import { splitForTelegram, stripHtmlTags, telegramChunks } from "./telegram-format.js";
 import { createTurnDelivery, isTransientTelegramError } from "./telegram-delivery.js";
+import { applyModelTap, currentModel, providerCard, readModelArgument, type Card } from "./telegram-model-menu.js";
 
 // Telegram channel: grammY long polling, per-chat batching, one editable status
 // draft per turn, DM pairing + group allowlists + mention gating.
@@ -233,7 +233,7 @@ type GrammyBot = Awaited<ReturnType<typeof createBot>>;
  */
 export const TELEGRAM_COMMANDS: { cmd: string; summary: string }[] = [
   { cmd: "/start", summary: "what this bot is, and every command" },
-  { cmd: "/model [provider/model]", summary: "show or set the default model" },
+  { cmd: "/model", summary: "pick the model for this chat — provider, then model" },
   { cmd: "/provider [list|add|remove|test]", summary: "manage model providers" },
   { cmd: "/whoami", summary: "your Telegram id, this chat and its session" },
   { cmd: "/new", summary: "start a fresh session (the old one is kept)" },
@@ -407,7 +407,12 @@ export class TelegramChannel {
   async #onCallbackQuery(ctx: Context): Promise<void> {
     const data = ctx.callbackQuery?.data ?? "";
     const fromId = ctx.from?.id;
-    if (fromId === undefined || !data) return;
+    // Task 54: a control acts on the CHAT, not on the person who tapped. In a
+    // DM the two ids are equal, which is why this was invisible for so long; in
+    // a group every picker used to read a bucket keyed by the user and answered
+    // "This picker expired" (or bound the user's DM session instead).
+    const chatId = ctx.chat?.id ?? fromId;
+    if (chatId === undefined || fromId === undefined || !data) return;
     const cfg = this.service.config.channels.telegram;
     if (!this.#paired(fromId)) {
       await ctx.answerCallbackQuery({ text: "Only paired users can decide this", show_alert: true }).catch(() => {});
@@ -443,14 +448,14 @@ export class TelegramChannel {
       if (choice !== "c" && choice !== "k") return;
       // `/new` already rotated the tag, so this reads the session the card was
       // drawn for rather than rotating a second time on the tap.
-      const key = this.#sessionKeyFor(fromId);
+      const key = this.#sessionKeyFor(chatId);
       await ctx.answerCallbackQuery({ text: choice === "c" ? "chat" : "pick a repo" }).catch(() => {});
       if (choice === "c") {
         await ctx.editMessageText(`💬 Chat session ${key} — say anything to begin.`).catch(() => {});
         return;
       }
       await ctx.editMessageText(`⌘ code session ${key} — pick the repository:`).catch(() => {});
-      await this.#sendRepoPicker(fromId, 0);
+      await this.#sendRepoPicker(chatId, 0);
       return;
     }
 
@@ -462,45 +467,45 @@ export class TelegramChannel {
       if (!Number.isFinite(page) || page < 0) return;
       if (slot === "p") {
         await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
-        await this.#sendRepoPicker(fromId, page);
+        await this.#sendRepoPicker(chatId, page);
         return;
       }
-      const repo = this.#repoPages.get(fromId)?.[Number(slot)];
+      const repo = this.#repoPages.get(chatId)?.[Number(slot)];
       if (!repo) {
         await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
         return;
       }
       // Task 36: one more question — which branch to continue — before anything
       // is cloned, so the worktree is checked out on the right branch first time.
-      this.#pickedRepo.set(fromId, { repo: repo.fullName, base: repo.defaultBranch });
+      this.#pickedRepo.set(chatId, { repo: repo.fullName, base: repo.defaultBranch });
       await ctx.answerCallbackQuery({ text: repo.fullName.slice(0, 180) }).catch(() => {});
       await ctx.editMessageText(`⌘ ${repo.fullName} — which branch should the agent continue?`).catch(() => {});
-      await this.#sendBranchPicker(fromId, 0);
+      await this.#sendBranchPicker(chatId, 0);
       return;
     }
 
     if (kind === "b") {
       // Branch keyboard: `b:<index>` selects, `b:p:<page>` pages. Two bytes of
       // verb and an integer — a branch name never rides a callback.
-      const pick = this.#pickedRepo.get(fromId);
+      const pick = this.#pickedRepo.get(chatId);
       if (!pick) {
         await ctx.answerCallbackQuery({ text: "Pick a repository first — /code", show_alert: true }).catch(() => {});
         return;
       }
       if (parts[1] === "p") {
         await ctx.answerCallbackQuery({ text: "…" }).catch(() => {});
-        await this.#sendBranchPicker(fromId, Number(parts[2] ?? 0) || 0);
+        await this.#sendBranchPicker(chatId, Number(parts[2] ?? 0) || 0);
         return;
       }
-      const branch = this.#branchPages.get(fromId)?.[Number(parts[1])];
+      const branch = this.#branchPages.get(chatId)?.[Number(parts[1])];
       if (!branch) {
         await ctx.answerCallbackQuery({ text: "This picker expired — send /code again", show_alert: true }).catch(() => {});
         return;
       }
       await ctx.answerCallbackQuery({ text: branch.slice(0, 180) }).catch(() => {});
-      const key = this.#sessionKeyFor(fromId);
+      const key = this.#sessionKeyFor(chatId);
       const bound = await this.service.bindRepo({ sessionKey: key, repo: pick.repo, base: pick.base, branch });
-      this.#pickedRepo.delete(fromId);
+      this.#pickedRepo.delete(chatId);
       await ctx
         .editMessageText(bound.ok ? `${this.#boundLine(bound)}\nAsk for a change, then /diff to review and /pr to publish.` : bound.error)
         .catch(() => {});
@@ -512,7 +517,7 @@ export class TelegramChannel {
       // separate tap, and cancel says plainly that nothing happened.
       const choice = parts[1];
       if (choice !== "d" && choice !== "o" && choice !== "x") return;
-      const key = this.#sessionKeyFor(fromId);
+      const key = this.#sessionKeyFor(chatId);
       if (choice === "x") {
         await ctx.answerCallbackQuery({ text: "nothing published" }).catch(() => {});
         await ctx.editMessageText("Publish cancelled — nothing left this machine.").catch(() => {});
@@ -544,6 +549,37 @@ export class TelegramChannel {
       } catch (err) {
         await ctx.editMessageText(`could not publish — ${(err as Error).message}`).catch(() => {});
       }
+      return;
+    }
+
+    if (kind === "m") {
+      // `/model`: providers, then that provider's selected models, then pin.
+      // The decision lives in telegram-model-menu.ts (pure, tested); this branch
+      // performs the effect and paints the returned card in place.
+      const key = this.#sessionKeyFor(chatId);
+      const effect = applyModelTap(
+        {
+          config: this.service.config,
+          pin: this.#pinFor(chatId),
+          setPin: (model) => this.service.store.setSessionModel(key, model),
+          makeDefault: (model) => {
+            const saved = this.service.configSvc.setPath("agents.defaults.model", model);
+            if (saved.ok) this.service.applyConfig();
+            return { ok: saved.ok, error: saved.errors.join("; ") };
+          },
+        },
+        data,
+      );
+      if (effect.kind === "error") {
+        await ctx.answerCallbackQuery({ text: effect.alert.slice(0, 180), show_alert: true }).catch(() => {});
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: "✓" }).catch(() => {});
+      if (effect.kind === "default") {
+        await ctx.editMessageText(effect.text).catch(() => {});
+        return;
+      }
+      await this.#editCard(ctx, effect.card);
       return;
     }
 
@@ -750,8 +786,14 @@ export class TelegramChannel {
         // buttons act on a session that already exists; the ids are 3 bytes and
         // comfortably inside the 64-byte callback cap.
         const previous = this.#sessionKeyFor(scope.chatId);
+        // Task 54: the model is a choice about THIS CHAT, so a fresh session in
+        // the same chat keeps it. Losing it on /new would read as the pin
+        // silently reverting, which is exactly the surprise /model exists to
+        // avoid. `/model default` is the way back.
+        const carried = this.#pinFor(scope.chatId);
         this.service.store.setMeta(`telegram:sess:${scope.chatId}`, Date.now().toString(36));
         const key = this.#sessionKeyFor(scope.chatId);
+        if (carried) this.service.store.setSessionModel(key, carried);
         await this.#requireBot().api
           .sendMessage(scope.chatId, `New session ${key}\nThe previous one is kept — ${previous} is still in Sessions.\n\nChat, or code a repository?`, {
             reply_markup: {
@@ -813,18 +855,33 @@ export class TelegramChannel {
       }
 
       case "model": {
-        if (!sub) return reply(defaultModelLine(this.service.config));
-        // a bare model id ("kilo/nvidia/x") is stored as "<provider>/<id>"
-        const canonical = canonicalModelRef(this.service.config, sub) ?? sub;
-        const result = cfgSvc.setPath("agents.defaults.model", canonical);
-        if (!result.ok) return reply(`could not set model: ${result.errors.join("; ")}`);
-        this.service.applyConfig();
+        // Task 54: the picker is the interface — provider, then model, all
+        // buttons. Typing still works (`/model <ref>`) because it is in people's
+        // fingers and in the docs, and `/model default` undoes a pin.
+        const key = this.#sessionKeyFor(scope.chatId);
+        if (!sub) return this.#sendModelCard(scope.chatId);
+        const read = readModelArgument(this.service.config, sub);
+        if (read.action === "help") {
+          return reply(
+            "usage: /model — pick a provider, then a model\n" +
+              "       /model <provider/model> — pin it by name\n" +
+              "       /model default — follow the configured default again",
+          );
+        }
+        if (read.action === "clear") {
+          this.service.store.setSessionModel(key, null);
+          const cur = currentModel(this.service.config, null);
+          return reply(`model: default${cur.defLabel ? ` (${cur.defLabel})` : ""} — this chat follows it`);
+        }
+        // A bare model id ("kilo/nvidia/x") is stored as "<provider>/<id>".
+        const canonical = canonicalModelRef(this.service.config, read.pin) ?? read.pin;
+        this.service.store.setSessionModel(key, canonical);
         const names = Object.keys(this.service.config.providers ?? {});
         const hint =
           canonical === sub && names.length && !names.includes(sub.split("/")[0] ?? "")
             ? `\nheads up: "${sub}" does not start with a provider name (${names.join(", ")})`
             : "";
-        return reply(`default model: ${canonical}${hint}`);
+        return reply(`model for this chat: ${read.label}\nthis chat only — /model default to go back · /model for the list${hint}`);
       }
 
       case "provider": {
@@ -962,6 +1019,27 @@ export class TelegramChannel {
    *  every earlier transcript stays exactly where it is. */
   #sessionKeyFor(chatId: number): string {
     return telegramSessionKey(chatId, this.service.store.getMeta(`telegram:sess:${chatId}`));
+  }
+
+  /** Task 54: the model pinned to this chat's session ("" = the default). */
+  #pinFor(chatId: number): string {
+    return String(this.service.store.getSessionByKey(this.#sessionKeyFor(chatId))?.model ?? "");
+  }
+
+  /** Paint a picker card in place — one message, no new bubbles per tap. */
+  async #editCard(ctx: Context, card: Card): Promise<void> {
+    await ctx
+      .editMessageText(card.text, card.keyboard ? { reply_markup: { inline_keyboard: card.keyboard } } : {})
+      .catch(() => {});
+  }
+
+  /** `/model` with no argument: the provider list, as buttons. */
+  async #sendModelCard(chatId: number, page = 0): Promise<boolean> {
+    const card = providerCard({ config: this.service.config, pin: this.#pinFor(chatId), page });
+    await this.#requireBot().api
+      .sendMessage(chatId, card.text, card.keyboard ? { reply_markup: { inline_keyboard: card.keyboard } } : {})
+      .catch((err: unknown) => this.log.warn(`telegram: model card failed — ${(err as Error).message}`));
+    return true;
   }
 
   /**

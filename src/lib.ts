@@ -68,6 +68,24 @@ export { systemUpdateCheck, systemUpdateApply, type UpdateStatus, type UpdateApp
 export { splitForTelegram, telegramProxy, probeTelegramApi, describeError, botApiCall } from "./channels/telegram.js";
 export { telegramHtml, telegramChunks, splitMarkdown, escapeHtml as escapeTelegramHtml, TELEGRAM_TEXT_LIMIT } from "./channels/telegram-format.js";
 export { createTurnDelivery, isTransientTelegramError, remainderAfter } from "./channels/telegram-delivery.js";
+export {
+  MODEL_PAGE_SIZE,
+  applyModelTap,
+  currentModel,
+  modelCard,
+  modelFingerprint,
+  modelProviders,
+  pinnedCard,
+  providerCard,
+  providerModels,
+  readModelArgument,
+  readModelTap,
+  type Card,
+  type ModelChoice,
+  type ModelTap,
+  type TapEffect,
+  type TapEnvironment,
+} from "./channels/telegram-model-menu.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
 export { Subagents } from "./agent/subagents.js";

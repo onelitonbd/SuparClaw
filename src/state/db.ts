@@ -12,6 +12,10 @@ export interface SessionRow {
   meta: string | null;
   /** Session thinking-level override ("low"…/"max", "off"); null = inherited. */
   thinking?: string | null;
+  /** Task 54: the model pinned for this session (a profile id or a bare ref);
+   *  null = the configured default. Written by /model in the chat and by
+   *  `sessions.patch { model }`, read once per run by the loop. */
+  model?: string | null;
   /** Per-session queue-mode override (steer|followup|collect|interrupt); null = config. */
   queue_mode?: string | null;
   /** JSON {debounceMs?, cap?, drop?} /queue options; null = none. */
@@ -389,6 +393,12 @@ export class Store {
     if (!sessionCols.has("thinking")) {
       db.exec("ALTER TABLE sessions ADD COLUMN thinking TEXT");
     }
+    // Task 54: a conversation can run on its own model. Same guard as above —
+    // a DB written before this feature upgrades in place, and re-opening an
+    // already-migrated DB is a no-op.
+    if (!sessionCols.has("model")) {
+      db.exec("ALTER TABLE sessions ADD COLUMN model TEXT");
+    }
     if (!sessionCols.has("queue_mode")) {
       db.exec("ALTER TABLE sessions ADD COLUMN queue_mode TEXT");
     }
@@ -570,6 +580,13 @@ export class Store {
   setSessionThinking(key: string, thinking: string | null): void {
     const row = this.ensureSession(key);
     this.db.prepare("UPDATE sessions SET thinking = ? WHERE id = ?").run(thinking, row.id);
+  }
+
+  /** Task 54: pin a model to one conversation (`null` clears it). */
+  setSessionModel(key: string, model: string | null): void {
+    const row = this.ensureSession(key);
+    const value = model === null ? null : String(model).trim() || null;
+    this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(value, row.id);
   }
 
   /**

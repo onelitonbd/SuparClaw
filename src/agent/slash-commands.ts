@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Service } from "./service.js";
 import { readTextSafe, workspaceDir } from "../util/paths.js";
+import { modelProfile } from "../config/schema.js";
 
 export const SLASH_CATALOG: { cmd: string; summary: string }[] = [
   { cmd: "/help", summary: "short help summary" },
@@ -131,8 +132,14 @@ export async function handleSlashExtension(
       const tools = (status.tools as unknown[]).length;
       const skills = status.skills as { name: string; eligible: boolean }[];
       const comp = service.compactionStats(payload.sessionKey);
+      // Task 54: a conversation can be pinned to its own model; `/status` must
+      // answer "what will the next turn use", not "what is the default".
+      const pin = String(service.store.getSessionByKey(payload.sessionKey)?.model ?? "").trim();
+      const pinLabel = pin ? modelProfile(cfg, pin).label || pin : "";
       return [
-        `model:     ${cfg.agents.defaults.model || "(unset)"}${cfg.agents.defaults.fallbacks.length ? ` · fallbacks: ${cfg.agents.defaults.fallbacks.length}` : ""}`,
+        `model:     ${pin ? `${pinLabel} (this chat) · default: ${cfg.agents.defaults.model || "(unset)"}` : cfg.agents.defaults.model || "(unset)"}${
+          cfg.agents.defaults.fallbacks.length ? ` · fallbacks: ${cfg.agents.defaults.fallbacks.length}` : ""
+        }`,
         `tools:     ${tools} registered · skills: ${skills.filter((s) => s.eligible).length}/${skills.length} ready`,
         `dreaming:  ${dreaming.enabled ? `on (${dreaming.schedule})` : "off"}`,
         `compact:   ${comp ? `${comp.count} sweep(s), ${comp.chars} chars folded (upto #${comp.upto})` : "0 (transcript still fits the budget)"}`,

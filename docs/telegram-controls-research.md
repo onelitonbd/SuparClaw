@@ -1,6 +1,6 @@
 # Telegram controls: model, session, thinking, coding
 
-**Task 54 candidate — research only, no implementation yet.**
+**Task 54 candidate — research; capability #1 shipped as Task 54a.**
 
 The ask, in the operator's words: *"i want to be able to change model from telegram,
 go to a different session and select level of thinging and also start a coding
@@ -10,7 +10,7 @@ So four things, all from the phone:
 
 | # | Capability | Exists today? | Real gap |
 |---|---|---|---|
-| 1 | Change **model** | `/model <ref>` — **yes**, but global | no picker, and it silently changes every other surface |
+| 1 | Change **model** | ✅ **shipped (54a)** — card + per-session pin | was: global, no picker, retargeted every surface |
 | 2 | Go to a **different session** | only one-way (`/new` rotates forward) | no way to see or return to an earlier session |
 | 3 | Choose **thinking level** | `/think <level>` — **yes** | no buttons, no visibility, awkward wording |
 | 4 | Start a **coding session** | `/new` → `⌘ Code` → repo → branch | two steps, buried, and it binds *this* session |
@@ -19,7 +19,11 @@ Three of the four already work if you know the exact command. The task is
 **discoverability, the missing half of #2, and the wrong scope of #1** — plus one
 real bug that makes all of it unreliable in groups.
 
----
+**Status:** #1 is **built** (Task 54a) — `/model` is a two-level card
+(providers → that provider's selected models, paged, all buttons) backed by a
+per-session model pin (`sessions.model`). Options #2–#4 are still research. The
+sections below are kept as the record of what was considered and why; the shipped
+shape is marked *Shipped*.
 
 ## 1. What exists right now (with the code that proves it)
 
@@ -106,7 +110,7 @@ it second in its chain — per-run → **session** → model profile → global 
 The loop already supports a per-run model (`input.model`, `loop.ts:783`), so all
 three are possible without touching the LLM client.
 
-**Recommendation: C.** It is what OpenClaw does (a `/model` pick selects a
+**Shipped: C.** It is what OpenClaw does (a `/model` pick selects a
 session pin; `/model default` clears it, `docs/openclaw/concepts/models.md:116-121`),
 it makes `/model` mean "this conversation" everywhere, and it fixes the TUI's
 disappearing override for free later. Scope: one `ALTER TABLE sessions ADD COLUMN
@@ -186,13 +190,15 @@ Deploy script`), and every control keys off the **chat** so groups stop breaking
 
 | File | Change |
 |---|---|
-| `src/channels/telegram.ts` | 3 new keyboards + handlers (`m:`, `t:`, `s:`), `#sessionKeyFor` reads the active pointer, callback ids off `ctx.chat.id`, `/model` and `/think` rewritten around the pickers |
-| `src/state/db.ts` | `sessions.model` column (PRAGMA-guarded), `setSessionModel()` |
-| `src/agent/loop.ts` | resolve the model once: `input.model ?? session.model ?? ""` (3 call sites today), sub-agents inherit it |
-| `src/gateway/server.ts` | `sessions.patch { model }`; `sessions.list` already returns the column |
-| `src/agent/slash-commands.ts` | `/status` line; `/think` keeps its text form and points at the buttons |
-| `ui/src/main.ts` | model chip honours the session pin (so the two surfaces agree) |
-| `docs`, `README` | the Telegram section of the README, architecture spec M3 |
+| `src/channels/telegram.ts` | **done (part 1):** the `m:` handlers, `/model` card, chat-keyed callbacks |
+| `src/channels/telegram-model-menu.ts` | **done (part 1):** the pure card + tap module |
+| `src/state/db.ts` | **done (part 1):** `sessions.model` column (PRAGMA-guarded), `setSessionModel()` |
+| `src/agent/loop.ts` | **done (part 1):** one `#modelFor()` — per-run → pin → default |
+| `src/gateway/server.ts` | **done (part 1):** `sessions.patch { model }` |
+| `src/agent/slash-commands.ts` | **done (part 1):** `/status` prints the pin |
+| `src/channels/telegram.ts` (`/think`, `/sessions`) | **next:** the other two pickers |
+| `ui/src/main.ts` | later: the model chip honours the pin |
+| `docs`, `README` | **done (part 1):** README Telegram section, spec M3 |
 
 Tests that must exist before this ships (the same standard as T53):
 

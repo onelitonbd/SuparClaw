@@ -211,6 +211,17 @@ catalog — the list, the help text and the menu cannot drift apart.
 Telegram additionally owns `/model`, `/provider`, `/whoami` and `/new`; anything else falls
 through to the shared router (it used to answer "unknown command" instead).
 
+**`/model` is a card, not a guess.** It prints the model this chat is on and one button per
+provider in the provider system; tapping a provider shows *that provider's selected models*
+(the Settings → Models list), paged eight at a time, and tapping one pins it **to this chat
+only** — the web UI and the TUI keep their own model. `Use default` clears the pin, `Make
+default` promotes it to `agents.defaults.model` for every surface, and the typed forms still
+work: `/model <provider/model>` pins by name, `/model default` clears. The pin lives in
+`sessions.model`, so it survives a restart and any other surface can read it — and `/new`
+carries it onto the fresh session, because the model is a choice about the chat, not about
+one transcript. A pin whose model was deleted falls back to the default with a warning
+instead of failing the turn.
+
 **The `/` menu is stored on the bot token, not in this app.** A token that ran another build
 keeps showing that build's command list until something replaces it. Telegram stores that list
 per **scope**, and a chat scope OVERRIDES the default one — so clearing `default` alone leaves

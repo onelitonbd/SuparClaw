@@ -970,6 +970,12 @@ export class Gateway {
           if (params["thinking"] !== undefined || params["thinkingLevel"] !== undefined) {
             service.store.setSessionThinking(key, thinking === "" ? null : thinking);
           }
+          // Task 54: the same contract for the model pin — an explicit choice
+          // for this conversation, cleared by null/"".
+          if (params["model"] !== undefined) {
+            const model = params["model"] === null ? "" : String(params["model"]);
+            service.store.setSessionModel(key, model.trim() ? model.trim() : null);
+          }
           // Session menu (P4 #33): archive/unarchive with identity + history
           // intact; the chat pane shows their archived banner + Unarchive.
           if (typeof params["archived"] === "boolean") {
@@ -984,6 +990,8 @@ export class Gateway {
               archived: Number(row?.archived ?? 0) === 1,
               thinkingLevels: THINKING_LEVELS,
               thinkingDefault: String(service.config.agents.defaults.reasoningEffort ?? "inherit"),
+              model: row?.model ?? null,
+              modelDefault: String(service.config.agents.defaults.model ?? ""),
             }),
           );
           return;
