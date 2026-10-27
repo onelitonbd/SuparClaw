@@ -1,73 +1,60 @@
-// One Telegram turn's outbound surface (Task 32).
+// One Telegram turn's outbound surface (Task 52 → rewritten in Task 53).
 //
-// The chat is not a transcript. What the user asked for: "I don't need to see
-// what tool it is using, what it is thinking — I just need the final answer."
-// Upstream (messaging.md) splits a turn into two lanes, and so do we:
+// The chat is not a transcript, and it is not a progress bar either. The
+// operator's rule, twice now, in their own words:
 //
-//   status draft  — one editable message, quiet by default: the stages the turn
-//                   is going through, never tool names, never reasoning, never
-//                   a half-written answer in "progress" mode;
-//   final answer  — its own message, rendered from Markdown to Telegram HTML.
+//   "I don't need to see what tool it is using, what it is thinking — I just
+//    need the final answer."
+//   "we dont need them on telegram the tool uses and working and thinking …
+//    we just need the responses. if the ai gives multiple responses for a
+//    single quary i want them come instantly all one by one when it tells."
 //
-// Modes (their four):
-//   progress (default) — quiet draft + answer as its own message
-//   partial / block    — the answer streams into the draft (the old behaviour)
-//   off                — no draft, no chatter; the answer, approvals and media
-//                        still arrive
+// So there is no status message any more. Task 32's editable draft ("▌ working…"
+// → "▌ Reading files") is gone, along with the `streaming` and `toolProgress`
+// config keys that only existed to shape it. What is left is one rule:
 //
-// Deliberately absent: reasoning. There is no listener for it anywhere in this
-// module, so thinking cannot leak into the chat by accident.
+//   every finished block of the model's words is its own message, posted the
+//   moment the model finishes it.
+//
+// `say()` is that message. `reply()` is the tail of the answer that no `say`
+// covered — usually the last block, sometimes the whole answer (a turn with no
+// tool calls at all). It works by offset, never by guesswork:
+//
+//   ledger = concatenation of the raw blocks `say` was given, plus a flag that
+//            is set if any of them could not be delivered.
+//
+// The loop emits `say` with the round's untrimmed text, so the ledger is a
+// byte-exact prefix of the final answer. If it is not (a synthetic final, an
+// aborted turn), or a block was lost, the final is sent whole: a duplicated
+// line is annoying, a lost answer is a bug.
+//
+// Everything outbound is serialised on one promise chain. `Service.send`
+// dispatches channel callbacks without awaiting them, so without this a block
+// posted "immediately" could still be in flight when the final computes its
+// remainder — and the user would read the same paragraph twice.
 
 import { splitForTelegram, stripHtmlTags, telegramChunks } from "./telegram-format.js";
-
-export type StreamingMode = "off" | "partial" | "block" | "progress";
 
 /** The slice of grammy's bot API this module needs (faked in tests). */
 export interface DeliveryApi {
   sendMessage(chatId: number, text: string, extra?: Record<string, unknown>): Promise<{ message_id: number }>;
-  editMessageText(chatId: number, messageId: number, text: string, extra?: Record<string, unknown>): Promise<unknown>;
-  deleteMessage(chatId: number, messageId: number): Promise<unknown>;
+  deleteMessage?(chatId: number, messageId: number): Promise<unknown>;
 }
 
 export interface TurnDeliveryOptions {
   api: DeliveryApi;
   chatId: number;
-  mode: StreamingMode;
-  /** channels.telegram.toolProgress — put raw tool names back in the draft. */
-  toolProgress?: boolean;
   /** Wait between retries (injected so tests do not sleep). */
   sleep?: (ms: number) => Promise<void>;
   /** Extra attempts for a transient failure (network, 429, 5xx). Default 2. */
   retries?: number;
   /** Observation hook (tests, and a place for a future "sent" metric). */
-  onEvent?: (event: { kind: "draft" | "draftEdit" | "draftDelete" | "answer" | "answerEdit" | "answerFallback"; text: string }) => void;
-  now?: () => number;
+  onEvent?: (event: { kind: "say" | "answer" | "answerFallback" | "notify" | "undelivered"; text: string }) => void;
   log?: (message: string) => void;
 }
 
-/** Human stage names — what the turn is DOING, not which tool it called. */
-const STAGES: Record<string, string> = {
-  fs_read: "Reading files",
-  fs_list: "Looking around",
-  fs_write: "Writing files",
-  fs_edit: "Editing files",
-  fs_delete: "Cleaning up",
-  exec: "Running a command",
-  web_fetch: "Fetching a page",
-  web_search: "Searching the web",
-  memory_search: "Checking memory",
-  memory_write: "Saving to memory",
-  cron_list: "Checking schedules",
-  cron_add: "Setting a schedule",
-  image_generate: "Generating an image",
-  ask_user: "Waiting for you",
-};
-
-const DELTA_THROTTLE_MS = 2000;
-const TOOL_THROTTLE_MS = 1200;
-
 /**
- * Did Telegram fail for a reason that is worth retrying?
+ * Did Telegram fail for a reason worth retrying?
  *
  * A turn's answer is the whole point of the turn, and the failures we see in
  * practice are transient: a network blip, a 429 during a burst, a 5xx. Those
@@ -86,27 +73,49 @@ export function isTransientTelegramError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * The part of `final` that has not been said yet.
+ *
+ * Exact when the ledger is a true prefix (the normal path); the whole string
+ * when it is not — a synthetic final, a turn that was aborted mid-sentence, a
+ * block whose send failed. Never returns a tail it cannot justify.
+ */
+export function remainderAfter(final: string, said: string, gap = false): string {
+  const text = final.trim();
+  if (gap) return text;
+  if (said.length === 0) return text;
+  const spoken = said.trim();
+  if (spoken.length === 0) return text;
+  if (!final.startsWith(spoken)) return text;
+  return final.slice(spoken.length).trim();
+}
+
 export function createTurnDelivery(opts: TurnDeliveryOptions) {
-  const { api, chatId, mode } = opts;
-  const showTools = opts.toolProgress === true;
-  const now = opts.now ?? (() => Date.now());
+  const { api, chatId } = opts;
   const log = opts.log ?? (() => {});
   const emit = opts.onEvent ?? (() => {});
-
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const tries = 1 + Math.max(0, opts.retries ?? 2);
 
-  let draft: { message_id: number } | null = null;
-  let draftDeleted = false;
-  let lastEdit = 0;
-  let everEdited = false;
-  const stages: string[] = [];
+  /** Raw text already posted as its own message, in order. */
+  let said = "";
+  /** A block we could not deliver — the final must be sent whole. */
+  let gap = false;
+  /** Everything outbound runs here, one after another. */
+  let chain: Promise<void> = Promise.resolve();
+
+  const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = chain.then(fn, fn);
+    chain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
 
   /**
    * Run one Telegram call, retrying only what is worth retrying.
-   *
-   * Returns null when the call ultimately failed — the caller decides what the
-   * user sees. Never throws: a delivery failure must not unwind a turn.
+   * Returns null when the call ultimately failed; never throws.
    */
   const attempt = async <T>(label: string, fn: () => Promise<T>): Promise<T | null> => {
     for (let i = 0; ; i++) {
@@ -126,99 +135,16 @@ export function createTurnDelivery(opts: TurnDeliveryOptions) {
     }
   };
 
-  const stageFor = (tool?: string): string => {
-    const stage = tool ? (STAGES[tool] ?? "Working") : "Thinking";
-    if (stages.at(-1) !== stage) stages.push(stage);
-    return stages.slice(-3).join(" → ");
-  };
-
-  const ensureDraft = async (): Promise<void> => {
-    if (mode === "off" || draft || draftDeleted) return;
-    draft = await attempt("status draft", () => api.sendMessage(chatId, "▌ working…", { link_preview_options: { is_disabled: true } }));
-    if (draft) emit({ kind: "draft", text: "▌ working…" });
-  };
-
-  const editDraft = async (text: string): Promise<void> => {
-    await ensureDraft();
-    if (!draft) return;
-    const id = draft.message_id;
-    lastEdit = now();
-    everEdited = true;
-    const ok = await attempt("draft edit", () => api.editMessageText(chatId, id, text, { link_preview_options: { is_disabled: true } }));
-    if (ok !== null) emit({ kind: "draftEdit", text });
-  };
-
-  return {
-    /** A streamed answer fragment. Never rendered in progress mode. */
-    async onDelta(_delta: string): Promise<void> {
-      if (mode === "off") return;
-      if (everEdited && now() - lastEdit < DELTA_THROTTLE_MS) return;
-      await editDraft(`▌ ${stageFor()}`);
-    },
-
-    /** A tool started. The quiet draft shows the stage; the answer never sees it. */
-    async onTool(name: string): Promise<void> {
-      if (mode === "off") return;
-      const stage = stageFor(name);
-      if (!showTools && everEdited && now() - lastEdit < TOOL_THROTTLE_MS) return;
-      await editDraft(showTools ? `▌ ${stage}\n· ${name}` : `▌ ${stage}`);
-    },
-
-    /** The turn's answer — Markdown in, rendered Telegram HTML out. */
-    async reply(markdown: string): Promise<void> {
-      if (markdown.trim() === "") {
-        // A turn with nothing to say (a bare HEARTBEAT_OK, a stripped marker):
-        // remove the working draft rather than leaving it spinning forever.
-        await finish();
-        return;
-      }
-      if (mode === "partial" || mode === "block") {
-        await sendIntoDraft(markdown);
-        return;
-      }
-      // progress / off: the answer is a message of its own (their default).
-      // ORDER MATTERS: send first, drop the draft second. Deleting first meant a
-      // single transient failure left the chat completely empty — no answer and
-      // no evidence that anything had happened.
-      const { sent, failed } = await sendAnswer(markdown);
-      if (failed === null) {
-        await finish();
-        return;
-      }
-      if (sent === 0) {
-        // Nothing got through: the draft is still on screen, so it becomes the
-        // notice instead of being deleted.
-        await reportUndelivered(failed);
-        return;
-      }
-      // Part of a long answer arrived. Say so — a silently truncated reply is
-      // worse than a short one with a signpost.
-      await finish();
-      await reportUndelivered(failed, true);
-    },
-  };
-
-  async function dropDraft(): Promise<void> {
-    if (!draft || draftDeleted) return;
-    draftDeleted = true;
-    const id = draft.message_id;
-    const ok = await attempt("draft delete", () => api.deleteMessage(chatId, id));
-    if (ok !== null) emit({ kind: "draftDelete", text: "" });
-    draft = null;
-  }
-
   /**
-   * Deliver the answer. Returns null when every attempt failed.
-   *
-   * Transport failures are retried; a markup rejection falls back to plain text
-   * immediately. The chat is only ever left without the answer if Telegram
-   * itself is unreachable, and then `reportUndelivered` says so.
+   * Send one formatted piece. HTML first; a rejected markup falls back to plain
+   * text, because an unformatted answer is infinitely better than a lost one.
+   * Returns the number of messages Telegram accepted.
    */
-  async function sendAnswer(markdown: string): Promise<{ sent: number; failed: string | null }> {
+  async function post(label: string, markdown: string, chunks: string[]): Promise<{ sent: number; failed: string | null }> {
     let sent = 0;
     let failed: string | null = null;
-    for (const chunk of telegramChunks(markdown)) {
-      const ok = await attempt("reply", () =>
+    for (const chunk of chunks) {
+      const ok = await attempt(label, () =>
         api.sendMessage(chatId, chunk, { parse_mode: "HTML", link_preview_options: { is_disabled: true } }),
       );
       if (ok) {
@@ -226,89 +152,104 @@ export function createTurnDelivery(opts: TurnDeliveryOptions) {
         emit({ kind: "answer", text: chunk });
         continue;
       }
-      // Telegram refused the markup (a 400, not a transport blip): send the text
-      // plainly. An unformatted answer is infinitely better than a lost one.
-      log("telegram: HTML reply rejected — falling back to plain text");
-      const plain = splitForTelegram(stripHtmlTags(chunk));
-      let plainSent = 0;
-      for (const piece of plain) {
-        const okPlain = await attempt("reply (plain)", () => api.sendMessage(chatId, piece));
-        if (okPlain) {
-          plainSent += 1;
+      log("telegram: HTML send rejected — falling back to plain text");
+      for (const piece of splitForTelegram(stripHtmlTags(chunk))) {
+        const plainOk = await attempt(`${label} (plain)`, () => api.sendMessage(chatId, piece));
+        if (plainOk) {
+          sent += 1;
           emit({ kind: "answerFallback", text: piece });
         } else {
           failed = "Telegram did not accept the message";
         }
       }
-      if (plainSent > 0) sent += plainSent;
     }
+    if (chunks.length === 0 && markdown.trim().length > 0) failed = "the message could not be split";
     return { sent, failed };
   }
 
-  async function sendIntoDraft(markdown: string): Promise<void> {
-    const chunks = telegramChunks(markdown);
-    await ensureDraft();
-    if (!draft) {
-      await finish();
-      return;
-    }
-    const id = draft.message_id;
-    const first = chunks[0] ?? "(empty)";
-    const ok = await attempt("preview edit", () =>
-      api.editMessageText(chatId, id, first, { parse_mode: "HTML", link_preview_options: { is_disabled: true } }),
-    );
-    if (ok !== null) {
-      emit({ kind: "answerEdit", text: first });
-    } else {
-      // The edit failed. Try plain into the same message, then — if even that
-      // fails — send the answer as its own message instead of leaving the
-      // "working…" draft as the last thing the user sees.
-      log("telegram: HTML preview rejected — falling back to plain text");
-      const plainFirst = splitForTelegram(stripHtmlTags(first))[0] ?? "(empty)";
-      const plainOk = await attempt("preview edit (plain)", () => api.editMessageText(chatId, id, plainFirst));
-      if (plainOk === null) {
-        draft = null; // stop trying to reuse a message we cannot write to
-        await sendAnswer(markdown);
-        return;
-      }
-    }
-    for (const chunk of chunks.slice(1)) {
-      const sent = await attempt("reply", () => api.sendMessage(chatId, chunk, { parse_mode: "HTML" }));
-      if (sent) {
-        emit({ kind: "answer", text: chunk });
-      } else {
-        for (const piece of splitForTelegram(stripHtmlTags(chunk))) {
-          await attempt("reply (plain)", () => api.sendMessage(chatId, piece));
+  return {
+    /**
+     * A finished block of the model's words. Posted as its own message, now.
+     *
+     * A whitespace-only block posts nothing but still advances the ledger: the
+     * loop emits it so the offsets stay exact, not so the user reads a blank
+     * bubble.
+     */
+    say(text: string): Promise<void> {
+      return serialize(async () => {
+        if (typeof text !== "string" || text.length === 0) return;
+        const body = text.trim();
+        if (body.length === 0) {
+          said += text;
+          return;
         }
-      }
-    }
-  }
+        const { sent, failed } = await post("answer part", body, telegramChunks(body));
+        if (sent > 0) {
+          said += text;
+          emit({ kind: "say", text: body });
+        }
+        if (failed) gap = true;
+      });
+    },
+
+    /**
+     * The tail of the answer. Usually the last block; the whole answer when the
+     * turn ran no tools, or when a `say` never made it.
+     */
+    reply(markdown: string): Promise<void> {
+      return serialize(async () => {
+        const rest = remainderAfter(markdown ?? "", said, gap);
+        if (rest.length === 0) {
+          // Nothing left to add (every block already landed, or the turn had
+          // nothing to say). Never post an empty message.
+          said = "";
+          gap = false;
+          return;
+        }
+        const { sent, failed } = await post("reply", rest, telegramChunks(rest));
+        said = "";
+        gap = false;
+        if (sent === 0 && failed) {
+          await reportUndelivered(failed);
+          return;
+        }
+        if (failed) await reportUndelivered(failed, sent > 0);
+      });
+    },
+
+    /**
+     * A line that is not the answer: the code-session signpost, a notice.
+     * Posted verbatim, wrapped in the same HTML pipeline, and it never touches
+     * the answer ledger.
+     */
+    notify(markdown: string): Promise<void> {
+      return serialize(async () => {
+        const body = (markdown ?? "").trim();
+        if (body.length === 0) return;
+        const { sent, failed } = await post("notice", body, telegramChunks(body));
+        if (sent > 0) emit({ kind: "notify", text: body });
+        if (failed) log(`telegram: notice not delivered — ${failed}`);
+      });
+    },
+
+    /** Resolves once everything queued has been attempted (tests, shutdown). */
+    settled(): Promise<void> {
+      return chain;
+    },
+  };
 
   /**
    * The answer could not be delivered at all.
    *
    * Silence is the worst outcome: the reply is in the session, visible in the
-   * web UI, and the chat just stops. So the draft — or a new message when there
-   * is no draft — says what happened and where the answer is.
+   * web UI, and the chat just stops. So a new message says what happened and
+   * where the answer is.
    */
   async function reportUndelivered(reason: string, partial = false): Promise<void> {
     const notice = partial
       ? `⚠ Part of this reply could not be delivered (${reason}). The full answer is in the web chat.`
       : `⚠ The answer could not be delivered (${reason}). It is saved in this session — open the web chat to read it.`;
-    if (draft && !draftDeleted) {
-      const ok = await attempt("failure notice", () => api.editMessageText(chatId, draft!.message_id, notice));
-      if (ok !== null) {
-        emit({ kind: "draftEdit", text: notice });
-        return;
-      }
-      draftDeleted = true;
-    }
-    await attempt("failure notice", () => api.sendMessage(chatId, notice));
-  }
-
-  /** The answer is on its way (or was never needed): drop the status draft. */
-  async function finish(): Promise<void> {
-    if (!draft || draftDeleted) return;
-    await dropDraft();
+    const ok = await attempt("failure notice", () => api.sendMessage(chatId, notice));
+    if (ok) emit({ kind: "undelivered", text: notice });
   }
 }

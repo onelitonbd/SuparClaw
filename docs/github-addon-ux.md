@@ -537,9 +537,12 @@ by the model), so it cannot be forgotten or hallucinated:
 
 ### 4.4 What never appears on Telegram
 
-Reasoning (already true), full diffs in the status draft, and any tool chatter by
-default (`channels.telegram.toolProgress` stays off). A repo session on Telegram
-should read like a colleague reporting back, not a CI log.
+Everything that is not an answer: reasoning, stage lines ("Thinking", "Working",
+"Reading files"), tool names and tool output. Task 53 removed the status draft
+and the `streaming` / `toolProgress` settings outright, so there is no longer a
+knob that can put this back — the chat posts answers only, one message per
+finished block, as the model writes them. A repo session on Telegram should read
+like a colleague reporting back, not a CI log.
 
 ---
 
@@ -589,7 +592,7 @@ Telegram draft all render the same four events — one implementation, three ski
 | Repo chip, file counts | `.chip` styling | `ui/styles.css:320` |
 | TUI pickers | `#pick` overlay | `src/tui/app.ts:460` |
 | Telegram buttons | existing inline-keyboard + callback handlers | `src/channels/telegram.ts:401` |
-| Progress | Task 32 status draft | `src/channels/telegram-delivery.ts` |
+| Answer delivery | `createTurnDelivery` (`say` blocks now; no status draft) | `src/channels/telegram-delivery.ts` |
 | Session fields | `sessions.patch` + column migrations | `src/gateway/server.ts:844`, `src/state/db.ts:418` |
 
 ---

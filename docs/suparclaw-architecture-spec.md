@@ -114,7 +114,7 @@ graph weight, not Node itself.
    backoff; model fallback chain; idle watchdog; separate quick `agent.wait` timeout (30s, wait-only).
 6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec follows
    `tools.exec.mode` (default `full` — no prompt).
-7. Stream events → channel adapter renders (Telegram typing indicator, message edits optional).
+7. Stream events → channel adapter renders (Telegram: typing indicator while a turn runs, then one message per finished answer block — no status draft).
 8. Persist transcript + usage; emit `final`. The `/usage` footer is a field on that event and is
    re-rendered from the numbers stored on the assistant row, so a reload or a restart keeps it
    (`chat.regenerate` drops the newest turn before re-running its prompt). `NO_REPLY` = intentional
@@ -352,7 +352,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | **M0** | Scaffold + build + `sc doctor` + config load | Single-file bundle builds; `sc --version` < 400 ms target on device; doctor probes pass/fail cleanly |
 | **M1** | Gateway daemon (WS protocol, state DB, logs, service) | Daemon survives 24 h on phone; reconnect works; idle RSS < 120 MB |
 | **M2** | Agent core + `sc chat` | Streaming reply in terminal; transcript persisted; turn overhead < 150 ms; compaction at threshold |
-| **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn |
+| **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn; answers only (no status/tool lines), multi-block answers posted as they are written |
 | **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full) with an opt-in approval flow; 5 bundled skills; FTS recall |
 | **M5** | Cron + hooks + polish | Scheduled job fires after reboot-era restarts; hot config reload; backup command; all §6 targets met |
 
@@ -396,7 +396,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | M0 scaffold + doctor + config | done | `sc init`, `sc doctor` (11 checks), strict JSON5 schema, 19 tests green |
 | M1 gateway daemon | done | http+ws on one port, token auth (bad token → close 4401), `/health`, static Control UI |
 | M2 agent core + `sc chat` | done | streaming SSE client, tool loop, SQLite transcripts, pure-JS TUI (local + remote) |
-| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, status-draft previews — needs a bot token to exercise |
+| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, answers-only delivery (no status draft) — needs a bot token to exercise |
 | M4 tools + skills + memory | done | 11 built-in tools, 5 bundled skills, workspace files, FTS search |
 | M5 cron + hooks | partial | croner scheduler + `sc cron` CLI; hooks not yet implemented |
 

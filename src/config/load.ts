@@ -33,8 +33,7 @@ export const STARTER_CONFIG = `// SuparClaw config (JSON5: comments allowed)
     telegram: {
       enabled: false,
       token: "",
-      dmPolicy: "pairing",     // first DM needs approval: sc pair <code>
-      streaming: "progress"    // status draft + final answer (Telegram-friendly)
+      dmPolicy: "pairing"      // first DM needs approval: sc pair <code>
     }
   },
   tools: {

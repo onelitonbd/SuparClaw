@@ -1127,13 +1127,12 @@ export class TelegramChannel {
     // interval (their 6s) with a 2-minute TTL safety stop.
     const typing = this.#typingFor(chatId, pending.topicId, pending.isGroup === true, pending.mentioned === true);
 
-    // Task 32 — outbound delivery is a pure module (telegram-delivery.ts) so the
-    // quiet-draft / formatted-answer contract is testable without a bot.
+    // Task 52/53 — outbound delivery is a pure module (telegram-delivery.ts) so
+    // the "answers only, as they are written" contract is testable without a
+    // bot. No mode: there is no status message left to configure.
     const delivery = createTurnDelivery({
       api: bot.api as unknown as import("./telegram-delivery.js").DeliveryApi,
       chatId,
-      mode: (cfg.streaming === "off" ? "off" : cfg.streaming === "partial" || cfg.streaming === "block" ? (cfg.streaming as "partial" | "block") : "progress"),
-      toolProgress: cfg.toolProgress === true,
       log: (m: string) => this.log.warn(m),
     });
 
@@ -1158,13 +1157,16 @@ export class TelegramChannel {
           await bot.api.sendMessage(chatId, b.text, b.reply_markup ? { reply_markup: b.reply_markup } : {}).catch((err) => this.log.warn(`telegram: question send failed: ${(err as Error).message}`));
         }
       },
+      // Deltas only feed the typing indicator now: the chat shows answers, not
+      // the answer being typed. `onSay` carries a finished block.
       onDelta: async (delta) => {
         typing.onText(delta);
-        await delivery.onDelta(delta);
       },
-      onTool: async (event) => {
+      onSay: async (text) => {
+        await delivery.say(text);
+      },
+      onTool: async () => {
         typing.onTool();
-        await delivery.onTool(event.name);
       },
       onApproval: async (event) => {
         // Approval card with buttons (P2 #17): one tap resolves; the card
@@ -1189,7 +1191,8 @@ export class TelegramChannel {
         // P3 #26: outside heartbeats, stray HEARTBEAT_OK at start/end is
         // stripped (their response contract); a pure-OK message is dropped.
         const cleaned = stripStrayHeartbeatOk(finalText);
-        if (cleaned.trim() === "") return;
+        // A turn with nothing left to say still has to settle the ledger (every
+        // block may already have been posted by `onSay`).
         await delivery.reply(cleaned);
         // Task 35: in a code session the answer is not the whole story — say
         // what changed and name the two commands that act on it. One line, no
@@ -1199,7 +1202,8 @@ export class TelegramChannel {
         try {
           const st = await this.service.repos.status(binding.workspace);
           if (st.clean) return;
-          await delivery.reply(
+          // A signpost, not the answer: `notify` never touches the answer ledger.
+          await delivery.notify(
             `${st.files.length} file(s) changed (+${st.added} −${st.removed}) · /diff to review · /pr to publish`,
           );
         } catch {

@@ -23,6 +23,17 @@ export type QueueMode = "steer" | "followup" | "collect" | "interrupt";
 export type RunEvent =
   | { type: "start"; runId: string; sessionKey: string }
   | { type: "delta"; text: string }
+  /**
+   * A finished block of the model's own words, emitted the moment it stops
+   * writing to do something else (a tool call). Telegram posts it as its own
+   * message right away — that is how one turn becomes several answers "one by
+   * one, as it tells them" instead of one glued-together wall at the end.
+   *
+   * `text` is the RAW round text, untrimmed, so the concatenation of every
+   * `say` in a run is a byte-exact prefix of `final.text`; a surface can send
+   * the remainder at the end without ever guessing or repeating.
+   */
+  | { type: "say"; runId: string; text: string }
   | { type: "question"; id: string; sessionKey: string; questions: { id: string; question: string; options: string[]; multi: boolean }[] }
   | { type: "reasoning"; text: string }
   | { type: "tool"; callId: string; name: string; status: "running" | "done" | "error" | "skipped"; detail?: string; ms?: number }
@@ -880,6 +891,13 @@ export class AgentLoop {
           break;
         }
         endedOnToolCalls = true;
+
+        // The model wrote something and is now going to work. That is a finished
+        // message, not a preamble to be swallowed into the final answer: emit it
+        // BEFORE the tools run so the chat hears it while the work happens.
+        // Whitespace-only rounds are emitted too (a client that trims must still
+        // be able to line the offsets up with `final.text`).
+        if (text.length > 0) onEvent({ type: "say", runId, text });
 
         messages.push({
           role: "assistant",

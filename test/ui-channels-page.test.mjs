@@ -155,8 +155,6 @@ test("every control the backend reads is on the page, with live status and Conne
     "channels.telegram.groupAllowFrom",
     "channels.telegram.mentionGated",
     "channels.telegram.allowBots",
-    "channels.telegram.streaming",
-    "channels.telegram.toolProgress",
     "channels.telegram.batchMs",
     "channels.telegram.typing.mode",
     "channels.telegram.typing.intervalSeconds",
@@ -170,16 +168,16 @@ test("every control the backend reads is on the page, with live status and Conne
   assert.equal(statusText(), "✔Connected as @mybot");
   assert.ok(document.getElementById("tg-connect"), "the connect action is there");
   assert.equal(inputOf("channels.telegram.typing.intervalSeconds").value, "6", "values come from the config");
-  // Task 32: the four upstream modes are choosable, and the quiet default wins
-  // when the config names none.
-  const modes = [...inputOf("channels.telegram.streaming").options].map((o) => o.value);
-  assert.deepEqual(modes, ["progress", "partial", "block", "off"]);
+  // Task 53: there is no "what to show while a turn runs" control, because there
+  // is no status message any more — the chat posts answers only.
+  assert.equal(document.querySelector('[data-ch-key="channels.telegram.streaming"]'), null);
+  assert.equal(document.querySelector('[data-ch-key="channels.telegram.toolProgress"]'), null);
 });
 
 test("Save writes the whole block in one frame, not one frame per control", async () => {
   await save();
   const frames = sets();
-  assert.equal(frames.length, 1, "one write for eighteen controls");
+  assert.equal(frames.length, 1, "one write for sixteen controls");
   assert.equal(frames[0].params.path, "channels.telegram");
   const block = frames[0].params.value;
   assert.equal(block.enabled, true);

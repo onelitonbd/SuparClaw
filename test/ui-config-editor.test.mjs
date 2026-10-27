@@ -92,7 +92,8 @@ test("ui: Channels tab renders every telegram section incl. token sentinel + sec
     "channels.telegram.groupAllowFrom",
     "channels.telegram.mentionGated",
     "channels.telegram.allowBots",
-    "channels.telegram.streaming",
+    // Task 53: `streaming` and `toolProgress` are gone — no status message left
+    // to shape, so the page has no control for them.
     "channels.telegram.batchMs",
     "channels.telegram.typing.mode",
     "channels.telegram.typing.intervalSeconds",

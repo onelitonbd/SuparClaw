@@ -67,7 +67,7 @@ export { auditSecretsFile, type SecretsAuditResult } from "./cli/secrets.js";
 export { systemUpdateCheck, systemUpdateApply, type UpdateStatus, type UpdateApplyResult } from "./cli/update.js";
 export { splitForTelegram, telegramProxy, probeTelegramApi, describeError, botApiCall } from "./channels/telegram.js";
 export { telegramHtml, telegramChunks, splitMarkdown, escapeHtml as escapeTelegramHtml, TELEGRAM_TEXT_LIMIT } from "./channels/telegram-format.js";
-export { createTurnDelivery, isTransientTelegramError } from "./channels/telegram-delivery.js";
+export { createTurnDelivery, isTransientTelegramError, remainderAfter } from "./channels/telegram-delivery.js";
 export { width, truncateToWidth, wrapText, sanitize, stripAnsi } from "./util/ansi.js";
 export { AgentLoop } from "./agent/loop.js";
 export { Subagents } from "./agent/subagents.js";

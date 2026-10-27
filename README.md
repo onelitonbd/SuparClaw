@@ -164,42 +164,41 @@ as OpenClaw's Control UI).
 
 ### What a Telegram turn looks like
 
-The chat is for answers, not for the machinery. By default
-(`channels.telegram.streaming: "progress"`) a turn posts:
+**Answers only.** The chat never shows what the turn is *doing* — no "Thinking",
+no "Working", no stage line, no tool rows, no draft that gets edited in place.
+There is nothing to configure here: the status message is not off by default, it
+no longer exists.
 
-1. **one status draft**, edited in place — what the turn is *doing*
-   (`Reading files → Running a command`), never which tool ran, never the
-   model's reasoning, never a half-written answer;
-2. **the answer**, as its own message, rendered from the model's Markdown into
-   Telegram's HTML (bold, italics, code, quotes, links; headings become bold and
-   GFM tables become an aligned monospace block, because Telegram has no table).
+A turn posts **the answer**, rendered from the model's Markdown into Telegram's
+HTML (bold, italics, code, quotes, links; headings become bold and GFM tables
+become an aligned monospace block, because Telegram has no table).
 
-The draft is deleted when the answer lands, and a turn that says nothing posts
-nothing — no stray `…` bubble.
+**Several answers, delivered as they are written.** A single question can make
+the model speak more than once: it says where it is going, runs a tool, then
+says what it found. Each of those finished blocks is posted **the moment the
+model finishes it** — in order, as its own message, before the turn ends —
+instead of the chat staying silent for a minute and then dumping one wall of
+text. The final answer posts only the part that has not been said yet, so
+nothing is duplicated and nothing is dropped; if the pieces do not line up
+exactly (a provider that rewrites earlier text), the whole answer is posted
+rather than a guess. Whitespace-only blocks post nothing.
+
+A turn that says nothing posts nothing — no stray `…` bubble. Approvals,
+`ask_user` prompts and media are unaffected: they are decisions and files, not
+status.
 
 **An answer is never lost to the network.** A turn's answer is persisted and
-broadcast to the web chat whether or not the Telegram send succeeds, so a failed
-send used to leave the chat on its last tool line while the answer sat in the
-session. Now: transient failures (a drop, a 429, a 5xx) are retried with
-Telegram's own `retry_after`; a rejected markup falls back to plain text; and if
-every attempt fails the draft becomes a visible notice saying the answer is in
-the web chat — the chat never just stops. The draft is only deleted once the
-answer is confirmed delivered.
+broadcast to the web chat whether or not the Telegram send succeeds. Transient
+failures (a drop, a 429, a 5xx) are retried with Telegram's own `retry_after`;
+rejected markup falls back to plain text; and if every attempt fails a visible
+notice says the answer is in the web chat — the chat never just stops. An answer
+part that cannot be delivered makes the final message carry the whole text, so
+a failed block is never silently skipped.
 
-| `channels.telegram.streaming` | What you see |
-|---|---|
-| `progress` *(default)* | quiet status draft, then the answer as its own message |
-| `partial` / `block` | the answer streams into the draft (the old live preview) |
-| `off` | no draft and no chatter; the answer, approvals and media still arrive |
-
-`channels.telegram.toolProgress: true` puts the raw tool log back in the draft —
-useful while debugging a tool, off by default. Reasoning is never forwarded to
-any chat surface; it stays in the session transcript and the Control UI.
-
-```bash
-sc config set channels.telegram.streaming progress
-sc config set channels.telegram.toolProgress true    # opt in to the tool log
-```
+Upgrading from a version that had `channels.telegram.streaming` /
+`channels.telegram.toolProgress`: old config files still load — the values are
+dropped on read rather than reported as unknown keys, and the settings pages no
+longer offer them.
 
 ### Chat commands (TUI, web chat, Telegram)
 

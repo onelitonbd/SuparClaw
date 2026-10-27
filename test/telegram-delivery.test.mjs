@@ -1,16 +1,22 @@
-// Task 32 — what a Telegram turn actually posts.
+// Task 53 — what a Telegram turn actually posts.
 //
-// The user's rule: "I don't need to see what tool it is using, what it is
-// thinking — I just need the final answer … clean, structured, markdown".
-// These drive the real delivery module with a fake bot that records every call.
-
+// The operator's rule, twice: "I don't need to see what tool it is using, what
+// it is thinking — I just need the answer", and then, after seeing the status
+// bubbles: "we dont need them on telegram the tool uses and working and
+// thinking … we just need the responses. if the ai gives multiple responses for
+// a single quary i want them come instantly all one by one when it tells."
+//
+// So these drive the real delivery module with a fake bot and assert two things
+// over and over: nothing but answers is ever posted, and a block of the answer
+// is posted the moment it is finished — never glued into one wall at the end,
+// never repeated by the tail.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { createTurnDelivery } = await import("../dist/lib.js");
+const { createTurnDelivery, remainderAfter, isTransientTelegramError } = await import("../dist/lib.js");
 
 /** A fake grammy bot: records calls, numbers messages, can fail on demand. */
-function fakeApi({ failSend = () => false, failEdit = () => false } = {}) {
+function fakeApi({ failSend = () => false } = {}) {
   let nextId = 100;
   const calls = [];
   const api = {
@@ -24,182 +30,12 @@ function fakeApi({ failSend = () => false, failEdit = () => false } = {}) {
       calls.push({ op: "send", chatId, text, extra, message_id: id });
       return { message_id: id };
     },
-    async editMessageText(chatId, messageId, text, extra) {
-      if (failEdit(text, extra)) {
-        calls.push({ op: "edit", chatId, messageId, text, extra, failed: true });
-        throw new Error("400 Bad Request: can't parse entities");
-      }
-      calls.push({ op: "edit", chatId, messageId, text, extra });
-      return true;
-    },
-    async deleteMessage(chatId, messageId) {
-      calls.push({ op: "delete", chatId, messageId });
-      return true;
-    },
   };
   return api;
 }
 
-function clock(start = 1_000_000) {
-  let t = start;
-  return { now: () => t, tick: (ms) => (t += ms) };
-}
-
-test("progress (default): tool names never reach the chat", async () => {
-  const api = fakeApi();
-  const c = clock();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", now: c.now });
-
-  await d.onTool("fs_read");
-  await d.reply("**Done** — read 3 files.");
-
-  const texts = api.calls.map((x) => x.text ?? "");
-  assert.ok(!texts.some((t) => t.includes("fs_read")), `no tool name in the chat, got: ${JSON.stringify(texts)}`);
-  const drafts = api.calls.filter((x) => x.op === "send" && x.message_id === 100);
-  assert.equal(drafts.length, 1, "one status draft");
-  assert.equal(drafts[0].text, "▌ working…", "the draft starts neutral");
-});
-
-test("progress: the draft is a stage, and it is edited in place", async () => {
-  const api = fakeApi();
-  const c = clock();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", now: c.now });
-  await d.onTool("fs_read");
-  const firstDraft = api.calls.find((x) => x.op === "send");
-  c.tick(2000);
-  await d.onTool("exec");
-  const edits = api.calls.filter((x) => x.op === "edit");
-  assert.ok(edits.length >= 1, "the stage was updated");
-  const text = edits.at(-1).text;
-  assert.match(text, /Reading files/);
-  assert.match(edits.at(-1).messageId === undefined ? text : text, /Running a command/, "stages accumulate into the headline");
-  assert.equal(edits.at(-1).messageId, firstDraft.message_id, "same message, edited — not a new one");
-  assert.ok(!text.includes("fs_read") && !text.includes("exec"), "stage names, not tool ids");
-});
-
-test("progress: the answer is its own formatted message and the draft is deleted", async () => {
-  const api = fakeApi();
-  const c = clock();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", now: c.now });
-  await d.onTool("exec");
-  c.tick(3000);
-  await d.reply("## Result\n\n- **one**\n- two");
-
-  const deleted = api.calls.find((x) => x.op === "delete");
-  assert.ok(deleted, "the status draft is removed");
-  assert.equal(deleted.messageId, 100, "…and it is the draft");
-
-  const answer = api.calls.filter((x) => x.op === "send" && x.message_id !== 100).at(-1);
-  assert.equal(answer.extra.parse_mode, "HTML", "sent as Telegram HTML, not raw text");
-  assert.match(answer.text, /<b>Result<\/b>/);
-  assert.match(answer.text, /<b>one<\/b>/);
-  assert.ok(!answer.text.includes("##"), "no Markdown sigils survive");
-  assert.ok(api.calls.some((x) => x.op === "delete"), "draft cleaned before the answer landed");
-});
-
-test("progress: no message is sent for a silent turn", async () => {
-  const api = fakeApi();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress" });
-  await d.reply("   ");
-  assert.equal(api.calls.length, 0, "nothing to say ⇒ nothing posted (no stray … bubble)");
-});
-
-test("toolProgress: true brings the raw log back, opt-in only", async () => {
-  const api = fakeApi();
-  const c = clock();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", toolProgress: true, now: c.now });
-  await d.onTool("fs_read");
-  c.tick(2000);
-  await d.onTool("exec");
-  const last = api.calls.filter((x) => x.op === "edit").at(-1);
-  assert.match(last.text, /· exec/, "the tool id is there when it was asked for");
-});
-
-test("off: no draft, no chatter — the answer still arrives formatted", async () => {
-  const api = fakeApi();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "off" });
-  await d.onDelta("thinking...");
-  await d.onTool("fs_read");
-  await d.reply("Plain **answer**.");
-  assert.equal(api.calls.filter((x) => x.op !== "send").length, 0, "no draft, no edits, no deletes");
-  assert.equal(api.calls.length, 1, "exactly one message: the answer");
-  assert.equal(api.calls[0].text, "Plain <b>answer</b>.");
-});
-
-test("partial: the answer still streams into the draft (old behaviour kept)", async () => {
-  const api = fakeApi();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "partial" });
-  await d.onTool("exec");
-  await d.reply("**hi**");
-  const edits = api.calls.filter((x) => x.op === "edit");
-  assert.equal(edits.at(-1).messageId, 100, "edited in place");
-  assert.equal(edits.at(-1).text, "<b>hi</b>");
-  assert.equal(api.calls.filter((x) => x.op === "delete").length, 0, "nothing deleted in preview mode");
-});
-
-test("a rejected HTML send falls back to plain text — the answer is never lost", async () => {
-  // Telegram 400s on markup it cannot parse; that must not swallow the message.
-  const api = fakeApi({ failSend: (_text, extra) => extra?.parse_mode === "HTML" });
-  const logged = [];
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", log: (m) => logged.push(m) });
-  await d.reply("A **bold** answer with a & ampersand");
-  const plain = api.calls.filter((x) => x.op === "send" && !x.failed);
-  assert.equal(plain.length, 1, "exactly one successful message");
-  assert.ok(!plain[0].extra?.parse_mode, "sent without parse_mode");
-  assert.equal(plain[0].text, "A bold answer with a & ampersand", "tags stripped, entities decoded, nothing lost");
-  assert.match(logged.join("\n"), /falling back to plain text/);
-});
-
-test("a rejected HTML edit falls back too", async () => {
-  const api = fakeApi({ failEdit: (_t, extra) => extra?.parse_mode === "HTML" });
-  const d = createTurnDelivery({ api, chatId: 7, mode: "partial" });
-  await d.reply("**bold**");
-  const plainEdit = api.calls.filter((x) => x.op === "edit" && !x.failed);
-  assert.equal(plainEdit.length, 1);
-  assert.equal(plainEdit[0].text, "bold");
-});
-
-test("a long answer splits; every piece is formatted and stays under the cap", async () => {
-  const api = fakeApi();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress" });
-  const body = Array.from({ length: 40 }, (_, i) => `### Step ${i}\n\n${"detail ".repeat(40)}`).join("\n\n");
-  await d.reply(body);
-  const answers = api.calls.filter((x) => x.op === "send");
-  assert.ok(answers.length > 1, `split into ${answers.length} messages`);
-  for (const a of answers) {
-    assert.ok(a.text.length <= 4096, "under Telegram's limit");
-    assert.equal(a.extra.parse_mode, "HTML");
-  }
-  assert.ok(answers.every((a) => (a.text.match(/<b>/g) ?? []).length === (a.text.match(/<\/b>/g) ?? []).length), "balanced markup");
-});
-
-test("reasoning has no path into the chat", async () => {
-  // There is no listener for it: the module's surface is exactly these three.
-  const api = fakeApi();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress" });
-  assert.deepEqual(Object.keys(d).sort(), ["onDelta", "onTool", "reply"]);
-});
-
-test("the turn's answer is never mixed into the status draft in progress mode", async () => {
-  const api = fakeApi();
-  const c = clock();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", now: c.now });
-  await d.onDelta("Partial answer text that should not be shown yet");
-  const draftEdits = api.calls.filter((x) => x.op === "edit");
-  assert.ok(draftEdits.every((e) => !e.text.includes("Partial answer")), "the draft holds a stage, never half an answer");
-});
-
-// ---------------------------------------------------------------------------
-// "The answer was in the web UI but never reached Telegram" — the delivery
-// failures behind it. The web gets the answer from the run's `final` event and
-// the transcript row; Telegram only gets it if a send succeeds. One transient
-// failure used to cost the whole answer, silently.
-// ---------------------------------------------------------------------------
-
-const { isTransientTelegramError } = await import("../dist/lib.js");
-
 /** A bot whose sends fail a controllable number of times, then work. */
-function flakyApi({ failSendTimes = 0, error = new Error("Network request for 'sendMessage' failed! (ETIMEDOUT)"), failEdit = false } = {}) {
+function flakyApi({ failSendTimes = 0, error = new Error("Network request for 'sendMessage' failed! (ETIMEDOUT)") } = {}) {
   let nextId = 500;
   let remaining = failSendTimes;
   const calls = [];
@@ -215,23 +51,202 @@ function flakyApi({ failSendTimes = 0, error = new Error("Network request for 's
       calls.push({ op: "send", text, extra, message_id: id });
       return { message_id: id };
     },
-    async editMessageText(chatId, messageId, text, extra) {
-      if (failEdit) throw new Error("400 Bad Request: message can't be edited");
-      calls.push({ op: "edit", messageId, text, extra });
-      return true;
-    },
-    async deleteMessage(chatId, messageId) {
-      calls.push({ op: "delete", messageId });
-      return true;
-    },
   };
 }
 
+const texts = (api) => api.calls.filter((c) => c.op === "send" && !c.failed).map((c) => c.text);
+
+// ---------------------------------------------------------------------------
+// The thing the operator asked for: no status bubbles, ever.
+// ---------------------------------------------------------------------------
+
+test("a turn posts no status message — not 'working', not a stage, not a tool", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  await d.say("Looking at the files.");
+  await d.reply("Here is the **answer**.");
+  await d.settled();
+  const all = api.calls.map((c) => c.text);
+  assert.deepEqual(all, ["Looking at the files.", "Here is the <b>answer</b>."], "exactly the words the model wrote");
+  for (const bad of [/working/i, /thinking/i, /reading files/i, /running a command/i, /exec/, /fs_read/]) {
+    assert.ok(!all.some((t) => bad.test(t)), `nothing matched ${bad}: ${JSON.stringify(all)}`);
+  }
+});
+
+test("the delivery surface has no draft machinery left to call", async () => {
+  const d = createTurnDelivery({ api: fakeApi(), chatId: 7 });
+  // onTool/onDelta are gone: a caller cannot put a stage on screen by accident.
+  assert.deepEqual(Object.keys(d).sort(), ["notify", "reply", "say", "settled"]);
+});
+
+test("reasoning has no path into the chat", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  // The module never receives thinking: there is no method that takes it.
+  await d.reply("Only the answer.");
+  await d.settled();
+  assert.deepEqual(texts(api), ["Only the answer."]);
+});
+
+// ---------------------------------------------------------------------------
+// "multiple responses … come instantly all one by one when it tells"
+// ---------------------------------------------------------------------------
+
+test("each finished block is posted immediately, as its own message", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  // The loop's `say` fires before the tool runs, so this must hit Telegram now,
+  // not at the end of the turn.
+  await d.say("Let me look at the config first.");
+  assert.deepEqual(texts(api), ["Let me look at the config first."], "the first block is already out while the tool runs");
+
+  await d.say("Found it — the port is taken.");
+  assert.equal(texts(api).length, 2, "the second block followed on its own");
+
+  await d.reply("Fixed. Restart the gateway.");
+  await d.settled();
+  assert.deepEqual(texts(api), [
+    "Let me look at the config first.",
+    "Found it — the port is taken.",
+    "Fixed. Restart the gateway.",
+  ], "one message per block, in order, no repetition");
+});
+
+test("the final sends only the tail — a prefix already posted is not repeated", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  const block1 = "First, the plan:\n";
+  const block2 = "Done — all three steps ran.\n";
+  await d.say(block1);
+  await d.reply(block1 + block2);
+  await d.settled();
+  assert.deepEqual(texts(api), ["First, the plan:", "Done — all three steps ran."]);
+});
+
+test("offsets are exact even when a block has trailing whitespace", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  const block1 = "line one\n\n\n";
+  const final = block1 + "  line two  \n";
+  await d.say(block1);
+  await d.reply(final);
+  await d.settled();
+  assert.deepEqual(texts(api), ["line one", "line two"]);
+});
+
+test("a whitespace-only block posts nothing but still advances the ledger", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  await d.say("\n\n");
+  assert.equal(api.calls.length, 0, "a blank block is not a message");
+  await d.reply("\n\nThe answer.\n");
+  await d.settled();
+  assert.deepEqual(texts(api), ["The answer."], "and the tail is still right");
+});
+
+test("a turn with no tool work is one message (say is never required)", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  await d.reply("Yo Liton 🦀 — what's up?");
+  await d.settled();
+  assert.deepEqual(texts(api), ["Yo Liton 🦀 — what's up?"]);
+});
+
+test("a silent turn posts nothing at all", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  await d.reply("   ");
+  await d.settled();
+  assert.equal(api.calls.length, 0, "no stray bubble");
+});
+
+test("replies are ordered even when the caller does not await them", async () => {
+  // Service.send dispatches channel callbacks with `void fn()`; without an
+  // internal chain the tail could compute its remainder before the block landed.
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  void d.say("one\n");
+  void d.say("two\n");
+  void d.reply("one\ntwo\nthree\n");
+  await d.settled();
+  assert.deepEqual(texts(api), ["one", "two", "three"]);
+});
+
+// ---------------------------------------------------------------------------
+// The guarantees that predate this task and must survive it.
+// ---------------------------------------------------------------------------
+
+test("a rejected HTML send falls back to plain text — the answer is never lost", async () => {
+  const api = fakeApi({ failSend: (_text, extra) => extra?.parse_mode === "HTML" });
+  const logged = [];
+  const d = createTurnDelivery({ api, chatId: 7, log: (m) => logged.push(m) });
+  await d.reply("A **bold** answer with a & ampersand");
+  await d.settled();
+  const plain = api.calls.filter((x) => x.op === "send" && !x.failed);
+  assert.equal(plain.length, 1, "exactly one successful message");
+  assert.ok(!plain[0].extra?.parse_mode, "sent without parse_mode");
+  assert.equal(plain[0].text, "A bold answer with a & ampersand", "tags stripped, entities decoded, nothing lost");
+  assert.match(logged.join("\n"), /falling back to plain text/);
+});
+
+test("a failed block is not treated as delivered — the final is sent whole", async () => {
+  // A gap means "the user did not read this": repeating a line is annoying, a
+  // lost answer is a bug.
+  // Both the HTML send and its plain-text fallback for the block fail; the final
+  // (a different call) goes through. That is the "this block never arrived" case.
+  let failsLeft = 2;
+  const calls = [];
+  const api = {
+    async sendMessage(_c, text, extra) {
+      if (failsLeft > 0) {
+        failsLeft -= 1;
+        calls.push({ op: "send", text, failed: true });
+        throw new Error("402 Payment Required: chat is gone");
+      }
+      calls.push({ op: "send", text, extra, message_id: calls.length });
+      return { message_id: calls.length };
+    },
+  };
+  const d = createTurnDelivery({ api, chatId: 7, sleep: async () => {} });
+  await d.say("block one");
+  await d.reply("block one\nblock two");
+  await d.settled();
+  assert.deepEqual(calls.filter((c) => !c.failed).map((c) => c.text), ["block one\nblock two"], "nothing was skipped");
+});
+
+test("a long answer splits; every piece is formatted and stays under the cap", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  const body = Array.from({ length: 40 }, (_, i) => `### Step ${i}\n\n${"detail ".repeat(40)}`).join("\n\n");
+  await d.reply(body);
+  await d.settled();
+  const answers = api.calls.filter((x) => x.op === "send");
+  assert.ok(answers.length > 1, `split into ${answers.length} messages`);
+  for (const a of answers) {
+    assert.ok(a.text.length <= 4096, "under Telegram's limit");
+    assert.equal(a.extra.parse_mode, "HTML");
+  }
+  assert.ok(answers.every((a) => (a.text.match(/<b>/g) ?? []).length === (a.text.match(/<\/b>/g) ?? []).length), "balanced markup");
+});
+
+test("a long block from `say` splits the same way and still leaves the right tail", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  const block = `${"block line\n".repeat(600)}`;
+  await d.say(block);
+  await d.reply(`${block}the end`);
+  await d.settled();
+  const sent = texts(api);
+  assert.ok(sent.length > 1);
+  assert.equal(sent.at(-1), "the end", "the tail is not a repeat of the block");
+});
+
 test("a transient send failure is retried — the answer still arrives", async () => {
-  const api = flakyApi({ failSendTimes: 1 }); // first answer send fails, retry works
+  const api = flakyApi({ failSendTimes: 1 });
   const slept = [];
-  const d = createTurnDelivery({ api, chatId: 7, mode: "off", sleep: async (ms) => slept.push(ms) });
+  const d = createTurnDelivery({ api, chatId: 7, sleep: async (ms) => slept.push(ms) });
   await d.reply("The **answer**.");
+  await d.settled();
   const delivered = api.calls.filter((c) => c.op === "send" && !c.failed);
   assert.equal(delivered.length, 1, "exactly one delivered message");
   assert.equal(delivered[0].text, "The <b>answer</b>.");
@@ -242,8 +257,9 @@ test("a 429 honours Telegram's retry_after", async () => {
   const err = Object.assign(new Error("429: Too Many Requests"), { error_code: 429, parameters: { retry_after: 3 } });
   const api = flakyApi({ failSendTimes: 1, error: err });
   const slept = [];
-  const d = createTurnDelivery({ api, chatId: 7, mode: "off", sleep: async (ms) => slept.push(ms) });
+  const d = createTurnDelivery({ api, chatId: 7, sleep: async (ms) => slept.push(ms) });
   await d.reply("hello");
+  await d.settled();
   assert.deepEqual(slept, [3000], "waited the 3s Telegram asked for");
   assert.equal(api.calls.filter((c) => c.op === "send" && !c.failed).length, 1);
 });
@@ -251,76 +267,72 @@ test("a 429 honours Telegram's retry_after", async () => {
 test("a markup rejection is not retried three times — it falls back immediately", async () => {
   const api = fakeApi({ failSend: (_t, extra) => extra?.parse_mode === "HTML" });
   const slept = [];
-  const d = createTurnDelivery({ api, chatId: 7, mode: "off", sleep: async (ms) => slept.push(ms) });
+  const d = createTurnDelivery({ api, chatId: 7, sleep: async (ms) => slept.push(ms) });
   await d.reply("**bold**");
+  await d.settled();
   assert.deepEqual(slept, [], "a 400 will fail the same way — no pointless waiting");
-  assert.equal(api.calls.filter((c) => c.op === "send" && !c.failed).length, 1, "delivered as plain text");
+  assert.equal(api.calls.filter((x) => x.op === "send" && !x.failed).length, 1, "delivered as plain text");
 });
 
-test("progress: a failed answer leaves the draft visible, turned into a notice", async () => {
-  // Exactly the report: tools ran, the answer existed, Telegram would not take
-  // it. The chat must not end up empty, and must not keep saying "working…".
-  // The draft send works (it is small, and it happened first); every later send
-  // fails, which is what a connection dropping mid-turn looks like.
-  const draft = { message_id: 900, text: "▌ working…" };
-  let draftSent = false;
+test("an answer Telegram refuses outright becomes a notice, never silence", async () => {
+  // The answer cannot be sent in any form (markup rejected, and the plain-text
+  // fallback is refused too), but a plain notice still gets through.
   const calls = [];
   const api = {
     async sendMessage(_c, text, extra) {
-      if (!draftSent) {
-        draftSent = true;
-        calls.push({ op: "send", text, extra, message_id: draft.message_id });
-        return { message_id: draft.message_id };
+      if (extra?.parse_mode || /boot/.test(text)) {
+        calls.push({ op: "send", text, failed: true });
+        throw new Error("400 Bad Request: can't parse entities");
       }
-      calls.push({ op: "send", text, extra, failed: true });
-      throw new Error("Network request for 'sendMessage' failed! (ETIMEDOUT)");
+      calls.push({ op: "send", text, message_id: calls.length });
+      return { message_id: calls.length };
     },
-    async editMessageText(_c, id, text) { calls.push({ op: "edit", messageId: id, text }); draft.text = text; return true; },
-    async deleteMessage() { calls.push({ op: "delete" }); return true; },
   };
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", sleep: async () => {} });
-  const unref = api; // keep the shape readable below
-  await d.onTool("exec");
-  await d.reply("Here is the **answer**.");
-
-  assert.equal(calls.filter((c) => c.op === "delete").length, 0, "the draft is NOT deleted when the answer failed");
-  const notice = calls.filter((c) => c.op === "edit").at(-1);
-  assert.ok(notice, "the draft was rewritten");
-  assert.match(notice.text, /could not be delivered/);
-  assert.match(notice.text, /web chat/, "and says where the answer is");
-  assert.ok(!/working…/.test(notice.text), "no endless spinner");
+  const d = createTurnDelivery({ api, chatId: 7, sleep: async () => {}, retries: 0 });
+  await d.reply("**boot**");
+  await d.settled();
+  assert.ok(calls.some((c) => /could not be delivered/.test(c.text ?? "")), `a notice was posted: ${JSON.stringify(calls)}`);
 });
 
-test("progress: the draft is deleted only after the answer is confirmed sent", async () => {
-  const order = [];
-  const api = {
-    async sendMessage(_c, text) { order.push(text.includes("<b>") ? "answer" : "draft"); return { message_id: order.length }; },
-    async editMessageText() { order.push("edit"); return true; },
-    async deleteMessage() { order.push("delete"); return true; },
-  };
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress" });
-  await d.onTool("exec");
-  order.length = 0;
-  await d.reply("**Answer**");
-  assert.deepEqual(order, ["answer", "delete"], "answer first, cleanup second");
-});
+// ---------------------------------------------------------------------------
+// notify(): a signpost is not the answer and must not touch the ledger.
+// ---------------------------------------------------------------------------
 
-test("preview: a failed edit still delivers the answer as its own message", async () => {
-  const api = flakyApi({ failSendTimes: 0, failEdit: true });
-  const d = createTurnDelivery({ api, chatId: 7, mode: "partial", sleep: async () => {} });
-  await d.onTool("exec");
-  await d.reply("**Answer**");
-  const delivered = api.calls.filter((c) => c.op === "send" && !c.failed && c.text.includes("Answer"));
-  assert.equal(delivered.length, 1, "the answer was not lost with the failed edit");
-  assert.equal(delivered[0].text, "<b>Answer</b>");
-});
-
-test("a silent turn removes a draft it had already shown", async () => {
+test("notify posts a line verbatim and leaves the answer ledger alone", async () => {
   const api = fakeApi();
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress" });
-  await d.onTool("exec");
-  await d.reply("   ");
-  assert.equal(api.calls.filter((c) => c.op === "delete").length, 1, "no draft left spinning after an empty answer");
+  const d = createTurnDelivery({ api, chatId: 7 });
+  await d.say("Working on it.");
+  await d.notify("3 files changed (+12 −4) · /diff to review");
+  await d.reply("Working on it.All done.");
+  await d.settled();
+  assert.deepEqual(texts(api), ["Working on it.", "3 files changed (+12 −4) · /diff to review", "All done."]);
+});
+
+test("notify with nothing to say posts nothing", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  await d.notify("   ");
+  await d.settled();
+  assert.equal(api.calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+
+test("remainderAfter is exact, and refuses to guess", () => {
+  assert.equal(remainderAfter("a\nb", "a\n"), "b");
+  assert.equal(remainderAfter("a\nb", "a\nb"), "");
+  assert.equal(remainderAfter("a\nb", "zzz"), "a\nb", "not a prefix ⇒ the whole final");
+  assert.equal(remainderAfter("a\nb", "a\n", true), "a\nb", "a gap ⇒ the whole final");
+  assert.equal(remainderAfter("  only  ", ""), "only");
+  assert.equal(remainderAfter("(no response)", "something else entirely"), "(no response)");
+});
+
+test("an empty ledger sends the whole answer", async () => {
+  const api = fakeApi();
+  const d = createTurnDelivery({ api, chatId: 7 });
+  await d.reply("Whole answer.");
+  await d.settled();
+  assert.deepEqual(texts(api), ["Whole answer."]);
 });
 
 test("transient vs permanent errors are classified", () => {
@@ -328,116 +340,8 @@ test("transient vs permanent errors are classified", () => {
   assert.equal(t("Network request for 'sendMessage' failed!"), true);
   assert.equal(t("fetch failed"), true);
   assert.equal(t("connect ETIMEDOUT 149.154.167.220:443"), true);
-  assert.equal(t("429: Too Many Requests"), true);
-  assert.equal(t("Bad Gateway", { error_code: 502 }), true);
-  assert.equal(t("400 Bad Request: can't parse entities"), false);
-  assert.equal(t("400 Bad Request: message is too long"), false);
-  assert.equal(t("403 Forbidden: bot was blocked by the user"), false);
-});
-
-// ---------------------------------------------------------------------------
-// The other half of the report: the surface that DIDN'T get the answer while
-// the web UI did. The service broadcasts the final event (web reads it) before
-// it calls the channel's reply, and used to fire that reply with no catch — a
-// throw became an unhandled rejection and the chat went quiet.
-// ---------------------------------------------------------------------------
-
-const { Service } = await import("../dist/lib.js");
-
-test("a channel reply that throws is logged, not swallowed as an unhandled rejection", async () => {
-  const svc = new Service();
-  const saved = svc.loop.run.bind(svc.loop);
-  const logged = [];
-  const originalError = svc.log.error.bind(svc.log);
-  svc.log.error = (...args) => {
-    logged.push(args.join(" "));
-    originalError?.(...args);
-  };
-  try {
-    // A run that produces exactly one final event, like a real turn.
-    svc.loop.run = async ({ onEvent }) => {
-      onEvent({ type: "final", runId: "r1", text: "Hi there", usage: { total_tokens: 3 } });
-    };
-    const seen = [];
-    const onEvent = (evt) => { if (evt.type === "chat") seen.push(evt.event.type); };
-    svc.events.on("event", onEvent);
-    try {
-      await svc.send({
-        sessionKey: "main:reply-throw",
-        text: "hello",
-        isMainSession: true,
-        source: "telegram",
-        reply: async () => {
-          throw new Error("Network request for 'sendMessage' failed! (ETIMEDOUT)");
-        },
-      });
-      await new Promise((r) => setTimeout(r, 30));
-    } finally {
-      svc.events.off("event", onEvent);
-    }
-    assert.ok(seen.includes("final"), "the web surface still received the answer");
-    assert.match(logged.join("\n"), /telegram reply delivery failed/, "the failed channel delivery is on the record");
-    assert.match(logged.join("\n"), /sendMessage/, "with the real cause");
-  } finally {
-    svc.loop.run = saved;
-    await svc.stop();
-  }
-});
-
-test("bookkeeping that fails cannot swallow the final event", async () => {
-  // `finishRun` sits between the transcript row and the `final` event. When it
-  // threw, the answer was persisted (so the web UI showed it after a refresh)
-  // and no surface was ever told — the chat stayed on the last tool line.
-  const { AgentLoop, Store, emptyConfig, createLogger } = await import("../dist/lib.js");
-  const { mkdtempSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const dir = mkdtempSync(join(tmpdir(), "sc-final-event-"));
-  const store = Store.open(join(dir, "state.sqlite"));
-  store.finishRun = () => {
-    throw new Error("SQLITE_BUSY: database is locked");
-  };
-  const config = emptyConfig();
-  const llm = {
-    async *stream() {
-      yield { type: "text", text: "The answer the user is waiting for." };
-      yield { type: "usage", usage: { total_tokens: 2 } };
-    },
-  };
-  const loop = new AgentLoop({ config, store, log: createLogger({ level: "error" }), llm });
-  const events = [];
-  try {
-    await loop.run({ sessionKey: "main:finish-fail", text: "hi", onEvent: (e) => events.push(e) });
-  } finally {
-    store.close();
-  }
-  const final = events.find((e) => e.type === "final");
-  assert.ok(final, "the surfaces were told, despite the failed bookkeeping");
-  assert.equal(final.text, "The answer the user is waiting for.");
-  assert.ok(!events.some((e) => e.type === "error"), "a bookkeeping failure is not reported as a lost turn");
-});
-
-test("a half-delivered long answer says so instead of ending mid-sentence", async () => {
-  // First chunk lands, the send of the second fails permanently.
-  let sent = 0;
-  const calls = [];
-  const api = {
-    async sendMessage(_c, text, extra) {
-      if (text.includes("Part five")) throw new Error("400 Bad Request: message is too long");
-      sent += 1;
-      calls.push({ op: "send", text, extra });
-      return { message_id: 900 + sent };
-    },
-    async editMessageText(_c, id, text) { calls.push({ op: "edit", text }); return true; },
-    async deleteMessage() { calls.push({ op: "delete" }); return true; },
-  };
-  const d = createTurnDelivery({ api, chatId: 7, mode: "progress", sleep: async () => {} });
-  const body = ["Part one", "Part two", "Part three", "Part four", "Part five", "Part six"]
-    .map((p) => `${p}\n\n${"filler ".repeat(700)}`) // each too big to share a message
-    .join("\n\n");
-  await d.reply(body);
-  const delivered = calls.filter((c) => c.op === "send" || c.op === "edit").map((c) => c.text);
-  assert.ok(delivered.some((t) => /Part one/.test(t)), "the start of the answer arrived");
-  assert.ok(delivered.some((t) => /Part of this reply could not be delivered/.test(t)), "and the truncation is flagged");
-  assert.ok(delivered.some((t) => /full answer is in the web chat/.test(t)));
+  assert.equal(t("429: Too Many Requests", { error_code: 429 }), true);
+  assert.equal(t("500 Internal Server Error", { error_code: 500 }), true);
+  assert.equal(t("400 Bad Request: can't parse entities", { error_code: 400 }), false);
+  assert.equal(t("403 Forbidden: bot was blocked by the user", { error_code: 403 }), false);
 });

@@ -84,6 +84,12 @@ export interface ChatPayload {
    */
   publish?: boolean;
   onDelta?: (delta: string) => void | Promise<void>;
+  /**
+   * A finished block of the model's words, delivered before it runs a tool.
+   * Chat surfaces that post messages (Telegram) send it immediately; the web
+   * chat ignores it and keeps streaming `onDelta` into one bubble.
+   */
+  onSay?: (text: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
   onApproval?: (event: Extract<RunEvent, { type: "approval" }>) => void | Promise<void>;
   /** ask_user (P2 #8): the surface renders the question set inline. */
@@ -1902,6 +1908,7 @@ export class Service {
           }
         };
         if (out.type === "delta") deliver("stream", () => payload.onDelta?.(out.text));
+        else if (out.type === "say") deliver("answer block", () => payload.onSay?.(out.text));
         else if (out.type === "tool") deliver("progress", () => payload.onTool?.(out));
         else if (out.type === "approval") deliver("approval", () => payload.onApproval?.(out));
         else if (out.type === "final") {
