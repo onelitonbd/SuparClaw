@@ -10,6 +10,7 @@ import { discoverSkills, readSkillBody, skillsCatalog, writeSkill, type SkillMet
 import { codeModeEngages, CodeMode, codeModeSurface, type CodeModeConfig, type GuestTool } from "./code-mode.js";
 import { describeDelivery, resolveAnnounceTarget, NO_SURFACES, type SurfaceFacts } from "./surfaces.js";
 import { describeSettings, type SettingsCtl } from "./self.js";
+import { selfToolSpecs, toolsmithSpec } from "./self-tools.js";
 
 export interface JsonSchema {
   type: "object";
@@ -35,6 +36,14 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Re-discover skills after a tool writes one (`skill_save`). */
   refreshSkills?: () => void;
+  /**
+   * Rebuild the tool list after `toolsmith` created/updated/deleted a tool
+   * (Task 58). The loop re-reads it before the next model call, so a tool made
+   * in this turn is callable in this turn.
+   */
+  refreshTools?: () => void;
+  /** Set by anything that changed the tool list mid-turn (see refreshTools). */
+  toolsChanged?: boolean;
   /** Session this tool call belongs to (set by the agent loop). */
   sessionKey?: string;
   /** One-shot text completion bound to the run's client (P3 #22 pdf analysis). */
@@ -169,6 +178,8 @@ export interface ToolSpec {
   description: string;
   parameters: JsonSchema;
   needsApproval?: boolean;
+  /** Internal marker: the loop replaces these when toolsmith changes the set. */
+  selfAuthored?: boolean;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<string>;
 }
 
@@ -1492,10 +1503,23 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     },
   });
 
+  // ── Task 58 — tools the agent writes for itself.
+  // Registered after every built-in so a made tool can never shadow one (two
+  // functions with the same name is an invalid request to every provider), and
+  // the reserved set is the finished built-in list: `create` refuses a
+  // collision with it by name instead of half-registering something.
+  const builtinNames = new Set([...tools.map((t) => t.name), "toolsmith"]);
+  if (config.tools.selfTools.enabled) {
+    tools.push(toolsmithSpec(config, () => builtinNames));
+    tools.push(...selfToolSpecs(config, builtinNames));
+  }
+
   // ── P3 #23 — Code Mode surface swap (their tools.codeMode, mode:"only"):
-  // when engaged, the model sees exec+wait(+direct-only); every other tool is
-  // hidden from the direct list and exposed inside the guest as an async
-  // global bridged through the normal run path (policy/approvals still apply).
+  // when engaged, the model sees exec+wait(+direct-only); built-ins are hidden
+  // from the direct list and exposed inside the guest as async globals bridged
+  // through the normal run path. Self-tools are the intentional exception:
+  // toolsmith and the saved typed tools stay directly callable so the agent can
+  // create a tool and have the next request see it.
   {
     const raw = config.tools.codeMode;
     const cmc: CodeModeConfig = {
@@ -1508,7 +1532,12 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       directOnly: raw.directOnly ?? [],
     };
     if (codeModeEngages(cmc, config.agents?.defaults?.model)) {
-      const hidden = tools.filter((t) => t.name !== "exec" && t.name !== "wait");
+      // Self-tools stay in the ordinary tool list even when Code Mode owns the
+      // main execution surface: they are explicitly persisted, schema-backed
+      // tools, and toolsmith must remain reachable so the agent can extend its
+      // toolbox. Other built-ins stay behind the Code Mode guest bridge.
+      const selfAuthored = tools.filter((t) => t.selfAuthored);
+      const hidden = tools.filter((t) => t.name !== "exec" && t.name !== "wait" && !t.selfAuthored);
       let callCtx: ToolContext | null = null;
       const engine = new CodeMode(
         () => {
@@ -1550,7 +1579,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       }
       // their session-history transparency: the cell's source lands as
       // "// Code Mode\n" + code on the tool-call record (their rule)
-      return [...surface, ...hidden.filter((t) => cmc.directOnly.includes(t.name))];
+      return [...surface, ...hidden.filter((t) => cmc.directOnly.includes(t.name)), ...selfAuthored];
     }
   }
 

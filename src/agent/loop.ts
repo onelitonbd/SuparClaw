@@ -7,6 +7,7 @@ import { loadWorkspaceContext, todayStamp } from "./workspace.js";
 import { repoPromptBlock } from "../repo/session.js";
 import { discoverSkills, matchSkills, readSkillBody, skillsCatalog, bundledSkillsRoot, type SkillMeta } from "./skills.js";
 import { buildRegistry, toolsToSchema, type RepoCtl, type SubagentCtl, type TerminalCtl, type ToolContext, type ToolSpec } from "./tools.js";
+import { selfToolSpecs, toolsmithSpec } from "./self-tools.js";
 import { LlmClient, isVisionUnsupportedError, parseToolArgs, type ChatMessage, type ToolCall } from "./llm.js";
 import { historyBudget, fallbackTuning } from "./context-budget.js";
 import { AUTO_TRIGGER, KEEP_TAIL_ROWS, clampSpanInput, isContextOverflowError, planCompactSpan, renderSpan, summarizerPrompt, SUMMARY_TARGET_CHARS } from "./compaction.js";
@@ -208,7 +209,8 @@ Operating rules:
 }
 
 export class AgentLoop {
-  readonly tools: ToolSpec[];
+  /** Built-ins plus the current self-tools; rebuilt by refreshTools(). */
+  tools: ToolSpec[];
   skills: SkillMeta[] = [];
   readonly llm: LlmClient;
   readonly workspace: string;
@@ -238,10 +240,16 @@ export class AgentLoop {
   #childActive = new Map<string, number>();
   /** Sessions waiting on sub-agent completions (sessions_yield). */
   #yieldWait = new Set<string>();
+  /** Built-in (and injected) tools — everything `refreshTools` keeps. */
+  private readonly baseTools: ToolSpec[];
 
   constructor(private readonly deps: LoopDeps) {
     this.workspace = workspaceDir();
-    this.tools = deps.tools ?? buildRegistry(deps.config);
+    // Split the registry once: the built-ins stay put, the self-tools are the
+    // ones that can appear and disappear while the daemon runs (Task 58).
+    const all = deps.tools ?? buildRegistry(deps.config);
+    this.baseTools = all.filter((t) => !t.selfAuthored);
+    this.tools = all;
     this.refreshSkills();
     this.llm =
       deps.llm ??
@@ -270,6 +278,24 @@ export class AgentLoop {
   }
 
   /**
+   * Rebuild the dynamic tail of the tool list (Task 58).
+   *
+   * `toolsmith` creates a tool *during* a turn, so the list the turn started
+   * with is stale the moment the file lands. The registry is rebuilt in place:
+   * everything that is not a self-tool is kept (including tools a test injected
+   * through `deps.tools`), the previous self-tools are dropped by name, and the
+   * fresh set is appended. The turn then re-reads it before the next model call
+   * — so a tool made in this turn can be called in this turn.
+   */
+  refreshTools(): void {
+    const reserved = new Set(this.baseTools.map((t) => t.name));
+    const fresh = this.deps.config.tools.selfTools.enabled
+      ? [toolsmithSpec(this.deps.config, () => reserved), ...selfToolSpecs(this.deps.config, reserved)]
+      : [];
+    this.tools = [...this.baseTools, ...fresh];
+  }
+
+  /**
    * Re-discover skills from all roots (after `skill_save` / Settings writes).
    * Workspace entries win the name shadowing order, same as at construction.
    */
@@ -290,6 +316,7 @@ export class AgentLoop {
    */
   setConfig(config: SuparClawConfig): void {
     this.deps.config = config;
+    this.refreshTools();
   }
 
   /** Late binding: Subagents is built after the loop (it needs the loop). */
@@ -693,6 +720,8 @@ export class AgentLoop {
       });
       // Sub-agent tool policy: a child at the nesting cap loses the session
       // family of tools (their default of no delegation inside sub-agents).
+      // `let`, not `const`: `toolsmith` can add a tool mid-turn and the very
+      // next call in this turn must be able to reach it (Task 58).
       let sessionTools = this.#toolsForSession(sessionKey);
       const schema = toolsToSchema(sessionTools);
       // Resolved once for the tool context: model + the thinking level this run
@@ -719,6 +748,12 @@ export class AgentLoop {
         refreshSkills: () => {
           this.refreshSkills();
           ctx.skills = this.skills;
+        },
+        // Task 58: a tool created/replaced/deleted here is in the list the next
+        // model call sees, and callable by name in this same turn.
+        refreshTools: () => {
+          this.refreshTools();
+          ctx.toolsChanged = true;
         },
         sessionKey,
         // What a spawned child inherits when nothing names a model/level. The
@@ -1082,6 +1117,15 @@ export class AgentLoop {
             ms,
           });
           messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: output });
+          // Task 58: the tool list changed under us (toolsmith). Re-read it
+          // before the next call is dispatched and before the next request is
+          // built, so `create` → `test` → call-by-name works inside one turn
+          // instead of waiting for the user to send another message.
+          if (ctx.toolsChanged) {
+            ctx.toolsChanged = false;
+            sessionTools = this.#toolsForSession(sessionKey);
+            activeSchema = toolsToSchema(sessionTools);
+          }
           // Loop detection (P2 #16): every outcome feeds the detector —
           // errors AND successes (their polling-loop case).
           const verdict = loopDet.record(call.name, call.args, output);

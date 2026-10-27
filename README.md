@@ -320,6 +320,16 @@ Skills are markdown packs (`SKILL.md` + frontmatter) discovered from
 `workspace/skills` → `~/.suparclaw/skills` → bundled. Only name + "use when" reach the prompt;
 the body loads on demand through the `skill_read` tool.
 
+The agent can also make **its own typed tools**. `toolsmith` saves a small ES module plus a
+manifest under `~/.suparclaw/tools/`; the manifest is derived from the module's exported name,
+description, and JSON Schema, so the tool appears in the model's normal tool list and survives
+restarts. The `self-tools` skill teaches the write → test on real inputs → inspect → update → reuse
+loop. Each invocation runs in a worker thread with a timeout: a thrown error, `process.exit()`, or
+infinite loop is reported as a tool error without killing the daemon. This is crash/timeout
+isolation, **not a sandbox** — a self-authored tool has the daemon's filesystem and network
+permissions. Keep it narrow; never bake credentials into its source. `tools.selfTools.enabled`,
+`tools.selfTools.maxTools`, and `tools.selfTools.timeoutMs` govern the feature.
+
 The agent also knows its own configuration. Every turn rebuilds a `## Your configuration`
 prompt block from the live config plus this session's overrides — model and fallbacks,
 reasoning, `/usage` footer mode, queue mode, exec policy, limits, cron, dreaming, workspace

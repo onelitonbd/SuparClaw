@@ -27,6 +27,16 @@ export function workspaceDir(): string {
 export function skillsDir(): string {
   return join(stateDir(), "skills");
 }
+/**
+ * Tools the agent wrote for itself (Task 58).
+ *
+ * State, not workspace: a self-tool is a capability of the daemon, so it must
+ * work in every session — including a code session whose workspace is a git
+ * worktree somewhere else entirely.
+ */
+export function toolsDir(): string {
+  return join(stateDir(), "tools");
+}
 export function logsDir(): string {
   return join(stateDir(), "logs");
 }
@@ -37,7 +47,7 @@ export function pidPath(): string {
 export function ensureDirs(): void {
   // Attachments live under workspace/media (Task 30); there is no separate
   // top-level media dir — it only ever held an empty folder.
-  for (const dir of [stateDir(), workspaceDir(), skillsDir(), logsDir()]) {
+  for (const dir of [stateDir(), workspaceDir(), skillsDir(), toolsDir(), logsDir()]) {
     mkdirSync(dir, { recursive: true });
   }
 }

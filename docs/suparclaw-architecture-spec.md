@@ -205,11 +205,21 @@ kill|clear` are gateway methods, and every output/state/create/remove change is 
 a panel that is full-screen on a phone and docked to the right from 900 px up; it shows one tab per
 terminal, a dot while a command runs, the live output, and a prompt you can type into yourself.
 
-### 4.5 Skills
+### 4.5 Skills and self-authored tools
 
 - `SKILL.md` markdown with frontmatter (`name`, `summary`, `read_when`) — same convention OpenClaw
   uses. Loaded on demand into context; workspace `skills/` overrides bundled.
 - Bundle ~5 starter skills (e.g. `help`, `daily-journal`, `web-digest`, `device-status`).
+- **Self-tools (Task 58):** `toolsmith` writes `~/.suparclaw/tools/<name>.mjs` and a JSON manifest
+  derived from the module's exported `{ name, description, parameters, run }`. The manifest supplies
+  the normal model tool schema; the model can call a tool it just created on its next call in the
+  same turn, and it is rediscovered after restart. `skills/self-tools/SKILL.md` teaches create →
+  test with real inputs → inspect → update → reuse.
+- Each invocation runs in a worker thread with a configured timeout. Throws, worker exit, and
+  infinite loops become visible tool errors without ending the daemon. This is crash/timeout
+  isolation, **not a security sandbox**: a self-authored tool has the daemon's filesystem and
+  network permissions. `tools.selfTools.enabled` is the feature switch; max tools and timeout are
+  configurable. The built-in `exec` policy in `deny` mode hides/refuses these code tools.
 
 ### 4.6 Memory
 
@@ -297,8 +307,8 @@ Backups: `VACUUM INTO 'backups/state-<date>.sqlite'` (safe while running).
 
 ### Explicitly *not* ported (v1)
 
-Nodes/device commands, voice/meetings, sandboxing (advisory only), embeddings/vector search,
-multi-agent rosters, desktop/mobile apps, plugin marketplace, canvas/A2UI.
+Nodes/device commands, voice/meetings, embeddings/vector search, multi-agent rosters,
+desktop/mobile apps, plugin marketplace, canvas/A2UI.
 
 ---
 

@@ -688,6 +688,23 @@ export const CONFIG_SCHEMA: SchemaNode = {
             },
           },
         },
+        // Self-tools (Task 58): tools the agent writes, tests and keeps. They
+        // live in `<state>/tools` as one `.mjs` + one manifest each, run in a
+        // worker thread (a bad tool cannot take the daemon down), and appear in
+        // the tool list on the next turn. This is the switch for all of it: it
+        // governs both `toolsmith` (create/update/delete) and the made tools.
+        selfTools: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: true },
+            // A phone with 400 generated tools is a phone whose context is the
+            // tool list. 40 is generous, and the cap is enforced on create.
+            maxTools: { t: "int", min: 1, max: 200, default: 40 },
+            // Per call. A self-tool may do network work; it may not hang a turn.
+            timeoutMs: { t: "int", min: 1000, max: 300000, default: 120000 },
+          },
+        },
         // Terminals: a persistent shell the agent drives and the operator
         // watches (see src/agent/terminals.ts). Full power by design — no
         // sandbox wrapper — so the limits here are about resources on a phone,
@@ -738,13 +755,10 @@ export const CONFIG_SCHEMA: SchemaNode = {
             // (Task 38): `npm install`, a test suite or a build on a phone is
             // routinely longer than the old 10.
             timeoutMs: { t: "int", min: 1000, max: 1800000, default: 1800000 },
-            // Execution sandbox (P2 #9; their tools exec sandbox at our
-            // scale): "off" runs plain (legacy), "strict" confines the child
-            // to a scrubbed env (PATH of trusted dirs, HOME=workspace),
-            // prlimit resource caps when the binary exists (2G address
-            // space, 256 procs, 1024 fds), and — when sandboxProot is on and
-            // a proot binary is found (Termux) — a real filesystem jail
-            // (workspace bound rw, / and system dirs read-only).
+            // The sandbox was REMOVED in Task 57 (exec is the operator's own
+            // shell now). Both keys stay in the schema so an old config still
+            // loads and `sc config` does not fail on it; neither has any
+            // effect, and `sc doctor` says so.
             sandbox: { t: "enum", values: ["off", "strict"], default: "off" },
             sandboxProot: { t: "bool", default: false },
             // Unattended sources (cron jobs, inbound webhooks) have nobody to
@@ -1036,6 +1050,8 @@ export interface SuparClawConfig {
     loopDetection: { enabled: boolean };
     /** Persistent terminals (src/agent/terminals.ts). */
     terminals: { enabled: boolean; max: number; scrollbackKb: number; waitMs: number };
+    /** Tools the agent writes for itself (src/agent/self-tools.ts, Task 58). */
+    selfTools: { enabled: boolean; maxTools: number; timeoutMs: number };
     // P3 #22 — media understanding (their tools.media).
     media: {
       concurrency: number;

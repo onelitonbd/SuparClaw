@@ -8,6 +8,24 @@ export { parseKeys } from "./tui/keys.js";
 export { parseConfig, validate, applyDefaults, emptyConfig, CONFIG_SCHEMA, modelProfiles, modelProfile, execModeOf, type ExecMode, type ExecAskFallback } from "./config/schema.js";
 export { parseFrontmatter, discoverSkills, matchSkills, skillsCatalog, writeSkill, skillSlug, readSkillBody } from "./agent/skills.js";
 export {
+  SELF_TOOL_NAME,
+  MAX_CODE_BYTES,
+  listSelfTools,
+  readSelfTool,
+  selfToolFile,
+  selfToolManifestNames,
+  selfToolNameProblem,
+  selfToolSpecs,
+  saveSelfTool,
+  testSelfTool,
+  runSelfTool,
+  deleteSelfTool,
+  toolsmithSpec,
+  runSelfToolWorker,
+  type SelfToolManifest,
+  type SelfToolRecord,
+} from "./agent/self-tools.js";
+export {
   CHARS_PER_TOKEN,
   WINDOW_SHARE,
   MAX_HISTORY_CHARS,
