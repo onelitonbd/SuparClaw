@@ -309,6 +309,7 @@ export class Gateway {
       "github.branches",
       // Native Gmail add-on: connection frames contain an auth URL, never tokens.
       "gmail.status",
+      "googleWorkspace.status",
       "gmail.connect",
       "gmail.cancelConnect",
       "gmail.disconnect",
@@ -1267,6 +1268,10 @@ case "sessions.rename": {
         }
         case "gmail.status": {
           send(okFrame(id, service.gmailStatus()));
+          return;
+        }
+        case "googleWorkspace.status": {
+          send(okFrame(id, service.googleWorkspaceStatus()));
           return;
         }
         case "gmail.connect": {

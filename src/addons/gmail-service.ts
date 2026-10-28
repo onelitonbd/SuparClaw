@@ -8,7 +8,7 @@ import type { VaultManager } from "../agent/vault.js";
 import {
   beginGmailOAuth,
   GmailApi,
-  GMAIL_SCOPES,
+  GOOGLE_ACCOUNT_SCOPES,
   refreshGmailAccessToken,
   type GmailOAuthFlow,
   type GmailOAuthResult,
@@ -121,7 +121,7 @@ export class GmailAddonService {
     }
     if (this.#pending) await this.cancelConnect(this.#pending.id);
     this.#lastError = "";
-    const flow = await beginGmailOAuth({ clientId, clientSecret: this.#oauthClientSecret(), scopes: GMAIL_SCOPES, fetchFn: this.fetchFn });
+    const flow = await beginGmailOAuth({ clientId, clientSecret: this.#oauthClientSecret(), scopes: GOOGLE_ACCOUNT_SCOPES, fetchFn: this.fetchFn });
     const id = randomUUID();
     const done = flow.done.then(async (result) => {
       const saved = await this.vault.setValue(TOKEN_ENTRY, result.tokens.refreshToken ?? "");
@@ -191,10 +191,17 @@ export class GmailAddonService {
     } });
   }
 
+  /** Shared short-lived token broker for Workspace APIs; refresh tokens remain vault-only. */
+  async workspaceAccessToken(forceRefresh = false): Promise<string> {
+    if (!this.vault.unlocked) throw new Error("encrypted vault is locked; unlock it in Settings to use Google Workspace");
+    if (forceRefresh) this.#cached = null;
+    return this.#accessToken();
+  }
+
   async #accessToken(): Promise<string> {
     if (this.#cached && this.#cached.expiresAt > Date.now() + 60_000) return this.#cached.accessToken;
     const resolved = this.vault.resolveForUse([TOKEN_ENTRY]);
-    if (!resolved.ok || !resolved.env?.[TOKEN_ENTRY]) throw new Error(resolved.error ?? `Gmail is not connected; run sc gmail connect`);
+    if (!resolved.ok || !resolved.env?.[TOKEN_ENTRY]) throw new Error(resolved.error ?? "Google account is not connected; connect it in Settings or run sc gmail connect");
     const refreshToken = resolved.env[TOKEN_ENTRY]!;
     const token = await refreshGmailAccessToken({ clientId: this.clientId(), clientSecret: this.#oauthClientSecret(), refreshToken, fetchFn: this.fetchFn });
     this.#cached = token;

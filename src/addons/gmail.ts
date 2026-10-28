@@ -8,6 +8,13 @@ export const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.settings.basic",
 ] as const;
+// Full Drive access is deliberately requested: drive.file would only cover
+// files individually opened/created by this app and cannot honor full-access approval.
+export const GOOGLE_WORKSPACE_SCOPES = [
+  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/calendar",
+] as const;
+export const GOOGLE_ACCOUNT_SCOPES = [...GMAIL_SCOPES, ...GOOGLE_WORKSPACE_SCOPES] as const;
 const GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
 const OAUTH_TIMEOUT_MS = 10 * 60_000;
@@ -226,7 +233,7 @@ export async function beginGmailOAuth(opts: {
           const detail = safeText(tokenBody["error_description"], 180);
           const reason = detail ? `${error}: ${detail}` : error;
           const secretHint = error === "invalid_request" && /client_secret is missing/i.test(detail)
-            ? " Add the Desktop OAuth client secret in Gmail settings, save, then reconnect."
+            ? " Add the Desktop OAuth client secret in Google integration settings, save, then reconnect."
             : "";
           sendHtml(res, 400, "Gmail connection failed", `Google could not complete authorization (${reason}).${secretHint} Return to SuparClaw and try again.`);
           await finish(new Error(`Google token exchange failed (${reason})${secretHint}`));
@@ -239,20 +246,20 @@ export async function beginGmailOAuth(opts: {
           scopes: typeof tokenBody["scope"] === "string" ? tokenBody["scope"].split(/\s+/).filter(Boolean) : scopes,
         };
         if (!tokens.refreshToken) {
-          sendHtml(res, 400, "Reconnect Gmail", "Google did not return offline access. Reconnect with consent so SuparClaw can refresh access when you are away.");
+          sendHtml(res, 400, "Reconnect Google account", "Google did not return offline access. Reconnect with consent so SuparClaw can refresh access when you are away.");
           await finish(new Error("Google did not return a refresh token; revoke the grant and reconnect with consent"));
           return;
         }
         const missingScopes = scopes.filter((scope) => !tokens.scopes.includes(scope));
         if (missingScopes.length) {
-          sendHtml(res, 400, "Gmail permissions incomplete", "Google did not grant all requested Gmail permissions. Reconnect and approve the requested access.");
-          await finish(new Error(`Google did not grant all requested Gmail scopes (${missingScopes.length} missing)`));
+          sendHtml(res, 400, "Google permissions incomplete", "Google did not grant all requested Gmail and Workspace permissions. Reconnect and approve the requested access.");
+          await finish(new Error(`Google did not grant all requested Gmail/Workspace scopes (${missingScopes.length} missing)`));
           return;
         }
         try {
           const api = new GmailApi(tokens.accessToken, { fetchFn });
           const profile = await api.getProfile();
-          sendHtml(res, 200, "Gmail connected", `Connected to ${profile.emailAddress}.`);
+          sendHtml(res, 200, "Google account connected", `Connected to ${profile.emailAddress}.`);
           await finish(undefined, { tokens, email: profile.emailAddress });
         } catch (err) {
           sendHtml(res, 400, "Gmail connection failed", safeText((err as Error).message, 300) || "Could not verify the Gmail account.");
@@ -625,7 +632,7 @@ export async function refreshGmailAccessToken(opts: {
     const error = safeText(data["error"], 80) || `HTTP ${res.status}`;
     const detail = safeText(data["error_description"], 180);
     const reason = detail ? `${error}: ${detail}` : error;
-    throw new Error(error === "invalid_grant" ? "Gmail authorization expired or was revoked — reconnect Gmail" : `Google token refresh failed (${reason})`);
+    throw new Error(error === "invalid_grant" ? "Google authorization expired or was revoked — reconnect the Google account" : `Google token refresh failed (${reason})`);
   }
   return {
     accessToken: String(data["access_token"]),

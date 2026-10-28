@@ -69,6 +69,8 @@ import { fetchModels } from "../config/providers.js";
 import { TelegramChannel, describeError, probeTelegramApi, telegramProxy } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
 import { GmailAddonService } from "../addons/gmail-service.js";
+import { GoogleWorkspaceAddonService } from "../addons/google-workspace.js";
+import { workspaceDeleteRequested, workspaceInviteRequested, workspaceMutationRequested, workspacePublicShareRequested, workspaceShareRequested } from "../addons/google-workspace-intent.js";
 import { gmailDraftDeleteRequested, gmailMutationRequested, gmailSendRequested } from "../addons/gmail-intent.js";
 
 export interface ChatPayload {
@@ -147,6 +149,8 @@ export class Service {
   readonly vault: VaultManager;
   /** Gmail OAuth/API lifecycle; refresh credentials remain encrypted in the vault. */
   readonly gmailAddon: GmailAddonService;
+  /** Docs/Sheets/Calendar/Drive clients share Gmail's encrypted Google account. */
+  readonly googleWorkspaceAddon: GoogleWorkspaceAddonService;
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
@@ -306,6 +310,10 @@ export class Service {
       () => this.config.addons.gmail.clientId,
       () => this.config.addons.gmail.enabled,
     );
+    this.googleWorkspaceAddon = new GoogleWorkspaceAddonService(
+      () => this.config.addons.googleWorkspace.enabled,
+      (forceRefresh) => this.gmailAddon.workspaceAccessToken(forceRefresh),
+    );
     const config = this.configSvc.current;
     // Auth-profile binding: providers resolve credentials from the stored
     // profiles (literal keys untouched); health outcomes flow back to the
@@ -347,6 +355,7 @@ export class Service {
       repoCtl: this.#repoCtl(),
       terminals: this.terminals,
       gmailCtl: { api: () => this.gmailAddon.api() },
+      googleWorkspaceCtl: { api: () => this.googleWorkspaceAddon.api() },
       vault: this.vault,
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
@@ -491,6 +500,23 @@ export class Service {
 
   gmailStatus() {
     return this.gmailAddon.status();
+  }
+
+  googleWorkspaceStatus() {
+    const gmail = this.gmailAddon.status();
+    const required = ["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"];
+    return {
+      ...this.googleWorkspaceAddon.status(),
+      oauthConfigured: gmail.configured,
+      connected: gmail.connected,
+      usable: gmail.usable,
+      account: gmail.account,
+      scopes: gmail.scopes,
+      reauthorizationRequired: gmail.connected && required.some((scope) => !gmail.scopes.includes(scope)),
+      vaultUnlocked: gmail.vaultUnlocked,
+      connecting: gmail.connecting,
+      error: gmail.error ?? "",
+    };
   }
 
   gmailConnectStart() {
@@ -2004,6 +2030,11 @@ export class Service {
       gmailSendAllowed: gmailSendRequested(text),
       gmailMutateAllowed: gmailMutationRequested(text),
       gmailDeleteDraftAllowed: gmailDraftDeleteRequested(text),
+      googleWorkspaceMutationAllowed: workspaceMutationRequested(text),
+      googleWorkspaceDeleteAllowed: workspaceDeleteRequested(text),
+      googleWorkspaceShareAllowed: workspaceShareRequested(text),
+      googleWorkspacePublicShareAllowed: workspacePublicShareRequested(text),
+      googleWorkspaceInviteAllowed: workspaceInviteRequested(text),
       onEvent: (event) => {
         // Reply-usage footer (P2 #15 / Task 23): a FIELD on the final event, not
         // text baked into the reply. The transcript row carries the numbers and

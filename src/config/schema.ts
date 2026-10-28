@@ -797,9 +797,16 @@ export const CONFIG_SCHEMA: SchemaNode = {
           default: {},
           fields: {
             enabled: { t: "bool", default: false },
-            // Google Desktop OAuth client ID. Gmail uses auth-code + PKCE over
-            // loopback; Google's device-code flow does not permit Gmail scopes.
+            // Google Desktop OAuth client ID. Sign-in requests the selected Gmail
+            // and Workspace scope union using auth-code + PKCE over loopback.
             clientId: { t: "text", default: "" },
+          },
+        },
+        googleWorkspace: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: false },
           },
         },
       },
@@ -1034,6 +1041,9 @@ export interface SuparClawConfig {
     gmail: {
       enabled: boolean;
       clientId: string;
+    };
+    googleWorkspace: {
+      enabled: boolean;
     };
   };
   channels: {

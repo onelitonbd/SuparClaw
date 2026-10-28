@@ -14,6 +14,7 @@ const {
   VaultManager,
   GMAIL_API,
   GMAIL_SCOPES,
+  GOOGLE_ACCOUNT_SCOPES,
   beginGmailOAuth,
   refreshGmailAccessToken,
   buildRegistry,
@@ -29,7 +30,7 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), {
 });
 const textPart = (text) => Buffer.from(text, "utf8").toString("base64url");
 
-const oauthFetch = (seen) => async (input, init = {}) => {
+const oauthFetch = (seen, scopes = GMAIL_SCOPES) => async (input, init = {}) => {
   const url = String(input);
   if (url === "https://oauth2.googleapis.com/token") {
     const form = new URLSearchParams(init.body);
@@ -38,7 +39,7 @@ const oauthFetch = (seen) => async (input, init = {}) => {
       access_token: "access-secret-for-test",
       refresh_token: "refresh-secret-for-test",
       expires_in: 3600,
-      scope: GMAIL_SCOPES.join(" "),
+      scope: scopes.join(" "),
       token_type: "Bearer",
     });
   }
@@ -66,7 +67,7 @@ test("OAuth uses desktop PKCE loopback, checks state, grants all Gmail scopes, a
   const response = await fetch(callback);
   const html = await response.text();
   assert.equal(response.status, 200);
-  assert.match(html, /Gmail connected/);
+  assert.match(html, /Google account connected/);
   assert.match(html, /owner@example\.com/);
   assert.doesNotMatch(html, /access-secret-for-test|refresh-secret-for-test|one-time-authorization-code/);
 
@@ -104,7 +105,7 @@ test("OAuth includes the optional client secret and surfaces Google's sanitized 
   const error = await result;
   assert.equal(seenForm.get("client_secret"), "desktop-client-secret");
   assert.match(html, /invalid_request: client_secret is missing/);
-  assert.match(html, /Add the Desktop OAuth client secret in Gmail settings/);
+  assert.match(html, /Add the Desktop OAuth client secret in Google integration settings/);
   assert.match(error.message, /client_secret is missing/);
   assert.doesNotMatch(html, /one-time-code|desktop-client-secret/);
 });
@@ -157,7 +158,7 @@ test("OAuth refuses a consent response that omitted requested scopes or offline 
   callback1.searchParams.set("state", auth1.searchParams.get("state"));
   callback1.searchParams.set("code", "code");
   assert.equal((await fetch(callback1)).status, 400);
-  assert.match((await noScopesDone).message, /did not grant all requested Gmail scopes/);
+  assert.match((await noScopesDone).message, /did not grant all requested Gmail\/Workspace scopes/);
 
   const noRefresh = await beginGmailOAuth({
     clientId: "desktop-client-id",
@@ -186,16 +187,17 @@ test("Gmail service reads the OAuth client secret from the encrypted vault for c
     assert.equal(vault.define({ name: "SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET", kind: "secret", description: "OAuth client secret for Gmail" }).ok, true);
     assert.equal((await vault.setValue("SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET", "desktop-client-secret-never-plaintext")).ok, true);
     const seen = {};
-    service = new GmailAddonService(vault, () => "desktop-client-id", () => true, oauthFetch(seen));
+    service = new GmailAddonService(vault, () => "desktop-client-id", () => true, oauthFetch(seen, GOOGLE_ACCOUNT_SCOPES));
     assert.equal(service.status().clientSecretConfigured, true);
     const started = await service.startConnect();
     const completion = service.waitConnect(started.flow);
     const authorization = new URL(started.authUrl);
+    assert.deepEqual(authorization.searchParams.get("scope").split(" "), [...GOOGLE_ACCOUNT_SCOPES]);
     const callback = new URL(started.redirectUri);
     callback.searchParams.set("state", authorization.searchParams.get("state"));
     callback.searchParams.set("code", "one-time-code");
-    assert.match(await (await fetch(callback)).text(), /Gmail connected/);
-    assert.deepEqual(await completion, { email: "owner@example.com", scopes: [...GMAIL_SCOPES] });
+    assert.match(await (await fetch(callback)).text(), /Google account connected/);
+    assert.deepEqual(await completion, { email: "owner@example.com", scopes: [...GOOGLE_ACCOUNT_SCOPES] });
     assert.equal(seen.tokenForm.get("client_secret"), "desktop-client-secret-never-plaintext");
     const vaultFile = readFileSync(join(home, ".suparclaw", "vault.json"), "utf8");
     assert.equal(vaultFile.includes("desktop-client-secret-never-plaintext"), false);

@@ -75,10 +75,14 @@ test("Gmail settings render connected-vault guidance and wire save/connect/popup
     const settings = new Settings(root, () => {});
     settings.setHash("#/settings/gmail");
     await settings.render();
-    assert.match(root.textContent, /Full Gmail tools/);
-    assert.match(root.textContent, /refresh token is stored in the encrypted vault/);
-    assert.match(root.textContent, /Production-but-unverified is for your own account only/);
+    assert.match(root.textContent, /Gmail tools plus Google Docs, Sheets, Calendar, and Drive/);
+    assert.match(root.textContent, /refresh token stays in the encrypted vault/);
+    assert.match(root.textContent, /For personal use, Google may still show an unverified-app warning/);
     assert.match(root.textContent, /Not connected/);
+    assert.match(root.textContent, /Full Drive access covers existing files/);
+    const workspaceToggle = root.querySelector("#google-workspace-enabled");
+    assert.ok(workspaceToggle, "Workspace enable control is rendered");
+    workspaceToggle.checked = true;
     let connect = root.querySelector("#gm-connect");
     const save = root.querySelector("#gm-save");
     const clientSecret = root.querySelector("#gm-client-secret");
@@ -92,6 +96,7 @@ test("Gmail settings render connected-vault guidance and wire save/connect/popup
     assert.deepEqual(saved.map((call) => [call.params.path, call.params.value]), [
       ["addons.gmail.clientId", "desktop-client-id"],
       ["addons.gmail.enabled", true],
+      ["addons.googleWorkspace.enabled", true],
     ]);
     assert.ok(globalThis.__GMAIL_CALLS.some((call) => call.method === "vault.define" && call.params.name === "SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET"));
     assert.ok(globalThis.__GMAIL_CALLS.some((call) => call.method === "vault.set" && call.params.value === "test-desktop-client-secret"));

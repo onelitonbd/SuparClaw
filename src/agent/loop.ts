@@ -96,6 +96,11 @@ export interface RunInput {
   gmailSendAllowed?: boolean;
   gmailMutateAllowed?: boolean;
   gmailDeleteDraftAllowed?: boolean;
+  googleWorkspaceMutationAllowed?: boolean;
+  googleWorkspaceDeleteAllowed?: boolean;
+  googleWorkspaceShareAllowed?: boolean;
+  googleWorkspacePublicShareAllowed?: boolean;
+  googleWorkspaceInviteAllowed?: boolean;
   onEvent: (event: RunEvent) => void;
 }
 
@@ -145,6 +150,8 @@ export interface LoopDeps {
   repoCtl?: RepoCtl;
   /** Gmail client and current-user intent gates for side-effecting operations. */
   gmailCtl?: ToolContext["gmailCtl"];
+  /** Native Google Workspace REST client, bound to the same vault token. */
+  googleWorkspaceCtl?: ToolContext["googleWorkspaceCtl"];
   /** Persistent terminals (Task 52). Owned by the service, shared by every run. */
   terminals?: TerminalCtl;
   /** User-managed encrypted variable/secret vault (Task 59). */
@@ -754,6 +761,12 @@ export class AgentLoop {
         gmailSendAllowed: input.gmailSendAllowed === true,
         gmailMutateAllowed: input.gmailMutateAllowed === true,
         gmailDeleteDraftAllowed: input.gmailDeleteDraftAllowed === true,
+        googleWorkspaceCtl: this.deps.googleWorkspaceCtl,
+        googleWorkspaceMutationAllowed: input.googleWorkspaceMutationAllowed === true,
+        googleWorkspaceDeleteAllowed: input.googleWorkspaceDeleteAllowed === true,
+        googleWorkspaceShareAllowed: input.googleWorkspaceShareAllowed === true,
+        googleWorkspacePublicShareAllowed: input.googleWorkspacePublicShareAllowed === true,
+        googleWorkspaceInviteAllowed: input.googleWorkspaceInviteAllowed === true,
         vault: this.deps.vault,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,

@@ -429,6 +429,8 @@ export {
   GmailApiError,
   GMAIL_API,
   GMAIL_SCOPES,
+  GOOGLE_WORKSPACE_SCOPES,
+  GOOGLE_ACCOUNT_SCOPES,
   beginGmailOAuth,
   refreshGmailAccessToken,
   type GmailTokenSet,
@@ -444,3 +446,5 @@ export {
 } from "./addons/gmail.js";
 export { GmailAddonService, type GmailAddonStatus, type GmailConnectStarted } from "./addons/gmail-service.js";
 export { gmailSendRequested, gmailMutationRequested, gmailDraftDeleteRequested } from "./addons/gmail-intent.js";
+export { GoogleWorkspaceApi, GoogleWorkspaceApiError, GoogleWorkspaceAddonService, type GoogleWorkspaceService, type GoogleHttpMethod, type GoogleWorkspaceRequest } from "./addons/google-workspace.js";
+export { workspaceMutationRequested, workspaceDeleteRequested, workspaceShareRequested, workspacePublicShareRequested, workspaceInviteRequested } from "./addons/google-workspace-intent.js";

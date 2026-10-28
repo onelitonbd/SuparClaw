@@ -24,6 +24,8 @@ import { explainExecError, type ExecVerdict } from "./exec-policy.js";
 import { execAttempts, fallbackNote, runWithFallback } from "./exec-fallback.js";
 import type { WebSearchCache } from "./web-search.js";
 import { GmailApiError, type GmailApi } from "../addons/gmail.js";
+import { GoogleWorkspaceApi, type GoogleWorkspaceService, type GoogleHttpMethod } from "../addons/google-workspace.js";
+import { isIP } from "node:net";
 
 export interface ToolContext {
   workspace: string;
@@ -94,6 +96,13 @@ export interface ToolContext {
   gmailSendAllowed?: boolean;
   gmailMutateAllowed?: boolean;
   gmailDeleteDraftAllowed?: boolean;
+  /** User-originated intent gates for Workspace side effects. */
+  googleWorkspaceCtl?: { api(): Promise<GoogleWorkspaceApi> };
+  googleWorkspaceMutationAllowed?: boolean;
+  googleWorkspaceDeleteAllowed?: boolean;
+  googleWorkspaceShareAllowed?: boolean;
+  googleWorkspacePublicShareAllowed?: boolean;
+  googleWorkspaceInviteAllowed?: boolean;
 }
 
 /**
@@ -213,6 +222,221 @@ function gmailNeedClient(ctx: ToolContext): string | null {
   if (!ctx.gmailCtl) return "error: Gmail integration is not wired in this runtime";
   if (!ctx.config.addons.gmail.enabled) return "error: Gmail add-on is disabled — enable addons.gmail.enabled in Settings";
   return null;
+}
+
+function googleJson(value: unknown, max = 32_000): string {
+  const json = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return json.length > max ? `${json.slice(0, max)}\n[truncated — narrow the fields/range or page the request]` : json;
+}
+
+function workspaceApiPath(args: Record<string, unknown>): string {
+  return String(args["path"] ?? "").trim();
+}
+
+function googleResourceId(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  const lower = parts.map((part) => part.toLowerCase());
+  if (lower.at(-1) === "clear" && lower[0] === "calendars") return parts[1] ?? "";
+  if ((lower.at(-1) === "emptytrash" || (lower[0] === "files" && lower[1] === "trash")) && lower.length <= 2) return "empty trash";
+  if ((lower[0] === "documents" || lower[0] === "spreadsheets") && parts[1]) return parts[1].replace(/:[^:]+$/, "");
+  const last = parts.at(-1) ?? "";
+  return last.replace(/:(?:clear|batchClear|batchUpdate)$/, "");
+}
+
+function isPublicHttpsCallback(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password) return false;
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
+    const family = isIP(host);
+    if (family === 4) {
+      const octets = host.split(".").map(Number);
+      const a = octets[0] ?? -1;
+      const b = octets[1] ?? -1;
+      if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) return false;
+    }
+    if (family === 6 && (host === "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:") || host.startsWith("::ffff:127."))) return false;
+    return true;
+  } catch { return false; }
+}
+
+function getDocText(value: unknown): string {
+  const out: string[] = [];
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const child of node) visit(child); return; }
+    const row = node as Record<string, unknown>;
+    const textRun = row["textRun"];
+    if (textRun && typeof textRun === "object") {
+      const content = (textRun as Record<string, unknown>)["content"];
+      if (typeof content === "string") out.push(content);
+    }
+    for (const [key, child] of Object.entries(row)) if (key !== "textRun") visit(child);
+  };
+  visit(value);
+  return out.join("");
+}
+
+function workspaceTool(service: GoogleWorkspaceService): ToolSpec {
+  const common = {
+    path: str("REST path relative to this Google API root; e.g. Docs documents/{id}, Sheets spreadsheets/{id}/values/A1:K100, Calendar calendars/primary/events, Drive files. No leading URL."),
+    method: { type: "string", enum: ["GET", "POST", "PATCH", "PUT", "DELETE"], description: "HTTP method; defaults to GET." },
+    query: { type: "object", description: "Google API query parameters (q, fields, pageToken, timeMin, range, etc.).", additionalProperties: true },
+    body: { type: "object", description: "JSON request body. Docs/Sheets batchUpdate accepts the native Google API requests array; this exposes complete formatting, tables, charts, tabs, and data operations.", additionalProperties: true },
+    responseType: { type: "string", enum: ["json", "text"], description: "Response decoding; defaults to JSON." },
+    confirm: str("Exact confirmation value required for destructive actions, public sharing, ownership transfer, or calendar invites."),
+  };
+  const descriptions: Record<GoogleWorkspaceService, string> = {
+    docs: "Google Docs REST access. Read/create documents with GET/POST documents; edit with POST documents/{documentId}:batchUpdate and native requests (insertText, updateTextStyle, updateParagraphStyle, createTable, insertTableRow/Column, deleteContentRange, named styles, headers/footers, tabs). GET documents/{id}?includeTabsContent=true reads structure/tabs. Action get_text extracts document text; search searches Drive's Google Docs index. Every non-read request requires explicit user intent. Destructive batch requests require exact document ID confirmation.",
+    sheets: "Google Sheets REST access. Read/create spreadsheets; values GET/UPDATE/APPEND/CLEAR/BATCH_GET/BATCH_UPDATE/BATCH_CLEAR; POST spreadsheets/{id}:batchUpdate for native requests covering tables, formatting, charts, filters, protections, dimensions, and sheet operations. Use GET spreadsheets/{id}/values/{range} for cell data. Every non-read request requires explicit user intent; clear/delete batch requests require exact spreadsheet ID confirmation.",
+    calendar: "Google Calendar REST access. Use calendars, calendarList, events, events/{id}/instances, freeBusy, settings, colors, ACL, channels/watch, and channels/stop. Events can be listed, inserted, patched, updated, deleted, imported, moved, or quick-added via native endpoints. Always pass timeMin/timeMax for event lists. POST freeBusy is read-only. Event attendee changes or sendUpdates require explicit invite intent and confirm='send invites'. Calendar/event deletion, cancellation, and clearing require explicit delete intent and exact target-ID confirmation. Watch callbacks need a publicly reachable HTTPS address.",
+    drive: "Google Drive REST access. Use files (list/get/create/update/copy/delete/export/download), permissions, comments/replies, file revisions, and drives/shared-drive endpoints. For shared-drive file requests, pass supportsAllDrives=true; for a full listing also pass includeItemsFromAllDrives=true and corpora=allDrives. Full Drive scope covers existing files, not only files created by this app. Use action=trash or restore instead of permanent deletion; trash requires confirm equal to the exact file ID. Permission/ACL changes require explicit sharing intent; public/anyone links and ownership transfer require elevated explicit intent plus confirm='public sharing' or confirm='transfer ownership'. Shared Drives require a supported Workspace edition.",
+  };
+  const properties: Record<string, unknown> = {
+    action: { type: "string", enum: service === "docs" ? ["request", "get_text", "search"] : service === "sheets" ? ["request", "query_values"] : service === "calendar" ? ["request"] : ["request", "download", "export", "upload", "trash", "restore"], description: "Convenience action; defaults to request. All Google API endpoints remain available through request." },
+    ...common,
+  };
+  if (service === "drive") Object.assign(properties, {
+    fileId: str("Drive file ID for download/export/trash/restore."),
+    name: str("Filename for an uploaded Drive file."),
+    mimeType: str("MIME type for an upload or export (e.g. text/plain, text/csv, application/pdf)."),
+    content: str("UTF-8 file content to upload."),
+    contentBase64: str("Optional base64-encoded bytes for an upload instead of content."),
+    folderId: str("Optional destination folder ID."),
+    outputName: str("Optional safe filename under the SuparClaw workspace for downloaded/exported bytes."),
+  });
+  if (service === "docs") Object.assign(properties, { documentId: str("Docs document ID for get_text."), text: str("Text to search in Drive's Docs index.") });
+  if (service === "sheets") Object.assign(properties, { spreadsheetId: str("Spreadsheet ID for query_values."), range: str("A1 range for query_values, e.g. Sheet1!A1:F100.") });
+  return {
+    name: `google_${service}`,
+    description: descriptions[service],
+    parameters: {
+      type: "object",
+      properties,
+      required: [],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      if (!ctx.googleWorkspaceCtl) return "error: Google Workspace integration is not wired in this runtime";
+      if (!ctx.config.addons.googleWorkspace.enabled) return "error: Google Workspace is disabled — enable addons.googleWorkspace.enabled in Settings";
+      const action = String(args["action"] ?? "request");
+      const api = await ctx.googleWorkspaceCtl.api();
+      try {
+        if (service === "docs" && action === "get_text") {
+          const id = String(args["documentId"] ?? "").trim();
+          if (!id) return "error: documentId is required";
+          const doc = await api.request(service, `documents/${encodeURIComponent(id)}`, { query: { includeTabsContent: true } });
+          return googleJson({ documentId: id, title: (doc as Record<string, unknown>)["title"], text: getDocText(doc) });
+        }
+        if (service === "docs" && action === "search") {
+          const term = String(args["text"] ?? "").trim();
+          if (!term) return "error: text is required";
+          const q = `mimeType='application/vnd.google-apps.document' and fullText contains '${term.replaceAll("'", "\\'")}' and trashed=false`;
+          return googleJson(await api.request("drive", "files", { query: { q, pageSize: 100, orderBy: "modifiedTime desc", fields: "files(id,name,mimeType,modifiedTime,webViewLink),nextPageToken" } }));
+        }
+        if (service === "sheets" && action === "query_values") {
+          const id = String(args["spreadsheetId"] ?? "").trim();
+          const range = String(args["range"] ?? "").trim();
+          if (!id || !range) return "error: spreadsheetId and range are required";
+          return googleJson(await api.request(service, `spreadsheets/${encodeURIComponent(id)}/values/${encodeURIComponent(range)}`, { query: { valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "FORMATTED_STRING" } }));
+        }
+        if (service === "drive" && ["download", "export"].includes(action)) {
+          const id = String(args["fileId"] ?? "").trim();
+          if (!id) return "error: fileId is required";
+          let bytes: Uint8Array;
+          let mimeType = String(args["mimeType"] ?? "application/octet-stream");
+          if (action === "download") {
+            const downloaded = await api.downloadDriveFile(id);
+            bytes = downloaded.bytes;
+            mimeType = downloaded.mimeType;
+          } else {
+            const exported = await api.request<Uint8Array>("drive", `files/${encodeURIComponent(id)}/export`, { method: "GET", query: { mimeType: mimeType === "application/octet-stream" ? "text/plain" : mimeType }, responseType: "bytes" });
+            bytes = exported;
+          }
+          const fileName = String(args["outputName"] ?? `${id}${action === "export" ? ".export" : ""}`).trim();
+          if (!fileName || fileName === "." || fileName === ".." || fileName.includes("/") || fileName.includes("\\")) return "error: outputName must be a filename, not a path";
+          if (bytes.byteLength > 25 * 1024 * 1024) return "error: downloads are capped at 25 MiB per file";
+          const workspaceRoot = realpathSync(ctx.workspace);
+          const dir = resolve(workspaceRoot, "google-drive");
+          mkdirSync(dir, { recursive: true, mode: 0o700 });
+          const realDir = realpathSync(dir);
+          const dirRelative = relative(workspaceRoot, realDir);
+          if (dirRelative === ".." || dirRelative.startsWith(`..${sep}`)) return "error: Drive download directory resolves outside the workspace";
+          const out = resolve(realDir, basename(fileName));
+          const rel = relative(realDir, out);
+          if (rel === ".." || rel.startsWith(`..${sep}`)) return "error: output path escapes workspace";
+          writeFileSync(out, bytes, { mode: 0o600, flag: "wx" });
+          return `Saved ${bytes.byteLength} bytes (${mimeType}) to ${out}`;
+        }
+        if (service === "drive" && action === "upload") {
+          if (ctx.googleWorkspaceMutationAllowed !== true) return "error: Drive uploads require the user's explicit create/upload request in this turn";
+          const name = String(args["name"] ?? "").trim();
+          const mimeType = String(args["mimeType"] ?? "text/plain").trim();
+          const encoded = String(args["contentBase64"] ?? "");
+          const content = args["content"] === undefined ? "" : String(args["content"]);
+          if (!name || (!encoded && !content)) return "error: name and either content or contentBase64 are required";
+          if (encoded.length > 24 * 1024 * 1024 || Buffer.byteLength(content, "utf8") > 18 * 1024 * 1024) return "error: upload exceeds 18 MiB limit";
+          const data = encoded ? new Uint8Array(Buffer.from(encoded, "base64")) : content;
+          if (typeof data !== "string" && data.byteLength > 18 * 1024 * 1024) return "error: upload exceeds 18 MiB limit";
+          return googleJson(await api.uploadDriveContent({ name, mimeType, content: data, folderId: String(args["folderId"] ?? "") || undefined }));
+        }
+        if (service === "drive" && ["trash", "restore"].includes(action)) {
+          const id = String(args["fileId"] ?? "").trim();
+          if (!id) return "error: fileId is required";
+          if (ctx.googleWorkspaceMutationAllowed !== true) return "error: moving a file to/from Trash requires the user's explicit Workspace change request in this turn";
+          if (action === "trash" && ctx.googleWorkspaceDeleteAllowed !== true) return "error: moving a file to Trash requires the user's explicit delete/trash request in this turn";
+          if (action === "trash" && String(args["confirm"] ?? "").trim() !== id) return `error: moving this file to Trash requires confirm equal to its exact file ID (${id})`;
+          return googleJson(await api.request("drive", `files/${encodeURIComponent(id)}`, { method: "PATCH", query: { fields: "id,name,trashed,webViewLink", supportsAllDrives: true }, body: { trashed: action === "trash" } }));
+        }
+        const path = workspaceApiPath(args);
+        if (!path) return "error: path is required";
+        const methodRaw = String(args["method"] ?? "GET").toUpperCase();
+        if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(methodRaw)) return "error: method must be GET, POST, PUT, PATCH, or DELETE";
+        const method = methodRaw as GoogleHttpMethod;
+        const body = args["body"];
+        const query = args["query"] && typeof args["query"] === "object" && !Array.isArray(args["query"]) ? args["query"] as Record<string, unknown> : {};
+        const bodyJson = JSON.stringify(body ?? {});
+        const normalizedPath = path.split("/").filter(Boolean).join("/");
+        const pathLower = normalizedPath.toLowerCase();
+        const readOnlyPost = service === "calendar" && normalizedPath === "freeBusy";
+        const isWrite = method !== "GET" && !readOnlyPost;
+        if (isWrite && ctx.googleWorkspaceMutationAllowed !== true) return "error: this Workspace change requires an explicit create/edit/update/share request in the user's current turn";
+        if (service === "calendar" && normalizedPath.toLowerCase().split("/").at(-1) === "watch") {
+          const address = body && typeof body === "object" ? (body as Record<string, unknown>)["address"] : undefined;
+          if (!isPublicHttpsCallback(address)) return "error: Calendar watch requires a publicly reachable HTTPS callback address (localhost/private addresses are not supported)";
+        }
+        const eventPath = service === "calendar" && normalizedPath.toLowerCase().split("/").includes("events");
+        const cancelledEvent = eventPath && bodyJson.includes("\"status\":\"cancelled\"");
+        const filePath = service === "drive" && normalizedPath.toLowerCase().split("/")[0] === "files";
+        const movedToTrash = filePath && body && typeof body === "object" && (body as Record<string, unknown>)["trashed"] === true;
+        const destructive = method === "DELETE" || pathLower.endsWith(":clear") || pathLower.endsWith(":batchclear") || pathLower.endsWith("emptytrash") || pathLower.endsWith("/clear") || pathLower === "files/trash" || movedToTrash || cancelledEvent || bodyJson.includes("\"delete");
+        const confirm = String(args["confirm"] ?? "").trim();
+        if (destructive) {
+          const resourceId = googleResourceId(path);
+          if (ctx.googleWorkspaceDeleteAllowed !== true) return "error: destructive Workspace actions require the user's explicit delete/clear request in this turn";
+          if (!resourceId || confirm !== resourceId) return `error: destructive action requires confirm equal to the exact target or action (${resourceId || "unresolved target"})`;
+        }
+        const aclChange = normalizedPath.toLowerCase().split("/").some((part) => part === "permissions" || part === "acl");
+        if (aclChange && isWrite && ctx.googleWorkspaceShareAllowed !== true) return "error: permission changes require the user's explicit sharing/access request in this turn";
+        const publicShare = bodyJson.includes("\"type\":\"anyone\"") || bodyJson.includes("\"role\":\"owner\"") || bodyJson.includes("transferOwnership") || String(query["transferOwnership"] ?? "").toLowerCase() === "true";
+        if (publicShare) {
+          const ownership = bodyJson.includes("\"role\":\"owner\"") || bodyJson.includes("transferOwnership") || String(query["transferOwnership"] ?? "").toLowerCase() === "true";
+          const wanted = ownership ? "transfer ownership" : "public sharing";
+          if (ctx.googleWorkspacePublicShareAllowed !== true || confirm !== wanted) return `error: ${wanted} requires explicit user intent and confirm='${wanted}'`;
+        }
+        const attendees = body && typeof body === "object" && Array.isArray((body as Record<string, unknown>)["attendees"]);
+        const sendsInvites = service === "calendar" && normalizedPath.toLowerCase().split("/").includes("events") && (attendees || ["all", "externalOnly"].includes(String(query["sendUpdates"] ?? "")));
+        if (sendsInvites && (ctx.googleWorkspaceInviteAllowed !== true || confirm !== "send invites")) return "error: Calendar invites require explicit invite/notification intent and confirm='send invites'";
+        const responseType = args["responseType"] === "text" ? "text" : "json";
+        const result = await api.request(service, path, { method, query, body, responseType });
+        return googleJson(result);
+      } catch (err) {
+        return `error: ${(err as Error).message}`;
+      }
+    },
+  };
 }
 
 async function gmailDraftInput(args: Record<string, unknown>, ctx: ToolContext): Promise<import("../addons/gmail.js").GmailDraftInput> {
@@ -1746,6 +1970,10 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         }
       },
   });
+
+  // Google Workspace REST tools expose the complete Docs, Sheets, Calendar,
+  // and Drive APIs through native, service-specific endpoints.
+  tools.push(workspaceTool("docs"), workspaceTool("sheets"), workspaceTool("calendar"), workspaceTool("drive"));
 
   // Gmail add-on — full 29-operation coverage grouped into seven coherent tools.
   // These remain discoverable while disconnected and fail with a setup sentence.

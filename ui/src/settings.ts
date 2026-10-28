@@ -92,8 +92,8 @@ const TAB_META: Record<TabId, { icon: string; desc: string; keywords: string }> 
   },
   gmail: {
     icon: glyph('<path d="M3.5 6.5 12 13l8.5-6.5"/><rect x="3.5" y="5" width="17" height="14" rx="2"/>'),
-    desc: "Connect Gmail so the agent can search, read, draft, send, and organize mail.",
-    keywords: "gmail google email inbox message thread search draft send labels attachment oauth",
+    desc: "Connect one Google account for Gmail plus Docs, Sheets, Calendar, and full Drive access.",
+    keywords: "gmail google workspace docs sheets calendar drive email inbox message thread search draft send labels attachment oauth",
   },
   usage: {
     icon: glyph('<path d="M5 20V11"/><path d="M12 20V5"/><path d="M19 20v-6"/>'),
@@ -360,7 +360,7 @@ export class Settings {
     } else if (this.#tab === "providers") this.#renderProviders(providers, config, authProfiles);
     else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
     else if (this.#tab === "github") await this.#renderGitHub(config.addons?.github ?? {});
-    else if (this.#tab === "gmail") await this.#renderGmail(config.addons?.gmail ?? {});
+    else if (this.#tab === "gmail") await this.#renderGmail(config.addons?.gmail ?? {}, config.addons?.googleWorkspace ?? {});
     else if (this.#tab === "usage") void this.#renderUsage();
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") await this.#renderTools(tools, config);
@@ -4883,22 +4883,25 @@ export class Settings {
   }
 
   /** Native Gmail add-on: local PKCE connection, encrypted refresh-token status, full tool capability. */
-  async #renderGmail(cfg: { enabled?: boolean; clientId?: string }): Promise<void> {
+  async #renderGmail(cfg: { enabled?: boolean; clientId?: string }, workspaceCfg: { enabled?: boolean } = {}): Promise<void> {
     const stack = el("div", { class: "settings__stack" });
     this.#root.append(stack);
     type Status = { configured: boolean; clientSecretConfigured?: boolean; enabled: boolean; connected: boolean; usable: boolean; account: string; scopes: string[]; connectedAt: string; connecting: boolean; vaultInitialized: boolean; vaultUnlocked: boolean; error?: string };
+    type WorkspaceStatus = { enabled: boolean; connected: boolean; usable: boolean; reauthorizationRequired: boolean; scopes: string[]; error?: string };
     let status: Status | null = null;
+    let workspaceStatus: WorkspaceStatus | null = null;
     try { status = await gateway.request("gmail.status", {}) as Status; } catch { /* disconnected gateway */ }
+    try { workspaceStatus = await gateway.request("googleWorkspace.status", {}) as WorkspaceStatus; } catch { /* old daemon or disconnected gateway */ }
 
     const card = el("div", { class: "card" }, [
       el("div", { class: "setcard__head" }, [
         el("h3", {}, ["Gmail"]),
-        el("p", { class: "hint" }, ["Full Gmail tools for search, reading, attachments, drafts, sending, labels, and trash/restore. The refresh token is stored in the encrypted vault, never in config or agent context."]),
+        el("p", { class: "hint" }, ["Gmail tools plus Google Docs, Sheets, Calendar, and Drive. One Google OAuth sign-in grants the enabled services; the refresh token stays in the encrypted vault, never in config or agent context."]),
       ]),
     ]);
     const account = el("span", { class: "row__value mono", id: "gm-account" }, [status?.connected ? status.account : "Not connected"]);
     const state = el("span", { class: "row__value", id: "gm-state" }, [
-      status?.connecting ? "Waiting for Google consent…" : status?.connected ? status.usable ? "Connected · ready" : "Connected · vault locked" : "Not connected",
+      status?.connecting ? "Waiting for Google consent…" : status?.connected ? workspaceStatus?.reauthorizationRequired ? "Connected · Workspace scopes missing; reauthorize" : status.usable ? "Connected · ready" : "Connected · vault locked" : "Not connected",
     ]);
     card.append(
       el("div", { class: "row", "data-gm-key": "account" }, [el("span", { class: "row__label" }, ["Account"]), account]),
@@ -4923,8 +4926,10 @@ export class Settings {
     }) as HTMLInputElement;
     const enabled = el("input", { type: "checkbox", id: "gm-enabled" }) as HTMLInputElement;
     enabled.checked = cfg.enabled === true;
+    const workspaceEnabled = el("input", { type: "checkbox", id: "google-workspace-enabled" }) as HTMLInputElement;
+    workspaceEnabled.checked = workspaceCfg.enabled === true;
     const setup = el("p", { class: "hint" }, [
-      "Google Cloud Console → enable Gmail API → create a Desktop app OAuth client → add your own Google account as the only personal-use user. Google's device-code flow cannot request Gmail scopes; SuparClaw uses PKCE and a temporary localhost callback. If Google reports that client_secret is missing, enter the Desktop client's secret above; it is stored only in the encrypted vault. Production-but-unverified is for your own account only; Google may show an unverified-app warning. This is not public-release approval.",
+      "Google Cloud Console → enable Gmail, Drive, Docs, Sheets, and Calendar APIs → create a Desktop app OAuth client → add your own Google account as the only personal-use user. Sign-in uses PKCE on a temporary localhost callback. The consent asks for Gmail access, full Drive access (including existing files), and Calendar access; Docs and Sheets use the Drive scope. Full Drive is a restricted Google scope and public apps may require verification/security assessment. For personal use, Google may still show an unverified-app warning. This is not public-release approval.",
     ]);
     const vaultHint = status?.vaultInitialized === false
       ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Initialize the encrypted vault in Settings → System → Secrets before connecting Gmail."])
@@ -4935,6 +4940,7 @@ export class Settings {
       el("label", { class: "modal__field" }, [el("span", { class: "lbl" }, ["Desktop OAuth client ID"]), clientId]),
       el("label", { class: "modal__field" }, [el("span", { class: "lbl" }, ["Desktop OAuth client secret (optional)"]), clientSecret]),
       el("label", { class: "row" }, [el("span", { class: "row__label" }, ["Enable Gmail tools"]), el("span", { class: "row__value" }, [enabled])]),
+      el("label", { class: "row" }, [el("span", { class: "row__label" }, ["Enable Docs, Sheets, Calendar, and Drive tools"]), el("span", { class: "row__value" }, [workspaceEnabled])]),
       setup,
       ...(vaultHint ? [vaultHint] : []),
     ]);
@@ -4962,13 +4968,14 @@ export class Settings {
         }
         await gateway.request("config.set", { path: "addons.gmail.clientId", value: clientId.value.trim() });
         await gateway.request("config.set", { path: "addons.gmail.enabled", value: enabled.checked });
-        toast("Gmail settings saved", "ok");
+        await gateway.request("config.set", { path: "addons.googleWorkspace.enabled", value: workspaceEnabled.checked });
+        toast("Google integration settings saved", "ok");
         void this.render();
       } catch (err) { toast((err as Error).message, "err"); }
       finally { clientSecret.value = ""; save.disabled = false; }
     };
-    const connect = el("button", { class: "btn pri", id: "gm-connect", type: "button" }, [status?.connected ? "Reconnect Gmail" : "Connect Gmail"]);
-    connect.disabled = !clientId.value.trim() || !enabled.checked || status?.vaultUnlocked !== true || status?.connecting === true;
+    const connect = el("button", { class: "btn pri", id: "gm-connect", type: "button" }, [status?.connected ? "Reauthorize Google access" : "Connect Google account"]);
+    connect.disabled = !clientId.value.trim() || (!enabled.checked && !workspaceEnabled.checked) || status?.vaultUnlocked !== true || status?.connecting === true;
     let activeFlow = "";
     const authLink = el("a", { class: "btn", id: "gm-auth-link", target: "_blank", rel: "noopener noreferrer", hidden: "" }, ["Open Google sign-in"]);
     let authPopup: Window | null = null;
@@ -4991,12 +4998,12 @@ export class Settings {
           state.textContent = "Waiting for Google consent…";
           if (authPopup) authPopup.location.href = flow.authUrl;
           else toast("Tap Open Google sign-in to continue", "info");
-          toast("Approve Gmail access in Google, then return here", "info");
+          toast("Review the requested Gmail, full Drive, and Calendar access in Google, then return here", "info");
           for (let i = 0; i < 240; i++) {
             await new Promise((resolve) => setTimeout(resolve, 2500));
             const latest = await refreshStatus();
             if (latest?.error && !latest.connecting) { cancel.hidden = true; authPopup?.close(); authPopup = null; toast(latest.error, "err"); break; }
-            if (latest?.connected && latest.usable && !latest.connecting) { cancel.hidden = true; authPopup?.close(); authPopup = null; toast(`Gmail connected as ${latest.account}`, "ok"); break; }
+            if (latest?.connected && latest.usable && !latest.connecting) { cancel.hidden = true; authPopup?.close(); authPopup = null; toast(`Google account connected as ${latest.account}`, "ok"); break; }
           }
           void this.render();
         } catch (err) {
@@ -5020,14 +5027,31 @@ export class Settings {
         void this.render();
       } catch (err) { toast((err as Error).message, "err"); }
     };
-    const disconnect = el("button", { class: "btn", id: "gm-disconnect", type: "button" }, ["Disconnect"]);
+    const disconnect = el("button", { class: "btn", id: "gm-disconnect", type: "button" }, ["Disconnect Google account"]);
     disconnect.hidden = status?.connected !== true;
     disconnect.onclick = async () => {
-      try { await gateway.request("gmail.disconnect", {}); toast("Gmail disconnected", "ok"); void this.render(); }
+      try { await gateway.request("gmail.disconnect", {}); toast("Google account disconnected", "ok"); void this.render(); }
       catch (err) { toast((err as Error).message, "err"); }
     };
     card.append(fields, el("div", { class: "row" }, [save, connect, authLink, cancel, disconnect]));
     stack.append(card);
+
+    const workspaceCard = el("div", { class: "card", id: "google-workspace-status" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Google Workspace"]),
+        el("p", { class: "hint" }, ["Docs, Sheets, Calendar, and Drive agent tools share the Google account above. Full Drive access covers existing files; Drive changes, public sharing, Calendar invites, and deletes are guarded by current-turn intent and confirmation checks."]),
+      ]),
+      el("div", { class: "row", "data-gw-key": "status" }, [
+        el("span", { class: "row__label" }, ["Workspace status"]),
+        el("span", { class: "row__value", id: "gw-state" }, [
+          workspaceStatus?.enabled ? workspaceStatus.usable ? "Enabled · connected" : "Enabled · connect or unlock vault" : "Disabled",
+        ]),
+      ]),
+      el("p", { class: "hint" }, ["Calendar watch notifications need a public HTTPS callback. Shared Drives need a qualifying Google Workspace account; personal Google accounts do not support them."]),
+    ]);
+    if (workspaceStatus?.error) workspaceCard.append(el("p", { class: "hint hint--err", role: "status" }, [workspaceStatus.error]));
+    if (workspaceStatus?.reauthorizationRequired) workspaceCard.append(el("p", { class: "hint hint--err", role: "status" }, ["This Google account has an older Gmail-only grant. Tap Reauthorize Google access above to approve Drive and Calendar scopes."]));
+    stack.append(workspaceCard);
   }
 
   #renderChannels(channels: any): void {
