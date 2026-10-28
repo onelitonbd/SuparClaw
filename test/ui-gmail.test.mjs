@@ -12,12 +12,13 @@ const outDir = mkdtempSync(join(tmpdir(), "sc-ui-gmail-"));
 const rpcStub = join(outDir, "rpc-stub.mjs");
 writeFileSync(rpcStub, `
 let status = { configured: true, clientSecretConfigured: false, enabled: true, connected: false, usable: false, account: "", scopes: [], connectedAt: "", connecting: false, vaultInitialized: true, vaultUnlocked: true };
+let workspaceEnabled = false;
 const vaultEntries = [];
 export const gateway = {
   state: "online",
   async request(method, params = {}) {
     (globalThis.__GMAIL_CALLS ||= []).push({ method, params });
-    if (method === "config.get") return { path: "/tmp/config.json5", config: { providers: {}, agents: { defaults: {} }, gateway: {}, addons: { gmail: { enabled: true, clientId: "desktop-client-id" } } } };
+    if (method === "config.get") return { path: "/tmp/config.json5", config: { providers: {}, agents: { defaults: {} }, gateway: {}, addons: { gmail: { enabled: true, clientId: "desktop-client-id" }, googleWorkspace: { enabled: workspaceEnabled } } } };
     if (method === "models.list") return { models: [], configured: [], auth: [], details: {} };
     if (method === "tools.list") return { tools: [] };
     if (method === "skills.list") return { skills: [] };
@@ -30,11 +31,11 @@ export const gateway = {
       if (status.connecting && globalThis.__GMAIL_COMPLETE === true) status = { ...status, connected: true, usable: true, connecting: false, account: "owner@example.com", scopes: ["https://www.googleapis.com/auth/gmail.modify"] };
       return structuredClone(status);
     }
-    if (method === "gmail.connect") {
+    if (method === "gmail.connect" || method === "googleWorkspace.connect") {
       status.connecting = true;
       return { flow: "flow-1", authUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=test&state=safe" };
     }
-    if (method === "config.set") return { ok: true };
+    if (method === "config.set") { if (params.path === "addons.googleWorkspace.enabled") workspaceEnabled = params.value; return { ok: true }; }
     if (method === "gmail.cancelConnect") return { cancelled: true };
     if (method === "gmail.disconnect") return { disconnected: true };
     return { ok: true };
@@ -75,6 +76,7 @@ test("Gmail settings render connected-vault guidance and wire save/connect/popup
     const settings = new Settings(root, () => {});
     settings.setHash("#/settings/gmail");
     await settings.render();
+    assert.match(root.textContent, /Google Workspace \+ Gmail/);
     assert.match(root.textContent, /Gmail tools plus Google Docs, Sheets, Calendar, and Drive/);
     assert.match(root.textContent, /refresh token stays in the encrypted vault/);
     assert.match(root.textContent, /For personal use, Google may still show an unverified-app warning/);
@@ -111,7 +113,7 @@ test("Gmail settings render connected-vault guidance and wire save/connect/popup
     assert.equal(popup.location.href.startsWith("https://accounts.google.com/"), true);
     assert.equal(root.querySelector("#gm-auth-link").hidden, false, "fallback auth link is shown while OAuth is pending");
     assert.equal(root.querySelector("#gm-cancel").hidden, false, "cancel becomes available while the OAuth flow is pending");
-    assert.ok(globalThis.__GMAIL_CALLS.some((call) => call.method === "gmail.connect"));
+    assert.ok(globalThis.__GMAIL_CALLS.some((call) => call.method === "googleWorkspace.connect"), "Workspace sign-in uses the explicit scope-union entry point");
     globalThis.__GMAIL_COMPLETE = true;
     await flush(20);
     assert.match(root.textContent, /owner@example\.com/);

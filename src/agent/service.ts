@@ -523,6 +523,11 @@ export class Service {
     return this.gmailAddon.startConnect();
   }
 
+  /** Explicit Workspace entry point; requests the shared full Google scope union. */
+  googleWorkspaceConnectStart() {
+    return this.gmailAddon.startConnect();
+  }
+
   gmailConnectWait(flow: string) {
     return this.gmailAddon.waitConnect(flow);
   }

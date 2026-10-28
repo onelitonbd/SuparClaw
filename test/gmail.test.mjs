@@ -59,6 +59,7 @@ test("OAuth uses desktop PKCE loopback, checks state, grants all Gmail scopes, a
   assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
   assert.equal(authorization.searchParams.get("access_type"), "offline");
   assert.equal(authorization.searchParams.get("prompt"), "consent");
+  assert.equal(authorization.searchParams.get("include_granted_scopes"), null, "installed-app OAuth sends the complete scope set, not an incremental grant");
   assert.deepEqual(authorization.searchParams.get("scope").split(" "), [...GMAIL_SCOPES]);
 
   const callback = new URL(flow.redirectUri);

@@ -252,8 +252,9 @@ export async function beginGmailOAuth(opts: {
         }
         const missingScopes = scopes.filter((scope) => !tokens.scopes.includes(scope));
         if (missingScopes.length) {
-          sendHtml(res, 400, "Google permissions incomplete", "Google did not grant all requested Gmail and Workspace permissions. Reconnect and approve the requested access.");
-          await finish(new Error(`Google did not grant all requested Gmail/Workspace scopes (${missingScopes.length} missing)`));
+          const missing = missingScopes.map((scope) => scope.split("/").at(-1)).join(", ");
+          sendHtml(res, 400, "Google permissions incomplete", `Missing scopes: ${missing}. Check Google Cloud Console → OAuth consent screen → Data access, enable the requested APIs, then reconnect and approve the full access request.`);
+          await finish(new Error(`Google did not grant all requested Gmail/Workspace scopes (${missing})`));
           return;
         }
         try {
@@ -290,8 +291,9 @@ export async function beginGmailOAuth(opts: {
     code_challenge_method: "S256",
     state,
     access_type: "offline",
+    // Desktop/installed apps do not support incremental authorization. Send the
+    // complete scope union on every connect/reauthorize instead.
     prompt: "consent",
-    include_granted_scopes: "true",
   }).toString();
   timer = setTimeout(() => { void finish(new Error("Google authorization timed out; start a new connection")); }, opts.timeoutMs ?? OAUTH_TIMEOUT_MS);
   timer.unref?.();

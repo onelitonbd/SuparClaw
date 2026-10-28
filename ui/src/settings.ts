@@ -18,7 +18,7 @@ const TABS: { id: TabId; label: string; group?: string }[] = [
   { id: "providers", label: "Providers", group: "Chat" },
   { id: "channels", label: "Channels", group: "Integrations" },
   { id: "github", label: "GitHub", group: "Integrations" },
-  { id: "gmail", label: "Gmail", group: "Integrations" },
+  { id: "gmail", label: "Google Workspace", group: "Integrations" },
   { id: "usage", label: "Usage", group: "Monitoring" },
   { id: "skills", label: "Skills", group: "Agent" },
   { id: "tools", label: "Tools", group: "Agent" },
@@ -39,6 +39,9 @@ const TAB_ALIASES: Record<string, TabId> = {
   channels: "channels",
   github: "github",
   gmail: "gmail",
+  workspace: "gmail",
+  "google-workspace": "gmail",
+  googleworkspace: "gmail",
   usage: "usage",
   skills: "skills",
   tools: "tools",
@@ -4895,7 +4898,7 @@ export class Settings {
 
     const card = el("div", { class: "card" }, [
       el("div", { class: "setcard__head" }, [
-        el("h3", {}, ["Gmail"]),
+        el("h3", {}, ["Google Workspace + Gmail"]),
         el("p", { class: "hint" }, ["Gmail tools plus Google Docs, Sheets, Calendar, and Drive. One Google OAuth sign-in grants the enabled services; the refresh token stays in the encrypted vault, never in config or agent context."]),
       ]),
     ]);
@@ -4932,9 +4935,9 @@ export class Settings {
       "Google Cloud Console → enable Gmail, Drive, Docs, Sheets, and Calendar APIs → create a Desktop app OAuth client → add your own Google account as the only personal-use user. Sign-in uses PKCE on a temporary localhost callback. The consent asks for Gmail access, full Drive access (including existing files), and Calendar access; Docs and Sheets use the Drive scope. Full Drive is a restricted Google scope and public apps may require verification/security assessment. For personal use, Google may still show an unverified-app warning. This is not public-release approval.",
     ]);
     const vaultHint = status?.vaultInitialized === false
-      ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Initialize the encrypted vault in Settings → System → Secrets before connecting Gmail."])
+      ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Initialize the encrypted vault in Settings → System → Secrets before connecting the Google account."])
       : status?.vaultUnlocked === false
-        ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Unlock the encrypted vault in Settings → System → Secrets before connecting or using Gmail."])
+        ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Unlock the encrypted vault in Settings → System → Secrets before connecting or using Google Workspace."])
         : null;
     const fields = el("div", { class: "settings__stack" }, [
       el("label", { class: "modal__field" }, [el("span", { class: "lbl" }, ["Desktop OAuth client ID"]), clientId]),
@@ -4990,7 +4993,8 @@ export class Settings {
       void (async () => {
         connect.disabled = true;
         try {
-          const flow = await gateway.request("gmail.connect", {}) as { flow: string; authUrl: string };
+          const connectMethod = workspaceEnabled.checked ? "googleWorkspace.connect" : "gmail.connect";
+          const flow = await gateway.request(connectMethod, {}) as { flow: string; authUrl: string };
           activeFlow = flow.flow;
           authLink.href = flow.authUrl;
           authLink.hidden = false;
@@ -5047,7 +5051,7 @@ export class Settings {
           workspaceStatus?.enabled ? workspaceStatus.usable ? "Enabled · connected" : "Enabled · connect or unlock vault" : "Disabled",
         ]),
       ]),
-      el("p", { class: "hint" }, ["Calendar watch notifications need a public HTTPS callback. Shared Drives need a qualifying Google Workspace account; personal Google accounts do not support them."]),
+      el("p", { class: "hint" }, ["Google's consent lists Drive and Calendar scopes. Docs and Sheets are covered by the Drive scope, so they will not appear as separate permission prompts. Calendar watch notifications need a public HTTPS callback; Shared Drives need an eligible Workspace account."]),
     ]);
     if (workspaceStatus?.error) workspaceCard.append(el("p", { class: "hint hint--err", role: "status" }, [workspaceStatus.error]));
     if (workspaceStatus?.reauthorizationRequired) workspaceCard.append(el("p", { class: "hint hint--err", role: "status" }, ["This Google account has an older Gmail-only grant. Tap Reauthorize Google access above to approve Drive and Calendar scopes."]));
