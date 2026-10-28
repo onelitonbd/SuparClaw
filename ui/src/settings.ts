@@ -7686,7 +7686,8 @@ export class Settings {
     const vaultHost = el("div", {});
     const vaultStrip = this.#statusStrip();
     vaultStrip.set("loading", "", "Reading encrypted vault metadata from the daemon.");
-    const vaultNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, ["Loading vault status…"]);
+    const vaultNote = el("p", { class: "hint vault-status-note", "aria-live": "polite" }, ["Loading vault status…"]);
+    const vaultRefreshNote = el("span", { class: "setfoot__note", "aria-live": "polite" }, [""]);
     const refreshVault = async (): Promise<void> => {
       vaultHost.innerHTML = "";
       try {
@@ -7700,6 +7701,7 @@ export class Settings {
           button.onclick = async () => {
             button.disabled = true;
             try { await run(); }
+            catch (err) { setNote(`Action failed: ${(err as Error).message}`); }
             finally { button.disabled = false; }
           };
           return button;
@@ -7764,19 +7766,26 @@ export class Settings {
         }
 
         if (status?.initialized) {
-          const nameInput = el("input", { class: "inp mono", type: "text", placeholder: "SERVICE_API_KEY", autocomplete: "off", autocapitalize: "characters", spellcheck: "false" }) as HTMLInputElement;
-          const descInput = el("input", { class: "inp", type: "text", placeholder: "What should the user enter, and what uses it?", autocomplete: "off" }) as HTMLInputElement;
-          const kind = el("select", { class: "inp" }, [el("option", { value: "secret" }, ["Secret"]), el("option", { value: "variable" }, ["Variable"])]) as HTMLSelectElement;
-          controls.push(this.#section("Add a named entry", "name + description", [
-            row("Name (uppercase environment style)", nameInput), row("Kind", kind), row("Description", descInput),
-            actionButton("Add name", async () => {
-              const name = nameInput.value.trim();
-              const result: any = await gateway.request("vault.define", { name, kind: kind.value, description: descInput.value });
-              if (!result?.ok) { setNote(String(result?.error ?? "Could not add entry.")); return; }
-              nameInput.value = ""; descInput.value = "";
-              setNote(`Added ${name}. Enter its value below.`);
-              await refreshVault();
-            }),
+          const nameInput = el("input", { class: "inp mono", type: "text", placeholder: "SERVICE_API_KEY", autocomplete: "off", autocapitalize: "characters", spellcheck: "false", "aria-label": "Secret or variable name" }) as HTMLInputElement;
+          const descInput = el("input", { class: "inp", type: "text", placeholder: "Optional: what is this value used for?", autocomplete: "off", "aria-label": "Optional description" }) as HTMLInputElement;
+          const kind = el("select", { class: "inp", "aria-label": "Entry kind" }, [el("option", { value: "secret" }, ["Secret"]), el("option", { value: "variable" }, ["Variable"])]) as HTMLSelectElement;
+          const addNameButton = actionButton("Add name", async () => {
+            const name = nameInput.value.trim().toUpperCase();
+            if (!name) { setNote("Enter a name for this entry first."); nameInput.focus(); return; }
+            const entryKind = kind.value || "secret";
+            const description = descInput.value.trim() || (entryKind === "secret"
+              ? "User-managed secret; no description provided."
+              : "User-managed variable; no description provided.");
+            const result: any = await gateway.request("vault.define", { name, kind: entryKind, description });
+            if (!result?.ok) { setNote(String(result?.error ?? "Could not add entry.")); return; }
+            nameInput.value = ""; descInput.value = "";
+            setNote(`Added ${name}. Enter its value below.`);
+            await refreshVault();
+          });
+          addNameButton.classList.add("vault-add");
+          controls.push(this.#section("Add a named entry", "name + kind", [
+            row("Name (uppercase environment style)", nameInput), row("Kind", kind), row("Description (optional)", descInput),
+            addNameButton,
           ]));
           if (entries.length) {
             const entryRows = entries.map((entry: any) => {
@@ -7834,13 +7843,15 @@ export class Settings {
     const refreshVaultButton = el("button", { class: "btn", type: "button" }, ["Refresh status"]) as HTMLButtonElement;
     refreshVaultButton.onclick = async () => {
       refreshVaultButton.disabled = true;
-      try { await refreshVault(); vaultNote.textContent = `Refreshed at ${stamp()}.`; }
+      try { await refreshVault(); vaultRefreshNote.textContent = `Refreshed at ${stamp()}.`; }
+      catch (err) { vaultRefreshNote.textContent = `Refresh failed: ${(err as Error).message}`; }
       finally { refreshVaultButton.disabled = false; }
     };
     body.append(card("sys-task-vault", "Task & tool vault", "User-managed named values, separate from provider authentication and config SecretRefs.", [
       vaultStrip.node,
+      vaultNote,
       vaultHost,
-      foot(vaultNote, [refreshVaultButton]),
+      foot(vaultRefreshNote, [refreshVaultButton]),
     ]));
     void refreshVault();
 

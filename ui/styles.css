@@ -2647,6 +2647,23 @@ html[data-theme-mode='dark'] .modal {
 .settings .setgrid > .setfield { margin-top: 0; }
 .settings .setfield > .hint { margin-top: 6px; }
 
+/* The vault value controls live inside a field, not as direct card children.
+   Give their footer its own layout instead of relying on the card commit band. */
+.settings .vault-status-note {
+  margin: 10px 0 12px;
+  overflow-wrap: anywhere;
+}
+.settings .vault-add { margin-top: 12px; }
+.settings .vault-entry > .setfoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 10px;
+}
+.settings .vault-entry > .setfoot .setfoot__note { min-width: 0; }
+
 /* The value a field resolves to ("ws://localhost:18790", "stored — ends in wxyz"),
    directly under the control and on the same rhythm as its hint. */
 .settings .setecho { margin-top: 6px; }
@@ -4880,6 +4897,10 @@ html[data-theme-mode='dark'] .settings select.inp {
   }
 
   .settings .setfoot .btn { flex: 1 1 100%; }
+
+  .settings .vault-entry > .setfoot { gap: 8px; }
+  .settings .vault-entry > .setfoot .setfoot__note { margin-bottom: 0; }
+  .settings .vault-add { width: 100%; }
 
   .settings .btn { height: 44px; }
 
