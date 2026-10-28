@@ -92,6 +92,10 @@ export interface RunInput {
    * `github_publish` can refuse a publish nobody asked for.
    */
   publishAllowed?: boolean;
+  /** Gmail send/mutation permissions are derived from this turn's user text. */
+  gmailSendAllowed?: boolean;
+  gmailMutateAllowed?: boolean;
+  gmailDeleteDraftAllowed?: boolean;
   onEvent: (event: RunEvent) => void;
 }
 
@@ -139,6 +143,8 @@ export interface LoopDeps {
   selfRuntime?: (sessionKey: string) => SelfRuntime;
   /** Repo operations for a code session (Task 35): status, diff, publish. */
   repoCtl?: RepoCtl;
+  /** Gmail client and current-user intent gates for side-effecting operations. */
+  gmailCtl?: ToolContext["gmailCtl"];
   /** Persistent terminals (Task 52). Owned by the service, shared by every run. */
   terminals?: TerminalCtl;
   /** User-managed encrypted variable/secret vault (Task 59). */
@@ -744,6 +750,10 @@ export class AgentLoop {
         publishAllowed: input.publishAllowed === true,
         repoCtl: this.deps.repoCtl,
         terminals: this.deps.terminals,
+        gmailCtl: this.deps.gmailCtl,
+        gmailSendAllowed: input.gmailSendAllowed === true,
+        gmailMutateAllowed: input.gmailMutateAllowed === true,
+        gmailDeleteDraftAllowed: input.gmailDeleteDraftAllowed === true,
         vault: this.deps.vault,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
