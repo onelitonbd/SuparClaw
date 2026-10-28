@@ -16,6 +16,7 @@ import {
 } from "./gmail.js";
 
 const TOKEN_ENTRY = "SUPARCLAW_GMAIL_REFRESH_TOKEN";
+const CLIENT_SECRET_ENTRY = "SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET";
 const META_FILE = "gmail-account.json";
 
 interface GmailMetadata {
@@ -45,6 +46,7 @@ function writeMetadata(meta: GmailMetadata): void {
 
 export interface GmailAddonStatus {
   configured: boolean;
+  clientSecretConfigured: boolean;
   enabled: boolean;
   connected: boolean;
   usable: boolean;
@@ -74,15 +76,25 @@ export class GmailAddonService {
     private readonly vault: VaultManager,
     private readonly clientId: () => string,
     private readonly enabled: () => boolean,
+    private readonly fetchFn: typeof fetch = fetch,
   ) {}
+
+  #oauthClientSecret(): string | undefined {
+    const resolved = this.vault.resolveForUse([CLIENT_SECRET_ENTRY]);
+    const value = resolved.ok ? resolved.env?.[CLIENT_SECRET_ENTRY]?.trim() : "";
+    return value || undefined;
+  }
 
   status(): GmailAddonStatus {
     const meta = readMetadata();
-    const entry = this.vault.list().find((e) => e.name === TOKEN_ENTRY);
+    const entries = this.vault.list();
+    const entry = entries.find((e) => e.name === TOKEN_ENTRY);
+    const clientSecret = entries.find((e) => e.name === CLIENT_SECRET_ENTRY);
     const connected = Boolean(meta && entry?.configured);
     const usable = connected && this.vault.unlocked;
     return {
       configured: Boolean(this.clientId().trim()),
+      clientSecretConfigured: Boolean(clientSecret?.configured),
       enabled: this.enabled(),
       connected,
       usable,
@@ -109,7 +121,7 @@ export class GmailAddonService {
     }
     if (this.#pending) await this.cancelConnect(this.#pending.id);
     this.#lastError = "";
-    const flow = await beginGmailOAuth({ clientId, scopes: GMAIL_SCOPES });
+    const flow = await beginGmailOAuth({ clientId, clientSecret: this.#oauthClientSecret(), scopes: GMAIL_SCOPES, fetchFn: this.fetchFn });
     const id = randomUUID();
     const done = flow.done.then(async (result) => {
       const saved = await this.vault.setValue(TOKEN_ENTRY, result.tokens.refreshToken ?? "");
@@ -184,7 +196,7 @@ export class GmailAddonService {
     const resolved = this.vault.resolveForUse([TOKEN_ENTRY]);
     if (!resolved.ok || !resolved.env?.[TOKEN_ENTRY]) throw new Error(resolved.error ?? `Gmail is not connected; run sc gmail connect`);
     const refreshToken = resolved.env[TOKEN_ENTRY]!;
-    const token = await refreshGmailAccessToken({ clientId: this.clientId(), refreshToken });
+    const token = await refreshGmailAccessToken({ clientId: this.clientId(), clientSecret: this.#oauthClientSecret(), refreshToken, fetchFn: this.fetchFn });
     this.#cached = token;
     return token.accessToken;
   }

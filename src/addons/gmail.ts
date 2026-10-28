@@ -143,6 +143,8 @@ async function parseOAuthJson(res: Response): Promise<Record<string, unknown>> {
  */
 export async function beginGmailOAuth(opts: {
   clientId: string;
+  /** Google sometimes requires the Desktop client's generated secret at token exchange. */
+  clientSecret?: string;
   scopes?: readonly string[];
   timeoutMs?: number;
   fetchFn?: typeof fetch;
@@ -204,23 +206,30 @@ export async function beginGmailOAuth(opts: {
     const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
     void (async () => {
       try {
+        const tokenForm = new URLSearchParams({
+          client_id: clientId,
+          code,
+          code_verifier: verifier,
+          grant_type: "authorization_code",
+          redirect_uri: redirectUri,
+        });
+        if (opts.clientSecret?.trim()) tokenForm.set("client_secret", opts.clientSecret.trim());
         const tokenRes = await fetchFn(GOOGLE_TOKEN, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            client_id: clientId,
-            code,
-            code_verifier: verifier,
-            grant_type: "authorization_code",
-            redirect_uri: redirectUri,
-          }),
+          body: tokenForm,
           signal: AbortSignal.timeout(20_000),
         });
         const tokenBody = await parseOAuthJson(tokenRes);
         if (!tokenRes.ok || typeof tokenBody["access_token"] !== "string") {
           const error = safeText(tokenBody["error"], 80) || `HTTP ${tokenRes.status}`;
-          sendHtml(res, 400, "Gmail connection failed", `Google could not complete authorization (${error}). Return to SuparClaw and try again.`);
-          await finish(new Error(`Google token exchange failed (${error})`));
+          const detail = safeText(tokenBody["error_description"], 180);
+          const reason = detail ? `${error}: ${detail}` : error;
+          const secretHint = error === "invalid_request" && /client_secret is missing/i.test(detail)
+            ? " Add the Desktop OAuth client secret in Gmail settings, save, then reconnect."
+            : "";
+          sendHtml(res, 400, "Gmail connection failed", `Google could not complete authorization (${reason}).${secretHint} Return to SuparClaw and try again.`);
+          await finish(new Error(`Google token exchange failed (${reason})${secretHint}`));
           return;
         }
         const tokens: GmailTokenSet = {
@@ -599,19 +608,24 @@ export class GmailApi {
 /** Refresh a token only when it is expiring; caller owns persisted refresh token. */
 export async function refreshGmailAccessToken(opts: {
   clientId: string;
+  clientSecret?: string;
   refreshToken: string;
   fetchFn?: typeof fetch;
 }): Promise<GmailTokenSet> {
+  const form = new URLSearchParams({ client_id: opts.clientId, refresh_token: opts.refreshToken, grant_type: "refresh_token" });
+  if (opts.clientSecret?.trim()) form.set("client_secret", opts.clientSecret.trim());
   const res = await (opts.fetchFn ?? fetch)(GOOGLE_TOKEN, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: opts.clientId, refresh_token: opts.refreshToken, grant_type: "refresh_token" }),
+    body: form,
     signal: AbortSignal.timeout(20_000),
   });
   const data = await parseOAuthJson(res);
   if (!res.ok || typeof data["access_token"] !== "string") {
     const error = safeText(data["error"], 80) || `HTTP ${res.status}`;
-    throw new Error(error === "invalid_grant" ? "Gmail authorization expired or was revoked — reconnect Gmail" : `Google token refresh failed (${error})`);
+    const detail = safeText(data["error_description"], 180);
+    const reason = detail ? `${error}: ${detail}` : error;
+    throw new Error(error === "invalid_grant" ? "Gmail authorization expired or was revoked — reconnect Gmail" : `Google token refresh failed (${reason})`);
   }
   return {
     accessToken: String(data["access_token"]),

@@ -15,6 +15,7 @@ const {
   GMAIL_API,
   GMAIL_SCOPES,
   beginGmailOAuth,
+  refreshGmailAccessToken,
   buildRegistry,
   emptyConfig,
   gmailDraftDeleteRequested,
@@ -50,7 +51,7 @@ const oauthFetch = (seen) => async (input, init = {}) => {
 
 test("OAuth uses desktop PKCE loopback, checks state, grants all Gmail scopes, and never returns tokens in callback HTML", async () => {
   const seen = {};
-  const flow = await beginGmailOAuth({ clientId: "desktop-client-id.apps.googleusercontent.com", fetchFn: oauthFetch(seen), timeoutMs: 20_000 });
+  const flow = await beginGmailOAuth({ clientId: "desktop-client-id.apps.googleusercontent.com", clientSecret: "desktop-client-secret", fetchFn: oauthFetch(seen), timeoutMs: 20_000 });
   const authorization = new URL(flow.authUrl);
   assert.equal(authorization.origin, "https://accounts.google.com");
   assert.equal(authorization.searchParams.get("redirect_uri"), flow.redirectUri);
@@ -78,7 +79,56 @@ test("OAuth uses desktop PKCE loopback, checks state, grants all Gmail scopes, a
   assert.equal(createHash("sha256").update(verifier).digest("base64url"), authorization.searchParams.get("code_challenge"));
   assert.equal(seen.tokenForm.get("redirect_uri"), flow.redirectUri);
   assert.equal(seen.tokenForm.get("grant_type"), "authorization_code");
+  assert.equal(seen.tokenForm.get("client_secret"), "desktop-client-secret");
   await flow.cancel();
+});
+
+test("OAuth includes the optional client secret and surfaces Google's sanitized token error detail", async () => {
+  let seenForm;
+  const flow = await beginGmailOAuth({
+    clientId: "desktop-client-id",
+    clientSecret: "desktop-client-secret",
+    timeoutMs: 20_000,
+    fetchFn: async (_input, init = {}) => {
+      seenForm = new URLSearchParams(init.body);
+      return json({ error: "invalid_request", error_description: "client_secret is missing." }, 400);
+    },
+  });
+  const result = flow.done.catch((error) => error);
+  const authorization = new URL(flow.authUrl);
+  const callback = new URL(flow.redirectUri);
+  callback.searchParams.set("state", authorization.searchParams.get("state"));
+  callback.searchParams.set("code", "one-time-code");
+  const response = await fetch(callback);
+  const html = await response.text();
+  const error = await result;
+  assert.equal(seenForm.get("client_secret"), "desktop-client-secret");
+  assert.match(html, /invalid_request: client_secret is missing/);
+  assert.match(html, /Add the Desktop OAuth client secret in Gmail settings/);
+  assert.match(error.message, /client_secret is missing/);
+  assert.doesNotMatch(html, /one-time-code|desktop-client-secret/);
+});
+
+test("refresh sends the optional client secret and preserves safe Google error details", async () => {
+  let form;
+  await refreshGmailAccessToken({
+    clientId: "desktop-client-id",
+    clientSecret: "desktop-client-secret",
+    refreshToken: "refresh-token",
+    fetchFn: async (_input, init = {}) => {
+      form = new URLSearchParams(init.body);
+      return json({ access_token: "access-token", expires_in: 3600, scope: GMAIL_SCOPES.join(" ") });
+    },
+  });
+  assert.equal(form.get("client_secret"), "desktop-client-secret");
+  assert.equal(form.get("refresh_token"), "refresh-token");
+
+  await assert.rejects(refreshGmailAccessToken({
+    clientId: "desktop-client-id",
+    clientSecret: "desktop-client-secret",
+    refreshToken: "refresh-token",
+    fetchFn: async () => json({ error: "invalid_request", error_description: "client_secret is missing." }, 400),
+  }), /invalid_request: client_secret is missing/);
 });
 
 test("OAuth rejects a mismatched state and can be cancelled cleanly", async () => {
@@ -123,6 +173,42 @@ test("OAuth refuses a consent response that omitted requested scopes or offline 
   callback2.searchParams.set("code", "code");
   assert.equal((await fetch(callback2)).status, 400);
   assert.match((await noRefreshDone).message, /did not return a refresh token/);
+});
+
+test("Gmail service reads the OAuth client secret from the encrypted vault for connect", async () => {
+  const previousHome = process.env.SUPARCLAW_HOME;
+  const home = mkdtempSync(join(tmpdir(), "sc-gmail-oauth-secret-"));
+  process.env.SUPARCLAW_HOME = home;
+  const vault = new VaultManager();
+  let service;
+  try {
+    assert.equal((await vault.initialize("gmail oauth secret test passphrase")).ok, true);
+    assert.equal(vault.define({ name: "SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET", kind: "secret", description: "OAuth client secret for Gmail" }).ok, true);
+    assert.equal((await vault.setValue("SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET", "desktop-client-secret-never-plaintext")).ok, true);
+    const seen = {};
+    service = new GmailAddonService(vault, () => "desktop-client-id", () => true, oauthFetch(seen));
+    assert.equal(service.status().clientSecretConfigured, true);
+    const started = await service.startConnect();
+    const completion = service.waitConnect(started.flow);
+    const authorization = new URL(started.authUrl);
+    const callback = new URL(started.redirectUri);
+    callback.searchParams.set("state", authorization.searchParams.get("state"));
+    callback.searchParams.set("code", "one-time-code");
+    assert.match(await (await fetch(callback)).text(), /Gmail connected/);
+    assert.deepEqual(await completion, { email: "owner@example.com", scopes: [...GMAIL_SCOPES] });
+    assert.equal(seen.tokenForm.get("client_secret"), "desktop-client-secret-never-plaintext");
+    const vaultFile = readFileSync(join(home, ".suparclaw", "vault.json"), "utf8");
+    assert.equal(vaultFile.includes("desktop-client-secret-never-plaintext"), false);
+    assert.equal(vaultFile.includes("refresh-secret-for-test"), false);
+    assert.equal(service.status().connected, true);
+    await service.disconnect();
+    assert.equal(service.status().clientSecretConfigured, true, "disconnect keeps OAuth client configuration in the vault");
+  } finally {
+    await service?.close();
+    vault.close();
+    if (previousHome === undefined) delete process.env.SUPARCLAW_HOME;
+    else process.env.SUPARCLAW_HOME = previousHome;
+  }
 });
 
 test("Gmail service keeps refresh tokens encrypted in the vault and clears metadata on disconnect", async () => {

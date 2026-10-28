@@ -4886,7 +4886,7 @@ export class Settings {
   async #renderGmail(cfg: { enabled?: boolean; clientId?: string }): Promise<void> {
     const stack = el("div", { class: "settings__stack" });
     this.#root.append(stack);
-    type Status = { configured: boolean; enabled: boolean; connected: boolean; usable: boolean; account: string; scopes: string[]; connectedAt: string; connecting: boolean; vaultInitialized: boolean; vaultUnlocked: boolean; error?: string };
+    type Status = { configured: boolean; clientSecretConfigured?: boolean; enabled: boolean; connected: boolean; usable: boolean; account: string; scopes: string[]; connectedAt: string; connecting: boolean; vaultInitialized: boolean; vaultUnlocked: boolean; error?: string };
     let status: Status | null = null;
     try { status = await gateway.request("gmail.status", {}) as Status; } catch { /* disconnected gateway */ }
 
@@ -4917,10 +4917,14 @@ export class Settings {
       placeholder: "Google Desktop OAuth client ID",
       value: String(cfg.clientId ?? ""),
     }) as HTMLInputElement;
+    const clientSecret = el("input", {
+      class: "inp mono", id: "gm-client-secret", type: "password", autocomplete: "new-password", spellcheck: "false",
+      placeholder: status?.clientSecretConfigured ? "Saved in encrypted vault · leave blank to keep" : "Optional · enter if Google requests it",
+    }) as HTMLInputElement;
     const enabled = el("input", { type: "checkbox", id: "gm-enabled" }) as HTMLInputElement;
     enabled.checked = cfg.enabled === true;
     const setup = el("p", { class: "hint" }, [
-      "Google Cloud Console → enable Gmail API → create a Desktop app OAuth client → add your own Google account as the only personal-use user. Google's device-code flow cannot request Gmail scopes; SuparClaw uses PKCE and a temporary localhost callback. Production-but-unverified is for your own account only; Google may show an unverified-app warning. This is not public-release approval.",
+      "Google Cloud Console → enable Gmail API → create a Desktop app OAuth client → add your own Google account as the only personal-use user. Google's device-code flow cannot request Gmail scopes; SuparClaw uses PKCE and a temporary localhost callback. If Google reports that client_secret is missing, enter the Desktop client's secret above; it is stored only in the encrypted vault. Production-but-unverified is for your own account only; Google may show an unverified-app warning. This is not public-release approval.",
     ]);
     const vaultHint = status?.vaultInitialized === false
       ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Initialize the encrypted vault in Settings → System → Secrets before connecting Gmail."])
@@ -4929,6 +4933,7 @@ export class Settings {
         : null;
     const fields = el("div", { class: "settings__stack" }, [
       el("label", { class: "modal__field" }, [el("span", { class: "lbl" }, ["Desktop OAuth client ID"]), clientId]),
+      el("label", { class: "modal__field" }, [el("span", { class: "lbl" }, ["Desktop OAuth client secret (optional)"]), clientSecret]),
       el("label", { class: "row" }, [el("span", { class: "row__label" }, ["Enable Gmail tools"]), el("span", { class: "row__value" }, [enabled])]),
       setup,
       ...(vaultHint ? [vaultHint] : []),
@@ -4936,13 +4941,31 @@ export class Settings {
     const save = el("button", { class: "btn", id: "gm-save", type: "button" }, ["Save settings"]);
     save.onclick = async () => {
       save.disabled = true;
+      const secretValue = clientSecret.value.trim();
       try {
+        if (secretValue) {
+          if (status?.vaultInitialized !== true || status.vaultUnlocked !== true) {
+            throw new Error("Initialize and unlock the encrypted vault before saving the OAuth client secret.");
+          }
+          const secretName = "SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET";
+          const vault: any = await gateway.request("vault.status", {});
+          if (!(vault.entries ?? []).some((entry: any) => entry.name === secretName)) {
+            const defined: any = await gateway.request("vault.define", {
+              name: secretName,
+              kind: "secret",
+              description: "Google Desktop OAuth client secret for SuparClaw Gmail token exchange and refresh.",
+            });
+            if (!defined?.ok) throw new Error(String(defined?.error ?? "Could not prepare encrypted storage for the Gmail OAuth secret."));
+          }
+          const stored: any = await gateway.request("vault.set", { name: secretName, value: secretValue });
+          if (!stored?.ok) throw new Error(String(stored?.error ?? "Could not save the Gmail OAuth secret in the encrypted vault."));
+        }
         await gateway.request("config.set", { path: "addons.gmail.clientId", value: clientId.value.trim() });
         await gateway.request("config.set", { path: "addons.gmail.enabled", value: enabled.checked });
         toast("Gmail settings saved", "ok");
         void this.render();
       } catch (err) { toast((err as Error).message, "err"); }
-      finally { save.disabled = false; }
+      finally { clientSecret.value = ""; save.disabled = false; }
     };
     const connect = el("button", { class: "btn pri", id: "gm-connect", type: "button" }, [status?.connected ? "Reconnect Gmail" : "Connect Gmail"]);
     connect.disabled = !clientId.value.trim() || !enabled.checked || status?.vaultUnlocked !== true || status?.connecting === true;

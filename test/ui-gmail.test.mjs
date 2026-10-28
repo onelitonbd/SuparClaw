@@ -11,7 +11,8 @@ import { build } from "esbuild";
 const outDir = mkdtempSync(join(tmpdir(), "sc-ui-gmail-"));
 const rpcStub = join(outDir, "rpc-stub.mjs");
 writeFileSync(rpcStub, `
-let status = { configured: true, enabled: true, connected: false, usable: false, account: "", scopes: [], connectedAt: "", connecting: false, vaultInitialized: true, vaultUnlocked: true };
+let status = { configured: true, clientSecretConfigured: false, enabled: true, connected: false, usable: false, account: "", scopes: [], connectedAt: "", connecting: false, vaultInitialized: true, vaultUnlocked: true };
+const vaultEntries = [];
 export const gateway = {
   state: "online",
   async request(method, params = {}) {
@@ -21,7 +22,11 @@ export const gateway = {
     if (method === "tools.list") return { tools: [] };
     if (method === "skills.list") return { skills: [] };
     if (method === "models.plugins") return { plugins: [] };
+    if (method === "vault.status") return { initialized: true, unlocked: true, entries: structuredClone(vaultEntries) };
+    if (method === "vault.define") { vaultEntries.push({ name: params.name, configured: false }); return { ok: true }; }
+    if (method === "vault.set") { const entry = vaultEntries.find((item) => item.name === params.name); if (entry) entry.configured = true; return { ok: true }; }
     if (method === "gmail.status") {
+      status = { ...status, clientSecretConfigured: vaultEntries.some((entry) => entry.name === "SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET" && entry.configured) };
       if (status.connecting && globalThis.__GMAIL_COMPLETE === true) status = { ...status, connected: true, usable: true, connecting: false, account: "owner@example.com", scopes: ["https://www.googleapis.com/auth/gmail.modify"] };
       return structuredClone(status);
     }
@@ -76,8 +81,11 @@ test("Gmail settings render connected-vault guidance and wire save/connect/popup
     assert.match(root.textContent, /Not connected/);
     let connect = root.querySelector("#gm-connect");
     const save = root.querySelector("#gm-save");
-    assert.ok(connect && save);
+    const clientSecret = root.querySelector("#gm-client-secret");
+    assert.ok(connect && save && clientSecret);
+    assert.equal(clientSecret.type, "password", "the OAuth secret is never shown as plain text");
     assert.equal(connect.disabled, false, "connect is enabled only when config and unlocked vault are ready");
+    clientSecret.value = "test-desktop-client-secret";
 
     await save.onclick();
     const saved = globalThis.__GMAIL_CALLS.filter((call) => call.method === "config.set");
@@ -85,6 +93,9 @@ test("Gmail settings render connected-vault guidance and wire save/connect/popup
       ["addons.gmail.clientId", "desktop-client-id"],
       ["addons.gmail.enabled", true],
     ]);
+    assert.ok(globalThis.__GMAIL_CALLS.some((call) => call.method === "vault.define" && call.params.name === "SUPARCLAW_GMAIL_OAUTH_CLIENT_SECRET"));
+    assert.ok(globalThis.__GMAIL_CALLS.some((call) => call.method === "vault.set" && call.params.value === "test-desktop-client-secret"));
+    assert.equal(clientSecret.value, "", "the secret field clears after save");
     await flush(10);
     connect = root.querySelector("#gm-connect");
 
