@@ -68,6 +68,8 @@ import { BUILD_STAMP } from "../util/build-stamp.js";
 import { fetchModels } from "../config/providers.js";
 import { TelegramChannel, describeError, probeTelegramApi, telegramProxy } from "../channels/telegram.js";
 import { Scheduler } from "../cron/scheduler.js";
+import { GmailAddonService } from "../addons/gmail-service.js";
+import { gmailDraftDeleteRequested, gmailMutationRequested, gmailSendRequested } from "../addons/gmail-intent.js";
 
 export interface ChatPayload {
   sessionKey: string;
@@ -143,6 +145,8 @@ export class Service {
   /** Task 52: the persistent shells the `terminal` tool drives and the UI watches. */
   readonly terminals: TerminalManager;
   readonly vault: VaultManager;
+  /** Gmail OAuth/API lifecycle; refresh credentials remain encrypted in the vault. */
+  readonly gmailAddon: GmailAddonService;
 
   #telegram: TelegramChannel | null = null;
   #cron: Scheduler | null = null;
@@ -297,6 +301,11 @@ export class Service {
     this.store = Store.open(dbPath());
     this.store.setMeta("state_dir", stateDir());
     this.vault = new VaultManager();
+    this.gmailAddon = new GmailAddonService(
+      this.vault,
+      () => this.config.addons.gmail.clientId,
+      () => this.config.addons.gmail.enabled,
+    );
     const config = this.configSvc.current;
     // Auth-profile binding: providers resolve credentials from the stored
     // profiles (literal keys untouched); health outcomes flow back to the
@@ -337,6 +346,7 @@ export class Service {
       selfRuntime: (key) => this.#selfRuntime(key),
       repoCtl: this.#repoCtl(),
       terminals: this.terminals,
+      gmailCtl: { api: () => this.gmailAddon.api() },
       vault: this.vault,
       onRunFinished: (key, info) => this.#subagents?.onRunFinished(key, info),
     });
@@ -475,6 +485,28 @@ export class Service {
         return { url: res.prUrl, number: res.prNumber, branch: res.branch, draft: res.draft };
       },
     };
+  }
+
+  // ---- Gmail add-on --------------------------------------------------------
+
+  gmailStatus() {
+    return this.gmailAddon.status();
+  }
+
+  gmailConnectStart() {
+    return this.gmailAddon.startConnect();
+  }
+
+  gmailConnectWait(flow: string) {
+    return this.gmailAddon.waitConnect(flow);
+  }
+
+  gmailConnectCancel(flow?: string) {
+    return this.gmailAddon.cancelConnect(flow);
+  }
+
+  gmailDisconnect() {
+    return this.gmailAddon.disconnect();
   }
 
   /** Current GitHub credentials, or null (env → gh CLI → stored token). */
@@ -1969,6 +2001,9 @@ export class Service {
       // Task 35, layer 2: the publish tool refuses unless THIS turn asked for a
       // PR. Matched on the user's text, never on the model's intention.
       publishAllowed: payload.publish === true || publishRequested(text),
+      gmailSendAllowed: gmailSendRequested(text),
+      gmailMutateAllowed: gmailMutationRequested(text),
+      gmailDeleteDraftAllowed: gmailDraftDeleteRequested(text),
       onEvent: (event) => {
         // Reply-usage footer (P2 #15 / Task 23): a FIELD on the final event, not
         // text baked into the reply. The transcript row carries the numbers and
@@ -2345,6 +2380,7 @@ export class Service {
     // Shells die with the daemon — say so plainly rather than pretending a
     // terminal survives a restart.
     this.terminals.stop();
+    await this.gmailAddon.close();
     this.vault.close();
     await this.#telegram?.stop();
     this.store.close();

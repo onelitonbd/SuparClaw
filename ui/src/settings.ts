@@ -10,7 +10,7 @@ import { connectDialog } from "./repo.js";
 
 type Provider = { baseUrl: string; apiKey: string; models?: string[]; headers?: Record<string, string> };
 
-type TabId = "model" | "models" | "providers" | "channels" | "github" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
+type TabId = "model" | "models" | "providers" | "channels" | "github" | "gmail" | "usage" | "skills" | "tools" | "memory" | "automations" | "alerts" | "config" | "gateway" | "runtime" | "system";
 
 const TABS: { id: TabId; label: string; group?: string }[] = [
   { id: "model", label: "Defaults", group: "Chat" },
@@ -18,6 +18,7 @@ const TABS: { id: TabId; label: string; group?: string }[] = [
   { id: "providers", label: "Providers", group: "Chat" },
   { id: "channels", label: "Channels", group: "Integrations" },
   { id: "github", label: "GitHub", group: "Integrations" },
+  { id: "gmail", label: "Gmail", group: "Integrations" },
   { id: "usage", label: "Usage", group: "Monitoring" },
   { id: "skills", label: "Skills", group: "Agent" },
   { id: "tools", label: "Tools", group: "Agent" },
@@ -37,6 +38,7 @@ const TAB_ALIASES: Record<string, TabId> = {
   providers: "providers",
   channels: "channels",
   github: "github",
+  gmail: "gmail",
   usage: "usage",
   skills: "skills",
   tools: "tools",
@@ -87,6 +89,11 @@ const TAB_META: Record<TabId, { icon: string; desc: string; keywords: string }> 
     icon: glyph('<path d="M9 19c-4 1.2-4-2-5.5-2.5"/><path d="M15 21v-3.4a2.9 2.9 0 0 0-.8-2.3c2.7-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.3 4.3 0 0 0-.1-3.2s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.5 2.6 5.5 2.9 5.5 2.9a4.3 4.3 0 0 0-.1 3.2A4.6 4.6 0 0 0 4.1 9.3c0 4.6 2.8 5.7 5.5 6a2.9 2.9 0 0 0-.8 2.3V21"/>'),
     desc: "Connect the account the agent clones and pushes with.",
     keywords: "github repo repository clone branch pull request pr oauth device token gh",
+  },
+  gmail: {
+    icon: glyph('<path d="M3.5 6.5 12 13l8.5-6.5"/><rect x="3.5" y="5" width="17" height="14" rx="2"/>'),
+    desc: "Connect Gmail so the agent can search, read, draft, send, and organize mail.",
+    keywords: "gmail google email inbox message thread search draft send labels attachment oauth",
   },
   usage: {
     icon: glyph('<path d="M5 20V11"/><path d="M12 20V5"/><path d="M19 20v-6"/>'),
@@ -353,6 +360,7 @@ export class Settings {
     } else if (this.#tab === "providers") this.#renderProviders(providers, config, authProfiles);
     else if (this.#tab === "channels") this.#renderChannels(config.channels ?? {});
     else if (this.#tab === "github") await this.#renderGitHub(config.addons?.github ?? {});
+    else if (this.#tab === "gmail") await this.#renderGmail(config.addons?.gmail ?? {});
     else if (this.#tab === "usage") void this.#renderUsage();
     else if (this.#tab === "skills") this.#renderSkills(skills);
     else if (this.#tab === "tools") await this.#renderTools(tools, config);
@@ -380,6 +388,7 @@ export class Settings {
         providers: "providers",
         channels: "channels",
         github: "github",
+        gmail: "gmail",
         usage: "usage",
         skills: "skills",
         tools: "tools",
@@ -4870,6 +4879,131 @@ export class Settings {
       row.append(out);
     }
     card.append(row);
+    stack.append(card);
+  }
+
+  /** Native Gmail add-on: local PKCE connection, encrypted refresh-token status, full tool capability. */
+  async #renderGmail(cfg: { enabled?: boolean; clientId?: string }): Promise<void> {
+    const stack = el("div", { class: "settings__stack" });
+    this.#root.append(stack);
+    type Status = { configured: boolean; enabled: boolean; connected: boolean; usable: boolean; account: string; scopes: string[]; connectedAt: string; connecting: boolean; vaultInitialized: boolean; vaultUnlocked: boolean; error?: string };
+    let status: Status | null = null;
+    try { status = await gateway.request("gmail.status", {}) as Status; } catch { /* disconnected gateway */ }
+
+    const card = el("div", { class: "card" }, [
+      el("div", { class: "setcard__head" }, [
+        el("h3", {}, ["Gmail"]),
+        el("p", { class: "hint" }, ["Full Gmail tools for search, reading, attachments, drafts, sending, labels, and trash/restore. The refresh token is stored in the encrypted vault, never in config or agent context."]),
+      ]),
+    ]);
+    const account = el("span", { class: "row__value mono", id: "gm-account" }, [status?.connected ? status.account : "Not connected"]);
+    const state = el("span", { class: "row__value", id: "gm-state" }, [
+      status?.connecting ? "Waiting for Google consent…" : status?.connected ? status.usable ? "Connected · ready" : "Connected · vault locked" : "Not connected",
+    ]);
+    card.append(
+      el("div", { class: "row", "data-gm-key": "account" }, [el("span", { class: "row__label" }, ["Account"]), account]),
+      el("div", { class: "row", "data-gm-key": "status" }, [el("span", { class: "row__label" }, ["Status"]), state]),
+    );
+    if (status?.connected) {
+      card.append(el("div", { class: "row", "data-gm-key": "scopes" }, [
+        el("span", { class: "row__label" }, ["Granted scopes"]),
+        el("span", { class: "row__value mono" }, [status.scopes.map((s) => s.split("/").at(-1)).join(", ")]),
+      ]));
+    }
+    if (status?.error) card.append(el("p", { class: "hint hint--err", id: "gm-error", role: "status" }, [status.error]));
+
+    const clientId = el("input", {
+      class: "inp mono", id: "gm-client-id", type: "text", autocomplete: "off", spellcheck: "false",
+      placeholder: "Google Desktop OAuth client ID",
+      value: String(cfg.clientId ?? ""),
+    }) as HTMLInputElement;
+    const enabled = el("input", { type: "checkbox", id: "gm-enabled" }) as HTMLInputElement;
+    enabled.checked = cfg.enabled === true;
+    const setup = el("p", { class: "hint" }, [
+      "Google Cloud Console → enable Gmail API → create a Desktop app OAuth client → add your own Google account as the only personal-use user. Google's device-code flow cannot request Gmail scopes; SuparClaw uses PKCE and a temporary localhost callback. Production-but-unverified is for your own account only; Google may show an unverified-app warning. This is not public-release approval.",
+    ]);
+    const vaultHint = status?.vaultInitialized === false
+      ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Initialize the encrypted vault in Settings → System → Secrets before connecting Gmail."])
+      : status?.vaultUnlocked === false
+        ? el("p", { class: "hint hint--err", "data-gm-key": "vault" }, ["Unlock the encrypted vault in Settings → System → Secrets before connecting or using Gmail."])
+        : null;
+    const fields = el("div", { class: "settings__stack" }, [
+      el("label", { class: "modal__field" }, [el("span", { class: "lbl" }, ["Desktop OAuth client ID"]), clientId]),
+      el("label", { class: "row" }, [el("span", { class: "row__label" }, ["Enable Gmail tools"]), el("span", { class: "row__value" }, [enabled])]),
+      setup,
+      ...(vaultHint ? [vaultHint] : []),
+    ]);
+    const save = el("button", { class: "btn", id: "gm-save", type: "button" }, ["Save settings"]);
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        await gateway.request("config.set", { path: "addons.gmail.clientId", value: clientId.value.trim() });
+        await gateway.request("config.set", { path: "addons.gmail.enabled", value: enabled.checked });
+        toast("Gmail settings saved", "ok");
+        void this.render();
+      } catch (err) { toast((err as Error).message, "err"); }
+      finally { save.disabled = false; }
+    };
+    const connect = el("button", { class: "btn pri", id: "gm-connect", type: "button" }, [status?.connected ? "Reconnect Gmail" : "Connect Gmail"]);
+    connect.disabled = !clientId.value.trim() || !enabled.checked || status?.vaultUnlocked !== true || status?.connecting === true;
+    let activeFlow = "";
+    const authLink = el("a", { class: "btn", id: "gm-auth-link", target: "_blank", rel: "noopener noreferrer", hidden: "" }, ["Open Google sign-in"]);
+    let authPopup: Window | null = null;
+    const refreshStatus = async (): Promise<Status | null> => {
+      try { return await gateway.request("gmail.status", {}) as Status; } catch { return null; }
+    };
+    connect.onclick = () => {
+      // Open a blank tab synchronously within the click so mobile browsers do not
+      // block the OAuth navigation after the asynchronous RPC completes.
+      authPopup = window.open("about:blank", "_blank");
+      if (authPopup) authPopup.opener = null;
+      void (async () => {
+        connect.disabled = true;
+        try {
+          const flow = await gateway.request("gmail.connect", {}) as { flow: string; authUrl: string };
+          activeFlow = flow.flow;
+          authLink.href = flow.authUrl;
+          authLink.hidden = false;
+          cancel.hidden = false;
+          state.textContent = "Waiting for Google consent…";
+          if (authPopup) authPopup.location.href = flow.authUrl;
+          else toast("Tap Open Google sign-in to continue", "info");
+          toast("Approve Gmail access in Google, then return here", "info");
+          for (let i = 0; i < 240; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+            const latest = await refreshStatus();
+            if (latest?.error && !latest.connecting) { cancel.hidden = true; authPopup?.close(); authPopup = null; toast(latest.error, "err"); break; }
+            if (latest?.connected && latest.usable && !latest.connecting) { cancel.hidden = true; authPopup?.close(); authPopup = null; toast(`Gmail connected as ${latest.account}`, "ok"); break; }
+          }
+          void this.render();
+        } catch (err) {
+          authPopup?.close();
+          authPopup = null;
+          cancel.hidden = true;
+          toast((err as Error).message, "err");
+        } finally { connect.disabled = false; }
+      })();
+    };
+    const cancel = el("button", { class: "btn", id: "gm-cancel", type: "button" }, ["Cancel sign-in"]);
+    cancel.hidden = status?.connecting !== true;
+    cancel.onclick = async () => {
+      try {
+        await gateway.request("gmail.cancelConnect", { flow: activeFlow });
+        activeFlow = "";
+        cancel.hidden = true;
+        authPopup?.close();
+        authPopup = null;
+        toast("Gmail sign-in cancelled", "info");
+        void this.render();
+      } catch (err) { toast((err as Error).message, "err"); }
+    };
+    const disconnect = el("button", { class: "btn", id: "gm-disconnect", type: "button" }, ["Disconnect"]);
+    disconnect.hidden = status?.connected !== true;
+    disconnect.onclick = async () => {
+      try { await gateway.request("gmail.disconnect", {}); toast("Gmail disconnected", "ok"); void this.render(); }
+      catch (err) { toast((err as Error).message, "err"); }
+    };
+    card.append(fields, el("div", { class: "row" }, [save, connect, authLink, cancel, disconnect]));
     stack.append(card);
   }
 

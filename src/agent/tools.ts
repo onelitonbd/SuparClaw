@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, appendFileSync, statSync, renameSync, existsSync } from "node:fs";
-import { join, resolve, relative, dirname, extname, sep } from "node:path";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, appendFileSync, statSync, renameSync, existsSync, realpathSync } from "node:fs";
+import { basename, join, resolve, relative, dirname, extname, sep } from "node:path";
 import { gitHead, gitIsFile, gitCommonDir, type GitHead } from "../util/git-head.js";
 import type { SuparClawConfig } from "../config/schema.js";
 import type { Store, JobRow } from "../state/db.js";
@@ -23,6 +23,7 @@ export interface JsonSchema {
 import { explainExecError, type ExecVerdict } from "./exec-policy.js";
 import { execAttempts, fallbackNote, runWithFallback } from "./exec-fallback.js";
 import type { WebSearchCache } from "./web-search.js";
+import { GmailApiError, type GmailApi } from "../addons/gmail.js";
 
 export interface ToolContext {
   workspace: string;
@@ -87,6 +88,12 @@ export interface ToolContext {
    * main run opened. Undefined only in tests that do not need one.
    */
   terminals?: TerminalCtl;
+  /** Gmail API client for the native Gmail add-on. */
+  gmailCtl?: { api(): Promise<GmailApi> };
+  /** User-originated intent gates for Gmail side effects. */
+  gmailSendAllowed?: boolean;
+  gmailMutateAllowed?: boolean;
+  gmailDeleteDraftAllowed?: boolean;
 }
 
 /**
@@ -190,6 +197,75 @@ export interface ToolSpec {
 
 const str = (description: string) => ({ type: "string", description });
 const int = (description: string) => ({ type: "integer", description });
+
+function gmailListArg(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((x) => String(x).trim()).filter(Boolean);
+  if (typeof value === "string") return value.split(",").map((x) => x.trim()).filter(Boolean);
+  return [];
+}
+
+function gmailJson(value: unknown, max = 24_000): string {
+  const json = JSON.stringify(value, null, 2);
+  return json.length > max ? `${json.slice(0, max)}\n[truncated — narrow the query or read one message at a time]` : json;
+}
+
+function gmailNeedClient(ctx: ToolContext): string | null {
+  if (!ctx.gmailCtl) return "error: Gmail integration is not wired in this runtime";
+  if (!ctx.config.addons.gmail.enabled) return "error: Gmail add-on is disabled — enable addons.gmail.enabled in Settings";
+  return null;
+}
+
+async function gmailDraftInput(args: Record<string, unknown>, ctx: ToolContext): Promise<import("../addons/gmail.js").GmailDraftInput> {
+  const attachments: import("../addons/gmail.js").GmailDraftInput["attachments"] = [];
+  let totalAttachmentBytes = 0;
+  const rawFiles = Array.isArray(args["attachments"]) ? args["attachments"] : [];
+  if (rawFiles.length > 5) throw new Error("at most five attachments are supported per message");
+  for (const raw of rawFiles) {
+    if (!raw || typeof raw !== "object") throw new Error("each attachment needs a workspace-relative path");
+    const item = raw as Record<string, unknown>;
+    const path = safePath(ctx.workspace, String(item["path"] ?? ""));
+    const workspaceRoot = realpathSync(ctx.workspace);
+    const actualPath = realpathSync(path);
+    const realRelative = relative(workspaceRoot, actualPath);
+    if (realRelative === ".." || realRelative.startsWith(`..${sep}`)) throw new Error(`attachment path escapes workspace through a symlink: ${String(item["path"] ?? "")}`);
+    const stat = statSync(actualPath);
+    if (!stat.isFile()) throw new Error(`attachment is not a regular file: ${String(item["path"] ?? "")}`);
+    if (stat.size > 18 * 1024 * 1024) throw new Error("an attachment is over the 18 MB limit");
+    totalAttachmentBytes += stat.size;
+    if (totalAttachmentBytes > 18 * 1024 * 1024) throw new Error("combined attachments exceed the 18 MB total limit");
+    attachments.push({
+      filename: String(item["filename"] ?? basename(path)),
+      mimeType: String(item["mimeType"] ?? "application/octet-stream"),
+      data: readFileSync(actualPath),
+    });
+  }
+  return {
+    to: gmailListArg(args["to"]),
+    ...(args["cc"] === undefined ? {} : { cc: gmailListArg(args["cc"]) }),
+    ...(args["bcc"] === undefined ? {} : { bcc: gmailListArg(args["bcc"]) }),
+    subject: String(args["subject"] ?? ""),
+    body: String(args["body"] ?? ""),
+    html: args["html"] === true,
+    ...(args["threadId"] ? { threadId: String(args["threadId"]) } : {}),
+    ...(args["inReplyTo"] ? { inReplyTo: String(args["inReplyTo"]) } : {}),
+    ...(args["references"] ? { references: String(args["references"]) } : {}),
+    ...(attachments.length ? { attachments } : {}),
+  };
+}
+
+async function gmailDraftPatch(args: Record<string, unknown>, ctx: ToolContext): Promise<Partial<import("../addons/gmail.js").GmailDraftInput>> {
+  const full = await gmailDraftInput(args, ctx);
+  const patch: Partial<import("../addons/gmail.js").GmailDraftInput> = {};
+  if (Object.hasOwn(args, "to")) patch.to = full.to;
+  if (Object.hasOwn(args, "cc")) patch.cc = full.cc;
+  if (Object.hasOwn(args, "bcc")) patch.bcc = full.bcc;
+  if (Object.hasOwn(args, "subject")) patch.subject = full.subject;
+  if (Object.hasOwn(args, "body")) patch.body = full.body;
+  if (Object.hasOwn(args, "html")) patch.html = full.html;
+  if (Object.hasOwn(args, "threadId")) patch.threadId = String(args["threadId"] ?? "");
+  if (Object.hasOwn(args, "attachments")) patch.attachments = full.attachments ?? [];
+  return patch;
+}
 
 /** Workspace-scoped path resolution: refuses to escape the workspace. */
 export function safePath(workspace: string, p: string): string {
@@ -1670,6 +1746,307 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         }
       },
   });
+
+  // Gmail add-on — full 29-operation coverage grouped into seven coherent tools.
+  // These remain discoverable while disconnected and fail with a setup sentence.
+  tools.push(
+    {
+      name: "gmail_account",
+      description: "Gmail account facts: profile, send-as aliases, or validate the current OAuth connection. Never returns OAuth tokens.",
+      parameters: { type: "object", properties: { action: { type: "string", enum: ["profile", "aliases", "validate"] } }, required: ["action"] },
+      async run(args, ctx) {
+        const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
+        try {
+          const api = await ctx.gmailCtl!.api();
+          const action = String(args["action"] ?? "profile");
+          if (action === "aliases") return gmailJson(await api.listSendAsAddresses());
+          const profile = await api.getProfile();
+          return action === "validate" ? `Gmail connection is valid for ${profile.emailAddress}.` : gmailJson(profile);
+        } catch (err) { return `error: ${(err as Error).message}`; }
+      },
+    },
+    {
+      name: "gmail_search",
+      description: "Search Gmail messages or conversation threads with Gmail query syntax (from:, subject:, is:unread, newer_than:, etc.). Returns paged metadata and snippets; read a message/thread for full content.",
+      parameters: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["messages", "threads"] },
+          query: str("Gmail search query (optional)"),
+          pageToken: str("Opaque token from the previous page"),
+          maxResults: int("Results per page, 1–100 (default 20)"),
+          includeSpamTrash: { type: "boolean", description: "Include spam and trash in search results" },
+        },
+        required: ["kind"],
+      },
+      async run(args, ctx) {
+        const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
+        try {
+          const api = await ctx.gmailCtl!.api();
+          const opts = {
+            q: args["query"] === undefined ? undefined : String(args["query"]),
+            pageToken: args["pageToken"] === undefined ? undefined : String(args["pageToken"]),
+            maxResults: Number(args["maxResults"] ?? 20),
+            includeSpamTrash: args["includeSpamTrash"] === true,
+          };
+          const result = String(args["kind"]) === "threads" ? await api.listThreads(opts) : await api.listMessages(opts);
+          return gmailJson(result);
+        } catch (err) { return `error: ${(err as Error).message}`; }
+      },
+    },
+    {
+      name: "gmail_read",
+      description: "Read a Gmail message or thread, inspect the MIME/raw message, or download an attachment. Attachments are extracted when text/PDF is supported; binary files are saved under the session workspace media/gmail/.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["message", "thread", "mime", "attachment"] },
+          id: str("Message ID, thread ID, or draft message ID as required by action"),
+          attachmentId: str("Attachment ID for the attachment action"),
+          format: { type: "string", enum: ["text", "raw"], description: "For mime: decoded text (default) or raw MIME" },
+        },
+        required: ["action", "id"],
+      },
+      async run(args, ctx) {
+        const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
+        try {
+          const api = await ctx.gmailCtl!.api();
+          const action = String(args["action"]);
+          const id = String(args["id"]);
+          if (action === "message") return gmailJson(await api.getMessageText(id), 40_000);
+          if (action === "thread") {
+            const raw = await api.getThread(id, "metadata") as { messages?: { id?: string; threadId?: string }[] };
+            const messages = await Promise.all((raw.messages ?? []).map(async (m) => m.id ? api.getMessageText(m.id) : null));
+            return gmailJson({ id, messages: messages.filter(Boolean) }, 48_000);
+          }
+          if (action === "mime") {
+            if (String(args["format"] ?? "text") !== "raw") return gmailJson(await api.getMessageText(id), 40_000);
+            const message = await api.getMessage(id, "raw");
+            return gmailJson(message, 24_000);
+          }
+          if (action === "attachment") {
+            const attachmentId = String(args["attachmentId"] ?? "");
+            if (!attachmentId) return "error: attachmentId is required";
+            const meta = (await api.getMessageText(id)).attachments.find((a) => a.attachmentId === attachmentId);
+            if (!meta) return "error: that attachment ID is not part of the selected message";
+            const raw = await api.getAttachment(id, attachmentId);
+            const data = Buffer.from(raw.data, "base64url");
+            if (data.byteLength > 18 * 1024 * 1024) return "error: attachment is over the 18 MB download limit";
+            if (/^(text\/|application\/(json|xml|csv))/i.test(meta.mimeType)) {
+              const text = data.toString("utf8");
+              return text.length > 24_000 ? `${text.slice(0, 24_000)}\n[truncated]` : text;
+            }
+            if (meta.mimeType === "application/pdf" || meta.filename.toLowerCase().endsWith(".pdf")) {
+              const { extractPdfText } = await import("../util/pdf-text.js");
+              const extracted = extractPdfText(data, { maxChars: 10_000 });
+              return extracted.text || `PDF downloaded (${meta.filename}) but no text could be extracted.`;
+            }
+            const requestedDir = join(ctx.workspace, "media", "gmail");
+            mkdirSync(requestedDir, { recursive: true, mode: 0o700 });
+            const root = realpathSync(ctx.workspace);
+            const dir = realpathSync(requestedDir);
+            const dirRelative = relative(root, dir);
+            if (dirRelative === ".." || dirRelative.startsWith(`..${sep}`)) throw new Error("Gmail attachment directory resolves outside the session workspace");
+            const safeName = basename(meta.filename).replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(0, 100) || "attachment.bin";
+            const safeId = id.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 32) || "message";
+            const file = join(dir, `${safeId}-${Date.now()}-${safeName}`);
+            writeFileSync(file, data, { mode: 0o600, flag: "wx" });
+            return `Downloaded ${meta.filename} (${meta.mimeType}, ${data.byteLength} bytes) to ${relative(ctx.workspace, file)}.`;
+          }
+          return `error: unknown action "${action}"`;
+        } catch (err) { return `error: ${(err as Error).message}`; }
+      },
+    },
+    {
+      name: "gmail_drafts",
+      description: "Manage Gmail drafts: list, read, create, update, or delete. Creating/updating only saves a draft; it never sends. Deleting a draft is irreversible and requires the user's explicit request in this turn plus confirm equal to its exact draft ID.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["list", "get", "create", "update", "delete"] },
+          id: str("Draft ID (get/update/delete)"),
+          query: str("Gmail search query for draft listing (optional)"),
+          pageToken: str("Opaque next-page token"),
+          maxResults: int("1–100, default 20"),
+          to: { type: "array", items: { type: "string" }, description: "To recipients" },
+          cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
+          bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
+          subject: str("Draft subject"),
+          body: str("Plain-text body (or HTML body when html=true)"),
+          html: { type: "boolean", description: "Interpret body as HTML" },
+          threadId: str("Thread ID when creating/updating a threaded reply"),
+          attachments: { type: "array", items: { type: "object", properties: { path: str("Workspace-relative file path"), filename: str("Optional filename"), mimeType: str("Optional MIME type") }, required: ["path"] }, description: "Up to five workspace files, 18 MB each and 18 MB combined" },
+          confirm: str("For delete only: repeat the exact draft ID"),
+        },
+        required: ["action"],
+      },
+      async run(args, ctx) {
+        const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
+        const action = String(args["action"]);
+        try {
+          const api = await ctx.gmailCtl!.api();
+          if (action === "list") return gmailJson(await api.listDrafts({ q: args["query"] ? String(args["query"]) : undefined, pageToken: args["pageToken"] ? String(args["pageToken"]) : undefined, maxResults: Number(args["maxResults"] ?? 20) }));
+          const id = String(args["id"] ?? "");
+          if (action === "get") {
+            if (!id) return "error: id is required";
+            const draft = await api.getDraft(id) as { id?: string; message?: { id?: string; threadId?: string } };
+            const message = draft.message?.id ? await api.getMessageText(draft.message.id) : null;
+            return gmailJson({ id: draft.id, threadId: draft.message?.threadId, message }, 40_000);
+          }
+          if (action === "create") {
+            const input = await gmailDraftInput(args, ctx);
+            const result = await api.createDraft(input);
+            return `Draft created. ${gmailJson(result, 4_000)}`;
+          }
+          if (action === "update") {
+            if (!id) return "error: id is required";
+            const patch = await gmailDraftPatch(args, ctx);
+            const result = await api.updateDraftPartial(id, patch);
+            return `Draft ${id} updated. ${gmailJson(result, 4_000)}`;
+          }
+          if (action === "delete") {
+            if (!id) return "error: id is required";
+            if (ctx.gmailDeleteDraftAllowed !== true) return "error: deleting a draft requires the user's explicit delete request in this turn";
+            if (String(args["confirm"] ?? "") !== id) return `error: repeat confirm="${id}" exactly before permanently deleting this draft`;
+            await api.deleteDraft(id);
+            return `Draft ${id} permanently deleted.`;
+          }
+          return `error: unknown action "${action}"`;
+        } catch (err) { return `error: ${(err as Error).message}`; }
+      },
+    },
+    {
+      name: "gmail_send",
+      description: "Send a new email or send an existing draft. This sends immediately: use only when the user explicitly asked to send in this turn. No automatic retries if Google reports delivery may have happened; check Sent before retrying.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["send", "send_draft"] },
+          draftId: str("For send_draft: exact existing draft ID"),
+          to: { type: "array", items: { type: "string" } },
+          cc: { type: "array", items: { type: "string" } },
+          bcc: { type: "array", items: { type: "string" } },
+          subject: str("Email subject"),
+          body: str("Plain text or HTML when html=true"),
+          html: { type: "boolean" },
+          threadId: str("Thread ID for a reply"),
+          inReplyTo: str("RFC Message-ID of the message being replied to"),
+          references: str("RFC References header for threaded replies"),
+          attachments: { type: "array", items: { type: "object", properties: { path: str("Workspace-relative file path"), filename: str("Optional filename"), mimeType: str("Optional MIME type") }, required: ["path"] }, description: "Up to five workspace files, 18 MB each and 18 MB combined" },
+        },
+        required: ["action"],
+      },
+      async run(args, ctx) {
+        const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
+        if (ctx.gmailSendAllowed !== true) return "error: sending email requires the user's explicit send request in this turn; offer to save a draft instead";
+        try {
+          const api = await ctx.gmailCtl!.api();
+          if (String(args["action"]) === "send_draft") {
+            const id = String(args["draftId"] ?? "");
+            if (!id) return "error: draftId is required";
+            const sent = await api.sendDraft(id);
+            return `Draft sent. Message ID ${String(sent["id"] ?? "(unknown)")}; thread ${String(sent["threadId"] ?? "(unknown)")}.`;
+          }
+          const input = await gmailDraftInput(args, ctx);
+          const sent = await api.sendMessage(input);
+          return `Email sent. Message ID ${String(sent["id"] ?? "(unknown)")}; thread ${String(sent["threadId"] ?? "(unknown)")}.`;
+        } catch (err) {
+          if (err instanceof GmailApiError && err.status === 0) return `error: delivery outcome is unknown (${err.message}); check Gmail's Sent folder before retrying and do not resend blindly`;
+          return `error: ${(err as Error).message}`;
+        }
+      },
+    },
+    {
+      name: "gmail_labels",
+      description: "List/read/create/update/delete Gmail labels and apply/remove labels on one message, one thread, or up to 100 messages. All changes require explicit user intent in this turn; deleting a label requires exact-ID confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["list", "get", "create", "update", "delete", "message", "thread", "batch"] },
+          id: str("Label ID for get/update/delete, message ID for message, thread ID for thread"),
+          ids: { type: "array", items: { type: "string" }, description: "1–100 message IDs for batch" },
+          name: str("Custom label name (use slashes for nesting)"),
+          add: { type: "array", items: { type: "string" }, description: "Label IDs to add" },
+          remove: { type: "array", items: { type: "string" }, description: "Label IDs to remove" },
+          messageListVisibility: str("show or hide"),
+          labelListVisibility: str("labelShow, labelShowIfUnread, or labelHide"),
+          color: { type: "object", properties: { textColor: str("Gmail palette text color"), backgroundColor: str("Gmail palette background color") } },
+          confirm: str("For delete: repeat the exact label ID"),
+        },
+        required: ["action"],
+      },
+      async run(args, ctx) {
+        const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
+        const action = String(args["action"]);
+        const mutating = ["create", "update", "delete", "message", "thread", "batch"].includes(action);
+        if (mutating && ctx.gmailMutateAllowed !== true) return "error: label changes require the user's explicit mailbox-management request in this turn";
+        try {
+          const api = await ctx.gmailCtl!.api();
+          const id = String(args["id"] ?? "");
+          if (action === "list") return gmailJson(await api.listLabels());
+          if (action === "get") { if (!id) return "error: label id is required"; return gmailJson(await api.getLabel(id)); }
+          if (action === "create") {
+            const name = String(args["name"] ?? "").trim(); if (!name) return "error: name is required";
+            return gmailJson(await api.createLabel({ name, ...(args["messageListVisibility"] ? { messageListVisibility: String(args["messageListVisibility"]) } : {}), ...(args["labelListVisibility"] ? { labelListVisibility: String(args["labelListVisibility"]) } : {}), ...(args["color"] && typeof args["color"] === "object" ? { color: args["color"] as { textColor?: string; backgroundColor?: string } } : {}) }));
+          }
+          if (action === "update") {
+            if (!id) return "error: label id is required";
+            return gmailJson(await api.updateLabel(id, { ...(args["name"] ? { name: String(args["name"]) } : {}), ...(args["messageListVisibility"] ? { messageListVisibility: String(args["messageListVisibility"]) } : {}), ...(args["labelListVisibility"] ? { labelListVisibility: String(args["labelListVisibility"]) } : {}), ...(args["color"] && typeof args["color"] === "object" ? { color: args["color"] as { textColor?: string; backgroundColor?: string } } : {}) }));
+          }
+          if (action === "delete") {
+            if (!id) return "error: label id is required";
+            if (String(args["confirm"] ?? "") !== id) return `error: repeat confirm="${id}" exactly to permanently delete the custom label`;
+            await api.deleteLabel(id); return `Label ${id} deleted; associated messages remain in Gmail.`;
+          }
+          const add = gmailListArg(args["add"]); const remove = gmailListArg(args["remove"]);
+          if (action === "message") { if (!id) return "error: message id is required"; return gmailJson(await api.modifyMessageLabels(id, add, remove)); }
+          if (action === "thread") { if (!id) return "error: thread id is required"; return gmailJson(await api.modifyThreadLabels(id, add, remove)); }
+          if (action === "batch") { const ids = gmailListArg(args["ids"]); return gmailJson(await api.batchModifyMessages(ids, add, remove)); }
+          return `error: unknown action "${action}"`;
+        } catch (err) { return `error: ${(err as Error).message}`; }
+      },
+    },
+    {
+      name: "gmail_trash",
+      description: "Move a message/thread to Trash, restore it, or batch-trash up to 100 messages. Gmail message deletion here is reversible, not permanent. Mutations require explicit user intent; trash actions also require exact ID/count confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["message", "untrash_message", "thread", "untrash_thread", "batch"] },
+          id: str("Message or thread ID"),
+          ids: { type: "array", items: { type: "string" }, description: "1–100 message IDs for batch trash" },
+          confirm: str("For trash: repeat the exact ID, or the exact comma-separated IDs for batch"),
+        },
+        required: ["action"],
+      },
+      async run(args, ctx) {
+        const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
+        if (ctx.gmailMutateAllowed !== true) return "error: moving/restoring mail requires the user's explicit mailbox-management request in this turn";
+        try {
+          const api = await ctx.gmailCtl!.api();
+          const action = String(args["action"]); const id = String(args["id"] ?? "");
+          if (action === "message" || action === "thread") {
+            if (!id) return "error: id is required";
+            if (String(args["confirm"] ?? "") !== id) return `error: repeat confirm="${id}" exactly before moving this ${action} to Trash`;
+            if (action === "message") await api.trashMessage(id); else await api.trashThread(id);
+            return `${action} ${id} moved to Gmail Trash; it can be restored.`;
+          }
+          if (action === "untrash_message" || action === "untrash_thread") {
+            if (!id) return "error: id is required";
+            if (action === "untrash_message") await api.untrashMessage(id); else await api.untrashThread(id);
+            return `${action === "untrash_message" ? "Message" : "Thread"} ${id} restored from Trash.`;
+          }
+          if (action === "batch") {
+            const ids = gmailListArg(args["ids"]);
+            if (String(args["confirm"] ?? "") !== ids.join(",")) return `error: repeat confirm="${ids.join(",")}" exactly to move these ${ids.length} messages to Trash`;
+            await api.batchTrashMessages(ids);
+            return `${ids.length} message(s) moved to Gmail Trash.`;
+          }
+          return `error: unknown action "${action}"`;
+        } catch (err) { return `error: ${(err as Error).message}`; }
+      },
+    },
+  );
 
   // Task 35 — repo tools. Present in every registry (they refuse with a sentence
   // outside a code session), so the model can discover them without the schema

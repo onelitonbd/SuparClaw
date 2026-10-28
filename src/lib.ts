@@ -424,3 +424,23 @@ export {
   type GitRunner,
 } from "./repo/manager.js";
 export { bindSessionRepo, unbindSessionRepo, repoPromptBlock, publishRequested, type RepoBinding } from "./repo/session.js";
+export {
+  GmailApi,
+  GmailApiError,
+  GMAIL_API,
+  GMAIL_SCOPES,
+  beginGmailOAuth,
+  refreshGmailAccessToken,
+  type GmailTokenSet,
+  type GmailOAuthResult,
+  type GmailOAuthFlow,
+  type GmailProfile,
+  type GmailMessageSummary,
+  type GmailMessageText,
+  type GmailAttachmentInfo,
+  type GmailLabel,
+  type GmailDraftInput,
+  type GmailRequestOptions,
+} from "./addons/gmail.js";
+export { GmailAddonService, type GmailAddonStatus, type GmailConnectStarted } from "./addons/gmail-service.js";
+export { gmailSendRequested, gmailMutationRequested, gmailDraftDeleteRequested } from "./addons/gmail-intent.js";

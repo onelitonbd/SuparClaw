@@ -792,6 +792,16 @@ export const CONFIG_SCHEMA: SchemaNode = {
             host: { t: "text", default: "github.com" },
           },
         },
+        gmail: {
+          t: "object",
+          default: {},
+          fields: {
+            enabled: { t: "bool", default: false },
+            // Google Desktop OAuth client ID. Gmail uses auth-code + PKCE over
+            // loopback; Google's device-code flow does not permit Gmail scopes.
+            clientId: { t: "text", default: "" },
+          },
+        },
       },
     },
     cron: {
@@ -1020,6 +1030,10 @@ export interface SuparClawConfig {
       enabled: boolean;
       clientId: string;
       host: string;
+    };
+    gmail: {
+      enabled: boolean;
+      clientId: string;
     };
   };
   channels: {

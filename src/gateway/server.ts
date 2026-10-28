@@ -307,6 +307,11 @@ export class Gateway {
       "github.disconnect",
       "github.repos",
       "github.branches",
+      // Native Gmail add-on: connection frames contain an auth URL, never tokens.
+      "gmail.status",
+      "gmail.connect",
+      "gmail.cancelConnect",
+      "gmail.disconnect",
       "usage.report",
       "models.list",
       "models.plugins",
@@ -1258,6 +1263,33 @@ case "sessions.rename": {
         case "github.disconnect": {
           service.githubDisconnect();
           send(okFrame(id, { disconnected: true }));
+          return;
+        }
+        case "gmail.status": {
+          send(okFrame(id, service.gmailStatus()));
+          return;
+        }
+        case "gmail.connect": {
+          try {
+            const res = await service.gmailConnectStart();
+            send(okFrame(id, res));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
+          return;
+        }
+        case "gmail.cancelConnect": {
+          const cancelled = await service.gmailConnectCancel(String(params["flow"] ?? "") || undefined);
+          send(okFrame(id, { cancelled }));
+          return;
+        }
+        case "gmail.disconnect": {
+          try {
+            const disconnected = await service.gmailDisconnect();
+            send(okFrame(id, { disconnected }));
+          } catch (err) {
+            send(errFrame(id, "bad_request", (err as Error).message));
+          }
           return;
         }
         case "github.branches": {

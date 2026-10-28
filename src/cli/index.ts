@@ -38,6 +38,8 @@ commands:
   github <status|connect|adopt-gh|disconnect|repos|code|publish>
                         the GitHub add-on: who is connected, which repos you can
                         see, make a session work in one, open a pull request
+  gmail <status|connect|disconnect>
+                        connect and manage the native Gmail add-on
   sessions <list|rename|delete|show|search|cleanup|export> [flags] [--json]
                         sessions on this device; search = full-text transcripts;
                         cleanup = pruning/archive maintenance (dry-run first!);
@@ -163,6 +165,8 @@ export async function main(argv: string[]): Promise<number> {
         store?.close();
       }
     }
+    case "gmail":
+      return (await import("./gmail.js")).cmdGmail(rest);
     case "github":
     case "repo":
       // Task 35: `sc github` and `sc repo` are the same command — the second
