@@ -21,6 +21,7 @@ import { rewindToPrompt, truncateLastTurn } from "./history.js";
 import { settingsCtlFrom, type SelfRuntime, type SettingsCtl } from "./self.js";
 import { namingDecision, namingSample } from "./naming.js";
 import { pruneMedia } from "./media-store.js";
+import type { TelegramMediaSender } from "./telegram-media.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
 import { modelProfile, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
@@ -72,6 +73,8 @@ export interface ChatPayload {
   queueMode?: QueueMode;
   /** Inline media for vision turns (Telegram inbound photos — P1 A5). */
   attachments?: { kind: "image"; dataUri: string; name: string }[];
+  /** Outbound file sender, bound to this one Telegram chat by its channel. */
+  telegramMedia?: TelegramMediaSender;
   reply: (text: string) => void | Promise<void>;
   /** Final text plus provider usage when the loop captured it (HTTP surfaces). */
   onFinal?: (text: string, usage?: Record<string, number>) => void | Promise<void>;
@@ -1979,6 +1982,7 @@ export class Service {
       source: payload.source,
       queueMode,
       attachments: payload.attachments,
+      telegramMedia: payload.source === "telegram" ? payload.telegramMedia : undefined,
       lightContext: payload.lightContext === true,
       // Channel (durable-ingress style) inputs never coalesce in collect mode.
       exclusive: payload.source === "telegram",

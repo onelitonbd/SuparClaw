@@ -17,6 +17,7 @@ import { channelLabel } from "../lib.js";
 import { surfacesFromConfig, surfacesPromptLine, type SurfaceFacts } from "./surfaces.js";
 import { selfFactsFrom, selfPromptLine, type SelfRuntime, type SettingsCtl } from "./self.js";
 import { isToolFailure } from "./exec-utils.js";
+import type { TelegramMediaSender } from "./telegram-media.js";
 import { ToolLoopDetector, loopGuardNudge, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
 import type { AskUserQuestion, AskUserResult } from "./ask-user.js";
 
@@ -83,6 +84,8 @@ export interface RunInput {
   subagent?: { parentKey: string; label: string; taskName: string; depth: number };
   /** Inline media for the injected user turn (P1 A5 photos → vision parts). */
   attachments?: { kind: "image"; dataUri: string; name: string }[];
+  /** Per-message sender bound to the active Telegram chat; never inherited by children. */
+  telegramMedia?: TelegramMediaSender;
   /** P3 #26 heartbeat lightContext: skip workspace bootstrap files entirely. */
   lightContext?: boolean;
   onEvent: (event: RunEvent) => void;
@@ -681,6 +684,7 @@ export class AgentLoop {
     // prompt is built for the active repository workspace.
     const repo = this.deps.store.getSessionRepo(sessionKey);
     const workspace = repo?.workspace ?? this.workspace;
+    const telegramMediaAvailable = input.source === "telegram" && typeof input.telegramMedia === "function";
 
     let answer = "";
     let usage: Record<string, number> | undefined;
@@ -696,7 +700,7 @@ export class AgentLoop {
       // family of tools (their default of no delegation inside sub-agents).
       // `let`, not `const`: `toolsmith` can add a tool mid-turn and the very
       // next call in this turn must be able to reach it (Task 58).
-      let sessionTools = this.#toolsForSession(sessionKey);
+      let sessionTools = this.#toolsForSession(sessionKey, telegramMediaAvailable);
       const schema = toolsToSchema(sessionTools);
       // Resolved once for the tool context: model + the thinking level this run
       // will call the model with, so a spawned child can inherit both.
@@ -711,6 +715,7 @@ export class AgentLoop {
         terminals: this.deps.terminals,
         gmailCtl: this.deps.gmailCtl,
         googleWorkspaceCtl: this.deps.googleWorkspaceCtl,
+        telegramMedia: telegramMediaAvailable ? input.telegramMedia : undefined,
         vault: this.deps.vault,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
@@ -1076,7 +1081,7 @@ export class AgentLoop {
           // instead of waiting for the user to send another message.
           if (ctx.toolsChanged) {
             ctx.toolsChanged = false;
-            sessionTools = this.#toolsForSession(sessionKey);
+            sessionTools = this.#toolsForSession(sessionKey, telegramMediaAvailable);
             activeSchema = toolsToSchema(sessionTools);
           }
           // Loop detection (P2 #16): every outcome feeds the detector —
@@ -1220,12 +1225,14 @@ export class AgentLoop {
   }
 
   /** Children at the nesting cap lose the session family (their skill rule). */
-  #toolsForSession(sessionKey: string): ToolSpec[] {
+  #toolsForSession(sessionKey: string, telegramMediaAvailable = false): ToolSpec[] {
     const depth = this.#childDepth(sessionKey);
-    if (depth === 0) return this.tools;
+    let tools = this.tools;
+    if (!telegramMediaAvailable) tools = tools.filter((t) => t.name !== "telegram_send_media");
+    if (depth === 0) return tools;
     const max = this.deps.config.agents?.defaults?.subagents?.maxDepth ?? 1;
-    if (depth < max) return this.tools;
-    return this.tools.filter((t) => !["sessions_spawn", "sessions_yield", "session_send", "subagents"].includes(t.name));
+    if (depth < max) return tools;
+    return tools.filter((t) => !["sessions_spawn", "sessions_yield", "session_send", "subagents"].includes(t.name));
   }
 
   /** Channel facts for this turn: live from the service, config-only otherwise. */

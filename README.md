@@ -127,6 +127,16 @@ tool extracts text locally. Telegram additionally runs media understanding
 Limits: 4 files per message, 8 MB each, 12 MB total on the web; 10 files,
 `channels.telegram.mediaMaxMb` (20 MB default) on Telegram.
 
+### Sending files from Telegram
+
+During a live Telegram chat, the agent can use `telegram_send_media` to upload a
+workspace-relative file back to that same chat. Auto mode sends common images,
+MP4 video, MP3/M4A audio, OGG/Opus voice notes, and GIFs using Telegram's native
+media methods; other formats are sent as downloadable documents. A caption is
+optional. Uploads are limited to Telegram's supported size (50 MB overall; 10 MB
+for photos). The file must already exist in the session workspace—the tool
+transports files but does not generate images, audio, or video.
+
 Files are kept forever by default. Clicking a file chip in a transcript
 downloads the original through the gateway (token-guarded); if a file has been
 removed the chip says so. To make the daemon clean up after itself:

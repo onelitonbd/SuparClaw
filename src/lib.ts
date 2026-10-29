@@ -147,6 +147,8 @@ export { handleHooksRequest, hookTokenFingerprint, type HookService } from "./ga
 export { handleOpenAiRequest, type OpenAiService } from "./gateway/openai-http.js";
 export { isContextOverflowError, planCompactSpan, summarizerPrompt, renderSpan, clampSpanInput } from "./agent/compaction.js";
 export { planInboundMedia, mediaPlaceholder, mediaFileName, downloadInboundMedia } from "./channels/telegram-media.js";
+export { resolveTelegramMediaFile, TELEGRAM_OUTBOUND_MAX_BYTES } from "./agent/telegram-media.js";
+export { sendTelegramMedia } from "./channels/telegram-outbound.js";
 export { isVisionUnsupportedError } from "./agent/llm.js";
 export { BotLoopGuard } from "./channels/bot-guard.js";
 export { ToolLoopDetector, loopGuardPrompt, type ToolLoopBreak } from "./agent/loop-detector.js";

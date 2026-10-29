@@ -26,6 +26,7 @@ import type { WebSearchCache } from "./web-search.js";
 import { GmailApiError, type GmailApi } from "../addons/gmail.js";
 import { GoogleWorkspaceApi, type GoogleWorkspaceService, type GoogleHttpMethod } from "../addons/google-workspace.js";
 import { isIP } from "node:net";
+import { resolveTelegramMediaFile, type TelegramMediaSender } from "./telegram-media.js";
 
 export interface ToolContext {
   workspace: string;
@@ -88,6 +89,8 @@ export interface ToolContext {
   /** Gmail API client for the native Gmail add-on. */
   gmailCtl?: { api(): Promise<GmailApi> };
   googleWorkspaceCtl?: { api(): Promise<GoogleWorkspaceApi> };
+  /** Per-turn sender bound to the active Telegram chat; absent on other surfaces. */
+  telegramMedia?: TelegramMediaSender;
 }
 
 /**
@@ -1377,6 +1380,42 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
     });
   }
+
+  // Telegram outbound media is injected only for a live Telegram turn. Paths
+  // are validated against the session workspace before the channel uploads them.
+  tools.push({
+    name: "telegram_send_media",
+    description:
+      "Send a file from this session's workspace to the current Telegram chat. Use after creating or downloading the file. " +
+      "Auto mode sends common images, MP4 video, MP3/M4A audio, OGG/Opus voice notes, and GIF animations in Telegram's native media view; other files go as documents. " +
+      "The tool uploads files but does not generate them. Only available during a Telegram chat.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: str("Workspace-relative file path, e.g. media/result.png"),
+        type: { type: "string", enum: ["auto", "photo", "video", "audio", "voice", "animation", "document"], description: "auto selects Telegram's media method from the file extension; document sends any supported file as a downloadable attachment." },
+        filename: str("Optional filename shown to the recipient"),
+        caption: str("Optional caption (up to 1024 characters)"),
+      },
+      required: ["path"],
+    },
+    async run(args, ctx) {
+      if (!ctx.telegramMedia) return "error: media delivery is available only during a live Telegram chat";
+      try {
+        const file = resolveTelegramMediaFile(
+          ctx.workspace,
+          String(args["path"] ?? ""),
+          String(args["type"] ?? "auto") as Parameters<typeof resolveTelegramMediaFile>[2],
+          args["filename"] === undefined ? undefined : String(args["filename"]),
+          args["caption"] === undefined ? undefined : String(args["caption"]),
+        );
+        await ctx.telegramMedia(file);
+        return `Sent ${file.filename} to this Telegram chat as ${file.kind}.`;
+      } catch (err) {
+        return `error: could not send Telegram media: ${(err as Error).message}`;
+      }
+    },
+  });
 
   // ----- terminal (Task 52) -------------------------------------------------
   // A shell that outlives one call: `cd` and `export` stick, a long build can

@@ -1,8 +1,10 @@
-import type { Context } from "grammy";
+import type { Context, InputFile as GrammyInputFile } from "grammy";
 import type { Service } from "../agent/service.js";
 import type { Logger } from "../util/log.js";
 import { workspaceDir } from "../util/paths.js";
 import { downloadInboundMedia, mediaPlaceholder, planInboundMedia, type InboundMedia } from "./telegram-media.js";
+import { sendTelegramMedia, type TelegramMediaApi } from "./telegram-outbound.js";
+import type { TelegramMediaUpload } from "../agent/telegram-media.js";
 import { BotLoopGuard } from "./bot-guard.js";
 import { renderQuestionText } from "../agent/ask-user.js";
 import { createTyping, type TypingHandle } from "../agent/typing.js";
@@ -56,6 +58,14 @@ import {
  *  default namespace object, so `const { Bot } = await import("grammy")` is
  *  undefined in the production bundle ("e is not a constructor") even though
  *  tsx/dev resolves it named. */
+async function createTelegramInputFile(path: string, filename: string): Promise<GrammyInputFile> {
+  type InputFileCtor = new (file: string, filename?: string) => GrammyInputFile;
+  const mod = (await import("grammy")) as typeof import("grammy") & { default?: { InputFile?: InputFileCtor } };
+  const InputFile = mod.InputFile ?? mod.default?.InputFile;
+  if (typeof InputFile !== "function") throw new Error("grammy InputFile export unavailable (bundle shape mismatch)");
+  return new InputFile(path, filename);
+}
+
 async function createBot(token: string, proxy = "") {
   const mod = (await import("grammy")) as typeof import("grammy") & { default?: { Bot?: typeof import("grammy").Bot } };
   const Bot = mod.Bot ?? mod.default?.Bot;
@@ -1475,6 +1485,12 @@ export class TelegramChannel {
       isMainSession: pending.isMain === true,
       source: "telegram",
       attachments,
+      telegramMedia: async (file: TelegramMediaUpload) => {
+        // Preserve ordering with any answer block already queued for delivery.
+        await delivery.settled();
+        const inputFile = await createTelegramInputFile(file.path, file.filename);
+        return sendTelegramMedia(bot.api as unknown as TelegramMediaApi, chatId, file, inputFile, pending.topicId);
+      },
       onQuestion: async (event) => {
         // ask_user cards (P2 #8): single-select rides an inline keyboard
         // (option buttons + Other + Skip); multi-select falls back to the
