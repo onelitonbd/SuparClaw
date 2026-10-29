@@ -81,7 +81,7 @@ graph weight, not Node itself.
  │  agent/           serialized per-session loop: prompt → model → tools   │
  │                   → streaming → persistence  (+queue modes, compaction) │
  │  llm/             HTTP(S) streaming clients, keep-alive, fallback       │
- │  tools/           fs · exec(approval-gated) · web · memory · time       │
+ │  tools/           fs · exec · web · memory · time       │
  │  skills/          markdown SKILL.md loader, on-demand injection         │
  │  state/           node:sqlite (WAL) — sessions, messages, runs, jobs     │
  │  cron/ hooks/     scheduler + event hooks (script/markdown)             │
@@ -112,9 +112,8 @@ graph weight, not Node itself.
    the agent never invents a capability gap it does not have.
 5. Model call: OpenAI-compatible first (covers most local/remote providers); streaming; retries with
    backoff; model fallback chain; idle watchdog; separate quick `agent.wait` timeout (30s, wait-only).
-6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec follows
-   `tools.exec.mode` (default `full`). The decision is a **policy**, never a person: no tool
-   opens an approval prompt, `ask` runs and logs the allowance, `deny` refuses with the reason.
+6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; enabled exec runs
+   directly in the daemon user's shell with a per-command timeout cap.
 7. Stream events → channel adapter renders (Telegram: typing indicator while a turn runs, then one message per finished answer block — no status draft).
 8. Persist transcript + usage; emit `final`. The `/usage` footer is a field on that event and is
    re-rendered from the numbers stored on the assistant row, so a reload or a restart keeps it
@@ -139,9 +138,8 @@ graph weight, not Node itself.
 
 ### 4.4 Tools (MVP set)
 
-`fs.read/write/list` (workspace-scoped by default), `exec` (on by default in mode `full`;
-`sc approvals mode` gates it, and a shell that dies before printing is retried down a ladder of
-plainer shells), `terminal` (persistent shells, §4.4), `github` (repos/archive/delete over the
+`fs.read/write/list` (workspace-scoped by default), `exec` (direct shell access by default,
+with a timeout cap and fallback shell ladder), `terminal` (persistent shells, §4.4), `github` (repos/archive/delete over the
 REST API, so no shell or `gh` binary is needed),
 `web.fetch`, `web.search` (DuckDuckGo HTML), `memory.journal` + `memory.search` (SQLite FTS),
 `time`, and the automation family `cron_list/add/update/remove` — the same `jobs` rows the
@@ -166,9 +164,9 @@ boundary either — the daemon already runs as the operator inside Android's per
 
 What remains is about *surviving a damaged environment*, not confinement: if a login shell aborts
 before the command starts, the same command is retried with `sh -c` and then with plainer shells
-(`src/agent/exec-fallback.ts`), and a rescue is stated in the tool result. `tools.exec.sandbox`
-and `sandboxProot` still parse so old configs load, but they do nothing and say so once.
-`sc doctor` runs one real command through this exact path and names the binary if it cannot start.
+(`src/agent/exec-fallback.ts`), and a rescue is stated in the tool result. Legacy exec policy and
+sandbox keys are discarded during config migration. `sc doctor` runs one real command through this
+exact path and names the binary if it cannot start.
 
 **Terminals (Task 52).** `exec` is one command in a throwaway process: state dies with it.
 The `terminal` tool is the opposite — a **persistent shell the daemon owns**, addressed by id:
@@ -194,10 +192,8 @@ an agent drives a shell for — and tests are the honest way to see them. Output
 (`tools.terminals.scrollbackKb`, default 200 KB) with a monotonic sequence, so the web panel asks
 for "everything after N" and never re-renders the whole log.
 
-`terminal` goes through the **same policy as `exec`** (`needsApproval` marks the call for the
-evaluator; it is not a prompt) — `full` runs it, `deny` refuses it, and no surface ever waits. There is no sandbox wrapper on either surface: the shell has
-the daemon's permissions and the workspace's cwd — by design (T52: "the ai can go anywhere and do
-anything").
+`terminal` provides the same daemon-user shell permissions as `exec`, with persistent process state
+and no sandbox wrapper — by design (T52: "the ai can go anywhere and do anything").
 
 The operator **watches the same shells**: `terminals.list|create|run|send|read|interrupt|restart|
 kill|clear` are gateway methods, and every output/state/create/remove change is broadcast as one
@@ -219,7 +215,7 @@ terminal, a dot while a command runs, the live output, and a prompt you can type
   infinite loops become visible tool errors without ending the daemon. This is crash/timeout
   isolation, **not a security sandbox**: a self-authored tool has the daemon's filesystem and
   network permissions. `tools.selfTools.enabled` is the feature switch; max tools and timeout are
-  configurable. The built-in `exec` policy in `deny` mode hides/refuses these code tools.
+  configurable; the tools are available independently of the `exec` settings.
 
 ### 4.6 Memory
 
@@ -372,7 +368,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | **M1** | Gateway daemon (WS protocol, state DB, logs, service) | Daemon survives 24 h on phone; reconnect works; idle RSS < 120 MB |
 | **M2** | Agent core + `sc chat` | Streaming reply in terminal; transcript persisted; turn overhead < 150 ms; compaction at threshold |
 | **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn; answers only (no status/tool lines), multi-block answers posted as they are written |
-| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full), governed by a policy with no interactive approvals and a shell fallback ladder; GitHub repo management via the API; 5 bundled skills; FTS recall |
+| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default with a timeout cap and shell fallback ladder; GitHub repo management via the API; 5 bundled skills; FTS recall |
 | **M5** | Cron + hooks + polish | Scheduled job fires after reboot-era restarts; hot config reload; backup command; all §6 targets met |
 
 ---

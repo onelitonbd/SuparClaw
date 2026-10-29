@@ -18,7 +18,7 @@ process.env.SUPARCLAW_HOME = HOME;
 const WS = join(HOME, "ws");
 mkdirSync(WS, { recursive: true });
 
-const { emptyConfig, buildRegistry, sandboxIgnoredNote, parseConfig } = await import("../dist/lib.js");
+const { emptyConfig, buildRegistry, parseConfig } = await import("../dist/lib.js");
 
 test("the sandbox module and its exports are gone", () => {
   assert.equal(existsSync(join(process.cwd(), "src/agent/exec-sandbox.ts")), false, "no planner to call");
@@ -31,21 +31,10 @@ test("the sandbox module and its exports are gone", () => {
   });
 });
 
-test("an old config with the keys still parses, so nobody is locked out", () => {
-  const cfg = emptyConfig();
-  cfg.tools.exec.sandbox = "strict";
-  cfg.tools.exec.sandboxProot = true;
-  const { config, errors } = parseConfig(JSON.parse(JSON.stringify(cfg)));
-  assert.deepEqual(errors, [], "an old key is not an error");
-  assert.equal(config.tools.exec.sandbox, "strict", "the value is preserved, not rewritten");
-});
-
-test("the note about the ignored key is said once, not on every command", () => {
-  const exec = { sandbox: "strict", sandboxProot: false };
-  const first = sandboxIgnoredNote(exec);
-  assert.match(first, /the jail is gone — this ran directly in Termux/);
-  assert.equal(sandboxIgnoredNote(exec), "", "a repeated migration note is noise the model copies");
-  assert.equal(sandboxIgnoredNote({ sandbox: "off", sandboxProot: false }), "", "nothing to say when the config is clean");
+test("legacy exec policy and sandbox keys are discarded during config migration", () => {
+  const { config, errors } = parseConfig({ tools: { exec: { enabled: true, timeoutMs: 60000, mode: "deny", approvals: true, safeBins: ["echo"], sandbox: "strict", sandboxProot: true } } });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(Object.keys(config.tools.exec).sort(), ["enabled", "timeoutMs"]);
 });
 
 test("exec runs in the session workspace", async () => {

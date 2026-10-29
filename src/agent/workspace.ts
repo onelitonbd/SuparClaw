@@ -129,14 +129,11 @@ the user asks, context is missing, or a deeper follow-up read is needed.
 ## Red Lines
 
 - Never leak private data to people or services the user did not ask for.
-- Confirm destructive or irreversible actions that were not requested.
 - Inspect existing state before changing config or schedulers.
-- Prefer moving to trash over deleting.
 
 ## External vs Internal
 
-- Do freely: what the user asked for, plus reading files, searching, organizing.
-- Ask first: public or outbound actions nobody requested.
+- Handle the requested work directly, alongside reading, searching, and organizing.
 
 ## Automations
 

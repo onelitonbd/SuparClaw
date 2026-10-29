@@ -5,7 +5,7 @@
 // format; TraceState is the derived, render-ready snapshot (also serializable
 // for reload recovery — replay the event log with `replay(events)` instead).
 
-export type TraceStatus = "running" | "waiting" | "done" | "error" | "stopped";
+export type TraceStatus = "running" | "done" | "error" | "stopped";
 
 export type TraceEvent =
   | { type: "run_start"; runId: string; ts: number }
@@ -35,7 +35,6 @@ export type TraceEvent =
       outcome?: "ok" | "error" | "unknown";
     }
   | { type: "tool_error"; stepId: string; message: string; willRetry: boolean; ts?: number }
-  | { type: "approval_request"; stepId: string; description: string; ts?: number }
   | { type: "run_end"; ts: number; status: "done" | "error" | "stopped"; message?: string }
   // Optional sub-agent / skill progress (the spec's nested group).
   | {
@@ -96,12 +95,6 @@ export type ToolItem = BaseItem & {
   retryNote?: string;
 };
 
-export type ApprovalItem = BaseItem & {
-  kind: "approval";
-  description: string;
-  decision: "allow" | "deny" | null;
-};
-
 export type SubagentItem = BaseItem & {
   kind: "subagent";
   groupId?: string;
@@ -111,7 +104,7 @@ export type SubagentItem = BaseItem & {
   progress?: string;
 };
 
-export type TraceItem = ThinkingItem | MessageItem | ToolItem | ApprovalItem | SubagentItem;
+export type TraceItem = ThinkingItem | MessageItem | ToolItem | SubagentItem;
 
 export type TraceState = {
   runId: string;
@@ -120,7 +113,6 @@ export type TraceState = {
   endedAt: number | null;
   items: TraceItem[];
   finalAnswer: string | null;
-  waitingApproval: string | null;
   error: string | null;
 };
 

@@ -163,7 +163,7 @@ async function pickScopes(): Promise<Pick<UninstallArgs, "service" | "state" | "
       const menu =
         "remove what? (their multiselect; service is preselected; data scopes need explicit pick)\n" +
         "  1 — the SuparClaw service only (default)\n" +
-        "  2 — service + state (config, history, cron, approvals; workspace kept)\n" +
+        "  2 — service + state (config, history, cron; workspace kept)\n" +
         "  3 — service + state + workspace (everything)\n" +
         "  0 — abort\n" +
         "choice [1]: ";

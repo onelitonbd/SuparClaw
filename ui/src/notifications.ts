@@ -1,13 +1,11 @@
-// Settings → Notifications (their web/notifications contract, local-Notification
-// lane — no external push relay): one master toggle per browser, approvals
-// default ON, final-reply opt-in, quiet-hours suppression, "send test".
+// Settings → Notifications: one master toggle per browser, final-reply opt-in,
+// quiet-hours suppression, and "send test".
 // Payloads stay generic (their privacy rule: generic lock-screen text — no
 // prompts, commands, or message excerpts in the alert body).
 
 export interface NotificationPrefs {
   enabled: boolean;
   reply: boolean;
-  approvals: boolean;
   quietFrom: string; // "22:00" local; "" disables quiet hours
   quietTo: string;
 }
@@ -17,7 +15,6 @@ const LS_KEY = "sc.alerts";
 const DEFAULTS: NotificationPrefs = {
   enabled: false,
   reply: false,
-  approvals: true, // their default: approval requests are enabled by default
   quietFrom: "",
   quietTo: "",
 };
@@ -26,8 +23,9 @@ export function loadPrefs(): NotificationPrefs {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return { ...DEFAULTS };
-    const v = JSON.parse(raw) as Partial<NotificationPrefs>;
-    return { ...DEFAULTS, ...v, enabled: Boolean(v.enabled) };
+    const v = JSON.parse(raw) as Partial<NotificationPrefs> & { approvals?: unknown };
+    const { approvals: _legacy, ...saved } = v;
+    return { ...DEFAULTS, ...saved, enabled: Boolean(v.enabled) };
   } catch {
     return { ...DEFAULTS };
   }
@@ -103,7 +101,7 @@ async function show(title: string, body: string): Promise<boolean> {
 }
 
 /** Gateway event hook — called from main.ts's fan-out. */
-export function onGatewayEvent(event: string, payload: { sessionKey?: string; event?: { type?: string; text?: string; name?: string } }): void {
+export function onGatewayEvent(event: string, payload: { sessionKey?: string; event?: { type?: string; text?: string } }): void {
   if (event !== "chat") return;
   const prefs = loadPrefs();
   if (!prefs.enabled || !supported()) return;
@@ -115,10 +113,7 @@ export function onGatewayEvent(event: string, payload: { sessionKey?: string; ev
   if (Notification.permission !== "granted") return;
   const ev = payload.event ?? {};
   if (inQuietHours(prefs.quietFrom, prefs.quietTo)) return;
-  if (ev.type === "approval" && prefs.approvals) {
-    // generic lock-screen text only (their privacy rule); name missing → plain.
-    void show("Approval requested", ev.name ? `“${ev.name}” needs a decision.` : "A tool call needs a decision.");
-  } else if (ev.type === "final" && prefs.reply) {
+  if (ev.type === "final" && prefs.reply) {
     void show("Reply ready", "The agent finished a reply.");
   }
 }

@@ -349,8 +349,7 @@ export async function githubSetArchived(
 }
 
 /**
- * Delete one repository. Irreversible, so the caller has to prove it meant this
- * one — the tool requires the exact `owner/name` twice (Task 56).
+ * Delete one repository after validating its owner/name identifier.
  */
 export async function githubDeleteRepo(
   token: string,

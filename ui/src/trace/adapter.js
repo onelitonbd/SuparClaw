@@ -1,7 +1,7 @@
 // Maps the gateway's existing chat events onto Agent Trace wire events.
 //
 // The chat socket (see ui/src/main.ts → handleChatEvent) already streams:
-//   start · delta · reasoning · tool · approval · question · final · error · idle
+//   start · delta · reasoning · tool · question · final · error · idle
 // This adapter turns the subset the trace card owns into the shared model, so
 // the component can be dropped next to the existing transcript without a new
 // server protocol. A backend that can emit TraceEvent directly should do that
@@ -118,16 +118,6 @@ export function createGatewayTrace(root, opts = {}) {
           }
           break;
         }
-
-        case "approval":
-          ensureRun();
-          trace.push({
-            type: "approval_request",
-            stepId: String(event.callId ?? `approval-${++seq}`),
-            description: `${toolLabel(String(event.tool ?? "tool"), undefined)}: ${formatValue(event.args)}`,
-            ts,
-          });
-          break;
 
         case "final":
           endReasoning();

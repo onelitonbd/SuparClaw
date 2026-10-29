@@ -1,6 +1,5 @@
 // Task 52 — the terminal feature as the daemon actually wires it: the Service
-// owns the shells, the `terminal` tool drives them through the normal approval
-// path, the events reach every subscriber (that is what the web panel watches),
+// owns the shells, the `terminal` tool drives them directly, the events reach every subscriber (that is what the web panel watches),
 // and shutting the daemon down reaps the processes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -30,7 +29,6 @@ function ctxFor(service, extra = {}) {
     store: service.store,
     log: service.log,
     config: service.config,
-    approved: true,
     sessionKey: "main:main",
     terminals: service.terminals,
     ...extra,
@@ -42,7 +40,7 @@ test("the service owns the terminals and the tool drives them end to end", async
   try {
     const tool = service.loop.tools.find((t) => t.name === "terminal");
     assert.ok(tool, "the terminal tool is registered");
-    assert.equal(tool.needsApproval, true, "terminals go through the same approval gate as exec");
+    assert.equal("needsApproval" in tool, false, "terminal is not marked for an approval gate");
 
     const ctx = ctxFor(service);
     const created = await tool.run({ action: "run", command: "pwd; cd /tmp; export SC_SVC=ok" }, ctx);
@@ -96,9 +94,8 @@ test("every terminal event reaches service subscribers — that is the panel's f
   }
 });
 
-test("the tool runs even when nothing approved it — there is no approval step (Task 55)", async () => {
+test("the terminal tool runs directly without an approval step", async () => {
   // The old contract was the bug the operator hit on Telegram: `approved:false`
-  // produced "terminals need approval — ask the user to approve, then retry",
   // and a model reading that asks the human to type the commands by hand.
   const service = new Service();
   try {

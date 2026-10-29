@@ -82,20 +82,10 @@ test("archive flips the flag in the right direction", async () => {
   ]);
 });
 
-test("delete needs the repository named twice — and refuses without it", async () => {
+test("delete runs without an exact confirmation", async () => {
   const api = fakeApi();
-  const tool1 = tool();
-
-  const refused = await tool1.run({ action: "delete", repo: "onelitonbd/old-thing" }, ctx(api));
-  assert.match(refused, /confirm="onelitonbd\/old-thing"/);
-  assert.deepEqual(api.calls, [], "nothing was deleted on an unconfirmed call");
-
-  const wrong = await tool1.run({ action: "delete", repo: "onelitonbd/old-thing", confirm: "onelitonbd/SuparClaw" }, ctx(api));
-  assert.match(wrong, /needs confirm=/);
-  assert.deepEqual(api.calls, []);
-
-  const done = await tool1.run({ action: "delete", repo: "onelitonbd/old-thing", confirm: "onelitonbd/old-thing" }, ctx(api));
-  assert.match(done, /deleted\. This cannot be undone/);
+  const out = await tool().run({ action: "delete", repo: "onelitonbd/old-thing" }, ctx(api));
+  assert.match(out, /deleted\. This cannot be undone/);
   assert.deepEqual(api.calls, [["remove", "onelitonbd/old-thing"]]);
 });
 

@@ -157,7 +157,6 @@ const chat = new Chat(document.body, {
     })();
   },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
-  approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
   // Remove just that queued message (their chat.abort runId parity).
   cancelQueued: (runId) => { void gateway.request("chat.abort", { sessionKey, runId }); },
   // ask_user card answers (P2 #8) ride their own RPC (session-scoped).
@@ -205,8 +204,7 @@ const chat = new Chat(document.body, {
 
 gateway.on((event, payload) => {
   if (event === "tick") return;
-  // Settings → Alerts (their Settings → Notifications): approvals default-on,
-  // replies opt-in, quiet-hours filtered, generic lock-screen text only.
+  // Settings → Alerts: replies are opt-in and quiet-hours filtered.
   try { onGatewayEvent(event, payload); } catch { /* notification quirks are non-fatal */ }
   if (event === "session.updated") {
     // Auto-title landed on a session row — re-render the list so the name
@@ -218,12 +216,6 @@ gateway.on((event, payload) => {
     // Output deltas, create/remove and state changes for every shell. Routed even
     // when the panel is closed so its rail dot stays honest.
     terminalPanel.handleEvent((payload ?? {}) as Record<string, unknown>);
-    return;
-  }
-  if (event === "approvals.updated") {
-    // An allow-always grant was minted or a policy entry changed — an open
-    // Tools tab re-reads the ledger live.
-    if (settings && !$("settings-view").hidden) void settings.render();
     return;
   }
   if (event === "chat") {
@@ -288,13 +280,6 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
       const attempt = Number(e.attempt ?? 1);
       const max = Number(e.max ?? 7);
       chat.notice(`error: ${error} — retrying (attempt ${attempt}/${max})...`, "notice--error");
-      break;
-    }
-    case "approval": {
-      const exec = e.exec && typeof e.exec === "object"
-        ? (e.exec as { mode: string; mintable: boolean; reason: string })
-        : undefined;
-      chat.approval(String(e.callId), String(e.tool), e.args, exec);
       break;
     }
     case "question": {

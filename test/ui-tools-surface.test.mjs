@@ -33,9 +33,7 @@ const CONFIG = {
   agents: { defaults: { model: "openai/gpt-5.6" } },
   gateway: {},
   tools: {
-    exec: { enabled: true, approvals: true, mode: "ask", askFallback: "deny", unattended: "deny",
-      strictInlineEval: false, safeBins: ["head"], safeBinTrustedDirs: ["/bin"], timeoutMs: 600000,
-      sandbox: "off", sandboxProot: false },
+    exec: { enabled: true, timeoutMs: 600000 },
     codeMode: { enabled: "auto", executor: "node", timeoutMs: 10000, maxCodeChars: 32768,
       maxOutputBytes: 65536, maxPendingToolCalls: 16, directOnly: [] },
     media: { concurrency: 2, models: [],
@@ -58,12 +56,11 @@ export const gateway = {
     if (method === "config.get") return { config: ${JSON.stringify(CONFIG)}, path: "/home/u/.suparclaw/openclaw.json5" };
     if (method === "models.list") return { models: [], configured: [], details: {}, auth: [] };
     if (method === "tools.list") return { tools: [
-      { name: "fs_read", description: "Read a UTF-8 text file from the workspace. Paths are workspace-relative.", needsApproval: false },
-      { name: "exec", description: "Run a shell command.", needsApproval: true },
+      { name: "fs_read", description: "Read a UTF-8 text file from the workspace. Paths are workspace-relative." },
+      { name: "exec", description: "Run a shell command." },
     ] };
     if (method === "skills.list") return { skills: [] };
     if (method === "models.plugins") return { plugins: [] };
-    if (method === "approvals.get") return { mode: "ask", entries: [] };
     if (method === "codeMode.get") return { enabled: "auto", engaged: true, model: "openai/gpt-5.6",
       preferredMatch: true, preferred: ["gpt-5.6"], preferredMatched: ["gpt-5.6"],
       executor: "node", executorBundled: true, catalog: ["fs_read"] };
@@ -115,7 +112,7 @@ const text = (n) => (n?.textContent ?? "").replace(/\s+/g, " ").trim();
 
 test("every dropdown on the page is this app's menu, not a platform select", () => {
   const selects = $$("select");
-  assert.ok(selects.length >= 4, "the four choice fields are still here");
+  assert.ok(selects.length > 0, "the remaining choice fields are still here");
   for (const sel of selects) {
     assert.ok(sel.classList.contains("dd__store"), `#${sel.getAttribute("id")} is a hidden store`);
     assert.equal(sel.hasAttribute("hidden"), true, "the store is not focusable or visible");
@@ -130,13 +127,12 @@ test("every dropdown on the page is this app's menu, not a platform select", () 
   }
 });
 
-test("the four former native selects kept their ids and their values", () => {
-  for (const id of ["exec-ask-fallback", "exec-unattended", "md-img-model", "md-aud-model"]) {
+test("the remaining native selects kept their ids and their values", () => {
+  for (const id of ["md-img-model", "md-aud-model"]) {
     assert.ok(document.getElementById(id), `${id} is still the value store`);
     assert.ok(document.getElementById(`${id}-btn`), `${id} has a menu button`);
     assert.ok(document.getElementById(`${id}-menu`), `${id} has a menu`);
   }
-  assert.equal($("#exec-ask-fallback-btn .dd__val").textContent, "refuse it — and say so (default)");
   assert.equal($("#md-aud-model-btn .dd__val").textContent, "auto (first that works)");
 });
 
@@ -200,10 +196,8 @@ test("a number and its unit share a line, and the field is sized to the digits",
 
 test("text fields in an inline row share the row instead of claiming it", () => {
   assert.match(css, /\.settings \.settings__inline > \.inp \{[^}]*flex: 1 1 220px;[^}]*width: auto;/s);
-  // The grant form is the reason: pattern, argv and the button on one line.
-  const add = $("#exec-grant-pattern").closest(".settings__inline");
-  assert.equal([...add.children].filter((c) => c.tagName === "INPUT").length, 2);
-  assert.ok(add.querySelector("button"));
+  assert.ok($("#exec-timeout"), "exec retains its timeout setting");
+  assert.ok($("#exec-enabled"), "exec availability remains configurable");
 });
 
 test("a commit footer holds only commit material", () => {

@@ -20,7 +20,7 @@ export interface JsonSchema {
   additionalProperties?: boolean;
 }
 
-import { explainExecError, type ExecVerdict } from "./exec-policy.js";
+import { explainExecError } from "./exec-utils.js";
 import { execAttempts, fallbackNote, runWithFallback } from "./exec-fallback.js";
 import type { WebSearchCache } from "./web-search.js";
 import { GmailApiError, type GmailApi } from "../addons/gmail.js";
@@ -34,9 +34,6 @@ export interface ToolContext {
   store: Store;
   log: Logger;
   config: SuparClawConfig;
-  approved: boolean;
-  /** exec-policy verdict attached to this call (allowlist/direct route info). */
-  execVerdict?: ExecVerdict;
   signal?: AbortSignal;
   /** Re-discover skills after a tool writes one (`skill_save`). */
   refreshSkills?: () => void;
@@ -80,8 +77,6 @@ export interface ToolContext {
   askUser?: (questions: import("./ask-user.js").AskUserQuestion[]) => Promise<import("./ask-user.js").AskUserResult>;
   /** Task 35: the repository this run is bound to, when it is a code session. */
   repo?: { repo: string; base: string; branch: string; workspace: string } | null;
-  /** Task 35: this turn's text asked for a PR (set by the surface, not the model). */
-  publishAllowed?: boolean;
   /** Repo operations wired by the service (publish/status/diff). */
   repoCtl?: RepoCtl;
   /**
@@ -92,17 +87,7 @@ export interface ToolContext {
   terminals?: TerminalCtl;
   /** Gmail API client for the native Gmail add-on. */
   gmailCtl?: { api(): Promise<GmailApi> };
-  /** User-originated intent gates for Gmail side effects. */
-  gmailSendAllowed?: boolean;
-  gmailMutateAllowed?: boolean;
-  gmailDeleteDraftAllowed?: boolean;
-  /** User-originated intent gates for Workspace side effects. */
   googleWorkspaceCtl?: { api(): Promise<GoogleWorkspaceApi> };
-  googleWorkspaceMutationAllowed?: boolean;
-  googleWorkspaceDeleteAllowed?: boolean;
-  googleWorkspaceShareAllowed?: boolean;
-  googleWorkspacePublicShareAllowed?: boolean;
-  googleWorkspaceInviteAllowed?: boolean;
 }
 
 /**
@@ -196,7 +181,6 @@ export interface ToolSpec {
   name: string;
   description: string;
   parameters: JsonSchema;
-  needsApproval?: boolean;
   /** Internal marker: the loop replaces these when toolsmith changes the set. */
   selfAuthored?: boolean;
   /** Dynamic infrastructure entry rebuilt alongside self-authored tools. */
@@ -286,13 +270,12 @@ function workspaceTool(service: GoogleWorkspaceService): ToolSpec {
     query: { type: "object", description: "Google API query parameters (q, fields, pageToken, timeMin, range, etc.).", additionalProperties: true },
     body: { type: "object", description: "JSON request body. Docs/Sheets batchUpdate accepts the native Google API requests array; this exposes complete formatting, tables, charts, tabs, and data operations.", additionalProperties: true },
     responseType: { type: "string", enum: ["json", "text"], description: "Response decoding; defaults to JSON." },
-    confirm: str("Exact confirmation value required for destructive actions, public sharing, ownership transfer, or calendar invites."),
   };
   const descriptions: Record<GoogleWorkspaceService, string> = {
-    docs: "Google Docs REST access. Read/create documents with GET/POST documents; edit with POST documents/{documentId}:batchUpdate and native requests (insertText, updateTextStyle, updateParagraphStyle, createTable, insertTableRow/Column, deleteContentRange, named styles, headers/footers, tabs). GET documents/{id}?includeTabsContent=true reads structure/tabs. Action get_text extracts document text; search searches Drive's Google Docs index. Every non-read request requires explicit user intent. Destructive batch requests require exact document ID confirmation.",
-    sheets: "Google Sheets REST access. Read/create spreadsheets; values GET/UPDATE/APPEND/CLEAR/BATCH_GET/BATCH_UPDATE/BATCH_CLEAR; POST spreadsheets/{id}:batchUpdate for native requests covering tables, formatting, charts, filters, protections, dimensions, and sheet operations. Use GET spreadsheets/{id}/values/{range} for cell data. Every non-read request requires explicit user intent; clear/delete batch requests require exact spreadsheet ID confirmation.",
-    calendar: "Google Calendar REST access. Use calendars, calendarList, events, events/{id}/instances, freeBusy, settings, colors, ACL, channels/watch, and channels/stop. Events can be listed, inserted, patched, updated, deleted, imported, moved, or quick-added via native endpoints. Always pass timeMin/timeMax for event lists. POST freeBusy is read-only. Event attendee changes or sendUpdates require explicit invite intent and confirm='send invites'. Calendar/event deletion, cancellation, and clearing require explicit delete intent and exact target-ID confirmation. Watch callbacks need a publicly reachable HTTPS address.",
-    drive: "Google Drive REST access. Use files (list/get/create/update/copy/delete/export/download), permissions, comments/replies, file revisions, and drives/shared-drive endpoints. For shared-drive file requests, pass supportsAllDrives=true; for a full listing also pass includeItemsFromAllDrives=true and corpora=allDrives. Full Drive scope covers existing files, not only files created by this app. Use action=trash or restore instead of permanent deletion; trash requires confirm equal to the exact file ID. Permission/ACL changes require explicit sharing intent; public/anyone links and ownership transfer require elevated explicit intent plus confirm='public sharing' or confirm='transfer ownership'. Shared Drives require a supported Workspace edition.",
+    docs: "Google Docs REST access. Read/create documents with GET/POST documents; edit with POST documents/{documentId}:batchUpdate and native requests (insertText, updateTextStyle, updateParagraphStyle, createTable, insertTableRow/Column, deleteContentRange, named styles, headers/footers, tabs). GET documents/{id}?includeTabsContent=true reads structure/tabs. Action get_text extracts document text; search searches Drive's Google Docs index.",
+    sheets: "Google Sheets REST access. Read/create spreadsheets; values GET/UPDATE/APPEND/CLEAR/BATCH_GET/BATCH_UPDATE/BATCH_CLEAR; POST spreadsheets/{id}:batchUpdate for native requests covering tables, formatting, charts, filters, protections, dimensions, and sheet operations. Use GET spreadsheets/{id}/values/{range} for cell data.",
+    calendar: "Google Calendar REST access. Use calendars, calendarList, events, events/{id}/instances, freeBusy, settings, colors, ACL, channels/watch, and channels/stop. Events can be listed, inserted, patched, updated, deleted, imported, moved, or quick-added via native endpoints. Always pass timeMin/timeMax for event lists. POST freeBusy is read-only. Watch callbacks need a publicly reachable HTTPS address.",
+    drive: "Google Drive REST access. Use files (list/get/create/update/copy/delete/export/download), permissions, comments/replies, file revisions, and drives/shared-drive endpoints. For shared-drive file requests, pass supportsAllDrives=true; for a full listing also pass includeItemsFromAllDrives=true and corpora=allDrives. Full Drive scope covers existing files, not only files created by this app. Use action=trash or restore when you want reversible deletion. Shared Drives require a supported Workspace edition.",
   };
   const properties: Record<string, unknown> = {
     action: { type: "string", enum: service === "docs" ? ["request", "get_text", "search"] : service === "sheets" ? ["request", "query_values"] : service === "calendar" ? ["request"] : ["request", "download", "export", "upload", "trash", "restore"], description: "Convenience action; defaults to request. All Google API endpoints remain available through request." },
@@ -371,7 +354,6 @@ function workspaceTool(service: GoogleWorkspaceService): ToolSpec {
           return `Saved ${bytes.byteLength} bytes (${mimeType}) to ${out}`;
         }
         if (service === "drive" && action === "upload") {
-          if (ctx.googleWorkspaceMutationAllowed !== true) return "error: Drive uploads require the user's explicit create/upload request in this turn";
           const name = String(args["name"] ?? "").trim();
           const mimeType = String(args["mimeType"] ?? "text/plain").trim();
           const encoded = String(args["contentBase64"] ?? "");
@@ -385,9 +367,6 @@ function workspaceTool(service: GoogleWorkspaceService): ToolSpec {
         if (service === "drive" && ["trash", "restore"].includes(action)) {
           const id = String(args["fileId"] ?? "").trim();
           if (!id) return "error: fileId is required";
-          if (ctx.googleWorkspaceMutationAllowed !== true) return "error: moving a file to/from Trash requires the user's explicit Workspace change request in this turn";
-          if (action === "trash" && ctx.googleWorkspaceDeleteAllowed !== true) return "error: moving a file to Trash requires the user's explicit delete/trash request in this turn";
-          if (action === "trash" && String(args["confirm"] ?? "").trim() !== id) return `error: moving this file to Trash requires confirm equal to its exact file ID (${id})`;
           return googleJson(await api.request("drive", `files/${encodeURIComponent(id)}`, { method: "PATCH", query: { fields: "id,name,trashed,webViewLink", supportsAllDrives: true }, body: { trashed: action === "trash" } }));
         }
         const path = workspaceApiPath(args);
@@ -397,38 +376,11 @@ function workspaceTool(service: GoogleWorkspaceService): ToolSpec {
         const method = methodRaw as GoogleHttpMethod;
         const body = args["body"];
         const query = args["query"] && typeof args["query"] === "object" && !Array.isArray(args["query"]) ? args["query"] as Record<string, unknown> : {};
-        const bodyJson = JSON.stringify(body ?? {});
         const normalizedPath = path.split("/").filter(Boolean).join("/");
-        const pathLower = normalizedPath.toLowerCase();
-        const readOnlyPost = service === "calendar" && normalizedPath === "freeBusy";
-        const isWrite = method !== "GET" && !readOnlyPost;
-        if (isWrite && ctx.googleWorkspaceMutationAllowed !== true) return "error: this Workspace change requires an explicit create/edit/update/share request in the user's current turn";
         if (service === "calendar" && normalizedPath.toLowerCase().split("/").at(-1) === "watch") {
           const address = body && typeof body === "object" ? (body as Record<string, unknown>)["address"] : undefined;
           if (!isPublicHttpsCallback(address)) return "error: Calendar watch requires a publicly reachable HTTPS callback address (localhost/private addresses are not supported)";
         }
-        const eventPath = service === "calendar" && normalizedPath.toLowerCase().split("/").includes("events");
-        const cancelledEvent = eventPath && bodyJson.includes("\"status\":\"cancelled\"");
-        const filePath = service === "drive" && normalizedPath.toLowerCase().split("/")[0] === "files";
-        const movedToTrash = filePath && body && typeof body === "object" && (body as Record<string, unknown>)["trashed"] === true;
-        const destructive = method === "DELETE" || pathLower.endsWith(":clear") || pathLower.endsWith(":batchclear") || pathLower.endsWith("emptytrash") || pathLower.endsWith("/clear") || pathLower === "files/trash" || movedToTrash || cancelledEvent || bodyJson.includes("\"delete");
-        const confirm = String(args["confirm"] ?? "").trim();
-        if (destructive) {
-          const resourceId = googleResourceId(path);
-          if (ctx.googleWorkspaceDeleteAllowed !== true) return "error: destructive Workspace actions require the user's explicit delete/clear request in this turn";
-          if (!resourceId || confirm !== resourceId) return `error: destructive action requires confirm equal to the exact target or action (${resourceId || "unresolved target"})`;
-        }
-        const aclChange = normalizedPath.toLowerCase().split("/").some((part) => part === "permissions" || part === "acl");
-        if (aclChange && isWrite && ctx.googleWorkspaceShareAllowed !== true) return "error: permission changes require the user's explicit sharing/access request in this turn";
-        const publicShare = bodyJson.includes("\"type\":\"anyone\"") || bodyJson.includes("\"role\":\"owner\"") || bodyJson.includes("transferOwnership") || String(query["transferOwnership"] ?? "").toLowerCase() === "true";
-        if (publicShare) {
-          const ownership = bodyJson.includes("\"role\":\"owner\"") || bodyJson.includes("transferOwnership") || String(query["transferOwnership"] ?? "").toLowerCase() === "true";
-          const wanted = ownership ? "transfer ownership" : "public sharing";
-          if (ctx.googleWorkspacePublicShareAllowed !== true || confirm !== wanted) return `error: ${wanted} requires explicit user intent and confirm='${wanted}'`;
-        }
-        const attendees = body && typeof body === "object" && Array.isArray((body as Record<string, unknown>)["attendees"]);
-        const sendsInvites = service === "calendar" && normalizedPath.toLowerCase().split("/").includes("events") && (attendees || ["all", "externalOnly"].includes(String(query["sendUpdates"] ?? "")));
-        if (sendsInvites && (ctx.googleWorkspaceInviteAllowed !== true || confirm !== "send invites")) return "error: Calendar invites require explicit invite/notification intent and confirm='send invites'";
         const responseType = args["responseType"] === "text" ? "text" : "json";
         const result = await api.request(service, path, { method, query, body, responseType });
         return googleJson(result);
@@ -734,22 +686,6 @@ export function findShell(): string {
     if (c && existsSync(c)) return c;
   }
   return "/bin/sh";
-}
-
-/**
- * A config written before Task 57 can still say `sandbox: "strict"`.
- *
- * The jail is gone, so the honest thing is to say so once per process rather
- * than let the setting look like it does something. Once, not per command: a
- * running transcript that repeats a migration note is noise the model will
- * copy.
- */
-let saidSandboxIgnored = false;
-export function sandboxIgnoredNote(exec: { sandbox?: string; sandboxProot?: boolean }): string {
-  if (exec.sandbox !== "strict" && !exec.sandboxProot) return "";
-  if (saidSandboxIgnored) return "";
-  saidSandboxIgnored = true;
-  return "[sandbox: the jail is gone — this ran directly in Termux (Task 57)]\n";
 }
 
 // Shared across registry rebuilds (config hot-reload) so the query cache survives.
@@ -1379,8 +1315,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   if (config.tools.exec.enabled) {
     tools.push({
       name: "exec",
-      description:
-        "Run a shell command. Nothing asks permission: the operator cannot approve from a phone, so exec always runs (Task 55). Report what happened, never pretend it ran.",
+      description: "Run a shell command and report its output.",
       parameters: {
         type: "object",
         properties: {
@@ -1390,12 +1325,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         },
         required: ["command"],
       },
-      // `needsApproval` is a POLICY marker, not a prompt (Task 55): it tells the
-      // service to weigh this call against `tools.exec` before it runs. Nothing
-      // in the decision waits for a human any more — the operator cannot tap
-      // "approve" from a phone, and a chat that answers "ask the user to
-      // approve, then retry" is what made the agent hand shell work back to him.
-      needsApproval: true,
       async run(args, ctx) {
         const command = String(args["command"] ?? "").trim();
         if (!command) return "error: the command is empty — give exec a command line to run";
@@ -1414,37 +1343,15 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         // execFile throws ERR_OUT_OF_RANGE synchronously, which used to make
         // *every* command fail until the model stopped sending it.
         const { ms: timeoutMs, note: timeoutNote } = resolveExecTimeout(args["timeoutMs"], config.tools.exec.timeoutMs);
-        // Task 57: exec IS the operator's shell. No prlimit, no proot, no
-        // `env -i`, no HOME rewrite — at any setting, including a config that
-        // still says `sandbox: "strict"`. On a phone those wrappers were the
-        // thing that aborted before the command existed ("killed by the
-        // sandbox"), and none of them was a boundary: the daemon already runs
-        // as the operator, inside Android's per-app sandbox.
+        // Exec runs directly in the daemon user's shell and environment.
         const shell = findShell();
         const childEnv: NodeJS.ProcessEnv = { ...process.env, ...(resolvedVault?.env ?? {}) };
-        const planned = { argv: [shell, "-lc", command], env: childEnv, wrappers: [] as string[] };
-        const note = sandboxIgnoredNote(config.tools.exec) + (timeoutNote ? `${timeoutNote}\n` : "");
-        // Allowlist/safe-bin verdicts run argv-direct — the policy matched
-        // literal tokens, so no shell may re-interpret them (globs, $PATH
-        // lookups, re-quoting all stay off). Full/shell verdicts keep the
-        // login shell exactly as before.
+        const planned = { argv: [shell, "-lc", command], env: childEnv };
+        const note = timeoutNote ? `${timeoutNote}\n` : "";
         try {
-          if (ctx.execVerdict?.route === "direct") {
-            const { runDirectChain } = await import("./exec-policy.js");
-            const result = await runDirectChain(ctx.execVerdict.segments, ctx.execVerdict.ops, {
-              cwd: ctx.workspace,
-              timeoutMs,
-              env: childEnv,
-            });
-            const body = safeOutput(result.output).slice(0, 60_000);
-            return safeOutput(note + (body || "(no output)"));
-          }
           const spawnOpts = { cwd: ctx.workspace, timeoutMs, cmdline: command };
-          // Task 56: the shell itself can die before the command starts
-          // (SIGABRT from a login rc or a stale LD_PRELOAD is the phone case).
-          // Walk the ladder instead of reporting the environment as the
-          // command's failure — the old shape tried one shell and, when it
-          // aborted, left the agent asking the human to run it by hand.
+          // Retry shell startup failures only; a command that ran or timed out
+          // is never repeated, avoiding duplicate side effects.
           const attempts = execAttempts({ shell, command, planned });
           const result = await runWithFallback(attempts, async (attempt) => {
             const run = await runPlan(execFile as unknown as ExecFileFn, attempt.argv, attempt.env, spawnOpts);
@@ -1474,8 +1381,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   // ----- terminal (Task 52) -------------------------------------------------
   // A shell that outlives one call: `cd` and `export` stick, a long build can
   // be started and checked later, and the operator watches the same stream in
-  // the web panel. Full power on purpose — no sandbox, no allowlist of its own;
-  // it goes through the same policy as exec (never a prompt).
+  // the web panel.
   if (config.tools.terminals.enabled) {
     tools.push({
       name: "terminal",
@@ -1507,9 +1413,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
         },
         required: ["action"],
       },
-      // Same rule as exec: a terminal is the agent's own shell, weighed by the
-      // same policy and never turned into a permission prompt.
-      needsApproval: true,
       async run(args, ctx) {
         const mgr = ctx.terminals;
         if (!mgr) return "error: terminals are not available in this runtime";
@@ -1784,8 +1687,8 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
   tools.push({
     name: "settings",
     description:
-      "Read or change your own configuration (the Settings pages) when the user asks — default model, " +
-      "fallbacks, reasoning, reply usage footer, queue mode, exec policy, cron timezone, identity. " +
+      "Read or change your own configuration (the Settings pages) — default model, " +
+      "fallbacks, reasoning, reply usage footer, queue mode, shell availability, cron timezone, identity. " +
       "Actions: list (what is writable), get (one path), set (path + value; applies live). " +
       "API keys, provider credentials and the gateway's port/bind/auth are operator-only and are refused " +
       "with the Settings page that owns them.",
@@ -1922,7 +1825,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           repo: str("For archive/unarchive/delete: owner/name"),
           filter: str("For repos: match in the name (optional)"),
           page: int("For repos: 1-based page (default 1)"),
-          confirm: str("For delete ONLY: repeat the exact owner/name — a deletion cannot be undone"),
         },
         required: ["action"],
       },
@@ -1956,11 +1858,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
             return `${res.fullName} is now ${res.archived ? "archived (read-only, still recoverable)" : "active again"}`;
           }
           if (action === "delete") {
-            // The latch: the model must repeat the name. Losing a repository to a
-            // plausible-sounding sentence is not a risk worth taking on a phone.
-            if (String(args["confirm"] ?? "").trim() !== repo) {
-              return `error: deleting ${repo} needs confirm="${repo}" exactly — say which repository you are deleting and get the user's word before calling again`;
-            }
             const res = await api.remove(repo);
             return `${res.fullName} deleted. This cannot be undone (GitHub keeps recoverable forks/deleted-repo history for 90 days only for some cases).`;
           }
@@ -2087,7 +1984,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     },
     {
       name: "gmail_drafts",
-      description: "Manage Gmail drafts: list, read, create, update, or delete. Creating/updating only saves a draft; it never sends. Deleting a draft is irreversible and requires the user's explicit request in this turn plus confirm equal to its exact draft ID.",
+      description: "Manage Gmail drafts: list, read, create, update, or delete. Creating/updating only saves a draft; it never sends.",
       parameters: {
         type: "object",
         properties: {
@@ -2104,7 +2001,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           html: { type: "boolean", description: "Interpret body as HTML" },
           threadId: str("Thread ID when creating/updating a threaded reply"),
           attachments: { type: "array", items: { type: "object", properties: { path: str("Workspace-relative file path"), filename: str("Optional filename"), mimeType: str("Optional MIME type") }, required: ["path"] }, description: "Up to five workspace files, 18 MB each and 18 MB combined" },
-          confirm: str("For delete only: repeat the exact draft ID"),
         },
         required: ["action"],
       },
@@ -2134,8 +2030,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           }
           if (action === "delete") {
             if (!id) return "error: id is required";
-            if (ctx.gmailDeleteDraftAllowed !== true) return "error: deleting a draft requires the user's explicit delete request in this turn";
-            if (String(args["confirm"] ?? "") !== id) return `error: repeat confirm="${id}" exactly before permanently deleting this draft`;
             await api.deleteDraft(id);
             return `Draft ${id} permanently deleted.`;
           }
@@ -2145,7 +2039,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     },
     {
       name: "gmail_send",
-      description: "Send a new email or send an existing draft. This sends immediately: use only when the user explicitly asked to send in this turn. No automatic retries if Google reports delivery may have happened; check Sent before retrying.",
+      description: "Send a new email or send an existing draft.",
       parameters: {
         type: "object",
         properties: {
@@ -2166,7 +2060,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
       async run(args, ctx) {
         const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
-        if (ctx.gmailSendAllowed !== true) return "error: sending email requires the user's explicit send request in this turn; offer to save a draft instead";
         try {
           const api = await ctx.gmailCtl!.api();
           if (String(args["action"]) === "send_draft") {
@@ -2179,14 +2072,14 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           const sent = await api.sendMessage(input);
           return `Email sent. Message ID ${String(sent["id"] ?? "(unknown)")}; thread ${String(sent["threadId"] ?? "(unknown)")}.`;
         } catch (err) {
-          if (err instanceof GmailApiError && err.status === 0) return `error: delivery outcome is unknown (${err.message}); check Gmail's Sent folder before retrying and do not resend blindly`;
+          if (err instanceof GmailApiError && err.status === 0) return `error: delivery outcome is unknown (${err.message})`;
           return `error: ${(err as Error).message}`;
         }
       },
     },
     {
       name: "gmail_labels",
-      description: "List/read/create/update/delete Gmail labels and apply/remove labels on one message, one thread, or up to 100 messages. All changes require explicit user intent in this turn; deleting a label requires exact-ID confirmation.",
+      description: "List/read/create/update/delete Gmail labels and apply/remove labels on one message, one thread, or up to 100 messages.",
       parameters: {
         type: "object",
         properties: {
@@ -2199,15 +2092,12 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           messageListVisibility: str("show or hide"),
           labelListVisibility: str("labelShow, labelShowIfUnread, or labelHide"),
           color: { type: "object", properties: { textColor: str("Gmail palette text color"), backgroundColor: str("Gmail palette background color") } },
-          confirm: str("For delete: repeat the exact label ID"),
         },
         required: ["action"],
       },
       async run(args, ctx) {
         const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
         const action = String(args["action"]);
-        const mutating = ["create", "update", "delete", "message", "thread", "batch"].includes(action);
-        if (mutating && ctx.gmailMutateAllowed !== true) return "error: label changes require the user's explicit mailbox-management request in this turn";
         try {
           const api = await ctx.gmailCtl!.api();
           const id = String(args["id"] ?? "");
@@ -2223,7 +2113,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           }
           if (action === "delete") {
             if (!id) return "error: label id is required";
-            if (String(args["confirm"] ?? "") !== id) return `error: repeat confirm="${id}" exactly to permanently delete the custom label`;
             await api.deleteLabel(id); return `Label ${id} deleted; associated messages remain in Gmail.`;
           }
           const add = gmailListArg(args["add"]); const remove = gmailListArg(args["remove"]);
@@ -2236,26 +2125,23 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     },
     {
       name: "gmail_trash",
-      description: "Move a message/thread to Trash, restore it, or batch-trash up to 100 messages. Gmail message deletion here is reversible, not permanent. Mutations require explicit user intent; trash actions also require exact ID/count confirmation.",
+      description: "Move a message/thread to Trash, restore it, or batch-trash up to 100 messages. Gmail message deletion here is reversible, not permanent.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", enum: ["message", "untrash_message", "thread", "untrash_thread", "batch"] },
           id: str("Message or thread ID"),
           ids: { type: "array", items: { type: "string" }, description: "1–100 message IDs for batch trash" },
-          confirm: str("For trash: repeat the exact ID, or the exact comma-separated IDs for batch"),
         },
         required: ["action"],
       },
       async run(args, ctx) {
         const unavailable = gmailNeedClient(ctx); if (unavailable) return unavailable;
-        if (ctx.gmailMutateAllowed !== true) return "error: moving/restoring mail requires the user's explicit mailbox-management request in this turn";
         try {
           const api = await ctx.gmailCtl!.api();
           const action = String(args["action"]); const id = String(args["id"] ?? "");
           if (action === "message" || action === "thread") {
             if (!id) return "error: id is required";
-            if (String(args["confirm"] ?? "") !== id) return `error: repeat confirm="${id}" exactly before moving this ${action} to Trash`;
             if (action === "message") await api.trashMessage(id); else await api.trashThread(id);
             return `${action} ${id} moved to Gmail Trash; it can be restored.`;
           }
@@ -2266,7 +2152,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
           }
           if (action === "batch") {
             const ids = gmailListArg(args["ids"]);
-            if (String(args["confirm"] ?? "") !== ids.join(",")) return `error: repeat confirm="${ids.join(",")}" exactly to move these ${ids.length} messages to Trash`;
             await api.batchTrashMessages(ids);
             return `${ids.length} message(s) moved to Gmail Trash.`;
           }
@@ -2296,7 +2181,7 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
     {
       name: "github_publish",
       description:
-        "Commit this session's work, push its sc/* branch, and open a pull request. Only when the user asked for a PR in this turn — it refuses otherwise.",
+        "Commit this session's work, push its branch, and open a pull request.",
       parameters: {
         type: "object",
         properties: {
@@ -2308,12 +2193,6 @@ export function buildRegistry(config: SuparClawConfig): ToolSpec[] {
       },
       async run(args, ctx) {
         if (!ctx.repo || !ctx.repoCtl) return "error: this session is not bound to a repository";
-        if (ctx.publishAllowed !== true) {
-          return (
-            "error: the user did not ask for a pull request in this turn. Do not publish — " +
-            "summarise what changed and say you can open a PR when they ask."
-          );
-        }
         const title = String(args["title"] ?? "").trim();
         if (!title) return "error: a title is required";
         try {

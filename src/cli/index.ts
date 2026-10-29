@@ -62,7 +62,6 @@ commands:
                         token, so --replace also cleans commands an earlier
                         install left behind (works without a running gateway)
   cron <list|add|remove>       scheduled prompts
-  approvals <get|list|mode|allow|revoke|preset>  exec approval policy + allowlist
   search <query> [--provider id] [--count n] [--json]  one-shot web search probe
   service <status|install|start|stop|restart|logs|uninstall>  daemon as an OS service
   backup <create|list|verify|restore>  timestamped state+config+workspace archives
@@ -107,8 +106,6 @@ export async function main(argv: string[]): Promise<number> {
       return (await import("./models-commands.js")).modelsCmd(rest);
     case "dream":
       return (await import("./dream-commands.js")).dreamCmd(rest);
-    case "approvals":
-      return (await import("./approval-commands.js")).approvalsCmd(rest);
     case "search":
       return (await import("./search-commands.js")).searchCmd(rest);
     case "doctor":

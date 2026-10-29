@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.SUPARCLAW_HOME = mkdtempSync(join(tmpdir(), "sc-switch-"));
-const { Service, applyModelTap, modelCard, pinnedCard, execModeOf, emptyConfig } = await import("../dist/lib.js");
+const { Service, applyModelTap, modelCard, pinnedCard } = await import("../dist/lib.js");
 
 function config(svc) {
   const cfg = svc.configSvc.current;
@@ -110,16 +110,6 @@ test("a stale pin never pretends: the card says it is no longer configured", () 
   const cfg = config(new Service());
   const card = pinnedCard({ config: cfg, pin: "removed-model" });
   assert.match(card.text, /no longer configured/);
-});
-
-test("legacy configs cannot resurrect an approval prompt", () => {
-  // Pre-`mode` configs only carry `approvals: true`, which used to mean "ask".
-  assert.equal(execModeOf({ approvals: true }), "full", "computed from the schema default");
-  assert.equal(execModeOf({ approvals: true, mode: "" }), "full");
-  assert.equal(execModeOf({ approvals: false }), "full");
-  assert.equal(execModeOf({ mode: "deny" }), "deny", "an explicit mode is still honoured");
-  const fresh = emptyConfig();
-  assert.equal(execModeOf(fresh.tools.exec), "full", "a fresh install asks for nothing");
 });
 
 test("the daemon can say which build it is, and the stamp is stable", async (t) => {

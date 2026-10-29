@@ -202,13 +202,11 @@ test("tool calls and errors persist — they used to vanish on refresh", async (
       {
         name: "ok_tool",
         description: "succeeds",
-        needsApproval: false,
         run: async () => "all good",
       },
       {
         name: "bad_tool",
         description: "throws",
-        needsApproval: false,
         run: async () => {
           throw new Error("tool exploded");
         },

@@ -40,7 +40,7 @@ export const STARTER_CONFIG = `// SuparClaw config (JSON5: comments allowed)
     fs: true,
     memory: true,
     web: { fetch: true, search: true },
-    exec: { enabled: true }   // on by default, runs without asking; sc approvals mode ask gates it
+    exec: { enabled: true }   // register the direct shell tool
   },
   cron: { enabled: true }
 }

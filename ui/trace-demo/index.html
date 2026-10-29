@@ -67,7 +67,6 @@
 
   <div class="bar" role="group" aria-label="Demo scenarios">
     <button type="button" id="btn-sample" aria-pressed="true">Sample run</button>
-    <button type="button" id="btn-approval">Needs approval</button>
     <button type="button" id="btn-failure">Failure + retry</button>
     <button type="button" id="btn-long">60-step run</button>
     <button type="button" id="btn-stop">Stop mid-run</button>
@@ -87,8 +86,6 @@
   import { AgentTrace } from "../src/trace/agent-trace.js";
   import {
     replaySample,
-    replayApproval,
-    finishApproval,
     replayFailure,
     replayLongRun,
     stopReplay,
@@ -97,7 +94,6 @@
   const thread = document.getElementById("thread");
   const buttons = {
     sample: document.getElementById("btn-sample"),
-    approval: document.getElementById("btn-approval"),
     failure: document.getElementById("btn-failure"),
     long: document.getElementById("btn-long"),
   };
@@ -130,7 +126,6 @@
     log = [];
     trace = new AgentTrace(thread, {
       scrollRoot: thread,
-      onApproval: (decision) => finishApproval(trace, decision),
       onRetry: () => {
         setActive("failure");
         replayFailure(trace);
@@ -158,8 +153,7 @@
       log = events;
       trace = new AgentTrace(thread, {
         scrollRoot: thread,
-        onApproval: (decision) => finishApproval(trace, decision),
-        onRetry: () => replayFailure(trace),
+          onRetry: () => replayFailure(trace),
       });
       const push = trace.push.bind(trace);
       trace.push = (event) => {
@@ -178,11 +172,6 @@
   buttons.sample.addEventListener("click", async () => {
     setActive("sample");
     await replaySample(fresh());
-  });
-
-  buttons.approval.addEventListener("click", () => {
-    setActive("approval");
-    replayApproval(fresh());
   });
 
   buttons.failure.addEventListener("click", () => {

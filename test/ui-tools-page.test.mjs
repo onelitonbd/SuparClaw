@@ -26,9 +26,7 @@ const CONFIG = {
   agents: { defaults: { model: "openai/gpt-5.6" } },
   gateway: {},
   tools: {
-    exec: { enabled: true, approvals: true, mode: "allowlist", askFallback: "deny", unattended: "deny",
-      strictInlineEval: false, safeBins: ["head"], safeBinTrustedDirs: ["/bin"], timeoutMs: 600000,
-      sandbox: "off", sandboxProot: false },
+    exec: { enabled: true, timeoutMs: 600000 },
     codeMode: { enabled: "auto", executor: "node", timeoutMs: 10000, maxCodeChars: 32768,
       maxOutputBytes: 65536, maxPendingToolCalls: 16, directOnly: [] },
     media: { concurrency: 2, models: [],
@@ -43,7 +41,7 @@ const CONFIG = {
 };
 
 const NAMES = ["fs_read", "fs_write", "exec", "pdf", "web_search", "memory_append"];
-const TOOLS = NAMES.map((name) => ({ name, description: `${name} does a thing`, needsApproval: name === "exec" }));
+const TOOLS = NAMES.map((name) => ({ name, description: `${name} does a thing` }));
 
 const outDir = mkdtempSync(join(TMP, "sc-ui-tools-page-"));
 const stub = join(outDir, "rpc-stub.mjs");
@@ -56,7 +54,6 @@ export const gateway = {
     if (method === "tools.list") return { tools: ${JSON.stringify(TOOLS)} };
     if (method === "skills.list") return { skills: [] };
     if (method === "models.plugins") return { plugins: [] };
-    if (method === "approvals.get") return { mode: "allowlist", entries: [] };
     if (method === "codeMode.get") return { enabled: "auto", engaged: true, model: "openai/gpt-5.6",
       preferredMatch: true, preferred: ["gpt-5.6"], preferredMatched: ["gpt-5.6"],
       executor: "node", executorBundled: true, catalog: ["fs_read", "fs_write", "pdf", "web_search", "memory_append"] };
@@ -112,13 +109,13 @@ const cardOf = (node) => node.closest(".card");
 test("five cards, in reading order, one heading each", () => {
   assert.equal(cards.length, 5);
   assert.deepEqual($$(".card > .setcard__head h3, .card > h3").map(text), [
-    "Exec & approvals", "Code mode", "Media understanding", "Web search", "Built-in tools",
+    "Exec", "Code mode", "Media understanding", "Web search", "Built-in tools",
   ]);
 });
 
 test("every save button reads Save <subject> and sits in its card's footer", () => {
   assert.deepEqual(saveButtons.map(text), [
-    "Save exec policy", "Save code mode", "Save media", "Save web search",
+    "Save exec settings", "Save code mode", "Save media", "Save web search",
   ]);
   for (const btn of saveButtons) {
     assert.ok(btn.closest(".setfoot"), `${text(btn)} is in a .setfoot`);
@@ -159,13 +156,9 @@ test("the inventory is shaped like the other cards and says what it is", () => {
   assert.ok(inv.querySelector(".setcard__head h3"), "it has the shared head");
   assert.equal(text(inv.querySelector(".setcard__head h3")), "Built-in tools");
   assert.match(text(inv.querySelector(".setcard__status .settings__tag")), /^6 registered$/);
-  assert.match(text(inv.querySelector(".setcard__status-note")), /1 of them ask/);
   assert.ok(![...inv.querySelectorAll("button")].some((b) => /^Save /.test(text(b))), "read-only: no save button");
   assert.match(text(inv.querySelector(".setfoot__note")), /Read-only inventory/);
-  const tags = [...inv.querySelectorAll(".settings__tag")].map(text);
-  assert.ok(tags.includes("no approval"), "an approval-free tool says so in words");
-  assert.ok(tags.includes("asks approval"));
-  assert.ok(!tags.includes("auto"), '"auto" no longer means "no approval"');
+  assert.ok(!/approval|allowlist|mode deny/i.test(text(inv)), "inventory has no retired policy warnings");
 });
 
 test("the inventory explains why a tool it does not list is missing, and its link to code mode", () => {

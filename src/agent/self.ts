@@ -27,7 +27,6 @@
 
 import type { ConfigService } from "../config/load.js";
 import type { SuparClawConfig } from "../config/schema.js";
-import { execModeOf } from "../config/schema.js";
 import { canonicalModelRef, validateModelRef } from "../config/providers.js";
 
 export type SettingType = "string" | "number" | "boolean" | "string[]" | "enum";
@@ -84,14 +83,7 @@ export const MUTABLE_SETTINGS: SettingSpec[] = [
   },
   { path: "agents.defaults.maxToolIterations", label: "tool rounds allowed per turn (0 = no limit)", type: "number" },
   { path: "agents.defaults.contextBudgetChars", label: "prompt character budget", type: "number" },
-  { path: "tools.exec.enabled", label: "whether you may run commands", type: "boolean" },
-  {
-    path: "tools.exec.mode",
-    label: "how exec is gated",
-    type: "enum",
-    values: ["deny", "allowlist", "ask", "full"],
-  },
-  { path: "tools.exec.approvals", label: "the legacy approvals flag behind the exec mode", type: "boolean" },
+  { path: "tools.exec.enabled", label: "whether the shell tool is enabled", type: "boolean" },
   {
     path: "channels.telegram.enabled",
     label: "whether Telegram is on (it still needs a token in Settings → Channels)",
@@ -290,9 +282,8 @@ export interface SelfFacts {
   reasoning: string;
   usage: string;
   queue: string;
-  execMode: string;
-  approvals: boolean;
-  sandbox: string;
+  execEnabled: boolean;
+  execTimeoutMs: number;
   maxIterations: number;
   contextBudget: number;
   skills: number;
@@ -308,8 +299,6 @@ export interface SelfRuntime {
   usage?: string;
   /** This session's effective queue mode. */
   queue?: string;
-  /** This session's exec override, when it has one. */
-  execMode?: string;
 }
 
 export interface SelfOptions {
@@ -332,9 +321,8 @@ export function selfFactsFrom(config: SuparClawConfig, opts: SelfOptions): SelfF
     reasoning: d.reasoningEffort,
     usage: opts.runtime?.usage ?? d.usage,
     queue: opts.runtime?.queue ?? d.queueMode,
-    execMode: opts.runtime?.execMode ?? execModeOf(config.tools.exec),
-    approvals: Boolean(config.tools.exec.approvals),
-    sandbox: config.tools.exec.sandbox,
+    execEnabled: config.tools.exec.enabled,
+    execTimeoutMs: config.tools.exec.timeoutMs,
     maxIterations: d.maxToolIterations,
     contextBudget: d.contextBudgetChars,
     skills: opts.skills ?? 0,
@@ -364,12 +352,12 @@ export function selfPromptLine(facts: SelfFacts): string {
     `- Model: ${model}${profile} · fallbacks: ${fallbacks}`,
     `- Naming new chats: ${facts.utilityModel ? "`" + facts.utilityModel + "`" : "this model"}`,
     `- Reasoning: \`${facts.reasoning}\` · reply usage footer: \`${facts.usage}\` · queue: \`${facts.queue}\``,
-    `- Exec: mode \`${facts.execMode}\` · approvals: ${onOff(facts.approvals)} · sandbox: \`${facts.sandbox}\``,
+    `- Exec: ${onOff(facts.execEnabled)} · timeout cap ${facts.execTimeoutMs.toLocaleString("en-US")} ms`,
     `- Limits: ${facts.maxIterations} tool iterations · context budget ${budget} chars · skills: ${facts.skills} enabled`,
     `- Cron: ${onOff(facts.cronEnabled)}, timezone \`${facts.timezone}\` · dreaming: ${onOff(facts.dreaming)}`,
     `- Workspace: \`${facts.workspace}\` · config: \`${facts.configPath}\``,
     "",
-    "When the user asks you to change a setting, call the `settings` tool (list → get → set);",
+    "Use the `settings` tool (list → get → set) to read or change configuration;",
     "a successful change applies immediately and this block is rebuilt next turn.",
     `Writable from chat: ${MUTABLE_SETTINGS.map((s) => s.path).join(", ")}.`,
     "Operator-only: API keys and provider credentials, the gateway port/bind and auth token, and the",

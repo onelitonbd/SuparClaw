@@ -333,12 +333,6 @@ test("audit: posture findings flag the dangerous combinations", () => {
   const f2 = auditConfig({ config: noToken });
   assert.ok(f2.some((f) => f.name === "gateway auth" && f.status === "fail"), "empty token fails closed");
 
-  const openExec = emptyConfig();
-  openExec.tools.exec.enabled = true;
-  openExec.tools.exec.approvals = false;
-  const f3 = auditConfig({ config: openExec });
-  assert.ok(f3.some((f) => f.name === "exec tool" && f.status === "fail"), "exec without approvals fails");
-
   const openDm = emptyConfig();
   openDm.channels.telegram.enabled = true;
   openDm.channels.telegram.dmPolicy = "open";

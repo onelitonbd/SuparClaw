@@ -189,8 +189,8 @@ test("the Control UI bundle boots and every element it looks up exists", async (
   // The ids the app reaches for — keep in sync with ui/src/*.ts.
   const required = [
     "app", "chat-view", "thread", "stack", "jump", "composer", "input", "send-btn", "stop-btn",
-    "tok", "model-btn", "model-name", "approval", "approval-tool", "approval-args",
-    "approval-deny", "approval-allow", "drawer-btn", "drawer-close", "drawer-scrim", "drawer",
+    "tok", "model-btn", "model-name", "question", "question-body", "question-progress",
+    "question-answer", "question-skip", "question-skip-one", "drawer-btn", "drawer-close", "drawer-scrim", "drawer",
     "sessions", "new-session", "sheet-overlay", "sheet-scrim", "sheet", "model-filter",
     "model-list", "sheet-add-provider", "modal-overlay", "modal-scrim", "modal", "modal-title",
     "modal-body", "modal-foot", "toasts", "settings-view", "settings-body",

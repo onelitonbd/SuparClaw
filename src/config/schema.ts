@@ -727,47 +727,9 @@ export const CONFIG_SCHEMA: SchemaNode = {
           t: "object",
           default: {},
           fields: {
-            // On by default, and approved without a prompt: the operator asked
-            // for an agent that can act on its own. `sc approvals mode
-            // deny|allowlist|ask|full` or mode in config still overrides it.
             enabled: { t: "bool", default: true },
-            // Legacy: approvals:false maps to mode=full (kept working). Ignored
-            // while `mode` names a policy.
-            approvals: { t: "bool", default: true },
-            // deny | allowlist | ask | full — the exec policy mode (default ask).
-            // Empty string = follow the legacy approvals bool (⇒ ask/full). Set in config
-            // or via `sc approvals mode …`. We need "unset" as a third state, so the
-            // enumeration itself is validated wherever it's written.
-            // Default "full": no per-call prompt. The mode check in
-            // evaluateExec() returns allow before allowlist/inline-eval
-            // analysis, so this also covers cron/webhook sessions.
-            mode: { t: "text", default: "full" },
-            // When zero approval surfaces are connected (cron, idle daemon):
-            // where an ask verdict lands (default deny).
-            askFallback: { t: "enum", values: ["deny", "allowlist", "full"], default: "deny" },
-            // Never auto-allow inline-eval carriers (node -e, bash -c, awk…).
-            strictInlineEval: { t: "bool", default: false },
-            // stdin-safe bins allowed without prompting (profiles in exec-policy).
-            safeBins: { t: "array", of: { t: "string" }, default: ["cut", "uniq", "head", "tail", "tr", "wc"] },
-            safeBinTrustedDirs: { t: "array", of: { t: "string" }, default: ["/bin", "/usr/bin"] },
-            // No time limits on the agent's work — this is only a safety cap
-            // so a hung command cannot block a session forever. 30 minutes
-            // (Task 38): `npm install`, a test suite or a build on a phone is
-            // routinely longer than the old 10.
+            // Upper bound for one command; prevents a hung process blocking a turn.
             timeoutMs: { t: "int", min: 1000, max: 1800000, default: 1800000 },
-            // The sandbox was REMOVED in Task 57 (exec is the operator's own
-            // shell now). Both keys stay in the schema so an old config still
-            // loads and `sc config` does not fail on it; neither has any
-            // effect, and `sc doctor` says so.
-            sandbox: { t: "enum", values: ["off", "strict"], default: "off" },
-            sandboxProot: { t: "bool", default: false },
-            // Unattended sources (cron jobs, inbound webhooks) have nobody to
-            // ask: how an "ask" exec verdict resolves there (P2 #10; their
-            // unattended exec policy at our scale). deny = decline loudly
-            // (default), allowlist = auto-allow ONLY when every segment is a
-            // safe bin (else the same loud decline), all = auto-allow.
-            // Every auto-decision is audited to the log and the transcript.
-            unattended: { t: "enum", values: ["deny", "allowlist", "all"], default: "deny" },
           },
         },
       },
@@ -1139,16 +1101,7 @@ export interface SuparClawConfig {
     };
     exec: {
       enabled: boolean;
-      approvals: boolean;
-      mode?: string;
-      askFallback: "deny" | "allowlist" | "full";
-      strictInlineEval: boolean;
-      safeBins: string[];
-      safeBinTrustedDirs: string[];
       timeoutMs: number;
-      sandbox: "off" | "strict";
-      sandboxProot: boolean;
-      unattended: "deny" | "allowlist" | "all";
     };
   };
   cron: {
@@ -1250,6 +1203,12 @@ export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: st
   // of the schema) is what keeps an old config loadable — validation rejects
   // unknown keys, so a stale file would otherwise fail to boot with a complaint
   // about a setting that does not do anything any more.
+  const execRaw = (r as { tools?: { exec?: Record<string, unknown> } }).tools?.exec;
+  if (execRaw) {
+    for (const key of ["approvals", "mode", "askFallback", "strictInlineEval", "safeBins", "safeBinTrustedDirs", "sandbox", "sandboxProot", "unattended"]) {
+      delete execRaw[key];
+    }
+  }
   const tgRaw = (r as { channels?: { telegram?: Record<string, unknown> } }).channels?.telegram;
   if (tgRaw) {
     delete tgRaw["streaming"];
@@ -1258,21 +1217,6 @@ export function parseConfig(raw: unknown): { config: SuparClawConfig; errors: st
   const errors = validate(CONFIG_SCHEMA, raw ?? {});
   if (errors.length > 0) return { config: emptyConfig(), errors };
   return { config: applyDefaults(CONFIG_SCHEMA, raw ?? {}) as SuparClawConfig, errors: [] };
-}
-
-export type ExecMode = "deny" | "allowlist" | "ask" | "full";
-export type ExecAskFallback = "deny" | "allowlist" | "full";
-
-/** Effective exec mode: explicit mode wins; legacy approvals:false ⇒ full. */
-export function execModeOf(exec: { approvals?: boolean; mode?: string }): ExecMode {
-  const mode = exec.mode && exec.mode.trim() ? exec.mode.trim() : null;
-  if (mode === "deny" || mode === "allowlist" || mode === "ask" || mode === "full") return mode;
-  // A config written before `mode` existed only carries the legacy
-  // `approvals: true`, which used to mean "ask". Nothing is interactive any
-  // more (Task 55: the operator cannot approve from a phone), so an unset mode
-  // means the permissive one — a stale config must never resurrect a prompt.
-  void exec.approvals;
-  return "full";
 }
 
 export function emptyConfig(): SuparClawConfig {

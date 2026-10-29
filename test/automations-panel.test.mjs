@@ -77,9 +77,8 @@ test("Control UI — automations.state is advertised + routed on the gateway", (
   assert.match(main, /onGatewayEvent/, "main wires the notification hook");
 });
 
-test("Control UI — alerts tab: approvals default ON, reply opt-in, quiet-hours + test (their Settings → Notifications shape)", () => {
+test("Control UI — alerts tab: reply opt-in, quiet-hours + test", () => {
   const src = readFileSync(new URL("../ui/src/notifications.ts", import.meta.url), "utf8");
-  assert.match(src, /approvals: true/, "approvals default on (their default category)");
   assert.match(src, /reply: false/, "every other category is opt-in");
   assert.match(src, /inQuietHours/, "quiet-hours gate");
   assert.match(src, /sendTest/, "Settings → Notifications send-test");

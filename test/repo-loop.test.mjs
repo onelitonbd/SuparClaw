@@ -1,10 +1,6 @@
 // Task 35 — the repository binding reaches the *model*, not just the UI.
 //
-// Three things have to be true at once for a code session to be real:
-//   1. the prompt says where the work happens and how publishing is gated,
-//   2. the tools run against the session's worktree (not the global workspace),
-//   3. a publish is refused unless *this turn* asked for one.
-// This file drives a real AgentLoop with a scripted model to prove all three.
+// The prompt and tools use the bound worktree; the publish tool has no current-turn intent gate.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -75,7 +71,7 @@ test("a bound session's prompt carries the repo, the branch and the workspace", 
   assert.match(h.seen.system, /## Repository/);
   assert.match(h.seen.system, /acme\/api · branch sc\/alpha \(from main\)/);
   assert.match(h.seen.system, new RegExp(`Workspace: ${BINDING.workspace}`));
-  assert.match(h.seen.system, /Publish only when the user asks in this turn/);
+  assert.doesNotMatch(h.seen.system, /Publish only when the user asks in this turn/);
 });
 
 test("the prompt tells the model which branch to continue, in the user's words", async () => {
@@ -102,7 +98,7 @@ test("a plain chat has no repository block at all", async () => {
   assert.doesNotMatch(h.seen.system, /Publish only when the user asks/);
 });
 
-test("the repo tools are offered, and a turn that did not ask cannot publish", async () => {
+test("repo tools are offered for every bound code session", async () => {
   const h = harness();
   h.store.setSessionRepo("main:code", BINDING);
   const published = [];
@@ -121,20 +117,18 @@ test("the repo tools are offered, and a turn that did not ask cannot publish", a
   await loop.run({
     sessionKey: "main:code",
     text: "fix the failing test",
-    // publishAllowed is unset: the service sets it from the user's text, and
-    // that text did not ask for a PR.
     onEvent: (e) => events.push(e),
   });
 
   assert.ok(h.seen.tools.includes("repo_status"), "the model can look at the worktree");
-  assert.ok(h.seen.tools.includes("github_publish"), "the tool exists even when it will refuse");
+  assert.ok(h.seen.tools.includes("github_publish"), "the tool is available");
 
   const toolEvents = events.filter((e) => e.type === "tool");
   assert.equal(toolEvents.length, 0, "the scripted model did not call a tool");
   assert.equal(published.length, 0);
 });
 
-test("an explicit ask opens the gate for that turn, and the publish is reported back", async () => {
+test("github_publish runs when called without publish intent metadata", async () => {
   const h = harness({
     script: [{ tool: "github_publish", args: { title: "Fix the test" } }, { text: "Opened PR #3." }],
   });
@@ -154,35 +148,16 @@ test("an explicit ask opens the gate for that turn, and the publish is reported 
   const events = [];
   await loop.run({
     sessionKey: "main:code",
-    text: "open a PR when the tests pass",
-    publishAllowed: true,
+    text: "fix the tests",
     onEvent: (e) => events.push(e),
   });
 
-  assert.equal(published.length, 1, "the gate was opened by the user's own words");
+  assert.equal(published.length, 1, "the repo publish call ran without an intent flag");
   assert.equal(published[0].title, "Fix the test");
   assert.equal(published[0].draft, true);
   const tool = events.find((e) => e.type === "tool");
   assert.ok(tool, "the surface is told a tool ran");
   assert.equal(tool.name, "github_publish");
-});
-
-test("the same tool refuses when the gate stays shut", async () => {
-  const h = harness({ script: [{ tool: "github_publish", args: { title: "Fix the test" } }, { text: "summary" }] });
-  h.store.setSessionRepo("main:code", BINDING);
-  let called = 0;
-  const loop = loopFor(h, {
-    repoCtl: {
-      status: async () => ({ repo: "acme/api", base: "main", branch: "sc/alpha", clean: false, files: [], added: 0, removed: 0 }),
-      diff: async () => "",
-      publish: async () => {
-        called++;
-        return { branch: "sc/alpha", number: 3, url: "u", draft: true };
-      },
-    },
-  });
-  await loop.run({ sessionKey: "main:code", text: "just look at it", onEvent: () => {} });
-  assert.equal(called, 0, "no push happened for a turn that never asked");
 });
 
 test("the prompt block itself is the single source of the repo facts", async () => {

@@ -128,8 +128,6 @@ export class Gateway {
     this.#unsubscribe = this.service.subscribe((event) => {
       this.#broadcast(event.type === "chat" ? "chat" : event.type, event);
     });
-    // Any connected client counts as an approval surface (web UI, TUI, tools).
-    this.service.setApprovalSurface(() => this.#clients.size > 0);
     this.#timer = setInterval(() => {
       // keep the send-dedupe map from growing on a long-lived daemon
       for (const [key, at] of this.#dedupe) if (Date.now() - at > 300_000) this.#dedupe.delete(key);
@@ -258,16 +256,9 @@ export class Gateway {
       "chat.rewind",
       "chat.fork",
       "chat.abort",
-      "chat.approval",
       "chat.questionAnswer",
-      "approvals.get",
-      "approvals.setMode",
-      "approvals.preset",
-      "approvals.entry.add",
-      "approvals.entry.revoke",
       "codeMode.get",
       "media.get",
-      "session.execMode",
       "web.search.get",
       "web.search.test",
       "queue.set",
@@ -275,8 +266,7 @@ export class Gateway {
       "subagents.list",
       "subagents.cancel",
       // Task 52 — the operator's window into the agent's shells. Listed here so
-      // `sc status`/clients can discover them; every call is the operator
-      // acting on their own machine, so no approval gate applies to these.
+      // `sc status`/clients can discover them; these manage the daemon's shells.
       "terminals.list",
       "terminals.create",
       "terminals.run",
@@ -436,7 +426,7 @@ export class Gateway {
           }
           send(okFrame(id, { accepted: true, sessionKey, warnings }));
           // Single event stream: service.subscribe already fans every run event
-          // (start/delta/tool/approval/final/error/idle) out to ALL sockets as
+          // (start/delta/tool/final/error/idle) out to ALL sockets as
           // "chat" envelopes. Broadcasting again from these callbacks produced
           // a second copy of every event — doubled streaming text and a
           // duplicate assistant bubble per reply in every client.
@@ -509,7 +499,6 @@ export class Gateway {
         case "chat.abort":
           // runId cancels just that queued/steering input; without it, queued
           // work is cancelled first, then the active run (their order).
-          service.denyApprovalsFor(String(params["sessionKey"] ?? "main:main"));
           send(
             okFrame(id, {
               aborted: service.loop.abort(
@@ -619,19 +608,6 @@ export class Gateway {
           send(okFrame(id, { cancelled: stopped, childSessionKey: row.child_session_key }));
           return;
         }
-        case "chat.approval": {
-          // New shape: {callId, decision: "once"|"always"|"deny"}.
-          // Legacy shape: {callId, approve: boolean} — booleans keep working.
-          const raw = params["decision"];
-          const decision =
-            raw === "once" || raw === "always" || raw === "deny"
-              ? raw
-              : params["approve"] === true
-                ? true
-                : false;
-          send(okFrame(id, { resolved: service.resolveApproval(String(params["callId"] ?? ""), decision) }));
-          return;
-        }
         case "chat.questionAnswer": {
           // answer an ask_user card (P2 #8) — WS path resolves the whole set
           const idq = service.pendingQuestion(String(params["sessionKey"] ?? ""));
@@ -651,25 +627,6 @@ export class Gateway {
             service.answerQuestionPart(idq.id, q.id, values, { skip: values.length === 0 });
           }
           send(okFrame(id, { id: idq.id, resolved: true }));
-          return;
-        }
-        case "session.execMode": {
-          // Per-session /exec override (TUI). null clears it.
-          const key = String(params["sessionKey"] ?? "main:main");
-          const mode = params["mode"];
-          if (mode === null) {
-            service.setSessionExecMode(key, null);
-          } else if (mode === "deny" || mode === "allowlist" || mode === "ask" || mode === "full") {
-            service.setSessionExecMode(key, mode);
-          } else {
-            send(errFrame(id, "bad_params", "mode must be deny|allowlist|ask|full or null"));
-            return;
-          }
-          send(okFrame(id, { sessionKey: key, execMode: service.getSessionExecMode(key), global: service.approvalsState().mode }));
-          return;
-        }
-        case "approvals.get": {
-          send(okFrame(id, service.approvalsState()));
           return;
         }
         case "codeMode.get": {
@@ -796,53 +753,6 @@ export class Gateway {
             firstTitles: out.kind === "results" ? out.results.slice(0, 3).map((r) => r.title) : [],
             message: out.kind === "error" ? out.message : undefined,
           }));
-          return;
-        }
-        case "approvals.setMode": {
-          const mode = params["mode"];
-          if (mode !== "deny" && mode !== "allowlist" && mode !== "ask" && mode !== "full") {
-            send(errFrame(id, "bad_params", "mode must be deny|allowlist|ask|full"));
-            return;
-          }
-          service.configSvc.setPath("tools.exec.mode", mode);
-          if (params["askFallback"] === "deny" || params["askFallback"] === "allowlist" || params["askFallback"] === "full") {
-            service.configSvc.setPath("tools.exec.askFallback", params["askFallback"]);
-          }
-          if (typeof params["strictInlineEval"] === "boolean") {
-            service.configSvc.setPath("tools.exec.strictInlineEval", params["strictInlineEval"]);
-          }
-          service.saveApprovalsDoc(service.approvalsDoc()); // broadcast approvals.updated
-          send(okFrame(id, service.approvalsState()));
-          return;
-        }
-        case "approvals.preset": {
-          const name = String(params["name"] ?? "");
-          if (name !== "cautious" && name !== "deny-all" && name !== "yolo") {
-            send(errFrame(id, "bad_params", "preset must be cautious|deny-all|yolo"));
-            return;
-          }
-          send(okFrame(id, { message: service.setExecPreset(name) }));
-          return;
-        }
-        case "approvals.entry.add": {
-          const { addManualEntry } = await import("../agent/exec-policy.js");
-          const pattern = String(params["pattern"] ?? "").trim();
-          const argPattern = params["argPattern"] == null ? undefined : String(params["argPattern"]);
-          const added = addManualEntry(service.store, pattern, argPattern);
-          if (!added.ok) {
-            send(errFrame(id, "bad_params", added.error ?? "invalid entry"));
-            return;
-          }
-          service.saveApprovalsDoc(service.approvalsDoc()); // broadcast
-          send(okFrame(id, { entry: added.entry }));
-          return;
-        }
-        case "approvals.entry.revoke": {
-          const { revokeEntry } = await import("../agent/exec-policy.js");
-          const target = String(params["id"] ?? "");
-          const okRev = revokeEntry(service.store, target);
-          if (okRev) service.saveApprovalsDoc(service.approvalsDoc()); // broadcast
-          send(okFrame(id, { revoked: okRev }));
           return;
         }
         case "dream.run": {
@@ -1607,7 +1517,6 @@ case "sessions.rename": {
               tools: service.loop.tools.map((t) => ({
                 name: t.name,
                 description: t.description,
-                needsApproval: t.needsApproval === true,
               })),
             }),
           );

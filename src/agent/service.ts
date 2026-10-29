@@ -22,20 +22,8 @@ import { settingsCtlFrom, type SelfRuntime, type SettingsCtl } from "./self.js";
 import { namingDecision, namingSample } from "./naming.js";
 import { pruneMedia } from "./media-store.js";
 import { LlmClient, resolveModel } from "../agent/llm.js";
-import { modelProfile, execModeOf, type UsageMode } from "../config/schema.js";
+import { modelProfile, type UsageMode } from "../config/schema.js";
 import { usageFooter } from "../util/usage.js";
-import {
-  evaluateExec,
-  unattendedDecision,
-  loadApprovalsDoc,
-  type UnattendedMode,
-  saveApprovalsDoc,
-  mintAlwaysEntry,
-  touchEntries,
-  ledgerEntries,
-  type ApprovalsDoc,
-  type ExecVerdict,
-} from "../agent/exec-policy.js";
 import { DREAM_SESSION_KEY, armDream, cleanTitle, titlePrompt, type DreamHandle, runSweep, promotePreview, backfillPreview, lightStage, consolidateGated } from "../agent/dream.js";
 import { writeWorkspaceTemplates, todayStamp } from "../agent/workspace.js";
 import { handleSlashExtension } from "./slash-commands.js";
@@ -43,7 +31,7 @@ import { resolveConfiguredProviders, markAuthOutcome, profileStatus, profileChec
 import { pluginById } from "../agent/provider-plugins.js";
 import { deviceLogin } from "../agent/oauth-device.js";
 import { RepoManager } from "../repo/manager.js";
-import { bindSessionRepo, publishRequested, unbindSessionRepo } from "../repo/session.js";
+import { bindSessionRepo, unbindSessionRepo } from "../repo/session.js";
 import {
   accountLabel,
   connectGithub,
@@ -70,8 +58,6 @@ import { TelegramChannel, describeError, probeTelegramApi, telegramProxy } from 
 import { Scheduler } from "../cron/scheduler.js";
 import { GmailAddonService } from "../addons/gmail-service.js";
 import { GoogleWorkspaceAddonService } from "../addons/google-workspace.js";
-import { workspaceDeleteRequested, workspaceInviteRequested, workspaceMutationRequested, workspacePublicShareRequested, workspaceShareRequested } from "../addons/google-workspace-intent.js";
-import { gmailDraftDeleteRequested, gmailMutationRequested, gmailSendRequested } from "../addons/gmail-intent.js";
 
 export interface ChatPayload {
   sessionKey: string;
@@ -91,11 +77,6 @@ export interface ChatPayload {
   onFinal?: (text: string, usage?: Record<string, number>) => void | Promise<void>;
   /** P3 #26 heartbeat: skip workspace bootstrap files on this turn (lightContext). */
   lightContext?: boolean;
-  /**
-   * Task 35: the surface itself requested a publish (the bar's button, `/pr`, the
-   * Telegram card). Set by the UI after a human confirmed — not by the model.
-   */
-  publish?: boolean;
   onDelta?: (delta: string) => void | Promise<void>;
   /**
    * A finished block of the model's words, delivered before it runs a tool.
@@ -104,7 +85,6 @@ export interface ChatPayload {
    */
   onSay?: (text: string) => void | Promise<void>;
   onTool?: (event: Extract<RunEvent, { type: "tool" }>) => void | Promise<void>;
-  onApproval?: (event: Extract<RunEvent, { type: "approval" }>) => void | Promise<void>;
   /** ask_user (P2 #8): the surface renders the question set inline. */
   onQuestion?: (event: Extract<RunEvent, { type: "question" }>) => void | Promise<void>;
 }
@@ -121,8 +101,6 @@ export type ServiceEvent =
    * is watching the daemon's real shells, not a replay of the tool calls.
    */
   | { type: "terminal"; kind: "output" | "state" | "created" | "removed"; id: string; [k: string]: unknown };
-
-export type ApprovalDecision = "once" | "always" | "deny";
 
 /** Live ask_user set (P2 #8): closure + per-question answers. */
 interface PendingQuestionSet {
@@ -268,28 +246,9 @@ export class Service {
   #questions = new Map<string, PendingQuestionSet>();
   /** sessionKey → last payload's onQuestion hook (for telegram surfacing). */
   #questionHooks = new Map<string, ChatPayload["onQuestion"]>();
-  /** sessionKey → last payload's onApproval hook (telegram IS a surface). */
-  #approvalHooks = new Map<string, NonNullable<ChatPayload["onApproval"]>>();
   #dream: DreamHandle | null = null;
   #dreamSig = "";
   #titleBusy = new Set<string>();
-  /**
-   * Pending human-decision calls. No timers (rule 9): a decision arrives from
-   * a connected surface, or from an abort; askFallback only applies when no
-   * surface is connected at all.
-   */
-  #approvals = new Map<string, {
-    resolve: (decision: ApprovalDecision) => void;
-    execVerdict?: ExecVerdict;
-    sessionKey: string;
-    workspace: string;
-  }>();
-  /** Which surface count currently counts as "someone is watching" (set by the gateway / local TUI). */
-  #approvalSurface: () => boolean = () => false;
-  /** Per-session exec mode overrides (/exec slash; null = follow global). */
-  #sessionExecModes = new Map<string, string>();
-  /** Latest payload source per session (P2 #10) — cron/webhook = unattended. */
-  #sessionSources = new Map<string, string>();
   #closing = false;
   /** Sub-agent lifecycle owner (spawn/yield/announce/cancel). */
   #subagents: Subagents | null = null;
@@ -340,7 +299,6 @@ export class Service {
       store: this.store,
       log: this.log,
       llm,
-      requestApproval: (callId, tool, args, ctx) => this.requestApproval(callId, tool, args, ctx),
       askUser: (sessionKey, questions) => this.#askUser(sessionKey, questions),
       // A job the agent creates mid-turn must arm before the turn's reply lands,
       // not at the next daemon restart (same reason cron.list reconciles).
@@ -701,7 +659,6 @@ export class Service {
     return {
       usage: this.usageModeFor(sessionKey),
       queue: this.loop.queueStatus(sessionKey).mode,
-      execMode: this.getSessionExecMode(sessionKey) ?? execModeOf(this.config.tools.exec),
     };
   }
 
@@ -1798,7 +1755,6 @@ export class Service {
     }
     // /stop (alias /abort) — cancel queued work first, then the active run (their order).
     if (cmd === "/stop" || cmd === "/abort") {
-      this.denyApprovalsFor(payload.sessionKey);
       const stopped = this.loop.abort(payload.sessionKey);
       return { reply: stopped ? "Stopped — queued inputs cancelled, active run aborted." : "Nothing to stop in this session." };
     }
@@ -2009,13 +1965,10 @@ export class Service {
     if (payload.source === "telegram") {
       this.#channelSinks.set(payload.sessionKey, payload.reply);
     }
-    // Unattended exec policy (P2 #10): the approval path consults the source.
-    this.#sessionSources.set(payload.sessionKey, payload.source);
     // ask_user surfacing (P2 #8): remember how THIS surface wants questions.
     if (payload.onQuestion) this.#questionHooks.set(payload.sessionKey, payload.onQuestion);
-    if (payload.onApproval) this.#approvalHooks.set(payload.sessionKey, payload.onApproval);
 
-    // Lifecycle events (start/delta/tool/approval/final/idle) all come from the loop with
+    // Lifecycle events (start/delta/tool/final/idle) all come from the loop with
     // the real runId — no synthetic start here, so surfaces never see two runs.
     await this.loop.run({
       sessionKey: payload.sessionKey,
@@ -2029,17 +1982,6 @@ export class Service {
       lightContext: payload.lightContext === true,
       // Channel (durable-ingress style) inputs never coalesce in collect mode.
       exclusive: payload.source === "telegram",
-      // Task 35, layer 2: the publish tool refuses unless THIS turn asked for a
-      // PR. Matched on the user's text, never on the model's intention.
-      publishAllowed: payload.publish === true || publishRequested(text),
-      gmailSendAllowed: gmailSendRequested(text),
-      gmailMutateAllowed: gmailMutationRequested(text),
-      gmailDeleteDraftAllowed: gmailDraftDeleteRequested(text),
-      googleWorkspaceMutationAllowed: workspaceMutationRequested(text),
-      googleWorkspaceDeleteAllowed: workspaceDeleteRequested(text),
-      googleWorkspaceShareAllowed: workspaceShareRequested(text),
-      googleWorkspacePublicShareAllowed: workspacePublicShareRequested(text),
-      googleWorkspaceInviteAllowed: workspaceInviteRequested(text),
       onEvent: (event) => {
         // Reply-usage footer (P2 #15 / Task 23): a FIELD on the final event, not
         // text baked into the reply. The transcript row carries the numbers and
@@ -2077,7 +2019,6 @@ export class Service {
         if (out.type === "delta") deliver("stream", () => payload.onDelta?.(out.text));
         else if (out.type === "say") deliver("answer block", () => payload.onSay?.(out.text));
         else if (out.type === "tool") deliver("progress", () => payload.onTool?.(out));
-        else if (out.type === "approval") deliver("approval", () => payload.onApproval?.(out));
         else if (out.type === "final") {
           // Telegram / TUI / the OpenAI-compatible endpoint get one string;
           // the web chat draws the line in its own element from `footer`.
@@ -2090,160 +2031,6 @@ export class Service {
     });
   }
 
-  /** Register "which connected surface count counts as watching" (gateway or local TUI). */
-  setApprovalSurface(fn: () => boolean): void {
-    this.#approvalSurface = fn;
-  }
-
-  /** Stamp the ledger entries that authorized a run. "Last used" is the one
-   *  thing an operator needs before revoking a grant, so it has to be written
-   *  (it never was). Deliberately silent: no broadcast, because re-rendering an
-   *  open Settings card mid-edit would throw away the operator's draft. */
-  #stampExecUsage(verdict: ExecVerdict, command: string): void {
-    const ids = verdict.segments
-      .map((seg) => seg.matchedEntryId)
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
-    if (ids.length === 0) return;
-    try {
-      touchEntries(this.store, ids, command);
-    } catch (err) {
-      this.log.warn(`exec ledger stamp failed: ${(err as Error).message}`);
-    }
-  }
-
-  /**
-   * Decide whether a tool may run. **Nothing here waits for a person.**
-   *
-   * Task 55, in the operator's words: *"let the ai work on any command without
-   * my permission … i cant give permission from telegram … no tool ok"*. The
-   * old shape asked a human and fell back to `deny` when nobody answered, so a
-   * phone chat turned the whole shell off and the model, seeing "declined",
-   * told the operator to run the commands by hand and paste the output.
-   *
-   * What is left is a **policy**, not a permission prompt: `deny` still denies,
-   * `allowlist` still restricts, and `ask` — which used to mean "wait for a
-   * human" — now means "run and log who allowed it", because there is nobody
-   * on the other end of a chat to press a button. Every auto-decision lands in
-   * the log and in the transcript, so the operator can read what happened.
-   */
-  private requestApproval(
-    callId: string,
-    tool: string,
-    args: Record<string, unknown>,
-    ctx?: { sessionKey: string; workspace: string; onPrompt?: (info: { exec?: { mode: string; mintable: boolean; reason: string } }) => void },
-  ): Promise<boolean | { approved: boolean; execVerdict?: ExecVerdict }> {
-    const sessionKey = ctx?.sessionKey ?? "";
-    const workspace = ctx?.workspace ?? workspaceDir();
-    void callId;
-
-    // Only a shell command has a policy to consult. `terminal` is the same
-    // power with memory, so a `run` goes through the identical evaluator.
-    const action = String(args.action ?? "").toLowerCase();
-    const command =
-      tool === "exec" ? String(args.command ?? "") : tool === "terminal" && action === "run" ? String(args.command ?? "") : "";
-    if (!command) {
-      // A tool that is not a shell command has nothing to weigh. It runs.
-      this.log.info(`tool ${tool}: allowed without a prompt (no approval step)`);
-      return Promise.resolve({ approved: true });
-    }
-
-    const doc = loadApprovalsDoc(this.store);
-    const exec = this.configSvc.current.tools.exec;
-    const verdict = evaluateExec({
-      config: this.configSvc.current,
-      doc,
-      command,
-      cwd: workspace,
-      pathEnv: process.env.PATH ?? "/bin:/usr/bin",
-      sessionMode: (this.#sessionExecModes.get(sessionKey) ?? undefined) as import("../config/schema.js").ExecMode | undefined,
-    });
-    this.log.info(`exec policy: mode=${verdict.mode} decision=${verdict.decision} reason=${verdict.reason} cmd=${command.slice(0, 120)}`);
-
-    if (verdict.decision === "deny") return Promise.resolve({ approved: false, execVerdict: verdict });
-
-    // Unattended sources (P2 #10): cron/webhook runs have their own policy for
-    // exactly this question and it still applies — nobody is watching either.
-    const src = this.#sessionSources.get(sessionKey) ?? "";
-    if (src === "cron" || src === "webhook") {
-      const mode = (exec.unattended ?? "deny") as UnattendedMode;
-      const decision = unattendedDecision(mode, verdict);
-      this.log.info(`unattended exec (${src}, ${sessionKey}): ${decision.audit} ⇒ ${command.slice(0, 120)}`);
-      const sess = this.store.getSessionByKey(sessionKey);
-      if (sess) this.store.appendMessage(sess.id, "tool", `[${decision.audit}]\n$ ${command.slice(0, 500)}`);
-      if (decision.allowed) this.#stampExecUsage(verdict, command);
-      return Promise.resolve({ approved: decision.allowed, execVerdict: verdict });
-    }
-
-    if (verdict.decision === "ask") {
-      // There is no card, no button and no wait. An `ask` policy means "a
-      // human would have been asked" — say so in the transcript and run.
-      const sess = this.store.getSessionByKey(sessionKey);
-      if (sess) this.store.appendMessage(sess.id, "tool", `[allowed automatically: ${verdict.reason} — approvals are not interactive]\n$ ${command.slice(0, 500)}`);
-      this.log.info(`exec ask ⇒ run (approvals are not interactive): ${verdict.reason}`);
-    }
-
-    this.#stampExecUsage(verdict, command);
-    return Promise.resolve({ approved: true, execVerdict: verdict });
-  }
-
-  /** Resolve a pending decision. Legacy boolean accepted everywhere. */
-  resolveApproval(callId: string, decision: boolean | ApprovalDecision): boolean {
-    const pending = this.#approvals.get(callId);
-    if (!pending) return false;
-    this.#approvals.delete(callId);
-    pending.resolve(typeof decision === "boolean" ? (decision ? "once" : "deny") : decision);
-    return true;
-  }
-
-  /** Deny every pending decision for one session (abort paths). */
-  denyApprovalsFor(sessionKey: string): number {
-    let n = 0;
-    for (const [callId, pending] of [...this.#approvals.entries()]) {
-      if (pending.sessionKey !== sessionKey) continue;
-      this.#approvals.delete(callId);
-      pending.resolve("deny");
-      n++;
-    }
-    return n;
-  }
-
-  /** Broadcasts that the ledger/policy changed so open UIs re-read. */
-  #broadcastApprovalsChanged(): void {
-    this.events.emit("event", { type: "approvals.updated", sessionKey: "", name: "" });
-  }
-
-  /** Effective exec policy snapshot for RPC/CLI display. */
-  approvalsState(): { enabled: boolean; mode: string; askFallback: string; strictInlineEval: boolean; entries: ReturnType<typeof ledgerEntries> } {
-    const exec = this.configSvc.current.tools.exec;
-    const doc = loadApprovalsDoc(this.store);
-    return {
-      enabled: exec.enabled,
-      mode: execModeOf(exec),
-      askFallback: exec.askFallback ?? "deny",
-      strictInlineEval: exec.strictInlineEval === true,
-      entries: ledgerEntries(doc),
-    };
-  }
-
-  approvalsDoc(): ApprovalsDoc {
-    return loadApprovalsDoc(this.store);
-  }
-
-  saveApprovalsDoc(doc: ApprovalsDoc): void {
-    saveApprovalsDoc(this.store, doc);
-    this.#broadcastApprovalsChanged();
-  }
-
-  /** Presets: mode + askFallback pairs in one move (their approvals --preset). */
-  setExecPreset(name: "cautious" | "deny-all" | "yolo"): string {
-    const presets = { cautious: { mode: "ask", askFallback: "deny" }, "deny-all": { mode: "deny", askFallback: "deny" }, yolo: { mode: "full", askFallback: "full" } } as const;
-    const p = presets[name];
-    this.configSvc.setPath("tools.exec.mode", p.mode);
-    this.configSvc.setPath("tools.exec.askFallback", p.askFallback);
-    this.#broadcastApprovalsChanged();
-    return `preset ${name}: mode=${p.mode} askFallback=${p.askFallback}`;
-  }
-
   /** /compact — force a rolling-summarization sweep now (P1 A2). */
   async compactNow(sessionKey: string, focus?: string): Promise<string> {
     const r = await this.loop.compactSession(sessionKey, { focus });
@@ -2252,15 +2039,6 @@ export class Service {
 
   compactionStats(sessionKey: string): { count: number; chars: number; upto: number } | null {
     return this.loop.compactionStats(sessionKey);
-  }
-
-  setSessionExecMode(sessionKey: string, mode: string | null): void {
-    if (mode === null) this.#sessionExecModes.delete(sessionKey);
-    else this.#sessionExecModes.set(sessionKey, mode);
-  }
-
-  getSessionExecMode(sessionKey: string): string | null {
-    return this.#sessionExecModes.get(sessionKey) ?? null;
   }
 
   subscribe(listener: (event: ServiceEvent) => void): () => void {

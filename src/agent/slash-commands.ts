@@ -40,7 +40,6 @@ export const SLASH_CATALOG: { cmd: string; summary: string }[] = [
   { cmd: "/think [level|default]", summary: "thinking effort for this session (off…max)" },
   { cmd: "/models [provider]", summary: "configured providers and their models" },
   { cmd: "/skill <name> [input]", summary: "run an installed skill by name (a bare /<name> works too)" },
-  { cmd: "/exec [mode|global <mode>|reset]", summary: "exec approval mode for this session or globally" },
   { cmd: "/title <text>", summary: "rename the current session (alias /name)" },
   { cmd: "/export-session [name]", summary: "export this chat to HTML in the workspace (alias /export)" },
   { cmd: "/new", summary: "start a fresh session; the current one is kept" },
@@ -167,39 +166,6 @@ export async function handleSlashExtension(
       // Force a rolling-summarization sweep now; optional focus text keeps
       // chosen aspects in detail (their /compact [instructions]).
       return service.compactNow(payload.sessionKey, rest.trim() || undefined);
-    }
-
-    case "/exec": {
-      // Identical semantics on every surface (previously TUI-only): session
-      // override by default, "global <mode>" persists, "reset" clears.
-      const arg = rest.trim();
-      const current = service.getSessionExecMode(payload.sessionKey);
-      const global = service.approvalsState().mode;
-      if (!arg) {
-        return `exec mode: ${current ?? global} (${current ? "session override" : "global"}) · /exec deny|allowlist|ask|full · /exec global <mode> · /exec reset`;
-      }
-      if (arg === "reset") {
-        service.setSessionExecMode(payload.sessionKey, null);
-        return `session override cleared — exec mode: ${service.approvalsState().mode}`;
-      }
-      let target = arg;
-      let globalScope = false;
-      if (arg.startsWith("global ")) {
-        target = arg.slice(7).trim();
-        globalScope = true;
-      }
-      const m = target as "deny" | "allowlist" | "ask" | "full";
-      if (!["deny", "allowlist", "ask", "full"].includes(m)) {
-        return `usage: /exec [deny|allowlist|ask|full|global <mode>|reset]`;
-      }
-      if (globalScope) {
-        const r = service.configSvc.setPath("tools.exec.mode", m);
-        if (!r.ok) return `config rejected: ${r.errors.join("; ")}`;
-        await service.applyConfig();
-        return `global exec mode: ${m}`;
-      }
-      service.setSessionExecMode(payload.sessionKey, m);
-      return `session exec mode: ${m}`;
     }
 
     case "/tools": {

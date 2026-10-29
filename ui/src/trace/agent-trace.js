@@ -112,7 +112,7 @@ const believable = (span) =>
  * epoch) start into "Worked for 29881624m 46s".
  */
 function elapsed(state) {
-  const live = state.status === "running" || state.status === "waiting";
+  const live = state.status === "running";
   const end = state.endedAt || (live ? now() : null);
   if (!end) return "";
   const start = state.startedAt || end;
@@ -182,7 +182,6 @@ export function createState(runId = "", ts = now()) {
     endedAt: null,
     items: [],
     finalAnswer: null,
-    waitingApproval: null,
     error: null,
   };
 }
@@ -225,7 +224,6 @@ export function applyEvent(state, ev) {
       state.endedAt = null;
       state.items = [];
       state.finalAnswer = null;
-      state.waitingApproval = null;
       state.error = null;
       return state;
     }
@@ -385,23 +383,6 @@ export function applyEvent(state, ev) {
       return state;
     }
 
-    case "approval_request": {
-      const existing = findItem(state, ev.stepId);
-      if (!existing) {
-        state.items.push({
-          kind: "approval",
-          id: ev.stepId,
-          description: String(ev.description ?? "Approval required"),
-          decision: null,
-          startedAt: ts,
-          endedAt: null,
-        });
-      }
-      state.status = "waiting";
-      state.waitingApproval = ev.stepId;
-      return state;
-    }
-
     case "subagent_start": {
       const tail = state.items[state.items.length - 1];
       if (tail && tail.kind === "subagent" && ev.groupId && tail.groupId === ev.groupId) {
@@ -444,7 +425,6 @@ export function applyEvent(state, ev) {
     case "run_end": {
       state.status = ev.status;
       state.endedAt = ts;
-      state.waitingApproval = null;
       if (ev.status === "error") {
         const errored = [...state.items]
           .reverse()
@@ -503,9 +483,8 @@ export class AgentTrace {
    * @param {HTMLElement} root container the trace card is appended to
    * @param {{
    *   scrollRoot?: HTMLElement,
-   *   onApproval?: (decision: "allow"|"deny", step: {id: string; description: string}) => void,
    *   onRetry?: (state: TraceState) => void,
-   *   onStatus?: (status: "running"|"waiting"|"done"|"error"|"stopped") => void,
+   *   onStatus?: (status: "running"|"done"|"error"|"stopped") => void,
    *   announce?: (text: string) => void
    * }} [opts]
    */
@@ -612,7 +591,7 @@ export class AgentTrace {
   }
 
   #isLive() {
-    return this.state.status === "running" || this.state.status === "waiting";
+    return this.state.status === "running";
   }
 
   /* --------------------------------------------------------------- input */
@@ -677,27 +656,6 @@ export class AgentTrace {
     return this.state;
   }
 
-  /** UI-only approval response: updates the row without invoking callbacks. */
-  setDecision(stepId, decision) {
-    const item = this.state.items.find((i) => i.kind === "approval" && (!stepId || i.id === stepId));
-    if (!item || item.kind !== "approval" || item.decision) return;
-    item.decision = decision;
-    item.endedAt = now();
-    this.state.waitingApproval = null;
-    if (this.state.status === "waiting") this.state.status = "running";
-    this.#render();
-    this.#announce(decision === "allow" ? "Approved" : "Denied");
-    this.#follow();
-  }
-
-  /** Approval response: updates the row and forwards to opts.onApproval. */
-  decide(stepId, decision) {
-    const item = this.state.items.find((i) => i.kind === "approval" && (!stepId || i.id === stepId));
-    if (!item || item.kind !== "approval" || item.decision) return;
-    this.setDecision(stepId, decision);
-    this.opts.onApproval?.(decision, { id: item.id, description: item.description });
-  }
-
   setFinalAnswer(content) {
     this.finalEl.hidden = !content;
     this.finalEl.replaceChildren();
@@ -759,7 +717,6 @@ export class AgentTrace {
       this.opts.onStatus?.(this.state.status);
     }
     this.el.classList.toggle("agent-trace--running", this.state.status === "running");
-    this.el.classList.toggle("agent-trace--waiting", this.state.status === "waiting");
     this.el.classList.toggle("agent-trace--done", this.state.status === "done");
     this.el.classList.toggle("agent-trace--stopped", this.state.status === "stopped");
     this.el.classList.toggle("agent-trace--error", this.state.status === "error");
@@ -827,7 +784,6 @@ export class AgentTrace {
     if (item.kind === "thinking") this.#fillThinking(item, rail, content);
     else if (item.kind === "message") this.#fillMessage(item, rail, content);
     else if (item.kind === "tool") this.#fillTool(item, rail, content, node);
-    else if (item.kind === "approval") this.#fillApproval(item, rail, content);
     else if (item.kind === "subagent") this.#fillSubagent(item, rail, content);
   }
 
@@ -1074,43 +1030,6 @@ export class AgentTrace {
     return detail;
   }
 
-  #fillApproval(item, rail, content) {
-    const doc = this.doc;
-    rail.appendChild(doc.createElement("span")).className = "agent-trace__dot agent-trace__dot--warn";
-    const card = doc.createElement("div");
-    card.className = "agent-trace__approval";
-    const title = doc.createElement("div");
-    title.className = "agent-trace__approval-title";
-    title.textContent = "Permission needed";
-    const desc = doc.createElement("p");
-    desc.className = "agent-trace__approval-desc";
-    desc.textContent = item.description;
-    card.append(title, desc);
-
-    if (item.decision) {
-      const done = doc.createElement("p");
-      done.className = "agent-trace__approval-done";
-      done.textContent = item.decision === "allow" ? "Allowed" : "Denied";
-      card.appendChild(done);
-    } else {
-      const actions = doc.createElement("div");
-      actions.className = "agent-trace__approval-actions";
-      const deny = doc.createElement("button");
-      deny.type = "button";
-      deny.className = "agent-trace__btn";
-      deny.textContent = "Deny";
-      deny.addEventListener("click", () => this.decide(item.id, "deny"));
-      const allow = doc.createElement("button");
-      allow.type = "button";
-      allow.className = "agent-trace__btn agent-trace__btn--primary";
-      allow.textContent = "Allow";
-      allow.addEventListener("click", () => this.decide(item.id, "allow"));
-      actions.append(deny, allow);
-      card.appendChild(actions);
-    }
-    content.appendChild(card);
-  }
-
   #fillSubagent(item, rail, content) {
     const doc = this.doc;
     const cell = doc.createElement("span");
@@ -1175,7 +1094,6 @@ export class AgentTrace {
     // tick/cross badge sitting in the left slot — only the live spinner
     // ever renders there.
     this.titleEl.classList.toggle("agent-trace__title--error", s.status === "error");
-    this.titleEl.classList.toggle("agent-trace__title--warning", s.status === "waiting");
 
     if (s.status === "running") {
       this.#setHeaderIcon("spinner");
@@ -1184,13 +1102,6 @@ export class AgentTrace {
       this.subEl.textContent = "";
       this.timerEl.hidden = false;
       this.timerEl.textContent = dur || "0s";
-    } else if (s.status === "waiting") {
-      this.#setHeaderIcon(null);
-      this.titleEl.classList.remove("agent-trace__shimmer");
-      this.titleEl.textContent = "Waiting for your approval";
-      this.subEl.textContent = "";
-      this.timerEl.hidden = false;
-      this.timerEl.textContent = dur;
     } else if (s.status === "done") {
       this.#setHeaderIcon(null);
       this.titleEl.classList.remove("agent-trace__shimmer");
@@ -1339,7 +1250,6 @@ export class AgentTrace {
 
   #announcement() {
     const s = this.state;
-    if (s.status === "waiting") return "Waiting for your approval";
     if (s.status === "done") {
       const n = countSteps(s);
       const dur = elapsed(s);

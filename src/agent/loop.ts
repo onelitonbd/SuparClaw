@@ -16,7 +16,7 @@ import { skillsDir, workspaceDir } from "../util/paths.js";
 import { channelLabel } from "../lib.js";
 import { surfacesFromConfig, surfacesPromptLine, type SurfaceFacts } from "./surfaces.js";
 import { selfFactsFrom, selfPromptLine, type SelfRuntime, type SettingsCtl } from "./self.js";
-import { isToolFailure } from "./exec-policy.js";
+import { isToolFailure } from "./exec-utils.js";
 import { ToolLoopDetector, loopGuardNudge, loopGuardPrompt, type ToolLoopBreak } from "./loop-detector.js";
 import type { AskUserQuestion, AskUserResult } from "./ask-user.js";
 
@@ -47,7 +47,6 @@ export type RunEvent =
    */
   | { type: "final"; runId: string; text: string; usage?: Record<string, number>; footer?: string; model?: string }
   | { type: "error"; runId: string; message: string }
-  | { type: "approval"; callId: string; tool: string; args: Record<string, unknown>; exec?: { mode: string; mintable: boolean; reason: string } }
   /** Message accepted into the queue (or the steer inbox), not yet consumed. */
   | { type: "queued"; runId: string; text: string; position: number; mode: QueueMode }
   /** Queued item left the queue without becoming a turn itself. */
@@ -86,21 +85,6 @@ export interface RunInput {
   attachments?: { kind: "image"; dataUri: string; name: string }[];
   /** P3 #26 heartbeat lightContext: skip workspace bootstrap files entirely. */
   lightContext?: boolean;
-  /**
-   * Task 35: this turn's user text asked for a pull request. Set by the surface
-   * that owns the input (the service matches intent, a UI action forces it), so
-   * `github_publish` can refuse a publish nobody asked for.
-   */
-  publishAllowed?: boolean;
-  /** Gmail send/mutation permissions are derived from this turn's user text. */
-  gmailSendAllowed?: boolean;
-  gmailMutateAllowed?: boolean;
-  gmailDeleteDraftAllowed?: boolean;
-  googleWorkspaceMutationAllowed?: boolean;
-  googleWorkspaceDeleteAllowed?: boolean;
-  googleWorkspaceShareAllowed?: boolean;
-  googleWorkspacePublicShareAllowed?: boolean;
-  googleWorkspaceInviteAllowed?: boolean;
   onEvent: (event: RunEvent) => void;
 }
 
@@ -108,7 +92,6 @@ export interface RunInput {
 export interface RunEnv {
   workspace: string;
   repo: { kind: "chat" | "code"; repo: string; base: string; branch: string; workspace: string } | null;
-  publishAllowed: boolean;
 }
 
 /** A queue entry keeps its identity (runId) so it can be cancelled in place. */
@@ -117,17 +100,6 @@ interface QueuedMessage {
   text: string;
   at: number;
   input: RunInput;
-}
-
-export interface ApprovalRequestCtx {
-  sessionKey: string;
-  workspace: string;
-  onPrompt?: (info: { exec?: { mode: string; mintable: boolean; reason: string } }) => void;
-}
-export interface ApprovalOutcome {
-  approved: boolean;
-  /** exec-policy verdict, when the call came through the exec evaluator. */
-  execVerdict?: import("./exec-policy.js").ExecVerdict;
 }
 
 export interface LoopDeps {
@@ -144,11 +116,11 @@ export interface LoopDeps {
   surfaces?: () => SurfaceFacts;
   /** Settings surface for the `settings` tool (Task 26); main sessions only. */
   settings?: SettingsCtl;
-  /** This session's effective usage/queue/exec overrides, for the prompt block. */
+  /** This session's effective usage/queue overrides, for the prompt block. */
   selfRuntime?: (sessionKey: string) => SelfRuntime;
   /** Repo operations for a code session (Task 35): status, diff, publish. */
   repoCtl?: RepoCtl;
-  /** Gmail client and current-user intent gates for side-effecting operations. */
+  /** Gmail client for native mail operations. */
   gmailCtl?: ToolContext["gmailCtl"];
   /** Native Google Workspace REST client, bound to the same vault token. */
   googleWorkspaceCtl?: ToolContext["googleWorkspaceCtl"];
@@ -156,19 +128,6 @@ export interface LoopDeps {
   terminals?: TerminalCtl;
   /** User-managed encrypted variable/secret vault (Task 59). */
   vault?: ToolContext["vault"];
-  /**
-   * Decide an approval. Auto-verdicts (allowlist hit, mode=full/deny) resolve
-   * immediately and side-generate no UI. When a human must decide, the
-   * implementation calls ctx.onPrompt BEFORE awaiting — the loop turns that
-   * into the approval event with the exec-policy context attached. A boolean
-   * return stays supported for old harnesses (true = approved).
-   */
-  requestApproval?: (
-    callId: string,
-    tool: string,
-    args: Record<string, unknown>,
-    ctx?: ApprovalRequestCtx,
-  ) => Promise<boolean | ApprovalOutcome>;
   /**
    * ask_user (P2 #8): pose questions to the operator and await the answer.
    * MAIN sessions only — the loop passes undefined elsewhere so the tool
@@ -719,7 +678,7 @@ export class AgentLoop {
     this.deps.store.startRun(session.id, runId);
 
     // Task 35: a repo session works in its own worktree. Resolved before the
-    // prompt is built so the prompt, the tool context and approvals all agree.
+    // prompt is built for the active repository workspace.
     const repo = this.deps.store.getSessionRepo(sessionKey);
     const workspace = repo?.workspace ?? this.workspace;
 
@@ -732,11 +691,7 @@ export class AgentLoop {
     let finishStatus: "done" | "error" | "aborted" = "done";
     let yieldedWait = false;
     try {
-      let messages = await this.#buildMessages(session.id, sessionKey, input, isMain, {
-        workspace,
-        repo,
-        publishAllowed: input.publishAllowed === true,
-      });
+      let messages = await this.#buildMessages(session.id, sessionKey, input, isMain, { workspace, repo });
       // Sub-agent tool policy: a child at the nesting cap loses the session
       // family of tools (their default of no delegation inside sub-agents).
       // `let`, not `const`: `toolsmith` can add a tool mid-turn and the very
@@ -751,29 +706,17 @@ export class AgentLoop {
         // A child must not rewrite global settings mid-flight (ask_user's rule).
         settings: isMain ? this.deps.settings : undefined,
         workspace,
-        // Task 35: repo facts + the publish gate. The gate is set by the surface
-        // that owns this input, never by the model.
         repo: repo ? { repo: repo.repo, base: repo.base, branch: repo.branch, workspace: repo.workspace } : null,
-        publishAllowed: input.publishAllowed === true,
         repoCtl: this.deps.repoCtl,
         terminals: this.deps.terminals,
         gmailCtl: this.deps.gmailCtl,
-        gmailSendAllowed: input.gmailSendAllowed === true,
-        gmailMutateAllowed: input.gmailMutateAllowed === true,
-        gmailDeleteDraftAllowed: input.gmailDeleteDraftAllowed === true,
         googleWorkspaceCtl: this.deps.googleWorkspaceCtl,
-        googleWorkspaceMutationAllowed: input.googleWorkspaceMutationAllowed === true,
-        googleWorkspaceDeleteAllowed: input.googleWorkspaceDeleteAllowed === true,
-        googleWorkspaceShareAllowed: input.googleWorkspaceShareAllowed === true,
-        googleWorkspacePublicShareAllowed: input.googleWorkspacePublicShareAllowed === true,
-        googleWorkspaceInviteAllowed: input.googleWorkspaceInviteAllowed === true,
         vault: this.deps.vault,
         stateDir: this.deps.store.getMeta("state_dir") ?? workspaceDir(),
         skills: this.skills,
         store: this.deps.store,
         log: this.deps.log,
         config: this.deps.config,
-        approved: false,
         signal: controller.signal,
         refreshSkills: () => {
           this.refreshSkills();
@@ -1097,34 +1040,14 @@ export class AgentLoop {
           const args = parseToolArgs(call.args);
           onEvent({ type: "tool", callId: call.id, name: call.name, status: "running" });
 
-          let approved = true;
-          let execVerdict: ApprovalOutcome["execVerdict"];
-          if (spec.needsApproval && this.deps.requestApproval) {
-            const outcome = await this.deps.requestApproval(call.id, call.name, args, {
-              sessionKey: session.key,
-              workspace,
-              onPrompt: (info) => onEvent({ type: "approval", callId: call.id, tool: call.name, args, exec: info.exec }),
-            });
-            // boolean stays supported for bare-bones harnesses / tests
-            approved = typeof outcome === "object" && outcome !== null ? outcome.approved : outcome === true;
-            execVerdict = typeof outcome === "object" && outcome !== null ? outcome.execVerdict : undefined;
-          }
-
           let output: string;
           try {
-            const callCtx: ToolContext = { ...ctx, approved: true, execVerdict };
-            // A policy refusal, never "the user declined": the model used to
-            // read that as a person saying no and answer "the sandbox blocks
-            // you, run it yourself" (Task 55). Say who refused and why.
-            output = approved
-              ? await spec.run(args, callCtx)
-              : `error: policy denied ${call.name}${execVerdict?.reason ? ` — ${execVerdict.reason}` : ""}. ` +
-                "This is a configuration decision, not a refusal anyone can grant in this chat: " +
-                "say plainly what is switched off instead of asking the user to allow it or to run the command themselves.";
+            const callCtx: ToolContext = { ...ctx };
+            output = await spec.run(args, callCtx);
             // Turn-shaping flags set by the tool (sessions_yield) ride their
             // per-call context copy; merge them back into the turn context.
             if (callCtx.yieldArmed) ctx.yieldArmed = true;
-            this.deps.store.logTool(runId, call.name, approved ? "ok" : "declined", Date.now() - started);
+            this.deps.store.logTool(runId, call.name, "ok", Date.now() - started);
           } catch (err) {
             output = `error: ${(err as Error).message}`;
             this.deps.store.logTool(runId, call.name, "error", Date.now() - started);
@@ -1336,7 +1259,6 @@ export class AgentLoop {
     // 400k budget overflow a 32k model. See src/agent/context-budget.ts.
     const workspace = env?.workspace ?? this.workspaceFor(sessionKey);
     const repo = env ? env.repo : this.deps.store.getSessionRepo(sessionKey);
-    const publishAllowed = env?.publishAllowed === true;
     const budget = historyBudget(this.deps.config, this.#modelFor(input, sessionKey)).chars;
     // Compaction frontier: anything at or below `upto` exists only as the
     // summary; rows above it stay verbatim. Auto-sweep when the un-compacted
@@ -1461,9 +1383,7 @@ export class AgentLoop {
       `Session: ${sessionKey} (${channelLabel(sessionKey)})`,
       `Where this message came from: ${channelLabel(sessionKey)}. A direct message can be answered privately; in a group or topic chat others can read your reply, so keep it on-topic and mention people by name when needed.`,
       surfacesPromptLine(surfaces, sessionKey),
-      // Task 35: a repo session tells the model where it is, how to work here,
-      // and the publishing rule the user chose.
-      repo ? repoPromptBlock({ ...repo, publishAllowed }) : "",
+      repo ? repoPromptBlock(repo) : "",
       // What it is set to, not just what it can do (Task 26). Rebuilt per turn
       // from live config + this session's overrides, so it cannot drift.
       selfPromptLine(

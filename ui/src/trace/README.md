@@ -1,7 +1,7 @@
 # Agent Trace
 
 A stream-driven trace card for one assistant turn: thinking, tool calls,
-commentary, approvals, sub-agents, and the final answer.
+commentary, sub-agents, and the final answer.
 
 The visual model follows the "timeline rail" spec, and the behaviour follows
 OpenClaw's chat transcript:
@@ -38,7 +38,6 @@ import { AgentTrace } from "./agent-trace.js";
 
 const trace = new AgentTrace(document.getElementById("turn"), {
   scrollRoot: document.getElementById("thread"), // enables follow + Jump to latest
-  onApproval: (decision, step) => gateway.request("chat.approval", { callId: step.id, decision }),
   onRetry: () => gateway.request("chat.send", { sessionKey, text: "Retry" }),
   onStatus: (status) => composer.setBusy(status === "running" || status === "waiting"),
 });
@@ -123,7 +122,7 @@ npm run build
 
 It includes the required sample run (thinking → read file → interim commentary →
 3 parallel searches → thinking → analysis that retries once → write file →
-final answer), plus approval, failure + retry, 60-step, and stop-mid-run
+final answer), plus failure + retry, 60-step, and stop-mid-run
 scenarios. Everything is driven by the same `push(event)` API; the mock player
 lives in `ui/trace-demo/mock-player.js`.
 
@@ -136,7 +135,7 @@ npm run build && npx --yes http-server dist/ui -p 8799
 
 ### Wiring it into the chat
 
-The existing socket already streams `start / reasoning / tool / approval /
+The existing socket already streams `start / reasoning / tool /
 final / error`. `adapter.js` maps that stream onto trace events:
 
 ```js

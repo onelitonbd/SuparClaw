@@ -204,7 +204,7 @@ longer offer them.
 
 One router answers `/…` on every surface (`src/agent/slash-commands.ts` + `#commands` in
 `service.ts`), so `/stop`, `/usage`, `/queue`, `/compact`, `/title`, `/dream`, `/think`,
-`/models`, `/context`, `/skills`, `/tools`, `/exec`, `/subagents`, `/export-session` and
+`/models`, `/context`, `/skills`, `/tools`, `/subagents`, `/export-session` and
 `/skill` behave the same wherever they are typed. `/help` and `/commands` print that same
 catalog — the list, the help text and the menu cannot drift apart.
 
@@ -212,7 +212,7 @@ Telegram additionally owns `/new`, `/sessions`, `/model`, `/provider` and `/whoa
 else falls through to the shared router (it used to answer "unknown command" instead).
 
 **"Did the update land?" is answerable from the chat.** `/whoami` prints the answering model
-with the exact ref that goes on the wire, the exec mode, and this daemon's build stamp
+with the exact ref that goes on the wire and this daemon's build stamp
 (`0.1.0+<source hash>`, hashed over `src/` and `package.json` at build time) — so a report like
 "the model switch still doesn't work" can be checked against the bundle that is actually
 running instead of guessed at. Two builds of the same source print the same stamp.
@@ -332,7 +332,7 @@ permissions. Keep it narrow; never bake credentials into its source. `tools.self
 
 The agent also knows its own configuration. Every turn rebuilds a `## Your configuration`
 prompt block from the live config plus this session's overrides — model and fallbacks,
-reasoning, `/usage` footer mode, queue mode, exec policy, limits, cron, dreaming, workspace
+reasoning, `/usage` footer mode, queue mode, shell availability and timeout, limits, cron, dreaming, workspace
 and config path — so "what model are you on?" or "switch the usage footer to cost" is
 answered from facts, not defaults. The `settings` tool (list / get / set) is the write half:
 it accepts a fixed allowlist of 17 paths, coerces and validates each value (model refs are
@@ -395,16 +395,9 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
   (`__redacted__:…`), `config.set` maps them back to the stored values. The task vault's
   explicit Settings save sends a value over the authenticated gateway connection, but the
   RPC response contains only its name and configured status.
-- **exec is on by default and never asks** — a permission prompt is a wall on every surface
-  without a keyboard, and the agent answers it by telling you to run the commands yourself.
-  What is left is a **policy**: `sc approvals mode deny|allowlist|ask|full`. `deny` refuses,
-  `allowlist` allows only listed binaries, and `ask` runs but records who allowed it — nobody
-  is ever asked to tap anything. `sc security audit` reports the mode.
+- **Exec is on by default** — shell commands run directly with the daemon user's environment and permissions. `tools.exec.enabled` controls tool availability, and `tools.exec.timeoutMs` caps one command.
 - **There is no sandbox** — exec runs your own `$SHELL -lc <command>` with the daemon's
-  environment and the session workspace as cwd. The old `strict` mode (env scrub + `prlimit` +
-  a `proot` jail) is gone in Task 57: on a phone `proot` aborts before the command exists, and
-  `env -i` hides `$PREFIX/bin`, so it produced "killed by the sandbox" rather than protection.
-  `tools.exec.sandbox` still parses for old configs and does nothing; `sc doctor` says so.
+  environment and the session workspace as cwd. The old wrappers are not used.
 - **Task/tool vault (Settings → System → Secrets)** — define names with the agent's `vault`
   tool, then enter or replace values through Settings (the agent cannot submit a value in chat).
   Values are encrypted in the state directory
@@ -416,7 +409,7 @@ built like one (see `docs/suparclaw-vs-openclaw.md` for the lessons behind this)
   injection are not supported. **This is not a sandbox:** unrestricted same-user Termux code can
   deliberately read, transform or exfiltrate a value it receives.
 - **`terminal` is the same power with memory** — a persistent shell (or several) the agent
-  drives and you watch live in the web UI; the same policy as exec, no sandbox by design.
+  drives and you watch live in the web UI; direct shell access, no sandbox by design.
   `tools.terminals.max` / `scrollbackKb` / `waitMs` bound the resources, not the permissions.
 - **A dead shell is not a dead end** — when the login shell dies before the command prints
   anything (a broken rc, a stale `LD_PRELOAD` after a Termux update, a wrapper that will not

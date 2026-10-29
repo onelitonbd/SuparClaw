@@ -106,11 +106,11 @@ html[data-theme-mode="dark"] .agent-trace {
   cursor: default;
 }
 
-.agent-trace:not(.agent-trace--running):not(.agent-trace--waiting) .agent-trace__header {
+.agent-trace:not(.agent-trace--running) .agent-trace__header {
   cursor: pointer;
 }
 
-.agent-trace:not(.agent-trace--running):not(.agent-trace--waiting) .agent-trace__header:hover {
+.agent-trace:not(.agent-trace--running) .agent-trace__header:hover {
   background: var(--hover);
 }
 
@@ -639,39 +639,6 @@ html[data-theme-mode="dark"] .agent-trace {
   font-size: 14.5px;
   line-height: 1.6;
   overflow-wrap: anywhere;
-}
-
-/* --------------------------------------------------------------- approval */
-
-.agent-trace__approval {
-  margin: 4px 0;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
-  border-radius: var(--radius-box);
-  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
-}
-
-.agent-trace__approval-title {
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-
-.agent-trace__approval-desc {
-  margin: 0 0 10px;
-  font-size: 14px;
-  overflow-wrap: anywhere;
-}
-
-.agent-trace__approval-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.agent-trace__approval-done {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
 }
 
 .agent-trace__btn {

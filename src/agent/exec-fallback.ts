@@ -1,23 +1,6 @@
-// Task 56 — exec that survives its own environment.
-//
-// The report: *"killed by the sandbox (SIGABRT)"*, followed by the agent asking
-// the human to run `gh` and paste the output. A SIGABRT before the command
-// prints anything is not the command failing — it is the environment failing:
-//
-//   - a login shell reading a broken rc file aborts (Termux after an update,
-//     a `.bashrc` that sources a missing file, a shell whose `$PREFIX` moved);
-//   - `LD_PRELOAD` / `LD_LIBRARY_PATH` pointing at a library that is gone makes
-//     Android's linker abort *every* child before `main()` (`termux-exec`);
-//   - a wrapper (prlimit/proot) that exists but cannot run.
-//
-// One strategy — `bash -lc` and hope — turns all three into "nothing works",
-// which is how a phone ends up being told to type shell commands by hand. This
-// module is the ladder: the same command, tried down a list of progressively
-// plainer shells and environments, stopping at the first that produces output.
-//
-// The retry rule is deliberately narrow: only when **nothing was printed**. A
-// command that ran, printed, and then failed is the command's business — retrying
-// it could run a side effect twice.
+// Exec shell startup fallback. It retries only when a shell failed before
+// printing anything; command failures and timeouts are never retried, preventing
+// duplicate side effects. Loader-variable cleanup is limited to fallback shells.
 import { existsSync } from "node:fs";
 
 export interface ExecAttempt {
@@ -34,7 +17,7 @@ export interface AttemptOutcome {
   exitCode?: number | null;
   /** The binary itself could not be spawned (ENOENT/EACCES/ENOEXEC/EPERM). */
   spawnFailed?: boolean;
-  /** The old message shape: "<path> could not be started (EACCES)". */
+  /** A concise detail when Node could not start the shell process. */
   spawnDetail?: string;
   /** We killed it at `tools.exec.timeoutMs` — never retried: that repeats the work. */
   timedOut?: boolean;
@@ -71,20 +54,16 @@ function baseName(path: string): string {
 }
 
 /**
- * The ladder for one command. The first entry is whatever the sandbox planner
- * produced (it may be wrapped); the rest get progressively plainer.
+ * The retry ladder for one command, from the configured shell to plain POSIX shells.
  */
 export function execAttempts(input: {
   shell: string;
   command: string;
-  planned: { argv: string[]; env: NodeJS.ProcessEnv; wrappers: string[] };
+  planned: { argv: string[]; env: NodeJS.ProcessEnv };
 }): ExecAttempt[] {
   const { shell, command, planned } = input;
   const attempts: ExecAttempt[] = [{ label: "the planned shell", argv: planned.argv, env: planned.env }];
 
-  if (planned.wrappers.length > 0) {
-    attempts.push({ label: `the login shell without ${planned.wrappers.map(baseName).join("/")}`, argv: [shell, "-lc", command], env: planned.env });
-  }
   // `-c` skips every login/rc file: the abort usually happens before `main()`
   // of the *command*, inside the shell's startup.
   attempts.push({ label: `${baseName(shell)} -c (no login files)`, argv: [shell, "-c", command], env: planned.env });
@@ -128,7 +107,7 @@ export interface AttemptRun {
 export interface FallbackResult {
   /** The output of the attempt that finished the job (or the last one tried). */
   output: string;
-  /** The first attempt's outcome — a broken sandbox wrapper is named from here. */
+  /** The first attempt outcome, used to report whether a shell retry was needed. */
   first: AttemptOutcome;
   /** Which attempt produced `output`. */
   used: ExecAttempt;
@@ -186,20 +165,10 @@ export function fallbackNote(result: FallbackResult, first: ExecAttempt): string
     return result.ran ? "" : `[exec: the command printed nothing — ${describeOutcome({ stdout: "", exitCode: null })}]`;
   }
   if (result.ran) {
-    // A wrapper that exists but cannot run is a sandbox story, not a shell one
-    // — and it has to say the command was NOT confined, or an audit reads it as
-    // if the jail had been applied.
     if (result.first.spawnFailed) {
-      return `[sandbox: ${result.first.spawnDetail ?? "the wrapper could not be started"} — retried WITHOUT the jail; this command is not confined]`;
+      return `[exec: the initial shell could not start (${result.first.spawnDetail ?? "unknown startup error"}); command succeeded with ${result.used.label}]`;
     }
-    return (
-      `[exec: ${result.reasons[0] ?? result.tried[0]}; ran with ${result.used.label} instead and it worked. ` +
-      "The environment was the problem, not your command — do not ask the user to run anything.]"
-    );
+    return `[exec: initial shell failed before output (${result.reasons[0] ?? result.tried[0]}); command succeeded with ${result.used.label}]`;
   }
-  return (
-    `[exec: every shell failed — ${result.reasons.join("; ")}. ` +
-    "This device cannot start a shell for the daemon right now; say exactly that (with this line) instead of " +
-    "asking the user to run the command and paste the output. If another tool can do the job, use it.]"
-  );
+  return `[exec: unable to start the command after trying available shells — ${result.reasons.join("; ")}]`;
 }

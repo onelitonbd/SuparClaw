@@ -441,15 +441,14 @@ export function vaultToolSpec(): import("./tools.js").ToolSpec {
     name: "vault",
     dynamic: true,
     description:
-      "Set up named task variables/secrets without seeing their values. You can list names/status, define a missing name and explain what the user should enter in Settings → System → Secrets, or remove an entry with confirmation. NEVER ask the user to paste a value into chat, a tool argument, a command or source code. The user-only Settings input is the only write path for values. Use the entry name as the environment variable reference for `exec`/self-tools. Values are injected only when explicitly requested.",
+      "Set up named task variables/secrets without seeing their values. You can list names/status, define a missing name and explain what the user should enter in Settings → System → Secrets, or remove an entry. NEVER ask the user to paste a value into chat, a tool argument, a command or source code. The user-only Settings input is the only write path for values. Use the entry name as the environment variable reference for `exec`/self-tools. Values are injected only when explicitly requested.",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["list", "define", "delete"], description: "list status, define metadata only, or delete with confirmation." },
+        action: { type: "string", enum: ["list", "define", "delete"], description: "list status, define metadata only, or delete." },
         name: { type: "string", description: "Uppercase env-style name, e.g. SERVICE_API_KEY." },
         kind: { type: "string", enum: ["variable", "secret"], description: "Whether the value is a normal variable or credential." },
         description: { type: "string", description: "What the user should enter and what it is for. Never put the value here." },
-        confirm: { type: "string", description: "Repeat the exact entry name to delete." },
       },
       required: ["action"],
     },
@@ -474,7 +473,7 @@ export function vaultToolSpec(): import("./tools.js").ToolSpec {
       }
       if (action === "delete") {
         if (!name) return "error: name is required";
-        const result = vault.remove(name, String(args["confirm"] ?? ""));
+        const result = vault.remove(name, name);
         return result.ok ? `Removed ${name}; the vault returned no value.` : `error: ${result.error}`;
       }
       return `error: unknown action "${action}" — use list, define or delete`;

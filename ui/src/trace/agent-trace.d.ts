@@ -12,11 +12,9 @@ export interface AgentTraceOptions {
   scrollRoot?: HTMLElement | null;
   /** Show the component's own "Jump to latest" button (chat owns one already). */
   jump?: boolean;
-  /** The user allowed or denied an approval request shown in the trace. */
-  onApproval?: (decision: "allow" | "deny", step: { id: string; description: string }) => void;
   /** User clicked Retry on a failed/interrupted run. */
   onRetry?: (state: TraceState) => void;
-  /** Fired whenever the run status changes (running → waiting → done | error | stopped). */
+  /** Fired whenever the run status changes (running → done | error | stopped). */
   onStatus?: (status: TraceStatus) => void;
   /** Custom substitute for the polite live-region announcements. */
   announce?: (text: string) => void;
@@ -25,17 +23,13 @@ export interface AgentTraceOptions {
 export class AgentTrace {
   readonly el: HTMLElement;
   constructor(root: HTMLElement, opts?: AgentTraceOptions);
-  /** Feed one wire event (run_start, thinking_*, message_delta, tool_*, approval_request, run_end, subagent_*). */
+  /** Feed one wire event (run_start, thinking_*, message_delta, tool_*, run_end, subagent_*). */
   push(event: TraceEvent): void;
   /** Rebuild from a persisted event log (page reload mid-run). */
   replay(events: TraceEvent[]): void;
   /** Rebuild from a serialized TraceState snapshot. */
   restore(snapshot: TraceState): void;
   getState(): TraceState;
-  /** UI response to an approval row (also forwarded to opts.onApproval). */
-  decide(stepId: string, decision: "allow" | "deny"): void;
-  /** Quiet UI-only approval response: updates the row without callbacks. */
-  setDecision(stepId: string, decision: "allow" | "deny"): void;
   setFinalAnswer(content: string | Node): void;
   setExpanded(on: boolean, manual?: boolean): void;
   destroy(): void;

@@ -182,25 +182,6 @@ test("raw JSON stays hidden until explicitly opened; tool label is human", () =>
   trace.destroy();
 });
 
-test("approval pauses the run and resolves once", () => {
-  const { document } = parseHTML("<html><body><div id='root'></div></body></html>");
-  const decisions = [];
-  const trace = new AgentTrace(document.getElementById("root"), {
-    onApproval: (decision) => decisions.push(decision),
-  });
-  trace.push({ type: "run_start", runId: "r1", ts: 1000 });
-  trace.push(tool("exec", "exec", { label: "Run migration" }));
-  trace.push({ type: "approval_request", stepId: "ap1", description: "Run npm run migrate" });
-
-  assert.equal(trace.state.status, "waiting");
-  assert.equal(trace.el.querySelector("[data-title]").textContent, "Waiting for your approval");
-  const allow = [...trace.el.querySelectorAll(".agent-trace__btn")].find((b) => b.textContent === "Allow");
-  allow.dispatchEvent(new document.defaultView.Event("click"));
-  assert.deepEqual(decisions, ["allow"]);
-  assert.equal(trace.state.status, "running");
-  trace.destroy();
-});
-
 test("interrupted runs stay expanded with a Stopped after header", () => {
   const { document } = parseHTML("<html><body><div id='root'></div></body></html>");
   const trace = new AgentTrace(document.getElementById("root"));

@@ -11,13 +11,6 @@ export type Item =
   | { kind: "tool"; name: string; status: "running" | "done" | "error" | "skipped"; detail?: string }
   | { kind: "system"; text: string };
 
-export type Approval = {
-  callId: string;
-  tool: string;
-  args: Record<string, unknown>;
-  exec?: { mode: string; mintable: boolean; reason: string };
-};
-
 export interface TuiDeps {
   /** `repo`/`branch`/`changes` appear only in a code session (Task 35). */
   header(): {
@@ -31,7 +24,6 @@ export interface TuiDeps {
   };
   onSubmit(text: string): void;
   onAbort(): void;
-  onApproval(callId: string, decision: "once" | "always" | "deny"): void;
   onCommand(name: string, args: string): Promise<string | null>;
   listSessions(): Promise<string[]>;
   pickSession(key: string): void;
@@ -57,7 +49,6 @@ interface Overlay {
 export class TuiApp {
   items: Item[] = [];
   status = "idle";
-  approvals: Approval[] = [];
   busy = false;
   expandedTools = false;
   showThinking = false;
@@ -184,8 +175,7 @@ export class TuiApp {
 
     const editorLineCount = this.#editor.lines.length;
     const statusLines = this.busy || this.status !== "idle" ? 1 : 0;
-    const approvalLines = this.approvals.length > 0 ? 3 : 0;
-    const budget = Math.max(1, rows - (out.length + statusLines + approvalLines + 1 + editorLineCount));
+    const budget = Math.max(1, rows - (out.length + statusLines + 1 + editorLineCount));
     const visibleBody = body.length > budget ? body.slice(body.length - budget) : body;
     if (body.length === 0 && !this.#overlay) {
       out.push(theme.dim("  no messages yet — ask something to begin"));
@@ -195,19 +185,8 @@ export class TuiApp {
     }
 
     // 4) pin the composer to the bottom
-    const pad = Math.max(0, rows - (out.length + statusLines + approvalLines + 1 + editorLineCount));
+    const pad = Math.max(0, rows - (out.length + statusLines + 1 + editorLineCount));
     for (let i = 0; i < pad; i++) out.push("");
-
-    // 4b) pinned pending approval — a card above the status line, modal (y/a/n)
-    const approval = this.approvals[0];
-    if (approval) {
-      const preview = JSON.stringify(approval.args).slice(0, Math.max(20, cols - 10));
-      out.push(theme.error(` ⚠ approval needed · ${approval.tool}`));
-      out.push(theme.dim(`   ${preview}${JSON.stringify(approval.args).length > cols - 10 ? "…" : ""}`));
-      const why = approval.exec ? `${approval.exec.reason} (mode ${approval.exec.mode})` : "confirm to run";
-      const hint = approval.exec?.mintable ? "y once · a allow always · n deny" : "y once · n deny";
-      out.push(`   ${theme.dim(why)}  ${theme.accentSoft(`[${hint}]`)}`);
-    }
 
     // 5) status line (only while working, like OpenClaw's loader row)
     if (this.busy) out.push(theme.accent(` ${state}`));
@@ -341,31 +320,6 @@ export class TuiApp {
         return;
       }
       if (key.name === "char" && key.ch) this.#overlay.filter += key.ch;
-      return;
-    }
-
-    // Approvals first: they are modal (y once · a always when mintable · n deny).
-    if (this.approvals.length > 0 && (key.name === "char" && (key.ch === "y" || key.ch === "Y"))) {
-      const pending = this.approvals.shift();
-      if (pending) this.deps.onApproval(pending.callId, "once");
-      this.setStatus("approved once");
-      return;
-    }
-    if (this.approvals.length > 0 && (key.name === "char" && (key.ch === "a" || key.ch === "A"))) {
-      const pending = this.approvals[0];
-      if (pending?.exec?.mintable) {
-        this.approvals.shift();
-        this.deps.onApproval(pending.callId, "always");
-        this.setStatus("always allowed for this directory");
-      } else {
-        this.setStatus("allow always unavailable — inline-eval/substitution needs per-run approval");
-      }
-      return;
-    }
-    if (this.approvals.length > 0 && (key.name === "char" && (key.ch === "n" || key.ch === "N") || key.name === "escape" || key.name === "ctrl-c")) {
-      const pending = this.approvals.shift();
-      if (pending) this.deps.onApproval(pending.callId, "deny");
-      this.setStatus("declined");
       return;
     }
 
@@ -559,9 +513,8 @@ const HINTS = "\u23ce send \u00b7 ^G new \u00b7 ^L model \u00b7 ^P session \u00b
 
 export const tuiHelp = [
   "TUI-local: /help /model <id> [--save] /provider <list|add|remove|test> /session <key> /new /clear /quit",
-  "Everywhere (web chat resolves the same): /status /stop /queue /steer /followup /dream [on|off|status|run|log] /title <text> /export-session /tools /skills /exec [mode|global <mode>|reset] — full list: /commands",
+  "Everywhere (web chat resolves the same): /status /stop /queue /steer /followup /dream [on|off|status|run|log] /title <text> /export-session /tools /skills — full list: /commands",
   "Keys: ⏎ send · ⇧⏎ newline · ^G new session · ^L model · ^P session · ^O tool output · ^T thinking · ^C stop · ^C^C quit",
-  "Approvals: y once · a allow always (this directory) · n deny",
 ].join("\n");
 
 export const terminalWidth = width;

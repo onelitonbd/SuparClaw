@@ -6,48 +6,18 @@ import { readFileSync } from "node:fs";
 
 const src = readFileSync(new URL("../ui/src/settings.ts", import.meta.url), "utf8");
 
-test("#38 exec & tools settings: one exec card owns the whole tools.exec block", () => {
-  // The section used to be two cards over one block, each writing its own
-  // leaves on change. It is now one draft and one write, so the guard is on the
-  // merged block rather than on eleven separate leaf paths.
-  assert.match(src, /#execCard\(config: any\): Promise<HTMLElement>/);
-  assert.doesNotMatch(src, /#execPolicyCard|#execApprovalsCard/, "the two half-cards are gone");
-  assert.match(src, /id: "exec-policy-save"/);
-  assert.match(src, /gateway\.request\("config\.set", \{ path: "tools\.exec", value: block \}\)/);
-  assert.doesNotMatch(src, /\["tools\.exec\./, "no leaf writes left for the exec block");
-  // Every key the schema owns is in the one block, plus the stored block spread
-  // so a knob this page does not render survives a save.
-  assert.match(src, /\.\.\.structuredClone\(x\),/);
-  for (const key of [
-    "enabled:", "approvals:", "mode:", "askFallback:", "strictInlineEval:", "safeBins:",
-    "safeBinTrustedDirs:", "timeoutMs:", "sandbox:", "sandboxProot:", "unattended:",
-  ]) {
-    assert.ok(src.includes(key), `missing merged key ${key}`);
-  }
-  // their unset-is-a-state rule for exec mode: blank follows the approvals bool
-  assert.match(src, /\/\^\(deny\|allowlist\|ask\|full\)\$\/\.test\(chosen\)/);
-  // Refuse, never clamp — the previous version silently rewrote the number.
-  // Task 38: the accepted range follows the 30-minute command cap.
-  assert.match(src, /timeoutMs < 1000 \|\| timeoutMs > 1800000/);
-  assert.match(src, /between 1000 and 1800000 ms/);
-  assert.match(src, /aria-invalid/);
-  // Task 57: there is no sandbox control left to mislead — the jail was
-  // removed, so the page states the posture instead of offering a wrapper that
-  // cannot start on a phone.
-  assert.doesNotMatch(src, /prootCb|sandboxSeg|syncSandbox/, "the sandbox controls are gone, not hidden");
-  assert.match(src, /exec-direct-note/);
-  assert.match(src, /Commands run directly in Termux/);
-  // …and saving still writes the keys, as off/false, so an old config migrates.
-  assert.match(src, /sandbox: "off",/);
-  assert.match(src, /sandboxProot: false,/);
-  assert.match(src, /unattended auto-decision is audited/);
-  assert.match(src, /Only the six above have a profile/);
-  // Grants are immediate and must not read as an unsaved policy change.
-  assert.match(src, /this\.#dirtyWatch\(policyZone, note\)/);
-  assert.match(src, /approvals\.entry\.revoke/);
-  assert.match(src, /lastUsedCommand/);
-  // tools tab gets the config so the cards can render
-  assert.match(src, /this\.#tab === "tools"\) await this\.#renderTools\(tools, config\)/);
+test("#38 exec settings expose only direct availability and timeout", () => {
+  const start = src.indexOf("async #execCard(");
+  const end = src.indexOf("\n  /** Code Mode card", start);
+  const card = src.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.match(card, /exec-settings-save/);
+  assert.match(card, /path: "tools\.exec"/);
+  assert.match(card, /value: \{ enabled: enabledCb\.checked, timeoutMs \}/);
+  assert.match(card, /1000–1800000 ms/);
+  assert.doesNotMatch(card, /approvals|allowlist|\bmode\b|askFallback|safeBins|unattended|exec-policy/i);
+  assert.match(card, /When enabled, shell commands run in the daemon user's environment and permissions/);
+  assert.match(card, /This cap limits how long one command can run/);
 });
 
 test("#38 code mode + media cards cover their config surfaces", () => {
@@ -72,7 +42,10 @@ test("#38 code mode + media cards cover their config surfaces", () => {
   // engagement comes from the engine's predicate through the gateway, not a UI copy
   assert.match(src, /gateway\.request\("codeMode\.get"\)/);
   assert.match(src, /executor_unavailable/);
-  assert.match(src, /still go through exec policy and approvals/);
+  const cmStart = src.indexOf("async #codeModeCard(");
+  const cmEnd = src.indexOf("async #mediaCard(", cmStart);
+  assert.ok(cmStart >= 0 && cmEnd > cmStart);
+  assert.doesNotMatch(src.slice(cmStart, cmEnd), /exec policy|approval/i);
 
   // Media understanding: three whole-object writes became one merged block.
   assert.match(src, /#mediaCard\(config: any\): Promise<HTMLElement>/);

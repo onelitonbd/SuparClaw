@@ -16,7 +16,7 @@ import {
   testProvider,
 } from "../config/providers.js";
 import { slashHelp, SLASH_CATALOG } from "../agent/slash-commands.js";
-import { execModeOf, modelProfile } from "../config/schema.js";
+import { modelProfile } from "../config/schema.js";
 import { BUILD_STAMP } from "../util/build-stamp.js";
 import { buildCommandMenu, staleCommandScopes } from "./telegram-menu.js";
 import { splitForTelegram, stripHtmlTags, telegramChunks } from "./telegram-format.js";
@@ -352,7 +352,7 @@ export class TelegramChannel {
   }
 
   /**
-   * Proactive outbound text (P2 cron delivery/alerts + later approval cards):
+   * Proactive outbound text (P2 cron delivery/alerts):
    * chunked by the usual rule; hard errors propagate for the caller to log.
    */
   async sendText(chatId: number, text: string): Promise<void> {
@@ -456,7 +456,7 @@ export class TelegramChannel {
   /**
    * Button taps: `qu:<setId>:<qid>:<n|other|skip>` (ask_user, P2 #8) and
    * pickers share one router — only PAIRED users may tap, and the card is
-   * edited in place to the outcome (Task 55: no approval cards remain).
+   * edited in place to the outcome.
    */
   async #onCallbackQuery(ctx: Context): Promise<void> {
     const data = ctx.callbackQuery?.data ?? "";
@@ -467,22 +467,12 @@ export class TelegramChannel {
     // "This picker expired" (or bound the user's DM session instead).
     const chatId = ctx.chat?.id ?? fromId;
     if (chatId === undefined || fromId === undefined || !data) return;
-    const cfg = this.service.config.channels.telegram;
     if (!this.#paired(fromId)) {
       await ctx.answerCallbackQuery({ text: "Only paired users can decide this", show_alert: true }).catch(() => {});
       return;
     }
-    void cfg;
     const parts = data.split(":");
     const kind = parts[0];
-
-    // `appr:` used to resolve an exec card. Task 55 removed the cards (and the
-    // wait behind them), so a stale one in an old chat must not resurrect a
-    // decision: answer that it is obsolete instead of resolving anything.
-    if (kind === "appr") {
-      await ctx.answerCallbackQuery({ text: "Approvals are no longer used — the agent just runs" }).catch(() => {});
-      return;
-    }
 
     const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
 
@@ -642,7 +632,7 @@ export class TelegramChannel {
       this.#branchLists.delete(chatId);
       this.#repoLists.delete(chatId);
       await ctx
-        .editMessageText(bound.ok ? `${this.#boundLine(bound)}\nAsk for a change, then /diff to review and /pr to publish.` : bound.error)
+        .editMessageText(bound.ok ? `${this.#boundLine(bound)}\nRepository ready. Use /diff to review the worktree or /pr to publish it.` : bound.error)
         .catch(() => {});
       return;
     }
@@ -917,7 +907,6 @@ export class TelegramChannel {
               const cur = currentModel(this.service.config, this.#pinFor(scope.chatId));
               return cur.pin ? `${cur.label} — this chat\n        ref: ${cur.ref}` : `default — ${cur.label}`;
             })()}`,
-            `exec:   ${execModeOf(this.service.config.tools.exec)} — nothing asks for permission`,
             `build:  ${BUILD_STAMP}`,
             `paired: ${from !== undefined && this.#paired(from) ? "yes" : `no — sc pair approve ${from ?? "?"}`}`,
           ].join("\n"),
@@ -1512,11 +1501,6 @@ export class TelegramChannel {
       onTool: async () => {
         typing.onTool();
       },
-      // Task 55 — no approval card, ever. The operator's rule: "let the ai work
-      // on any command without my permission … i cant give permission from
-      // telegram". A card here is a wall: the turn does not continue until it is
-      // tapped, and a swipe away from it looks exactly like the agent refusing
-      // to run anything at all.
       reply: async (finalText) => {
         typing.stop();
         // P3 #26: heartbeat target:"last" follows this conversation.

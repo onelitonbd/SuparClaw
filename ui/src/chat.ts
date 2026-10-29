@@ -1,4 +1,4 @@
-// Chat surface: transcript, streaming, tool cards, approvals, composer.
+// Chat surface: transcript, streaming, tool cards, composer.
 //
 // Markup follows the "SuperClaw Mobile" design reference:
 //   .msg.msg--user      > .bubble
@@ -9,7 +9,7 @@
 import { askOnceOnFirstSend } from "./notifications.js";
 import { el, icon, toast } from "./dom.js";
 import { renderMarkdown } from "./markdown.js";
-import { AgentTrace, formatValue } from "./trace/agent-trace.js";
+import { AgentTrace } from "./trace/agent-trace.js";
 import type { TraceItem } from "./trace/types.js";
 
 /**
@@ -71,7 +71,6 @@ export interface ChatHandlers {
    *  and seeded with its text (OpenClaw's Fork from here). */
   fork(messageId: number): void;
   abort(): void;
-  approve(callId: string, decision: "once" | "always" | "deny"): void;
   cancelQueued(runId: string): void;
   questionAnswer(id: string, answers: Record<string, string[]>): void;
   /** Open/download one saved attachment by its workspace path (Task 30). */
@@ -256,7 +255,6 @@ export class Chat {
   #attachBtn: HTMLButtonElement;
   #attachInput: HTMLInputElement;
   #staged: StagedAttachment[] = [];
-  #approval: HTMLElement;
   #qrow: HTMLElement;
   /** Waiting queue items by runId (rendered above the composer). */
   #queueItems = new Map<string, { text: string; at: number }>();
@@ -273,7 +271,6 @@ export class Chat {
   #autoScroll = true;
   #scrollingToBottom = false;
   #toolStart = new Map<string, number>();
-  #pendingApprovals = new Map<string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }>();
   /** ask_user card state: one visible question; prior answers stay local until submit. */
   #pendingQuestion: {
     id: string;
@@ -304,7 +301,6 @@ export class Chat {
     this.#sendBtn = root.querySelector("#send-btn") as HTMLButtonElement;
     this.#stopBtn = root.querySelector("#stop-btn") as HTMLButtonElement;
     this.#composer = root.querySelector("#composer") as HTMLElement;
-    this.#approval = root.querySelector("#approval") as HTMLElement;
     this.#qrow = root.querySelector("#qrow") as HTMLElement;
     this.#jump = root.querySelector("#jump") as HTMLElement;
     this.#tok = root.querySelector("#tok") as HTMLElement;
@@ -853,7 +849,6 @@ export class Chat {
     this.#liveTrace = new AgentTrace(traceRoot, {
       scrollRoot: this.#thread,
       jump: false, // the dock owns the single Jump-to-latest button
-      onApproval: (decision, step) => this.#resolve(step.id, decision),
       onRetry: () => {
         if (this.#lastSend) void this.#handlers.send(this.#lastSend.text, this.#lastSend.attachments);
       },
@@ -987,8 +982,7 @@ export class Chat {
         outcome: status === "error" ? "error" : undefined,
       });
     }
-    // "pending" / "skipped" carry no trace transition — the approval card and
-    // queue rows own those states. Pending is not a failure.
+    // "pending" / "skipped" carry no trace transition — queue rows own those states.
     this.#scrollToBottom();
   }
 
@@ -1062,74 +1056,6 @@ export class Chat {
       x.onclick = () => this.#handlers.cancelQueued(runId);
       this.#qrow.append(el("span", { class: "qrow__item", title: item.text }, [item.text.slice(0, 48), x]));
     }
-  }
-
-  /** ---- approvals ---- */
-
-  approval(callId: string, tool: string, args: unknown, exec?: { mode: string; mintable: boolean; reason: string }): void {
-    this.#pendingApprovals.set(callId, { tool, args, exec });
-    this.#renderApprovals();
-  }
-
-  #renderApprovals(): void {
-    const first = this.#pendingApprovals.entries().next().value as
-      | [string, { tool: string; args: unknown; exec?: { mode: string; mintable: boolean; reason: string } }]
-      | undefined;
-    if (!first) {
-      this.#approval.hidden = true;
-      this.#composer.classList.remove("composer--attached");
-      return;
-    }
-    const [callId, pending] = first;
-    this.#approval.hidden = false;
-    this.#composer.classList.add("composer--attached");
-    const t = this.#liveTrace;
-    if (t && !t.getState().items.some((i: TraceItem) => i.kind === "approval" && i.id === callId)) {
-      const label = TOOL_LABELS[pending.tool] ?? pending.tool;
-      t.push({
-        type: "approval_request",
-        stepId: callId,
-        description: `${label}: ${formatValue(pending.args)}`,
-        ts: Date.now(),
-      });
-    }
-    (document.getElementById("approval-tool") as HTMLElement).textContent = pending.tool;
-    (document.getElementById("approval-args") as HTMLElement).textContent =
-      typeof pending.args === "string" ? pending.args : JSON.stringify(pending.args ?? {});
-    const why = document.getElementById("approval-why") as HTMLElement;
-    if (pending.exec) {
-      why.textContent = `${pending.exec.reason} · mode ${pending.exec.mode}`;
-      why.hidden = false;
-    } else {
-      why.hidden = true;
-    }
-    // Allow-always mints a grant bound to exact argv in this directory — the
-    // policy refuses to mint carriers, so don't offer the button there.
-    const always = document.getElementById("approval-always") as HTMLButtonElement;
-    if (pending.exec && !pending.exec.mintable) {
-      always.disabled = true;
-      always.title = "Inline-eval/substitution — per-run approval only";
-    } else {
-      always.disabled = false;
-      always.title = "Always allow this exact command in this directory";
-    }
-    (document.getElementById("approval-deny") as HTMLElement).onclick = () => this.#resolve(callId, "deny");
-    always.onclick = () => this.#resolve(callId, "always");
-    (document.getElementById("approval-allow") as HTMLElement).onclick = () => this.#resolve(callId, "once");
-  }
-
-  #resolve(callId: string, decision: "allow" | "deny" | "once" | "always"): void {
-    this.#pendingApprovals.delete(callId);
-    this.#renderApprovals();
-    // Trace buttons say allow/deny; the dock card says once/always/deny. The
-    // gateway only accepts once/always/deny.
-    const rpcDecision = decision === "allow" ? "once" : decision;
-    this.#handlers.approve(callId, rpcDecision as "once" | "always" | "deny");
-    this.notice(decision === "deny" ? "denied" : decision === "always" ? "always allowed (this directory)" : "approved once");
-    // Update the trace row without re-invoking opts.onApproval (that would
-    // send the approval RPC a second time).
-    const t = this.#liveTrace;
-    if (t) t.setDecision(callId, decision === "deny" ? "deny" : "allow");
   }
 
   /** ---- ask_user (P2 #8): option card over the composer ---- */

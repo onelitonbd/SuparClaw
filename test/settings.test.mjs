@@ -256,7 +256,7 @@ test("gateway: skills + models settings surface over the wire, tools stay read-o
   const names = (toolsRes.payload.tools ?? []).map((s) => s.name);
   assert.ok(names.includes("fs_read") && names.includes("skill_save") && names.includes("time_now"));
   assert.ok((toolsRes.payload.tools ?? []).every((s) => typeof s.description === "string"));
-  assert.ok((toolsRes.payload.tools ?? []).every((s) => typeof s.needsApproval === "boolean"));
+  assert.ok((toolsRes.payload.tools ?? []).every((s) => !("needsApproval" in s)));
   for (const method of ["tools.save", "tools.add", "tools.remove"]) {
     const res = await cli.request(method, { name: "evil", description: "x" });
     assert.equal(res.ok, false, `${method} must not exist (neither the AI nor the user can add tools)`);

@@ -4,7 +4,7 @@
 // network-facing personal agent, so we run those here on every install.
 
 import { statSync } from "node:fs";
-import { execModeOf, type SuparClawConfig } from "../config/schema.js";
+import type { SuparClawConfig } from "../config/schema.js";
 import { configPath } from "../util/paths.js";
 import { readConfigFile } from "../config/load.js";
 
@@ -108,38 +108,6 @@ export function auditConfig(input: AuditInput): Finding[] {
       name: "host allowlist",
       status: "warn",
       detail: `extra hosts accepted: ${gw.allowedHosts.join(", ")}`,
-    });
-  }
-
-  // ---- tools ------------------------------------------------------------
-  // Judge the effective mode, not the legacy approvals bool: mode=full with
-  // approvals=true used to be reported as gated, which was simply false.
-  const execMode = execModeOf(config.tools.exec);
-  if (!config.tools.exec.enabled) {
-    findings.push({ name: "exec tool", status: "ok", detail: "disabled" });
-  } else if (execMode === "deny") {
-    findings.push({ name: "exec tool", status: "ok", detail: "enabled but refusing every command (mode=deny)" });
-  } else if (execMode === "allowlist") {
-    findings.push({ name: "exec tool", status: "ok", detail: "enabled — allowlisted commands and safe bins only" });
-  } else if (execMode === "ask") {
-    findings.push({
-      name: "exec tool",
-      status: "warn",
-      detail: "enabled — every command asks for approval first (mode=ask)",
-    });
-  } else {
-    // mode=full is now the shipped default, so it is a posture note, not a
-    // broken install: a healthy `sc init` must keep auditing clean. Someone who
-    // also flipped the legacy switch off has deliberately removed the gate, and
-    // that stays a finding.
-    const legacyOff = config.tools.exec.approvals === false;
-    findings.push({
-      name: "exec tool",
-      status: legacyOff ? "fail" : "warn",
-      detail: legacyOff
-        ? "enabled in mode=full with approvals:false — every command, including from scheduled jobs, runs without asking"
-        : "enabled in mode=full — every command runs without asking (the default; gate it with sc approvals mode ask)",
-      fix: "sc approvals mode ask",
     });
   }
 

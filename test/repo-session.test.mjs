@@ -1,11 +1,4 @@
-// Task 35 — session binding (`src/repo/session.ts`) and the two enforcement
-// layers of the publish rule.
-//
-// The product decision this file protects: *a pull request happens only when
-// the user asks for one in that turn*. Layer 1 is the surface (a button or a
-// command), layer 2 is the tool refusing when the turn did not ask, and the
-// system prompt is layer 3 (a rule the model reads). A prompt alone is not a
-// gate, so both code layers are tested here.
+// Task 35 — session binding (`src/repo/session.ts`) and the repository tool contract.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +11,7 @@ process.env["SUPARCLAW_DB"] = join(process.env["SUPARCLAW_STATE_DIR"], "test.db"
 delete process.env["GITHUB_TOKEN"];
 delete process.env["GH_TOKEN"];
 
-const { Store, bindSessionRepo, unbindSessionRepo, repoPromptBlock, publishRequested } = await import("../dist/lib.js");
+const { Store, bindSessionRepo, unbindSessionRepo, repoPromptBlock } = await import("../dist/lib.js");
 
 function managerFor(result) {
   const calls = [];
@@ -100,16 +93,13 @@ test("the progress callback is passed straight through, so surfaces share one st
   assert.deepEqual(seen.map((p) => p.phase), ["clone", "worktree", "done"], "the caller's callback is the one the manager calls");
 });
 
-test("the prompt block carries the branch, the workspace and the publish rule", () => {
-  const off = repoPromptBlock({ repo: "acme/api", base: "main", branch: "sc/x", workspace: "/w/x" });
-  assert.match(off, /acme\/api · branch sc\/x \(from main\)/);
-  assert.match(off, /Workspace: \/w\/x/);
-  assert.match(off, /Publish only when the user asks in this turn/);
-  assert.match(off, /Never force-push/);
-  assert.doesNotMatch(off, /asked for a pull request in this turn/);
-
-  const on = repoPromptBlock({ repo: "acme/api", base: "main", branch: "sc/x", workspace: "/w/x", publishAllowed: true });
-  assert.match(on, /asked for a pull request in this turn/);
+test("the prompt block gives repo facts without a current-turn publishing gate", () => {
+  const prompt = repoPromptBlock({ repo: "acme/api", base: "main", branch: "sc/x", workspace: "/w/x" });
+  assert.match(prompt, /acme\/api · branch sc\/x \(from main\)/);
+  assert.match(prompt, /Workspace: \/w\/x/);
+  assert.match(prompt, /github_publish commits the session branch, pushes it, and opens a pull request/);
+  assert.match(prompt, /Never force-push or push to the default branch/);
+  assert.doesNotMatch(prompt, /only when the user asks|asked for a pull request in this turn/i);
 });
 
 test("a chosen branch is continued, and the prompt says which branch that is", async () => {
@@ -137,84 +127,29 @@ test("a chosen branch is continued, and the prompt says which branch that is", a
   // Working on the default branch reads differently, because publishing does.
   const onBase = repoPromptBlock({ repo: "acme/api", base: "main", branch: "main", workspace: "/tmp/wt/keep" });
   assert.match(onBase, /branch main \(the default branch\)/);
-  assert.match(repoPromptBlock({ repo: "a/b", base: "main", branch: "main", workspace: "/w", publishAllowed: true }), /commits go to a session branch that targets main/);
-  assert.match(prompt, /Publish only when the user asks in this turn/, "a continued branch does not loosen the publish rule");
+  assert.match(repoPromptBlock({ repo: "a/b", base: "main", branch: "main", workspace: "/w" }), /Never force-push/);
 });
 
-test("publishRequested recognises an ask and ignores ordinary work", () => {
-  const yes = [
-    "open a PR when you're done",
-    "please create a pull request",
-    "can you raise a PR for this",
-    "publish this branch",
-    "/pr",
-    "make a PR with the fix",
-    "submit a pull request now",
-  ];
-  for (const text of yes) assert.equal(publishRequested(text), true, `should publish: ${text}`);
-
-  const no = [
-    "fix the failing test",
-    "what does the PR template say?",
-    "review the pull request my colleague opened",
-    "summarise the diff",
-    "",
-  ];
-  for (const text of no) assert.equal(publishRequested(text), false, `must not publish: ${text}`);
-});
-
-test("the tool refuses when the turn did not ask — layer 2 of the gate", async () => {
+test("github_publish runs for a bound repo without current-turn intent metadata", async () => {
   const { buildRegistry, emptyConfig } = await import("../dist/lib.js");
   const calls = [];
-  const store = Store.open(join(mkdtempSync(join(tmpdir(), "sc-gate-")), "s.db"));
-  store.ensureSession("main:gate");
-  store.setSessionRepo("main:gate", { kind: "code", repo: "acme/api", base: "main", branch: "sc/gate", workspace: "/tmp/wt/gate" });
-
+  const store = Store.open(join(mkdtempSync(join(tmpdir(), "sc-publish-")), "s.db"));
+  store.ensureSession("main:repo");
+  store.setSessionRepo("main:repo", { kind: "code", repo: "acme/api", base: "main", branch: "sc/repo", workspace: "/tmp/wt/repo" });
   const repoCtl = {
-    status: async () => ({
-      repo: "acme/api",
-      base: "main",
-      branch: "sc/gate",
-      clean: false,
-      files: [{ path: "a.ts", added: 1, removed: 0 }],
-      added: 1,
-      removed: 0,
-    }),
+    status: async () => ({ repo: "acme/api", base: "main", branch: "sc/repo", clean: false, files: [{ path: "a.ts", added: 1, removed: 0 }], added: 1, removed: 0 }),
     diff: async () => "diff --git a/a.ts b/a.ts",
-    publish: async (input) => {
-      calls.push(input);
-      return { branch: "sc/gate", number: 9, url: "https://github.com/acme/api/pull/9", draft: true };
-    },
+    publish: async (input) => { calls.push(input); return { branch: "sc/repo", number: 9, url: "https://github.com/acme/api/pull/9", draft: true }; },
   };
-  const ctx = (publishAllowed) => ({
-    workspace: "/tmp/wt/gate",
-    store,
-    sessionKey: "main:gate",
-    config: emptyConfig(),
-    repo: { kind: "code", repo: "acme/api", base: "main", branch: "sc/gate", workspace: "/tmp/wt/gate" },
-    repoCtl,
-    publishAllowed,
-  });
-
+  const ctx = { workspace: "/tmp/wt/repo", store, sessionKey: "main:repo", config: emptyConfig(),
+    repo: { kind: "code", repo: "acme/api", base: "main", branch: "sc/repo", workspace: "/tmp/wt/repo" }, repoCtl };
   const tools = buildRegistry(emptyConfig());
-  const publishTool = tools.find((t) => t.name === "github_publish");
-  assert.ok(publishTool, "the tool exists");
-
-  const refused = await publishTool.run({ title: "Fix" }, ctx(false));
-  assert.match(String(refused), /did not ask for a pull request/i);
-  assert.equal(calls.length, 0, "nothing was pushed");
-
-  const statusTool = tools.find((t) => t.name === "repo_status");
-  const status = await statusTool.run({}, ctx(false));
-  assert.match(String(status), /a\.ts/, "repo_status reads the worktree, which is allowed any time");
-
-  // The same tool, with the gate open, publishes exactly once.
-  const done = await publishTool.run({ title: "Fix" }, ctx(true));
-  assert.match(String(done), /pull\/9/);
+  const publishTool = tools.find((tool) => tool.name === "github_publish");
+  assert.ok(publishTool);
+  assert.match(String(await publishTool.run({ title: "Fix" }, ctx)), /pull\/9/);
   assert.equal(calls.length, 1);
-
-  // And it still refuses outside a repository, whatever the flag says.
-  const unbound = await publishTool.run({ title: "Fix" }, { ...ctx(true), repo: undefined });
-  assert.match(String(unbound), /not bound to a repository/);
-  assert.equal(calls.length, 1);
+  const statusTool = tools.find((tool) => tool.name === "repo_status");
+  assert.match(String(await statusTool.run({}, ctx)), /a\.ts/);
+  assert.match(String(await publishTool.run({ title: "Fix" }, { ...ctx, repo: undefined })), /not bound to a repository/);
+  assert.equal(calls.length, 1, "repository binding remains a technical prerequisite");
 });

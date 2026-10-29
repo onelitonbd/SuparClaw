@@ -148,7 +148,7 @@ const open = async ({ prefs = null, permission = "default", hidden = true, answe
   return settings;
 };
 
-const ON = { enabled: true, approvals: true, reply: false, quietFrom: "", quietTo: "" };
+const ON = { enabled: true, reply: false, quietFrom: "", quietTo: "" };
 
 test("the page is one card on the shared shell", async () => {
   await open({ prefs: ON, permission: "granted" });
@@ -170,10 +170,9 @@ test("the state words are English, not the permission API", async () => {
   const cases = [
     [{ prefs: null, permission: "default" }, "off", /Nothing is sent/],
     [{ prefs: { ...ON, enabled: false }, permission: "default" }, "off", /Nothing is sent/],
-    [{ prefs: ON, permission: "granted" }, "on", /Approval requests are announced while the tab is in the background\./],
-    [{ prefs: { ...ON, approvals: false, reply: true }, permission: "granted" }, "on", /Finished replies are announced/],
-    [{ prefs: { ...ON, reply: true }, permission: "granted" }, "on", /Approval requests and finished replies are announced/],
-    [{ prefs: { ...ON, approvals: false }, permission: "granted" }, "on", /Nothing is selected below, so no alert will appear\./],
+    [{ prefs: { ...ON, reply: true }, permission: "granted" }, "on", /Finished replies are announced/],
+
+    [{ prefs: ON, permission: "granted" }, "on", /Nothing is selected below, so no alert will appear\./],
     [{ prefs: ON, permission: "default" }, "not asked", /until this browser is asked/],
     [{ prefs: ON, permission: "denied" }, "blocked", /blocks notifications for this site/],
   ];
@@ -212,22 +211,15 @@ test("the ask button exists only while the browser has not been asked", async ()
 test("a switch is a draft until the footer commits it", async () => {
   await open({ prefs: null, permission: "granted" });
   assert.equal(tag(), "off");
-  assert.equal(byId("alerts-approvals").disabled, true, "nothing below an off switch looks live");
   assert.equal(byId("alerts-quiet-from").disabled, true);
 
   await toggle("alerts-enabled", true);
-  assert.equal(byId("alerts-approvals").disabled, false, "turning it on revives the kinds");
   assert.equal(byId("alerts-quiet-to").disabled, false);
   assert.match(footNote(), /Unsaved changes/);
   assert.equal(stored(), null, "nothing is written before the commit");
 
-  await toggle("alerts-approvals", false);
-  assert.equal(tag(), "on");
-  assert.match(statusNote(), /Nothing is selected below/, "the status follows the draft");
-  assert.equal(stored(), null);
-
   await click("alerts-save");
-  assert.deepEqual(stored(), { enabled: true, approvals: false, reply: false, quietFrom: "", quietTo: "" });
+  assert.deepEqual(stored(), { enabled: true, reply: false, quietFrom: "", quietTo: "" });
   assert.match(shownText(), /alerts saved/);
   assert.ok(!/Unsaved changes/.test(footNote()), "the band is clean after the commit");
   assert.match(footNote(), /Saved in this browser only/, "and it says where the values went");
@@ -349,7 +341,7 @@ test("alerts fire only when enabled, granted and hidden", () => {
     store.clear();
     if (prefs) store.set("sc.alerts", JSON.stringify(prefs));
     shown.length = 0;
-    notif.onGatewayEvent("chat", { event: { type: "approval", name: "Bash" } });
+    notif.onGatewayEvent("chat", { event: { type: "final" } });
   };
   browser.permission = "granted";
   browser.hidden = true;
@@ -358,8 +350,11 @@ test("alerts fire only when enabled, granted and hidden", () => {
   assert.equal(shown.length, 0, "an off switch silences everything");
 
   run(ON);
-  assert.equal(shown.length, 1, "hidden + granted + on → one banner");
-  assert.equal(shown[0].title, "Approval requested");
+  assert.equal(shown.length, 0, "reply alerts are opt-in");
+
+  run({ ...ON, reply: true });
+  assert.equal(shown.length, 1, "hidden + granted + reply selected → one banner");
+  assert.equal(shown[0].title, "Reply ready");
 
   browser.hidden = false;
   run(ON);
@@ -376,9 +371,7 @@ test("alerts fire only when enabled, granted and hidden", () => {
   run({ ...ON, quietFrom: `${pad(now.getHours())}:00`, quietTo: `${pad((now.getHours() + 2) % 24)}:00` });
   assert.equal(shown.length, 0, "quiet hours suppress the banner");
 
-  run({ ...ON, approvals: false, reply: true });
-  assert.equal(shown.length, 0, "an approval is not a reply");
-  notif.onGatewayEvent("chat", { event: { type: "final" } });
+  run({ ...ON, reply: true });
   assert.equal(shown.length, 1, "a reply is announced when it is selected");
 });
 
@@ -386,6 +379,5 @@ test("the alert bodies stay generic", () => {
   const notes = readFileSync(join(ROOT, "ui/src/notifications.ts"), "utf8");
   assert.ok(!/body:\s*ev\.text/.test(notes), "never the message text");
   assert.ok(!/ev\.(prompt|args)/.test(notes), "never the prompt or tool arguments");
-  assert.match(notes, /Approval requested/);
   assert.match(notes, /Reply ready/);
 });

@@ -10,7 +10,7 @@
 // This drives the real page and asserts the parts a reader has to be able to trust:
 // whether it is running right now and why, one merged write, refusal instead of
 // clamping, chips instead of free text, and that turning it on does not read as a
-// way around the exec policy above it.
+// way around an exec policy.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -80,13 +80,12 @@ export const gateway = {
     }
     if (method === "models.list") return { models: [], configured: [], details: {}, auth: [] };
     if (method === "tools.list") {
-      return { tools: ${JSON.stringify(CM.catalog)}.map((name) => ({ name, description: name, needsApproval: false }))
-        .concat([{ name: "exec", description: "shell", needsApproval: true }]) };
+      return { tools: ${JSON.stringify(CM.catalog)}.map((name) => ({ name, description: name }))
+        .concat([{ name: "exec", description: "shell" }]) };
     }
     if (method === "skills.list") return { skills: [] };
     if (method === "models.plugins") return { plugins: [] };
     if (method === "web.search.get") return { providers: [], provider: "", enabled: false };
-    if (method === "approvals.get") return { mode: "ask", entries: [] };
     if (method === "codeMode.get") {
       if (globalThis.__GW_FAIL_CM) throw new Error(globalThis.__GW_FAIL_CM);
       return { ...${JSON.stringify(CM)}, ...(globalThis.__CM ?? {}) };
@@ -289,7 +288,7 @@ test("the family list marks the one your model is on", () => {
 });
 
 test("code mode states that it does not bypass exec policy", () => {
-  assert.match($(".code-mode-card").textContent, /still go through exec policy and approvals/);
+  assert.doesNotMatch($(".code-mode-card").textContent, /exec policy|approval/i);
 });
 
 test("a select change marks the draft, and the marker clears on save", async () => {

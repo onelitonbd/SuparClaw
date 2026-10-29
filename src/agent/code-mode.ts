@@ -9,7 +9,7 @@
  *  - every catalog-eligible enabled tool is hidden from the direct list and
  *    exposed inside the guest as an async global (NAME(args, extra?));
  *    catalog.search/describe give handle-shaped discovery; bridge calls ride
- *    the normal tool-run path — policy, approvals, hooks all still apply
+ *    the normal tool-run path — tool hooks still apply
  *  - JavaScript-only surface: shell-smelling code → invalid_input BEFORE
  *    guest execution (their pre-reject), dynamic import()/require also
  *    rejected with actionable guidance; `command` is their JS alias for code

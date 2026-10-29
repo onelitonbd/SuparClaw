@@ -110,8 +110,8 @@ const TAB_META: Record<TabId, { icon: string; desc: string; keywords: string }> 
   },
   tools: {
     icon: glyph('<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M8 10l2.5 2.5L8 15"/><path d="M13 15h4"/>'),
-    desc: "What the agent may run, read and fetch on this device — and what needs your approval.",
-    keywords: "exec shell approval sandbox code mode media web search policy",
+    desc: "Tools the agent can run, read and fetch on this device.",
+    keywords: "exec shell code mode media web search tools",
   },
   memory: {
     icon: glyph('<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="M7.5 9.5h9"/><path d="M7.5 13.5h5"/>'),
@@ -194,8 +194,6 @@ export class Settings {
   #modelsProvider: string | null = null;
   /** Search text on the provider model list (survives re-renders). */
   #modelQuery = "";
-  /** Live search on the exec allowlist ledger (rule: long lists get it). */
-  #execQuery = "";
   /** Non-empty while the All-settings page holds a draft that was never sent.
    *  render() consults it before painting a different section, so a draft cannot
    *  be dropped by a nav click or a hash change. */
@@ -2383,244 +2381,61 @@ export class Settings {
     return { input, node: el("div", { class: "row" }, [el("span", { class: "row__label" }, [label]), input]) };
   }
 
-  /** Exec & approvals (P4 #38 — their tools.exec page + their approvals
-   *  ledger). ONE section with ONE draft and ONE atomic write.
-   *
-   *  It used to be two cards, and `mode`, `askFallback` and `strictInlineEval`
-   *  lived in both: instant RPCs in one, staged behind a Save in the other. The
-   *  same setting could be live in one card and stale in the other, presets
-   *  rewrote fields someone was editing, and the "Save" fired eleven separate
-   *  config.set frames so a rejected value left the policy half applied.
-   *
-   *  Grants are the exception: they live in the approvals ledger (sqlite), not
-   *  in config, so adding and revoking stay immediate — there is nothing to
-   *  stage when a decision is remembered the moment you make it. */
+  /** Exec controls: availability and a technical per-command timeout only. */
   async #execCard(config: any): Promise<HTMLElement> {
     const x = config.tools?.exec ?? {};
-    let st: any = null;
-    let stError = "";
-    try {
-      st = await gateway.request("approvals.get");
-    } catch (err) {
-      // The policy comes from config, so losing this RPC must not take the
-      // whole section down with it — only the grants list.
-      stError = (err as Error).message;
-    }
-    const entries: any[] = Array.isArray(st?.entries) ? st.entries : [];
-    const effMode = String(st?.mode ?? (x.approvals === false ? "full" : "ask"));
-    const MODE_TEXT: Record<string, string> = {
-      deny: "Refuses every shell command.",
-      allowlist: "Runs only allowlisted commands and safe bins; everything else is refused.",
-      ask: "Anything not on the allowlist asks you first.",
-      full: "Runs anything without asking. Only on a machine you would hand a shell to. This is the default.",
-    };
-
-    /* ---- draft: every policy control stages here, Save applies the lot ---- */
-
-    let modeValue = String(x.mode ?? "");
-    const mark = (): void => this.#dirtyMark(note);
     const note = el("span", { class: "setfoot__note", "aria-live": "polite" }, []);
-
+    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
     const enabledCb = el("input", { type: "checkbox", id: "exec-enabled" }) as HTMLInputElement;
     enabledCb.checked = Boolean(x.enabled);
-
-    // The status line reads the draft, not the stored config, so it answers
-    // "what happens if I save this?" while the radio is still being moved.
-    const statusTag = el("span", { class: "settings__tag" });
-    const statusNote = el("span", { class: "setcard__status-note", "aria-live": "polite" });
-    const enabledHint = el("span", { class: "hint" });
-    // Task 55/56: the legacy `approvals` bool no longer decides anything —
-    // `execModeOf` maps an unset mode to `full`, because nothing is
-    // interactive any more. The status line must not promise otherwise.
-    const draftMode = (): string => modeValue || "full";
-    const syncStatus = (): void => {
-      const on = enabledCb.checked;
-      const mode = draftMode();
-      statusTag.textContent = on ? `mode ${mode}` : "exec off";
-      statusTag.className = `settings__tag${on && mode !== "deny" ? " is-ok" : " is-warn"}`;
-      statusNote.textContent = on
-        ? MODE_TEXT[mode] ?? MODE_TEXT["ask"]!
-        : "The agent has no shell tool while this is off.";
-      enabledHint.textContent = on
-        ? "Registered: the agent can ask to run commands on this machine."
-        : "Off: the tool is not registered at all, so nothing below has any effect until you switch it on and save.";
-    };
-    enabledCb.onchange = () => { syncStatus(); mark(); };
-
-    const modeRadios = new Map<string, HTMLInputElement>();
-    const modeGroup = el("div", { class: "setcard__modes", role: "radiogroup", "aria-label": "Exec mode" });
-    const modeRowOf = new Map<string, HTMLElement>();
-    const syncMode = (): void => {
-      for (const [value, row] of modeRowOf) row.classList.toggle("is-on", value === modeValue);
-      for (const [value, radio] of modeRadios) radio.checked = value === modeValue;
-    };
-    const pickMode = (value: string): void => {
-      modeValue = value;
-      syncMode();
-      syncStatus();
-    };
-    const MODES: { value: string; label: string; text: string }[] = [
-      { value: "deny", label: "deny", text: MODE_TEXT["deny"]! },
-      { value: "allowlist", label: "allowlist", text: MODE_TEXT["allowlist"]! },
-      { value: "ask", label: "ask", text: MODE_TEXT["ask"]! },
-      { value: "full", label: "full", text: MODE_TEXT["full"]! },
-    ];
-    for (const m of MODES) {
-      const id = `exec-mode-${m.value || "legacy"}`;
-      const radio = el("input", { type: "radio", name: "exec-mode", id, value: m.value, "aria-describedby": `${id}-desc` }) as HTMLInputElement;
-      radio.checked = modeValue === m.value;
-      radio.onchange = () => {
-        if (!radio.checked) return;
-        pickMode(m.value);
-        mark();
-      };
-      modeRadios.set(m.value, radio);
-      const row = el("div", { class: "setcard__mode" }, [
-        el("div", { class: "setcard__mode-main" }, [
-          el("label", { class: "setcard__mode-label", for: id }, [m.label]),
-          el("span", { class: "hint", id: `${id}-desc` }, [m.text]),
-        ]),
-        radio,
-      ]);
-      row.dataset["mode"] = m.value;
-      modeRowOf.set(m.value, row);
-      modeGroup.append(row);
-    }
-
-    const strictCb = el("input", { type: "checkbox", id: "exec-strict-inline" }) as HTMLInputElement;
-    strictCb.checked = Boolean(x.strictInlineEval);
-    strictCb.onchange = mark;
-    const strictRow = el("div", { class: "row" }, [
-      el("div", { class: "row__main" }, [
-        el("label", { class: "row__label", for: "exec-strict-inline" }, ["Never auto-allow inline eval"]),
-        el("span", { class: "hint" }, ["node -e, bash -c, awk, sed, make, xargs and find -exec always need a real approval."]),
-      ]),
-      strictCb,
-    ]);
-
-    const askDd = this.#dropdown({
-      id: "exec-ask-fallback",
-      value: String(x.askFallback ?? "deny"),
-      label: "Fallback for an unseen prompt",
-      placeholder: "choose…",
-      options: [
-        { value: "deny", label: "refuse it — and say so (default)" },
-        { value: "allowlist", label: "run it only if it is a safe bin" },
-        { value: "full", label: "run it anyway" },
-      ],
-    });
-    const unatDd = this.#dropdown({
-      id: "exec-unattended",
-      value: String(x.unattended ?? "deny"),
-      label: "Runs with nobody watching",
-      placeholder: "choose…",
-      options: [
-        { value: "deny", label: "refuse it — and say so (default)" },
-        { value: "allowlist", label: "run it only if it is a safe bin" },
-        { value: "all", label: "run anything" },
-      ],
-    });
-    askDd.sel.addEventListener("change", mark);
-    unatDd.sel.addEventListener("change", mark);
-
     const timeoutInp = el("input", {
       class: "inp mono", id: "exec-timeout", inputmode: "numeric", autocomplete: "off", spellcheck: "false",
       value: String(Number(x.timeoutMs ?? 1800000)),
     }) as HTMLInputElement;
-    const timeoutEcho = el("span", { class: "setcard__echo", "aria-live": "polite" }, []);
-    const syncEcho = (): void => {
-      const n = Number(timeoutInp.value.trim());
-      timeoutEcho.textContent = Number.isFinite(n) && n >= 1000 ? `≈ ${Math.round((n / 60000) * 10) / 10} min` : "";
-    };
-    timeoutInp.oninput = () => { syncEcho(); mark(); };
-    syncEcho();
-
-    // Task 57: there is no sandbox to configure. The two controls that used to
-    // live here (off/strict, and the proot jail) described wrappers that are
-    // gone — offering them would be the same lie the "killed by the sandbox"
-    // report was. Saving still writes the keys as off/false so an old config
-    // migrates on the next save.
-    const sandboxNote = el("p", { class: "hint", id: "exec-direct-note" }, [
-      "Commands run directly in Termux: your shell, your PATH and HOME, no prlimit, no proot, no environment rewrite. The sandbox was removed in Task 57 — a jail that aborts before the command starts is an outage, not a boundary.",
+    const save = el("button", { class: "btn pri", type: "button", id: "exec-settings-save" }, ["Save exec settings"]) as HTMLButtonElement;
+    const execSettings = el("div", { class: "exec__settings" }, [
+      el("div", { class: "row exec__enabled" }, [
+        el("div", { class: "row__main" }, [
+          el("label", { class: "row__label", for: "exec-enabled" }, ["Exec tool"]),
+          el("span", { class: "hint" }, ["When enabled, shell commands run in the daemon user's environment and permissions."]),
+        ]),
+        enabledCb,
+      ]),
+      el("div", { class: "setfield" }, [
+        el("label", { class: "lbl", for: "exec-timeout" }, ["Timeout per command (ms)"]),
+        timeoutInp,
+        el("p", { class: "hint" }, ["1000–1800000 ms. This cap limits how long one command can run."]),
+      ]),
     ]);
-
-    // Only these bins have a stdin-only profile in the evaluator. A name that
-    // is not on this list does nothing at all — which is exactly the trap the
-    // old free-text box set, so the list is the control now.
-    const SAFE_BINS = ["cut", "uniq", "head", "tail", "tr", "wc"];
-    const bins = new Set<string>((Array.isArray(x.safeBins) ? x.safeBins : []).map(String));
-    const binsWrap = el("div", { class: "seg seg--wrap", role: "group", "aria-label": "Safe bins" });
-    const binChip = (bin: string, supported: boolean): HTMLButtonElement => {
-      const b = el("button", {
-        class: `seg__btn${supported ? "" : " is-off"}`,
-        type: "button",
-        id: `exec-bin-${bin}`,
-        "aria-pressed": String(bins.has(bin)),
-        title: supported ? `${bin} may run without asking when its argv is a stdin-only shape` : `${bin} has no stdin-only profile — this name does nothing`,
-      }, [bin]) as HTMLButtonElement;
-      b.onclick = () => {
-        if (bins.has(bin)) bins.delete(bin);
-        else bins.add(bin);
-        b.setAttribute("aria-pressed", String(bins.has(bin)));
-        mark();
-      };
-      return b;
-    };
-    for (const bin of SAFE_BINS) binsWrap.append(binChip(bin, true));
-    for (const bin of [...bins].filter((b) => !SAFE_BINS.includes(b))) binsWrap.append(binChip(bin, false));
-
-    const dirsInp = el("input", {
-      class: "inp mono", id: "exec-trusted-dirs", autocomplete: "off", spellcheck: "false",
-      value: (Array.isArray(x.safeBinTrustedDirs) ? x.safeBinTrustedDirs : []).join(", "),
-      placeholder: "/bin, /usr/bin",
-    }) as HTMLInputElement;
-    dirsInp.oninput = mark;
-
-    const problem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
-    const save = el("button", { class: "btn pri", type: "button", id: "exec-policy-save" }, ["Save exec policy"]) as HTMLButtonElement;
+    const clearDirty = this.#dirtyWatch(execSettings, note);
+    const syncDirty = (): void => this.#dirtyMark(note);
+    enabledCb.onchange = syncDirty;
+    timeoutInp.oninput = syncDirty;
     let saving = false;
     save.onclick = async () => {
       if (saving) return;
       problem.textContent = "";
       problem.setAttribute("hidden", "");
       timeoutInp.removeAttribute("aria-invalid");
-      const timeoutRaw = timeoutInp.value.trim();
-      const timeoutMs = Number(timeoutRaw);
-      // Refuse, never clamp: silently turning 50 ms into 1000 is how a policy
-      // setting becomes a lie.
-      if (!timeoutRaw || !Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 1800000) {
+      const raw = timeoutInp.value.trim();
+      const timeoutMs = Number(raw);
+      if (!raw || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 1800000) {
         timeoutInp.setAttribute("aria-invalid", "true");
-        problem.textContent = "Not saved — the timeout has to be between 1000 and 1800000 ms.";
+        problem.textContent = "Not saved — timeout must be between 1000 and 1800000 ms.";
         problem.removeAttribute("hidden");
         timeoutInp.focus();
         return;
       }
-      const chosen = [...modeRadios.entries()].find(([, radio]) => radio.checked)?.[0] ?? "";
-      // One write for the whole block, merged over what is stored so a key this
-      // page does not render survives a save.
-      const block: Record<string, unknown> = {
-        ...structuredClone(x),
-        enabled: enabledCb.checked,
-        // Nothing asks for permission any more (Task 55); the key is written as
-        // false so a legacy config cannot drift back to `ask`.
-        approvals: false,
-        mode: /^(deny|allowlist|ask|full)$/.test(chosen) ? chosen : "",
-        askFallback: this.#selValue(askDd.sel),
-        strictInlineEval: strictCb.checked,
-        safeBins: [...bins],
-        safeBinTrustedDirs: dirsInp.value.split(",").map((v) => v.trim()).filter(Boolean),
-        timeoutMs: Math.round(timeoutMs),
-        sandbox: "off",
-        sandboxProot: false,
-        unattended: this.#selValue(unatDd.sel),
-      };
       saving = true;
       save.disabled = true;
       save.textContent = "Saving…";
       try {
-        await gateway.request("config.set", { path: "tools.exec", value: block });
+        await gateway.request("config.set", {
+          path: "tools.exec",
+          value: { enabled: enabledCb.checked, timeoutMs },
+        });
         clearDirty();
-        toast("exec policy saved — applies to the next tool call", "ok");
+        toast("exec settings saved", "ok");
         this.#onChanged();
         void this.render();
       } catch (err) {
@@ -2630,242 +2445,15 @@ export class Settings {
       } finally {
         saving = false;
         save.disabled = false;
-        save.textContent = "Save exec policy";
+        save.textContent = "Save exec settings";
       }
     };
-
-    /* ---- grants: the approvals ledger (immediate, its own RPCs) ---- */
-
-    const ago = (ts?: number): string => {
-      if (!ts) return "never used";
-      const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
-      return m < 1 ? "used <1m ago" : m < 60 ? `used ${m}m ago` : m < 1440 ? `used ${Math.round(m / 60)}h ago` : `used ${Math.round(m / 1440)}d ago`;
-    };
-    const shortDir = (dir: string): string => String(dir || "?").replace(/^\/data\/data\/com\.termux\/files\/home/, "~").replace(/^\/home\/[^/]+/, "~");
-
-    const grantRow = (e: any): HTMLElement => {
-      const always = e.source === "allow-always";
-      const cmd = String(e.lastUsedCommand ?? e.command ?? "");
-      const meta = always
-        ? [`exact command`, `in ${shortDir(e.cwd)}`, ago(e.lastUsedAt)].join(" · ")
-        : [e.argPattern ? `argv /${e.argPattern}/` : "name or path match", ago(e.lastUsedAt), e.lastResolvedPath ? String(e.lastResolvedPath) : null].filter(Boolean).join(" · ");
-      const revoke = el("button", {
-        class: "btn sm danger", type: "button", "aria-label": `Revoke ${e.pattern}`,
-      }, ["Revoke"]) as HTMLButtonElement;
-      let armed = false;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const disarm = (): void => {
-        armed = false;
-        if (timer) clearTimeout(timer);
-        timer = null;
-        revoke.textContent = "Revoke";
-        revoke.classList.remove("is-warn");
-      };
-      revoke.onclick = async () => {
-        // Revoking a grant is a security decision: one click arms, the second
-        // one acts, and the arm expires on its own.
-        if (!armed) {
-          armed = true;
-          revoke.textContent = "Confirm revoke";
-          revoke.classList.add("is-warn");
-          timer = setTimeout(disarm, 4000);
-          return;
-        }
-        disarm();
-        revoke.disabled = true;
-        try {
-          await gateway.request("approvals.entry.revoke", { id: e.id });
-          toast("grant revoked", "ok");
-          void this.render();
-        } catch (err) {
-          toast((err as Error).message, "err");
-          revoke.disabled = false;
-        }
-      };
-      const main = el("div", { class: "ledger__main" }, [
-        el("div", { class: "ledger__pattern", title: String(e.pattern) }, [String(e.pattern)]),
-        el("div", { class: "ledger__meta" }, [meta]),
-        ...(cmd ? [el("div", { class: "exec__cmd", title: cmd }, [`$ ${cmd}`])] : []),
-      ]);
-      return el("div", { class: "ledger__row" }, [
-        main,
-        el("span", { class: `settings__tag${always ? " is-warn" : ""}` }, [always ? "always" : "manual"]),
-        revoke,
-      ]);
-    };
-
-    const list = el("div", { class: "ledger" });
-    const renderRows = (): void => {
-      list.innerHTML = "";
-      const q = this.#execQuery.trim().toLowerCase();
-      const shown = entries.filter((e) => !q || [e.pattern, e.argPattern, e.lastUsedCommand, e.command]
-        .some((v) => String(v ?? "").toLowerCase().includes(q)));
-      if (shown.length === 0) {
-        list.append(el("p", { class: "hint" }, [
-          entries.length === 0
-            ? effMode === "full"
-              ? "No grants — full mode does not need any; every command already runs."
-              : "No grants yet. Anything that is not a safe bin asks first."
-            : "No grants match the search.",
-        ]));
-        return;
-      }
-      for (const e of shown) list.append(grantRow(e));
-    };
-    renderRows();
-    const search = el("input", {
-      class: "inp", id: "exec-grant-search", placeholder: "Search grants — pattern, command, regex…",
-      value: this.#execQuery, autocomplete: "off", spellcheck: "false",
-    }) as HTMLInputElement;
-    search.oninput = () => {
-      this.#execQuery = search.value;
-      renderRows();
-    };
-
-    const patternInp = el("input", { class: "inp mono", id: "exec-grant-pattern", placeholder: "rg, /opt/homebrew/bin/rg or ~/.local/bin/*", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
-    const argInp = el("input", { class: "inp mono", id: "exec-grant-argv", placeholder: "argv regex (optional), e.g. ^safe\\.py$", autocomplete: "off", spellcheck: "false" }) as HTMLInputElement;
-    const addProblem = el("p", { class: "hint hint--err", role: "alert", hidden: "" }, []);
-    const addBtn = el("button", { class: "btn", type: "button", id: "exec-grant-add" }, ["Add grant"]) as HTMLButtonElement;
-    addBtn.onclick = async () => {
-      addProblem.textContent = "";
-      addProblem.setAttribute("hidden", "");
-      if (!patternInp.value.trim()) {
-        addProblem.textContent = "A pattern is required — a binary name, a path, or a glob.";
-        addProblem.removeAttribute("hidden");
-        patternInp.focus();
-        return;
-      }
-      addBtn.disabled = true;
-      try {
-        await gateway.request("approvals.entry.add", {
-          pattern: patternInp.value.trim(),
-          argPattern: argInp.value.trim() || undefined,
-        });
-        patternInp.value = "";
-        argInp.value = "";
-        toast("grant added", "ok");
-        void this.render();
-      } catch (err) {
-        addProblem.textContent = (err as Error).message;
-        addProblem.removeAttribute("hidden");
-      } finally {
-        addBtn.disabled = false;
-      }
-    };
-
-    /* ---- assembly ---- */
-
-    const modeSection = el("div", { class: "setsec" }, [
-      el("div", { class: "setsec__head" }, [
-        el("span", { class: "cap" }, ["Mode"]),
-        el("span", { class: "setsec__count" }, ["4 modes"]),
-      ]),
-      modeGroup,
-      el("div", { class: "settings__inline exec__presets" }, [
-        el("span", { class: "cap" }, ["Start from"]),
-        (() => {
-          const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-cautious", title: "ask + refuse when nobody can answer" }, ["Cautious"]);
-          b.onclick = () => { pickMode("ask"); askDd.set("deny"); mark(); };
-          return b;
-        })(),
-        (() => {
-          const b = el("button", { class: "btn sm", type: "button", id: "exec-preset-deny", title: "deny + refuse" }, ["Deny all"]);
-          b.onclick = () => { pickMode("deny"); askDd.set("deny"); mark(); };
-          return b;
-        })(),
-        (() => {
-          const b = el("button", { class: "btn sm is-warn", type: "button", id: "exec-preset-yolo", title: "full + run even unattended" }, ["YOLO"]);
-          b.onclick = () => { pickMode("full"); askDd.set("full"); unatDd.set("all"); mark(); };
-          return b;
-        })(),
-      ]),
-      strictRow,
-    ]);
-
-    const fallbackSection = el("div", { class: "setsec" }, [
-      el("div", { class: "setsec__head" }, [
-        el("span", { class: "cap" }, ["When nobody can answer"]),
-        el("span", { class: "setsec__count" }, ["2 rules"]),
-      ]),
-      this.#setField("exec-ask-fallback", "If a prompt cannot be shown (no UI connected)", askDd.node, undefined, null),
-      this.#setField("exec-unattended", "Runs with nobody watching (cron jobs, webhooks)", unatDd.node,
-        "every unattended auto-decision is audited — it is written to the log and the session transcript", null),
-    ]);
-
-    const limitsSection = el("div", { class: "setsec" }, [
-      el("div", { class: "setsec__head" }, [
-        el("span", { class: "cap" }, ["Limits"]),
-        el("span", { class: "setsec__count" }, ["2 settings"]),
-      ]),
-      el("div", { class: "setfield" }, [
-        el("label", { class: "lbl", for: "exec-timeout" }, ["Timeout per command (ms)"]),
-        el("div", { class: "setline" }, [timeoutInp, timeoutEcho]),
-        el("p", { class: "hint" }, ["1000–1800000 (30 min, the default). A safety cap only — a hung command cannot block a session forever."]),
-      ]),
-      el("div", { class: "setfield" }, [
-        el("span", { class: "lbl" }, ["Execution"]),
-        sandboxNote,
-      ]),
-    ]);
-
-    const safeBinsSection = el("div", { class: "setsec" }, [
-      el("div", { class: "setsec__head" }, [
-        el("span", { class: "cap" }, ["Safe bins"]),
-        el("span", { class: "setsec__count" }, [`${[...bins].filter((b) => SAFE_BINS.includes(b)).length} of ${SAFE_BINS.length}`]),
-      ]),
-      binsWrap,
-      el("p", { class: "hint" }, ["These run without asking when their arguments are a stdin-only shape (no file operands). Only the six above have a profile — any other name is ignored."]),
-      el("div", { class: "setfield" }, [
-        el("label", { class: "lbl", for: "exec-trusted-dirs" }, ["Trusted directories (comma separated)"]),
-        dirsInp,
-        el("p", { class: "hint" }, ["A safe bin must resolve inside one of these; /bin and /usr/bin by default."]),
-      ]),
-    ]);
-
-    // Everything above is a draft: one zone, one Save, one write.
-    const policyZone = el("div", { class: "exec__policy" }, [modeSection, fallbackSection, limitsSection, safeBinsSection]);
-    const clearDirty = this.#dirtyWatch(policyZone, note);
-    // Grants live outside the draft zone on purpose: revoking one applies
-    // immediately, so it must never read as an unsaved policy change.
-    syncMode();
-    syncStatus();
-
-    const grantsSection = el("div", { class: "setsec exec-grants" }, [
-      el("div", { class: "setsec__head" }, [
-        el("span", { class: "cap" }, ["Grants"]),
-        el("span", { class: "setsec__count" }, [`${entries.length} ${entries.length === 1 ? "grant" : "grants"}`]),
-      ]),
-      ...(stError
-        ? [el("p", { class: "hint" }, [`Grants could not be read — ${stError}`])]
-        : [
-            search,
-            list,
-            el("div", { class: "exec__add" }, [
-              el("span", { class: "lbl" }, ["Add a grant by hand"]),
-              el("div", { class: "settings__inline" }, [patternInp, argInp, addBtn]),
-              addProblem,
-              el("p", { class: "hint" }, ["A bare name matches only commands found on PATH; a path or glob matches the resolved binary. The argv regex applies to the arguments after the binary."]),
-            ]),
-          ]),
-    ]);
-
     return el("div", { class: "card exec-card" }, [
       el("div", { class: "setcard__head" }, [
-        el("h3", {}, ["Exec & approvals"]),
-        el("p", { class: "hint" }, [
-          "How shell commands get authorized. Allowlisted commands and safe bins run without asking; anything else follows the mode. “Allow always” mints a grant for one exact command in one directory.",
-        ]),
+        el("h3", {}, ["Exec"]),
+        el("p", { class: "hint" }, ["Run shell commands directly in the daemon environment. Configure tool availability and the command timeout here."]),
       ]),
-      el("div", { class: "setcard__status" }, [statusTag, statusNote]),
-      el("div", { class: "row exec__enabled" }, [
-        el("div", { class: "row__main" }, [
-          el("label", { class: "row__label", for: "exec-enabled" }, ["Exec tool"]),
-          enabledHint,
-        ]),
-        enabledCb,
-      ]),
-      policyZone,
-      grantsSection,
+      execSettings,
       el("div", { class: "setfoot" }, [note, problem, save]),
     ]);
   }
@@ -2924,7 +2512,7 @@ export class Settings {
         // Not knowing is its own state: claiming "off" would be as wrong as claiming on.
         statusTag.textContent = "unknown";
         tone(true);
-        statusNote.textContent = `Engagement could not be read — ${stError}. The policy below still saves.`;
+        statusNote.textContent = `Engagement could not be read — ${stError}. The settings below still save.`;
         return;
       }
       const state = draftEngages();
@@ -3193,12 +2781,12 @@ export class Settings {
       ]),
       chipsWrap,
       el("p", { class: "hint" }, [
-        "These stay visible next to exec. Every other tool is only reachable from inside the cell as an async global — and those calls still go through exec policy and approvals, so code mode is not a way around the section above."
+        "These stay visible next to exec. Every other tool is only reachable from inside the cell as an async global."
       ]),
     ]);
 
     // One subtree for the dirty watch: every control below is a draft edit, and
-    // nothing outside it (the catalog card, the grants above) is part of the draft.
+    // nothing outside it (the catalog card and surrounding settings) is part of the draft.
     const policyZone = el("div", { class: "cm__policy" }, [runSection, limitsSection, directSection]);
     const clearDirty = this.#dirtyWatch(policyZone, note);
 
@@ -3981,7 +3569,6 @@ export class Settings {
     // The inventory is the *registered* list (tools.list → service.loop.tools), which
     // is why a tool switched off in a card above disappears from it. Say so once,
     // here, instead of letting the reader guess whether it was never built in.
-    const asksApproval = (tools as any[]).filter((t) => t.needsApproval === true).length;
     body.append(el("div", { class: "card tools-inventory" }, [
       el("div", { class: "setcard__head" }, [
         el("h3", {}, ["Built-in tools"]),
@@ -3991,11 +3578,6 @@ export class Settings {
       ]),
       el("div", { class: "setcard__status" }, [
         el("span", { class: "settings__tag" }, [`${tools.length} registered`]),
-        el("span", { class: "setcard__status-note" }, [
-          asksApproval === 0
-            ? "None of them asks for approval before running."
-            : `${asksApproval} of them ask${asksApproval === 1 ? "s" : ""} for approval before running.`,
-        ]),
       ]),
       el("p", { class: "hint" }, [
         "Only registered tools are listed: switch one off above (exec, web search, pdf) — or the fs and memory switches on the Config tab — and it leaves this list.",
@@ -4007,9 +3589,6 @@ export class Settings {
         el("div", { class: "prov" }, [
           el("div", { class: "prov__head" }, [
             el("span", { class: "prov__name mono" }, [t.name]),
-            el("span", { class: `settings__tag${t.needsApproval ? " is-warn" : ""}` }, [
-              t.needsApproval ? "asks approval" : "no approval",
-            ]),
           ]),
           el("div", { class: "tool__desc" }, [t.description || ""]),
         ])),
@@ -5043,7 +4622,7 @@ export class Settings {
     const workspaceCard = el("div", { class: "card", id: "google-workspace-status" }, [
       el("div", { class: "setcard__head" }, [
         el("h3", {}, ["Google Workspace"]),
-        el("p", { class: "hint" }, ["Docs, Sheets, Calendar, and Drive agent tools share the Google account above. Full Drive access covers existing files; Drive changes, public sharing, Calendar invites, and deletes are guarded by current-turn intent and confirmation checks."]),
+        el("p", { class: "hint" }, ["Docs, Sheets, Calendar, and Drive agent tools share the Google account above. Full Drive access covers existing files."]),
       ]),
       el("div", { class: "row", "data-gw-key": "status" }, [
         el("span", { class: "row__label" }, ["Workspace status"]),
@@ -7005,8 +6584,6 @@ export class Settings {
 
     const enabledCb = el("input", { type: "checkbox", id: "alerts-enabled" }) as HTMLInputElement;
     enabledCb.checked = prefs.enabled;
-    const approvalsCb = el("input", { type: "checkbox", id: "alerts-approvals" }) as HTMLInputElement;
-    approvalsCb.checked = prefs.approvals;
     const replyCb = el("input", { type: "checkbox", id: "alerts-reply" }) as HTMLInputElement;
     replyCb.checked = prefs.reply;
 
@@ -7109,9 +6686,8 @@ export class Settings {
         strip.set("not asked", "is-warn", "Nothing below can be sent until this browser is asked — use the button above.");
         return;
       }
-      const a = approvalsCb.checked;
       const r = replyCb.checked;
-      const kinds = a && r ? "Approval requests and finished replies are announced" : a ? "Approval requests are announced" : r ? "Finished replies are announced" : "";
+      const kinds = r ? "Finished replies are announced" : "";
       strip.set(
         "on",
         kinds ? "is-ok" : "is-warn",
@@ -7123,7 +6699,7 @@ export class Settings {
      *  while it is off, so nothing below it looks live either. */
     const syncAvailability = (): void => {
       const on = enabledCb.checked;
-      for (const cb of [approvalsCb, replyCb]) cb.disabled = !on;
+      replyCb.disabled = !on;
       for (const inp of [fromIn, toIn]) inp.disabled = !on;
       quietField.className = `setfield${on ? "" : " is-off"}`;
     };
@@ -7168,12 +6744,9 @@ export class Settings {
       "alerts-enabled",
     );
 
-    const announce = this.#section("What gets announced", "2 settings", [
-      this.#settingRow("Approval requests", "A tool call is waiting for your answer.", approvalsCb, "alerts-approvals"),
+    const announce = this.#section("What gets announced", "1 setting", [
       this.#settingRow("Finished replies", "A turn finished while you were in another tab.", replyCb, "alerts-reply"),
-      el("p", { class: "hint" }, [
-        "An alert says that something needs you — never the prompt, the tool's arguments or the reply.",
-      ]),
+      el("p", { class: "hint" }, ["The notification contains no prompt or reply text."]),
     ]);
 
     const quiet = this.#section("Quiet hours", "2 times", [quietField]);
@@ -7228,7 +6801,6 @@ export class Settings {
       syncAvailability();
       syncStatus();
     };
-    approvalsCb.onchange = () => syncStatus();
     replyCb.onchange = () => syncStatus();
 
     const save = el("button", { class: "btn pri", type: "button", id: "alerts-save" }, ["Save alerts"]) as HTMLButtonElement;
@@ -7250,7 +6822,6 @@ export class Settings {
         // none, and this store can refuse (private browsing, quota).
         savePrefs({
           enabled: enabledCb.checked,
-          approvals: approvalsCb.checked,
           reply: replyCb.checked,
           quietFrom: from ? parseTime(from) : "",
           quietTo: to ? parseTime(to) : "",

@@ -87,7 +87,6 @@ export const gateway = {
     if (method === "tools.list") return { tools: [] };
     if (method === "skills.list") return { skills: [] };
     if (method === "models.plugins") return { plugins: [] };
-    if (method === "approvals.get") return { mode: "ask", entries: [] };
     if (method === "codeMode.get") return { enabled: "auto", engaged: false, catalog: [], preferred: [] };
     if (method === "media.get") return { defaults: {}, models: [] };
     if (method === "web.search.get") {

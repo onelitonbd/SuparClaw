@@ -48,7 +48,6 @@ const base = () => {
   cfg.gateway.auth.token = "__redacted__:••••wxyz";
   cfg.providers = { openai: { apiKey: "__redacted__:••••9f2a", baseUrl: "" } };
   cfg.agents.defaults.model = "openai/gpt-5.1";
-  cfg.tools.exec.mode = "allowlist";
   cfg.cron.enabled = true;
   return cfg;
 };
@@ -155,12 +154,8 @@ test("every schema leaf is one card row in the shared field language", async () 
   assert.equal($("#cfg-form").classList.contains("settings__stack"), true, "the cards sit on the shared stack");
 
   const rows = $$("[data-cfg-path]");
-  // 164: Task 52 added tools.terminals.{enabled,max,scrollbackKb,waitMs} (156 + 4),
-  // Task 53 retired channels.telegram.{streaming,toolProgress} (−2) — the
-  // status draft they shaped no longer exists, so neither do the controls — Task 58
-  // added tools.selfTools.{enabled,maxTools,timeoutMs} (+3), Gmail adds two leaves,
-  // and Google Workspace adds its enable toggle (+1).
-  assert.equal(rows.length, 164, "164 editable leaves");
+  // The schema-driven page excludes nine removed exec policy/sandbox leaves.
+  assert.equal(rows.length, 155, "155 editable leaves");
   assert.equal($$(".modal__field").length, 0, "cards do not borrow the dialog's field class");
   assert.equal($$("select:not(.dd__store)").length, 0, "no native dropdown anywhere");
   for (const r of rows) {
@@ -228,7 +223,7 @@ test("filtering hides empty groups and cards, and says when nothing matches", as
   assert.deepEqual($$(".cfg-section").filter((c) => !c.hidden).map((c) => c.dataset.cfgSection), ["memory", "tools"], "MATCH: memory.dreaming.* and tools.memory");
   const visibleGroups = $$(".cfg-group").filter((g) => !g.hidden);
   for (const g of visibleGroups) assert.ok(g.querySelector("[data-cfg-path]:not([hidden])"), "a visible group has a visible row");
-  assert.match(text($("#cfg-toolbar-count") ?? $(".cfg-toolbar .setsec__count")), /of 164 shown/);
+  assert.match(text($("#cfg-toolbar-count") ?? $(".cfg-toolbar .setsec__count")), /of 155 shown/);
 
   await typeInto("cfg-filter", "zzz-no-such-key");
   assert.equal($$(".cfg-section").filter((c) => !c.hidden).length, 0);

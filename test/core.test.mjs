@@ -143,7 +143,8 @@ test("tool registry respects config policy", () => {
   assert.ok(names.includes("memory_append"));
   assert.ok(names.includes("exec"), "exec ships enabled — the agent acts on its own");
   const execTool = buildRegistry(config).find((t) => t.name === "exec");
-  assert.ok(execTool?.needsApproval, "the gate is still there for stricter modes");
+  assert.ok(execTool, "exec is registered directly, without policy metadata");
+  assert.equal("needsApproval" in execTool, false);
 
   config.tools.exec.enabled = false;
   assert.ok(!buildRegistry(config).some((t) => t.name === "exec"), "the switch still disables it");

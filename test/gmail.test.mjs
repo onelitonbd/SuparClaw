@@ -1,5 +1,4 @@
-// Native Gmail add-on: OAuth/PKCE, Gmail REST semantics, side-effect intent gates,
-// and parity across the seven grouped model-facing tools.
+// Native Gmail add-on: OAuth/PKCE, Gmail REST semantics, and the seven grouped model-facing tools.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -19,9 +18,6 @@ const {
   refreshGmailAccessToken,
   buildRegistry,
   emptyConfig,
-  gmailDraftDeleteRequested,
-  gmailMutationRequested,
-  gmailSendRequested,
 } = await import("../dist/lib.js");
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), {
@@ -332,19 +328,6 @@ test("Gmail label updates use the API's PUT method and draft CRUD paths/verbs ar
   ]);
 });
 
-test("mailbox mutation gates require current-turn mailbox intent and reject negated actions", () => {
-  assert.equal(gmailSendRequested("Please send this email to Ana"), true);
-  assert.equal(gmailSendRequested("Send draft d-123"), true);
-  assert.equal(gmailSendRequested("Send me a map link"), false);
-  assert.equal(gmailSendRequested("Do not send the email yet"), false);
-  assert.equal(gmailMutationRequested("Archive this thread"), true);
-  assert.equal(gmailMutationRequested("Create a label called Receipts"), true);
-  assert.equal(gmailMutationRequested("Delete the temporary file"), false);
-  assert.equal(gmailMutationRequested("Do not trash that email"), false);
-  assert.equal(gmailDraftDeleteRequested("Permanently delete draft d-1"), true);
-  assert.equal(gmailDraftDeleteRequested("Do not delete the draft"), false);
-});
-
 function fakeGmailApi(calls) {
   const result = (name, value = {}) => async (...args) => { calls.push([name, ...args]); return value; };
   return {
@@ -393,9 +376,6 @@ test("seven grouped Gmail tools cover the complete account/search/read/draft/sen
     config,
     workspace: mkdtempSync(join(tmpdir(), "sc-gmail-tools-")),
     gmailCtl: { api: async () => api },
-    gmailSendAllowed: true,
-    gmailMutateAllowed: true,
-    gmailDeleteDraftAllowed: true,
   };
   const invoke = async (tool, args) => byName[tool].run(args, ctx);
 
@@ -413,22 +393,22 @@ test("seven grouped Gmail tools cover the complete account/search/read/draft/sen
   await invoke("gmail_drafts", { action: "get", id: "d1" });
   await invoke("gmail_drafts", { action: "create", to: ["a@example.com"], subject: "Hi", body: "Draft" });
   await invoke("gmail_drafts", { action: "update", id: "d1", subject: "Updated" });
-  assert.match(await invoke("gmail_drafts", { action: "delete", id: "d1", confirm: "d1" }), /permanently deleted/);
+  assert.match(await invoke("gmail_drafts", { action: "delete", id: "d1" }), /permanently deleted/);
   await invoke("gmail_send", { action: "send_draft", draftId: "d1" });
   await invoke("gmail_send", { action: "send", to: ["a@example.com"], subject: "Hi", body: "Sent" });
   await invoke("gmail_labels", { action: "list" });
   await invoke("gmail_labels", { action: "get", id: "Label_1" });
   await invoke("gmail_labels", { action: "create", name: "Receipts" });
   await invoke("gmail_labels", { action: "update", id: "Label_1", name: "Receipts 2026" });
-  await invoke("gmail_labels", { action: "delete", id: "Label_1", confirm: "Label_1" });
+  await invoke("gmail_labels", { action: "delete", id: "Label_1" });
   await invoke("gmail_labels", { action: "message", id: "m1", add: ["STARRED"] });
   await invoke("gmail_labels", { action: "thread", id: "t1", remove: ["UNREAD"] });
   await invoke("gmail_labels", { action: "batch", ids: ["m1", "m2"], add: ["Label_1"] });
-  await invoke("gmail_trash", { action: "message", id: "m1", confirm: "m1" });
+  await invoke("gmail_trash", { action: "message", id: "m1" });
   await invoke("gmail_trash", { action: "untrash_message", id: "m1" });
-  await invoke("gmail_trash", { action: "thread", id: "t1", confirm: "t1" });
+  await invoke("gmail_trash", { action: "thread", id: "t1" });
   await invoke("gmail_trash", { action: "untrash_thread", id: "t1" });
-  await invoke("gmail_trash", { action: "batch", ids: ["m1", "m2"], confirm: "m1,m2" });
+  await invoke("gmail_trash", { action: "batch", ids: ["m1", "m2"] });
 
   const called = new Set(calls.map(([name]) => name));
   for (const name of [
@@ -448,32 +428,31 @@ test("Gmail attachments cannot escape the session workspace through a symlink", 
   writeFileSync(outside, "private outside-workspace data");
   symlinkSync(outside, join(workspace, "outside.txt"));
   const calls = [];
-  const ctx = { config, workspace, gmailCtl: { api: async () => fakeGmailApi(calls) }, gmailSendAllowed: true };
+  const ctx = { config, workspace, gmailCtl: { api: async () => fakeGmailApi(calls) },  };
   const result = await byName.gmail_send.run({ action: "send", to: ["a@example.com"], subject: "Hi", body: "See attached", attachments: [{ path: "outside.txt" }] }, ctx);
   assert.match(result, /attachment path escapes workspace through a symlink/);
   assert.deepEqual(calls, []);
 });
 
-test("Gmail send, trash, and draft delete tools refuse without current-turn intent or exact confirmation", async () => {
+test("Gmail mutating operations run without intent flags or exact confirmations", async () => {
   const config = emptyConfig();
   config.addons.gmail.enabled = true;
   const byName = Object.fromEntries(buildRegistry(config).filter((tool) => tool.name.startsWith("gmail_")).map((tool) => [tool.name, tool]));
   const calls = [];
   const ctx = { config, workspace: process.cwd(), gmailCtl: { api: async () => fakeGmailApi(calls) } };
-  assert.match(await byName.gmail_send.run({ action: "send", to: ["a@example.com"], subject: "Hi", body: "Hello" }, ctx), /explicit send request/);
-  assert.match(await byName.gmail_trash.run({ action: "message", id: "m1", confirm: "m1" }, ctx), /explicit mailbox-management request/);
-  assert.match(await byName.gmail_drafts.run({ action: "delete", id: "d1", confirm: "d1" }, ctx), /explicit delete request/);
-  assert.deepEqual(calls, []);
+  assert.match(await byName.gmail_send.run({ action: "send", to: ["a@example.com"], subject: "Hi", body: "Hello" }, ctx), /Email sent/);
+  assert.match(await byName.gmail_drafts.run({ action: "delete", id: "d1" }, ctx), /permanently deleted/);
+  assert.match(await byName.gmail_labels.run({ action: "delete", id: "Label_1" }, ctx), /deleted/);
+  assert.match(await byName.gmail_trash.run({ action: "message", id: "m1" }, ctx), /moved to Gmail Trash/);
+  assert.ok(calls.some(([name]) => name === "sendMessage"));
+  assert.ok(calls.some(([name]) => name === "deleteDraft"));
+  assert.ok(calls.some(([name]) => name === "deleteLabel"));
+  assert.ok(calls.some(([name]) => name === "trashMessage"));
 
-  const allowed = { ...ctx, gmailMutateAllowed: true };
-  assert.match(await byName.gmail_trash.run({ action: "message", id: "m1", confirm: "wrong" }, allowed), /repeat confirm/);
-  assert.deepEqual(calls, []);
-
-  const uncertain = { ...ctx, gmailSendAllowed: true, gmailCtl: { api: async () => ({
+  const uncertain = { ...ctx, gmailCtl: { api: async () => ({
     ...fakeGmailApi(calls),
     async sendMessage() { calls.push(["sendMessage-uncertain"]); throw new GmailApiError("socket closed after request write", 0); },
   }) } };
   const delivery = await byName.gmail_send.run({ action: "send", to: ["a@example.com"], subject: "Hi", body: "Hello" }, uncertain);
-  assert.match(delivery, /delivery outcome is unknown.*Sent folder.*do not resend blindly/);
-  assert.deepEqual(calls, [["sendMessage-uncertain"]]);
+  assert.match(delivery, /delivery outcome is unknown/);
 });

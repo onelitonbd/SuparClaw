@@ -81,7 +81,7 @@ test("a repo tap asks for a branch, and the branch tap binds the session", () =>
   assert.match(handler, /branch: branch\.name/, "the branch the user tapped is the branch that is continued");
   assert.match(handler, /source: pick\.account\.source,/, "and the clone uses the login the list came from");
   assert.match(handler, /this\.#pickedRepo\.delete\(chatId\)/, "the pick is consumed, so a double tap cannot bind twice");
-  assert.match(TG, /Ask for a change, then \/diff to review and \/pr to publish/, "the confirmation names the next two commands");
+  assert.match(TG, /Repository ready\. Use \/diff to review the worktree or \/pr to publish it\./);
 
   // The branch question itself is the pure card, so it is asserted by shape
   // there rather than by string-matching a template inside this file.
@@ -133,11 +133,6 @@ test("the shared commands exist once and are published in the menu", () => {
   assert.match(SERVICE, /if \(cmd === "\/diff"\)/);
   assert.match(SERVICE, /if \(cmd === "\/pr"\)/);
   assert.match(SERVICE, /if \(cmd === "\/code"\)/);
-});
-
-test("the service, not the model, decides whether this turn may publish", () => {
-  assert.match(SERVICE, /publishAllowed: payload\.publish === true \|\| publishRequested\(text\)/);
-  assert.match(SERVICE, /publish\?: boolean;/, "a surface can assert the user confirmed");
 });
 
 test("controls act on the chat, not on the person who tapped", () => {
@@ -201,7 +196,6 @@ test("/whoami answers the two questions a phone cannot otherwise settle", () => 
   const block = TG.slice(TG.indexOf('case "whoami"'), TG.indexOf('case "new"'));
   assert.match(block, /currentModel\(this\.service\.config, this\.#pinFor\(scope\.chatId\)\)/, "the model is read per chat, like the picker");
   assert.match(block, /ref: \$\{cur\.ref\}/, "and printed as the wire ref, so the footer can be checked against it");
-  assert.match(block, /execModeOf\(this\.service\.config\.tools\.exec\)/, "the exec mode is visible, not guessable");
   assert.match(block, /BUILD_STAMP/, "and the build stamp says which code is running");
 });
 

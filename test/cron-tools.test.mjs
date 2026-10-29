@@ -10,7 +10,7 @@ import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { Store, buildRegistry, emptyConfig, execModeOf } = await import("../dist/lib.js");
+const { Store, buildRegistry, emptyConfig } = await import("../dist/lib.js");
 
 const TMP = mkdtempSync(join(tmpdir(), "sc-cron-tools-"));
 const noop = { info() {}, warn() {}, error() {}, debug() {}, child() { return noop; } };
@@ -34,7 +34,6 @@ function harness(extraCtx = {}) {
     store,
     config,
     log: noop,
-    approved: true,
     sessionKey: "main:test",
     ...extraCtx,
   };
@@ -48,12 +47,11 @@ const JOB = {
   tz: "Asia/Dhaka",
 };
 
-test("registry: the four cron tools ship by default and none asks for approval", () => {
+test("registry: the four cron tools ship by default", () => {
   const { registry } = harness();
   const names = registry.map((t) => t.name);
   for (const name of ["cron_list", "cron_add", "cron_update", "cron_remove"]) {
     assert.ok(names.includes(name), `${name} is registered`);
-    assert.notEqual(registry.find((t) => t.name === name).needsApproval, true, `${name} acts on its own`);
   }
   // parameterless list must survive toolsToSchema's empty-properties quirk
   assert.ok(Array.isArray(registry.find((t) => t.name === "cron_list").parameters.required ?? []));
@@ -244,24 +242,6 @@ test("cron_add: warns instead of pretending when cron is disabled in config", as
   const out = await tool("cron_add").run(JOB, ctx);
   assert.match(out, /^created cron job /);
   assert.match(out, /warning: cron is disabled in config \(cron\.enabled=false\)/);
-});
-
-test("exec ships on and approved by default; the operator can still take it back", () => {
-  const config = emptyConfig();
-  assert.equal(config.tools.exec.enabled, true, "exec is on by default");
-  assert.equal(execModeOf(config.tools.exec), "full", "and runs without a prompt");
-  assert.ok(buildRegistry(config).some((t) => t.name === "exec"));
-
-  config.tools.exec.enabled = false;
-  assert.ok(!buildRegistry(config).some((t) => t.name === "exec"), "the switch still disables it");
-
-  const config2 = emptyConfig();
-  config2.tools.exec.mode = "ask";
-  assert.equal(execModeOf(config2.tools.exec), "ask", "an explicit mode wins");
-  const config3 = emptyConfig();
-  config3.tools.exec.mode = "";
-  config3.tools.exec.approvals = false;
-  assert.equal(execModeOf(config3.tools.exec), "full", "the legacy switch still maps");
 });
 
 // ---- Task 22: the agent knows its surfaces ---------------------------------

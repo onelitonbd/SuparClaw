@@ -42,7 +42,7 @@ const C = {
  * failure names the binary that would not start.
  */
 export async function execSelfTest(
-  exec: { sandbox?: "off" | "strict"; sandboxProot?: boolean; timeoutMs: number },
+  exec: { timeoutMs: number },
 ): Promise<DoctorCheck> {
   const { findShell, runPlan } = await import("../agent/tools.js");
   const { execFile } = await import("node:child_process");
@@ -57,9 +57,8 @@ export async function execSelfTest(
       cmdline: "echo sc-exec-ok",
     });
     const ms = Date.now() - started;
-    const legacy = exec.sandbox === "strict" || exec.sandboxProot ? " · tools.exec.sandbox is ignored (removed in Task 57)" : "";
     if (run.output.includes("sc-exec-ok") && !run.failedPath) {
-      return { name: "exec run", status: "ok", detail: `echo round-trip in ${ms} ms · direct Termux (no sandbox) · shell ${shell}${legacy}` };
+      return { name: "exec run", status: "ok", detail: `echo round-trip in ${ms} ms · shell ${shell}` };
     }
     if (run.failedPath) {
       return {
@@ -272,59 +271,10 @@ export async function runDoctorChecks(opts: { insideGateway?: boolean } = {}): P
     }
   }
 
-  // exec approvals (Partial #8): effective policy, ledger health, common
-  // misconfigurations. Read-only — one line surfaces the whole trust surface.
-  {
-    const { execModeOf } = await import("../config/schema.js");
-    const { ledgerEntries, loadApprovalsDoc } = await import("../agent/exec-policy.js");
-    const { Store } = await import("../state/db.js");
-    const exec = load.config.tools.exec;
-    let entries = 0;
-    try {
-      const { dbPath } = await import("../util/paths.js");
-      entries = ledgerEntries(loadApprovalsDoc(Store.open(dbPath()))).length;
-    } catch {
-      /* ledger unreadable → report 0, the mode line still carries the policy */
-    }
-    const mode = execModeOf(exec);
-    if (!exec.enabled && mode !== "deny") {
-      checks.push({
-        name: "exec",
-        status: "warn",
-        detail: `exec tool disabled but mode=${mode} — the disable wins silently`,
-        fix: "tools.exec.enabled=false means the tool never registers; set mode=deny as well for a consistent policy posture",
-      });
-    } else if (exec.enabled && mode === "allowlist" && entries === 0) {
-      checks.push({
-        name: "exec",
-        status: "warn",
-        detail: "mode=allowlist with an empty ledger — every command will be denied",
-        fix: "sc approvals allow <pattern>, or switch: sc approvals preset cautious",
-      });
-    } else if (exec.enabled && mode === "full") {
-      checks.push({
-        name: "exec",
-        status: "warn",
-        detail: `mode=full — host commands run WITHOUT operator prompts (yolo posture), ${entries} ledger entries`,
-        fix: "sc approvals preset cautious to restore prompting",
-      });
-    } else {
-      checks.push({
-        name: "exec",
-        status: "ok",
-        detail: `${exec.enabled ? "enabled" : "disabled"} · mode=${mode} · askFallback=${exec.askFallback ?? "deny"} · ${entries} allowlist entries${exec.strictInlineEval ? " · strict inline eval" : ""}`,
-      });
-    }
-
-    // Live check: policy is not the same as "a command runs". "exec returns
-    // exit 1 on every command" was impossible to diagnose from the policy line
-    // alone, so run one trivial command through the exact same path the tool
-    // uses (same shell, same env) and report what came back.
-    if (exec.enabled && mode !== "deny") {
-      const live = await execSelfTest(load.config.tools.exec);
-      checks.push(live);
-    }
-  }
+  // Exec availability is a runtime capability; command execution is checked
+  // with one short echo rather than a retired policy/allowlist evaluator.
+  if (load.config.tools.exec.enabled) checks.push(await execSelfTest(load.config.tools.exec));
+  else checks.push({ name: "exec", status: "ok", detail: "tool disabled" });
 
   // web search (Partial #9): enabled/provider readiness, no liveness probing.
   {

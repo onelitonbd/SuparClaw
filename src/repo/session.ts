@@ -87,8 +87,7 @@ export function unbindSessionRepo(store: Store, sessionKey: string): void {
 /**
  * The prompt block for a repo session.
  *
- * Three short sections: where you are, how to work here, and the publishing
- * rule the user chose (only on request). The repo's own AGENTS.md arrives via
+ * Two short sections: where you are and how to work here. The repo's own AGENTS.md arrives via
  * the workspace loader, so it is not repeated here.
  */
 export function repoPromptBlock(opts: {
@@ -97,7 +96,6 @@ export function repoPromptBlock(opts: {
   branch: string;
   workspace: string;
   files?: number;
-  publishAllowed?: boolean;
 }): string {
   const onBase = opts.branch === opts.base;
   return [
@@ -113,22 +111,6 @@ export function repoPromptBlock(opts: {
     `Work on the branch you are given (${opts.branch}). Do not switch branches or create one; that is the user's choice.`,
     "",
     "## Publishing",
-    opts.publishAllowed
-      ? onBase
-        ? `The user asked for a pull request in this turn. Publish with github_publish: the commits go to a session branch that targets ${opts.base}.`
-        : `The user asked for a pull request in this turn. Publish with github_publish to ${opts.branch} → ${opts.base} when the work is ready.`
-      : "Publish only when the user asks in this turn. Never force-push and never push to the default branch. " +
-        "When the work is ready, say how many files changed and that you can open a PR when they ask.",
+    "github_publish commits the session branch, pushes it, and opens a pull request. Never force-push or push to the default branch.",
   ].join("\n");
-}
-
-/** Does this turn ask for a PR? Used to gate the publish tool (layer 2). */
-export function publishRequested(text: string): boolean {
-  const t = text.toLowerCase();
-  if (/^\/(pr|publish)\b/m.test(t)) return true;
-  return (
-    /\b(open|create|raise|make|send|submit)\b[^.?!\n]{0,40}\b(pr|pull request)\b/.test(t) ||
-    /\b(pr|pull request)\b[^.?!\n]{0,30}\b(please|now|when ready)\b/.test(t) ||
-    /\bpublish (it|this|the (branch|changes|pr))\b/.test(t)
-  );
 }

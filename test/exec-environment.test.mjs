@@ -61,10 +61,8 @@ async function withPrefix(dir, fn) {
 
 /* ------------------------------------------------------------- no jail --- */
 
-test("a config that still says strict runs the command plainly", async () => {
-  // The keys stay parseable (old configs load, `sc config` does not fail) but
-  // they are inert. The marker file proves no wrapper was executed: the fake
-  // prlimit/proot in $PREFIX would have written it and exited 97.
+test("direct exec does not invoke wrapper binaries", async () => {
+  // Fake wrapper binaries would mark the filesystem if the exec path invoked them.
   const prefix = fakePrefix({ prlimit: 0o755, proot: 0o755 });
   const marker = join(HOME, "wrapper-ran.txt");
   for (const name of ["prlimit", "proot"]) {
@@ -73,14 +71,12 @@ test("a config that still says strict runs the command plainly", async () => {
   }
   const cfg = emptyConfig();
   cfg.tools.exec.enabled = true;
-  cfg.tools.exec.sandbox = "strict";
-  cfg.tools.exec.sandboxProot = true;
   const exec = buildRegistry(cfg).find((t) => t.name === "exec");
   const out = await withPrefix(prefix, () => exec.run({ command: "echo alive" }, { workspace: WS }));
 
   assert.match(out, /alive/, "the command ran");
-  assert.ok(!existsSync(marker), "no prlimit and no proot — the jail is gone, not merely skipped");
-  assert.doesNotMatch(out, /WITHOUT the jail/, "and nothing claims a sandbox story any more");
+  assert.ok(!existsSync(marker), "no prlimit or proot wrapper ran");
+  assert.doesNotMatch(out, /sandbox|jail|prlimit|proot/i, "the result contains no retired wrapper or policy copy");
 });
 
 test("the child is the operator's own environment, not a scrubbed copy", async () => {
@@ -131,16 +127,7 @@ test("`sc doctor` runs a real command, not just the policy", async () => {
   assert.equal(live.name, "exec run");
   assert.equal(live.status, "ok", `a healthy tree must pass: ${live.detail}`);
   assert.match(live.detail, /round-trip in \d+ ms/);
-  assert.match(live.detail, /direct Termux \(no sandbox\)/);
-});
-
-test("`sc doctor` says a legacy sandbox key is ignored", async () => {
-  const cfg = emptyConfig();
-  cfg.tools.exec.enabled = true;
-  cfg.tools.exec.sandbox = "strict";
-  const live = await execSelfTest(cfg.tools.exec);
-  assert.equal(live.status, "ok", "a stale key must not fail a healthy device");
-  assert.match(live.detail, /tools\.exec\.sandbox is ignored \(removed in Task 57\)/);
+  assert.match(live.detail, /round-trip in \d+ ms.*shell \//);
 });
 
 test("`sc doctor` fails, and says why, when the shell itself cannot be started", async () => {

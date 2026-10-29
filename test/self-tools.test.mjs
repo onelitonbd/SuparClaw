@@ -288,15 +288,10 @@ test("a failing test is recorded as a failure, not as a pass", async () => {
   assert.match(await toolsmith.run({ action: "list" }, ctx), /picky .* last run FAILED/);
 });
 
-test("delete needs the exact name; it removes both files and the tool from the registry", async () => {
+test("delete removes a self-tool without exact confirmation", async () => {
   const toolsmith = registryTool("toolsmith");
   const { ctx, refreshes } = ctxWith();
-  const wrong = await toolsmith.run({ action: "delete", name: "quitter" }, ctx);
-  assert.match(wrong, /pass confirm: "quitter"/);
-  const wrong2 = await toolsmith.run({ action: "delete", name: "quitter", confirm: "quit" }, ctx);
-  assert.match(wrong2, /pass confirm: "quitter"/);
-
-  const gone = await toolsmith.run({ action: "delete", name: "quitter", confirm: "quitter" }, ctx);
+  const gone = await toolsmith.run({ action: "delete", name: "quitter" }, ctx);
   assert.match(gone, /Deleted quitter/);
   assert.ok(!existsSync(selfToolFile("quitter")));
   assert.ok(!existsSync(join(TOOLS, "quitter.json")));
@@ -304,26 +299,18 @@ test("delete needs the exact name; it removes both files and the tool from the r
   assert.equal(registryTool("quitter"), undefined, "gone from the next registry build");
 });
 
-test("switched off, or with exec denied, the capability says so instead of half-working", async () => {
+test("self-tools keep their feature switch, independent of exec policy keys", async () => {
   const off = parseConfig({ tools: { selfTools: { enabled: false } } }).config;
   assert.ok(!buildRegistry(off).some((t) => t.name === "toolsmith"), "off means gone");
   const offCfg = { ...emptyConfig(), tools: { ...emptyConfig().tools, selfTools: { enabled: false, maxTools: 40, timeoutMs: 5000 } } };
-  const refused = await lib
-    .toolsmithSpec(offCfg, () => new Set())
-    .run({ action: "create", name: "nope2", code: source("nope2", '    return "x";') }, ctxWith().ctx);
+  const refused = await lib.toolsmithSpec(offCfg, () => new Set()).run(
+    { action: "create", name: "nope2", code: source("nope2", '    return "x";') }, ctxWith().ctx);
   assert.match(refused, /self-tools are switched off/);
   assert.ok(!existsSync(selfToolFile("nope2")));
 
-  const deny = parseConfig({ tools: { exec: { mode: "deny" } } }).config;
-  const denyTools = buildRegistry(deny);
-  assert.ok(denyTools.some((t) => t.name === "toolsmith"), "toolsmith stays so the model gets the reason");
-  assert.ok(!denyTools.some((t) => t.name === "shout"), "a made tool is code execution — deny hides it");
-  const created = await denyTools.find((t) => t.name === "toolsmith").run(
-    { action: "create", name: "nope", code: source("nope", '    return "x";') },
-    ctxWith().ctx,
-  );
-  assert.match(created, /exec policy is deny/);
-  assert.ok(!existsSync(selfToolFile("nope")));
+  const legacy = parseConfig({ tools: { exec: { mode: "deny" } } }).config;
+  assert.ok(!("mode" in legacy.tools.exec));
+  assert.ok(buildRegistry(legacy).some((tool) => tool.name === "shout"), "legacy policy does not hide self-tools");
 });
 
 test("the cap is enforced with a number the operator can act on", async () => {
@@ -407,9 +394,6 @@ test("live config changes remove and restore the self-tool capability", async (t
   assert.ok(svc.loop.tools.some((tool) => tool.name === "toolsmith"));
   assert.ok(svc.loop.tools.some((tool) => tool.selfAuthored && tool.name === "shout"));
 
-  svc.loop.setConfig(parseConfig({ tools: { exec: { mode: "deny" } } }).config);
-  assert.ok(svc.loop.tools.some((tool) => tool.name === "toolsmith"), "manager can explain why the capability is denied");
-  assert.ok(!svc.loop.tools.some((tool) => tool.name === "shout"), "made code tools are hidden when exec is denied");
 });
 
 test("the skill exists and is written to trigger", () => {

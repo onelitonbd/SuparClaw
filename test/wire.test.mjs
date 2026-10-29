@@ -117,14 +117,12 @@ test("tool rounds serialize to strict OpenAI wire format (the Gemini 400 fix)", 
         name: "echo_tool",
         description: "echoes",
         parameters: { type: "object", properties: { x: { type: "number" } } },
-        needsApproval: false,
         run: async (args) => `echo:${JSON.stringify(args)}`,
       },
       {
         name: "bare_tool",
         description: "parameterless",
         parameters: { type: "object", properties: {} },
-        needsApproval: false,
         run: async () => "bare",
       },
     ],
@@ -231,7 +229,7 @@ test("plain thinking without signed blocks replays as reasoning_content fallback
     store,
     log: createLogger({ level: "error" }),
     llm,
-    tools: [{ name: "echo_tool", description: "e", parameters: { type: "object", properties: { x: { type: "string" } } }, needsApproval: false, run: async () => "ok" }],
+    tools: [{ name: "echo_tool", description: "e", parameters: { type: "object", properties: { x: { type: "string" } } }, run: async () => "ok" }],
   });
   await loop.run({ sessionKey: "main:wire2", text: "go", onEvent: () => {} });
   const assistant = bodies[1].messages.find((m) => m.role === "assistant" && m.tool_calls);
@@ -300,7 +298,7 @@ test("gemini rounds keep per-call extra_content and sign unsigned calls with the
     store,
     log: createLogger({ level: "error" }),
     llm,
-    tools: [{ name: "echo_tool", description: "e", parameters: { type: "object", properties: { x: { type: "string" } } }, needsApproval: false, run: async () => "ok" }],
+    tools: [{ name: "echo_tool", description: "e", parameters: { type: "object", properties: { x: { type: "string" } } }, run: async () => "ok" }],
   });
   await loop.run({ sessionKey: "main:wire3", text: "go", onEvent: () => {} });
 

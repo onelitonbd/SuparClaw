@@ -212,68 +212,6 @@ export async function replaySample(trace) {
   trace.setFinalAnswer(frag);
 }
 
-/* -------------------------------------------------------------- approval */
-
-export function replayApproval(trace) {
-  const start = Date.now() - 6500;
-  const ts = () => Date.now();
-  trace.push({ type: "run_start", runId: `approval-${++token}`, ts: start });
-  trace.push({ type: "thinking_start", stepId: "ta", ts: start + 400 });
-  trace.push({
-    type: "thinking_delta",
-    stepId: "ta",
-    text: "The migration is safe but changes production data, so I need permission first.",
-  });
-  trace.push({ type: "thinking_end", stepId: "ta", ts: start + 1100 });
-  trace.push({
-    type: "tool_start",
-    stepId: "exec-approval",
-    tool: "exec",
-    label: "Run database migration",
-    icon: "terminal",
-    input: { command: "npm run migrate", cwd: "/srv/app" },
-    ts: start + 1300,
-  });
-  trace.push({
-    type: "approval_request",
-    stepId: "approval-1",
-    description: "Run npm run migrate in /srv/app. This changes production data.",
-    ts: ts(),
-  });
-}
-
-export function finishApproval(trace, decision) {
-  const ts = () => Date.now();
-  if (decision === "deny") {
-    trace.push({ type: "tool_error", stepId: "exec-approval", message: "Denied by the user", willRetry: false, ts: ts() });
-    trace.push({
-      type: "message_delta",
-      stepId: "answer-a",
-      text: "I did not run the migration. Tell me when you want me to try again.",
-      final: true,
-      ts: ts(),
-    });
-    trace.push({ type: "run_end", ts: ts(), status: "stopped" });
-    return;
-  }
-  trace.push({
-    type: "tool_end",
-    stepId: "exec-approval",
-    output: { migrations: 3, ok: true },
-    summary: "3 migrations applied",
-    meta: "3 migrations",
-    ts: ts(),
-  });
-  trace.push({
-    type: "message_delta",
-    stepId: "answer-a",
-    text: "The migration finished successfully — 3 migrations applied.",
-    final: true,
-    ts: ts(),
-  });
-  trace.push({ type: "run_end", ts: ts(), status: "done" });
-}
-
 /* --------------------------------------------------------------- failure */
 
 export function replayFailure(trace) {

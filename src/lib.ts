@@ -5,7 +5,7 @@ export { renderMarkdown, renderInline } from "./tui/markdown.js";
 export { palette, theme, detectLightMode, markdownTheme } from "./tui/theme.js";
 export { Editor } from "./tui/editor.js";
 export { parseKeys } from "./tui/keys.js";
-export { parseConfig, validate, applyDefaults, emptyConfig, CONFIG_SCHEMA, modelProfiles, modelProfile, execModeOf, type ExecMode, type ExecAskFallback } from "./config/schema.js";
+export { parseConfig, validate, applyDefaults, emptyConfig, CONFIG_SCHEMA, modelProfiles, modelProfile } from "./config/schema.js";
 export { parseFrontmatter, discoverSkills, matchSkills, skillsCatalog, writeSkill, skillSlug, readSkillBody } from "./agent/skills.js";
 export {
   SELF_TOOL_NAME,
@@ -53,7 +53,7 @@ export {
   type TranscriptRow,
 } from "./agent/memory-search.js";
 export { loadWorkspaceContext, writeWorkspaceTemplates, todayStamp } from "./agent/workspace.js";
-export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout, findShell, runPlan, sandboxIgnoredNote } from "./agent/tools.js";
+export { buildRegistry, toolsToSchema, safePath, resolveExecTimeout, findShell, runPlan } from "./agent/tools.js";
 export { VaultManager, validVaultName, vaultToolSpec, type VaultEntry, type VaultStatus, type VaultCtl } from "./agent/vault.js";
 export {
   Terminal,
@@ -283,35 +283,7 @@ export {
 
 // Local services (Partial #7)
 export { LOCAL_SERVICES, localServiceById, probeLocalService, scanLocalServices, addLocalService, type LocalServiceInfo, type LocalScanResult } from "./agent/local-services.js";
-export {
-  evaluateExec,
-  splitChain,
-  tokenizeArgv,
-  globMatcher,
-  hashArgv,
-  safeBinCheck,
-  inlineEvalCarrier,
-  runDirectChain,
-  explainExecError,
-  isToolFailure,
-  emptyApprovalsDoc,
-  loadApprovalsDoc,
-  saveApprovalsDoc,
-  ledgerEntries,
-  mintAlwaysEntry,
-  addManualEntry,
-  revokeEntry,
-  touchEntries,
-  resolveBinary,
-  newEntryId,
-  unattendedDecision,
-  type AllowlistEntry,
-  type ApprovalsDoc,
-  type ExecVerdict,
-  type ChainOp,
-  type SegmentPlan,
-  type UnattendedMode,
-} from "./agent/exec-policy.js";
+export { explainExecError, isToolFailure, type ExecFailureContext } from "./agent/exec-utils.js";
 export {
   webSearch,
   renderSearchText,
@@ -423,7 +395,7 @@ export {
   type GitResult,
   type GitRunner,
 } from "./repo/manager.js";
-export { bindSessionRepo, unbindSessionRepo, repoPromptBlock, publishRequested, type RepoBinding } from "./repo/session.js";
+export { bindSessionRepo, unbindSessionRepo, repoPromptBlock, type RepoBinding } from "./repo/session.js";
 export {
   GmailApi,
   GmailApiError,
@@ -445,6 +417,4 @@ export {
   type GmailRequestOptions,
 } from "./addons/gmail.js";
 export { GmailAddonService, type GmailAddonStatus, type GmailConnectStarted } from "./addons/gmail-service.js";
-export { gmailSendRequested, gmailMutationRequested, gmailDraftDeleteRequested } from "./addons/gmail-intent.js";
 export { GoogleWorkspaceApi, GoogleWorkspaceApiError, GoogleWorkspaceAddonService, type GoogleWorkspaceService, type GoogleHttpMethod, type GoogleWorkspaceRequest } from "./addons/google-workspace.js";
-export { workspaceMutationRequested, workspaceDeleteRequested, workspaceShareRequested, workspacePublicShareRequested, workspaceInviteRequested } from "./addons/google-workspace-intent.js";

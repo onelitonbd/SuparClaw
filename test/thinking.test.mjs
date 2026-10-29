@@ -158,7 +158,7 @@ test("loop: thinking persists per step, previews live, and never re-enters the p
     store,
     log: createLogger({ level: "error" }),
     llm,
-    tools: [{ name: "ok_tool", description: "ok", needsApproval: false, run: async () => "file body" }],
+    tools: [{ name: "ok_tool", description: "ok", run: async () => "file body" }],
   });
 
   const events = [];

@@ -198,7 +198,7 @@ test("gateway ws contract matches what the Control UI expects", async (t) => {
   // single stream contract: one final per run, zero legacy duplicate frames
   const finals = events.filter((e) => e.event === "chat" && e.payload.event.type === "final");
   assert.equal(finals.length, 1, "exactly one final per run (duplicate bubbles regression)");
-  const legacy = events.filter((e) => ["chat.delta", "chat.reply", "chat.tool", "chat.approval"].includes(e.event));
+  const legacy = events.filter((e) => ["chat.delta", "chat.reply", "chat.tool"].includes(e.event));
   assert.equal(legacy.length, 0, `legacy per-event frames are gone: ${JSON.stringify(legacy.map((e) => e.event))}`);
 
   const history = await request("chat.history", { sessionKey, limit: 10 });

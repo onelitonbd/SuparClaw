@@ -14,8 +14,6 @@ import {
 
 export async function tuiLocal(): Promise<number> {
   const service = new Service();
-  // The local terminal is an always-connected approval surface.
-  service.setApprovalSurface(() => true);
   service.bootstrap();
   let sessionKey = "main:main";
   let modelOverride: string | undefined;
@@ -45,16 +43,9 @@ export async function tuiLocal(): Promise<number> {
         reply: async () => {},
         onDelta: () => {},
         onTool: () => {},
-        onApproval: () => {},
       });
     },
-    onAbort: () => {
-      service.denyApprovalsFor(sessionKey);
-      return service.loop.abort(sessionKey);
-    },
-    onApproval: (callId, decision) => {
-      service.resolveApproval(callId, decision);
-    },
+    onAbort: () => service.loop.abort(sessionKey),
     onCommand: async (name, args) => {
       switch (name) {
         case "help":
@@ -136,8 +127,7 @@ export async function tuiLocal(): Promise<number> {
             reply: async () => {},
             onDelta: () => {},
             onTool: () => {},
-            onApproval: () => {},
-          });
+              });
           return null;
         }
       }
@@ -210,11 +200,6 @@ export async function tuiLocal(): Promise<number> {
         break;
       case "tool":
         app.push({ kind: "tool", name: e.name, status: e.status, detail: e.detail });
-        break;
-      case "approval":
-        app.approvals.push({ callId: e.callId, tool: e.tool, args: e.args, exec: e.exec });
-        app.setStatus("waiting for approval…");
-        app.markDirty();
         break;
       case "final":
         // The usage line rides `footer`, not the text (Task 23) — the web chat
@@ -291,11 +276,6 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
       case "tool":
         app?.push({ kind: "tool", name: e.name ?? "?", status: (e.status as "running") ?? "done", detail: e.detail });
         break;
-      case "approval":
-        app?.approvals.push({ callId: e.callId ?? "", tool: e.tool ?? "", args: e.args ?? {}, exec: e.exec });
-        app?.setStatus("waiting for approval…");
-        app?.markDirty();
-        break;
       case "final":
         app?.completeAssistant(
           e?.footer ? `${String(e.text ?? "")}\n\n${String(e.footer)}` : String(e.text ?? ""),
@@ -327,9 +307,6 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
       void client.request("chat.send", { sessionKey, text, isMainSession: true, key: crypto.randomUUID() });
     },
     onAbort: () => void client.request("chat.abort", { sessionKey }),
-    onApproval: (callId, decision) => {
-      void client.request("chat.approval", { callId, decision });
-    },
     onCommand: async (name, args) => {
       if (name === "help") return tuiHelp;
       if (name === "session" && args) {

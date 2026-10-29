@@ -52,9 +52,8 @@ const FACTS = {
   reasoning: "medium",
   usage: "cost",
   queue: "steer",
-  execMode: "full",
-  approvals: false,
-  sandbox: "off",
+  execEnabled: true,
+  execTimeoutMs: 1800000,
   maxIterations: 20,
   contextBudget: 200000,
   skills: 12,
@@ -74,9 +73,7 @@ test("the prompt states the live configuration as facts, not defaults", () => {
   assert.match(line, /Reasoning: `medium`/);
   assert.match(line, /reply usage footer: `cost`/, "the /usage mode this session is on");
   assert.match(line, /queue: `steer`/);
-  assert.match(line, /Exec: mode `full`/);
-  assert.match(line, /approvals: off/);
-  assert.match(line, /sandbox: `off`/);
+  assert.match(line, /Exec: on · timeout cap 1,800,000 ms/);
   assert.match(line, /20 tool iterations/);
   assert.match(line, /context budget 200,000 chars/);
   assert.match(line, /skills: 12 enabled/);
@@ -95,16 +92,15 @@ test("the block reflects the config it is built from, including empty states", (
   const facts = selfFactsFrom(config, { sessionKey: "main:main", workspace: "/w", configPath: "/c.json5", skills: 3 });
   assert.match(selfPromptLine(facts), /Model: \(unset\)/, "an unset model says so instead of inventing a default");
   assert.equal(facts.usage, config.agents.defaults.usage, "no session override → the config default");
-  assert.equal(facts.execMode, "full", "execModeOf's legacy approvals:false ⇒ full rule");
+  assert.equal(facts.execEnabled, config.tools.exec.enabled);
+  assert.equal(facts.execTimeoutMs, config.tools.exec.timeoutMs);
 
   const changed = emptyConfig();
   changed.agents.defaults.usage = "off";
   changed.agents.defaults.model = "openai/gpt-4.1";
-  changed.tools.exec.mode = "ask";
   const line = selfPromptLine(selfFactsFrom(changed, { sessionKey: "main:x", workspace: "/w", configPath: "/c" }));
   assert.match(line, /reply usage footer: `off`/);
   assert.match(line, /Model: `openai\/gpt-4\.1`/);
-  assert.match(line, /Exec: mode `ask`/);
 });
 
 test("selfFactsFrom prefers this session's overrides over the config defaults", () => {
@@ -114,11 +110,10 @@ test("selfFactsFrom prefers this session's overrides over the config defaults", 
     sessionKey: "main:main",
     workspace: "/w",
     configPath: "/c",
-    runtime: { usage: "tokens", queue: "collect", execMode: "allowlist" },
+    runtime: { usage: "tokens", queue: "collect" },
   });
   assert.equal(facts.usage, "tokens");
   assert.equal(facts.queue, "collect");
-  assert.equal(facts.execMode, "allowlist");
   const line = selfPromptLine(facts);
   assert.match(line, /reply usage footer: `tokens`/);
   assert.match(line, /queue: `collect`/);
@@ -135,7 +130,6 @@ test("the writable list is exact, typed and complete", () => {
     "agents.defaults.reasoningEffort",
     "agents.defaults.reasoningView",
     "agents.defaults.usage",
-    "tools.exec.mode",
   ]);
 });
 

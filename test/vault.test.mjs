@@ -88,16 +88,6 @@ test("exec injects only explicitly named entries and redacts returned exact valu
   }, ctx);
   assert.match(stderr, /\[redacted:TASK_TOKEN\]/);
   assert.equal(stderr.includes(SECRET), false, "stderr is redacted too");
-  const direct = await exec.run({ command: "direct-run", vaultEnv: ["TASK_TOKEN"] }, {
-    ...ctx,
-    execVerdict: {
-      route: "direct",
-      segments: [{ argv: [process.execPath, "-e", "process.stdout.write(process.env.TASK_TOKEN || 'not-injected')"], argv0: process.execPath, resolvedPath: process.execPath, matched: null }],
-      ops: [],
-    },
-  });
-  assert.match(direct, /\[redacted:TASK_TOKEN\]/);
-  assert.equal(direct.includes(SECRET), false, "argv-direct execution receives and redacts selected values");
   const missing = await exec.run({ command, vaultEnv: ["DOES_NOT_EXIST"] }, ctx);
   assert.match(missing, /DOES_NOT_EXIST/);
   assert.equal(missing.includes(SECRET), false);

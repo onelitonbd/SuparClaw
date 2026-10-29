@@ -1,13 +1,5 @@
-// Task 56 — exec must survive a broken environment.
-//
-// The report was "killed by the sandbox (SIGABRT)" followed by "you run `gh` and
-// paste the output". A SIGABRT before the command prints anything is the
-// *environment* dying — a login rc that aborts, an `LD_PRELOAD` pointing at a
-// library that moved, a wrapper that exists but cannot run — and the old exec
-// tried exactly one strategy: `bash -lc`, then report whatever came back.
-//
-// These tests pin the ladder and, more importantly, the retry rule: only a
-// child that printed nothing is retried, and a timeout never is.
+// Shell startup fallback tests: a no-output startup failure can retry, but a
+// command that ran or timed out is never repeated.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -17,7 +9,7 @@ import { join } from "node:path";
 
 const { execAttempts, fallbackNote, runWithFallback, scrubLoaderEnv, shouldRetryAfter, posixShells } = await import("../dist/lib.js");
 
-const PLANNED = { argv: ["/bin/bash", "-lc", "gh repo list"], env: { PATH: "/usr/bin", HOME: "/w" }, wrappers: [] };
+const PLANNED = { argv: ["/bin/bash", "-lc", "gh repo list"], env: { PATH: "/usr/bin", HOME: "/w" } };
 const attempt = (label, argv) => ({ label, argv, env: PLANNED.env });
 
 test("the ladder starts with the planned shell and ends with a clean posix shell", () => {
@@ -40,18 +32,6 @@ test("the last rung scrubs loader variables that abort children", () => {
   assert.equal(env["LD_LIBRARY_PATH"], undefined);
   assert.equal(env["PATH"], "/usr/bin", "PATH survives — the command needs it");
   assert.equal(env["HOME"], "/w");
-});
-
-test("a wrapper failure adds its own rung and duplicate invocations are dropped", () => {
-  const wrapped = execAttempts({
-    shell: "/bin/bash",
-    command: "echo hi",
-    planned: { argv: ["prlimit", "--as=1", "--", "/bin/bash", "-lc", "echo hi"], env: {}, wrappers: ["/usr/bin/prlimit"] },
-  });
-  assert.equal(wrapped[0].label, "the planned shell");
-  assert.match(wrapped[1].label, /without prlimit/, "the un-wrapped login shell is rung two");
-  const argvJoin = wrapped.map((a) => a.argv.join(" "));
-  assert.equal(new Set(argvJoin).size, argvJoin.length, "no rung repeats another");
 });
 
 test("posixShells only names shells that exist here", () => {
@@ -84,11 +64,11 @@ test("a dead login shell falls through to the next rung and says so", async () =
 
   const note = fallbackNote(result, attempts[0]);
   assert.match(note, /killed by SIGABRT before printing anything/);
-  assert.match(note, /ran with sh -c \(clean env\) instead/);
-  assert.match(note, /do not ask the user to run anything/);
+  assert.match(note, /command succeeded with sh -c \(clean env\)/);
+  assert.doesNotMatch(note, /ask the user|paste the output|sandbox|jail/i);
 });
 
-test("when every rung fails the model is told to say so, not to delegate", async () => {
+test("when every shell startup fails, the tool reports that plainly", async () => {
   const attempts = [attempt("the planned shell", ["/bin/bash", "-lc", "gh repo list"]), attempt("sh -c (clean env)", ["/bin/sh", "-c", "gh repo list"])];
   const result = await runWithFallback(attempts, async (a) => ({
     outcome: a.label === "the planned shell" ? { stdout: "", signal: "SIGABRT" } : { stdout: "", exitCode: 127 },
@@ -96,9 +76,8 @@ test("when every rung fails the model is told to say so, not to delegate", async
   }));
   assert.equal(result.ran, false);
   const note = fallbackNote(result, attempts[0]);
-  assert.match(note, /every shell failed/);
-  assert.match(note, /instead of\s+asking the user to run the command and paste the output/);
-  assert.match(note, /If another tool can do the job, use it/);
+  assert.match(note, /unable to start the command after trying available shells/);
+  assert.doesNotMatch(note, /ask the user|paste the output|another tool/i);
 });
 
 test("a first-try success says nothing extra", async () => {
