@@ -107,12 +107,28 @@ graph weight, not Node itself.
 2. Queue: `steer` / `followup` (MVP), later `collect` / `interrupt`.
 3. Turn admission: one active run per session; `runId` + single-writer fence on transcript writes.
 4. Prompt assembly: base prompt + workspace bootstrap (`AGENTS.md`, `SOUL.md`, `USER.md`,
-   `MEMORY.md`, `memory/*.md`) + skills snapshot (truncation budgets).
+   `MEMORY.md`, `memory/*.md`) + skills snapshot (truncation budgets) + a `## Surfaces` block
+   rebuilt every turn (live channel status and the chat ids a scheduled result can reach), so
+   the agent never invents a capability gap it does not have.
 5. Model call: OpenAI-compatible first (covers most local/remote providers); streaming; retries with
    backoff; model fallback chain; idle watchdog; separate quick `agent.wait` timeout (30s, wait-only).
-6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec needs approval.
-7. Stream events → channel adapter renders (Telegram typing indicator, message edits optional).
-8. Persist transcript + usage; emit `final`. `NO_REPLY` = intentional silence (copy semantics).
+6. Tools: JSON-schema validated; `before_tool_call`/`after_tool_call` hooks; exec follows
+   `tools.exec.mode` (default `full`). The decision is a **policy**, never a person: no tool
+   opens an approval prompt, `ask` runs and logs the allowance, `deny` refuses with the reason.
+7. Stream events → channel adapter renders (Telegram: typing indicator while a turn runs, then one message per finished answer block — no status draft).
+8. Persist transcript + usage; emit `final`. The `/usage` footer is a field on that event and is
+   re-rendered from the numbers stored on the assistant row, so a reload or a restart keeps it
+   (`chat.regenerate` drops the newest turn before re-running its prompt). `NO_REPLY` = intentional
+   silence (copy semantics).
+9. Transcript actions follow OpenClaw's chat: every persisted message carries a quiet icon row —
+   Copy returns the source Markdown for answers and the exact typed text for prompts; the newest
+   answer adds Regenerate; a prompt adds Edit (`chat.rewind` drops that prompt and everything after
+   it and returns the text to the composer, never re-sends) and Fork (`chat.fork` copies the
+   conversation's prefix before that prompt into a new session, opens it until a send, and seeds
+   the composer -- the parent is only read; timestamps and usage move with the rows). Labels live in
+   the tooltip and the accessible name, and the glyphs ship with the bundle. Reactions and per-run
+   failure details are deliberately not implemented yet (they need reaction storage and a
+   run-error record respectively).
 
 ### 4.3 Channels
 
@@ -123,15 +139,87 @@ graph weight, not Node itself.
 
 ### 4.4 Tools (MVP set)
 
-`fs.read/write/list` (workspace-scoped by default), `exec` (off by default; approval-gated),
+`fs.read/write/list` (workspace-scoped by default), `exec` (on by default in mode `full`;
+`sc approvals mode` gates it, and a shell that dies before printing is retried down a ladder of
+plainer shells), `terminal` (persistent shells, §4.4), `github` (repos/archive/delete over the
+REST API, so no shell or `gh` binary is needed),
 `web.fetch`, `web.search` (DuckDuckGo HTML), `memory.journal` + `memory.search` (SQLite FTS),
-`time`. Tools run in-process — no subprocess per call (except `exec` itself, inherently).
+`time`, and the automation family `cron_list/add/update/remove` — the same `jobs` rows the
+gateway's `cron.*` and `sc cron` write, so the agent can schedule its own work and re-arm it
+through the scheduler. Tools run in-process — no subprocess per call (except `exec` itself,
+inherently).
 
-### 4.5 Skills
+`exec` never fails silently. Every non-zero result is labelled with its cause and the
+command that ran — `[exit N] cmd` (plus "printed nothing" when it was quiet),
+`[cannot run] cmd — <binary / working directory>` for a spawn failure, `[timeout] cmd — killed
+after N ms` at the `tools.exec.timeoutMs` cap (30 min, Task 38), `[signal]` for a kill. A model
+that sends a nonsense `timeoutMs` gets the configured cap and a note, never an exception: the
+value is clamped to 100 ms–1 800 000 ms before `execFile` sees it.
+
+**There is no sandbox (Task 57).** `exec` runs `[$SHELL, "-lc", command]` with the daemon's own
+`process.env` and the session workspace as cwd — the operator's shell, their PATH, their HOME.
+The earlier `strict` mode rebuilt the invocation (env scrub + `prlimit` caps + a `proot` jail) and
+on a phone that was the failure mode, not the protection: `proot` needs `ptrace`, `prlimit` was
+picked by `existsSync`, and `env -i` removed `$PREFIX/bin`, so the reported "killed by the sandbox
+(SIGABRT)" was our own wrapper dying before the command existed. Nothing they added was a
+boundary either — the daemon already runs as the operator inside Android's per-app sandbox.
+
+What remains is about *surviving a damaged environment*, not confinement: if a login shell aborts
+before the command starts, the same command is retried with `sh -c` and then with plainer shells
+(`src/agent/exec-fallback.ts`), and a rescue is stated in the tool result. `tools.exec.sandbox`
+and `sandboxProot` still parse so old configs load, but they do nothing and say so once.
+`sc doctor` runs one real command through this exact path and names the binary if it cannot start.
+
+**Terminals (Task 52).** `exec` is one command in a throwaway process: state dies with it.
+The `terminal` tool is the opposite — a **persistent shell the daemon owns**, addressed by id:
+
+```
+terminal {action:"run", command:"cd ~/proj && export NODE_ENV=dev && npm run dev", terminal:"t2"}
+```
+
+Every later call on `t2` starts in `~/proj`, sees `NODE_ENV`, and can read what the dev server
+printed. `create` opens another shell (up to `tools.terminals.max`), `read` shows the tail (also
+while a command is still running), `interrupt` sends SIGINT to the command's *descendants* and
+keeps the shell alive, `restart` replaces a shell that exited, `clear` empties the scrollback,
+`kill` closes it. Terminals die with the daemon; nothing survives a restart, and the UI says so.
+
+The implementation is pipes plus a sentinel, **not a PTY** (src/agent/terminals.ts): after each
+command line the shell is told to print `\n__sc:<token>:%d\t%s` with `$?` and `$PWD`. That gives the
+exit code, the new working directory and an exact end-of-output marker, while stderr is merged into
+stdout once (`exec 2>&1`) so ordering is the terminal's ordering. A PTY was tried and rejected: it
+echoes every command, prints an ANSI prompt and would need a full terminal emulator in a phone
+panel. Consequences, stated rather than hidden: the panel is **plain text** (ANSI and `\r` redraws
+are stripped server-side), full-screen programs (`vim`, `htop`) will not render — they are not what
+an agent drives a shell for — and tests are the honest way to see them. Output is held in a ring
+(`tools.terminals.scrollbackKb`, default 200 KB) with a monotonic sequence, so the web panel asks
+for "everything after N" and never re-renders the whole log.
+
+`terminal` goes through the **same policy as `exec`** (`needsApproval` marks the call for the
+evaluator; it is not a prompt) — `full` runs it, `deny` refuses it, and no surface ever waits. There is no sandbox wrapper on either surface: the shell has
+the daemon's permissions and the workspace's cwd — by design (T52: "the ai can go anywhere and do
+anything").
+
+The operator **watches the same shells**: `terminals.list|create|run|send|read|interrupt|restart|
+kill|clear` are gateway methods, and every output/state/create/remove change is broadcast as one
+`terminal` event on the normal event stream. The Control UI's rail button (id `terminal-btn`) opens
+a panel that is full-screen on a phone and docked to the right from 900 px up; it shows one tab per
+terminal, a dot while a command runs, the live output, and a prompt you can type into yourself.
+
+### 4.5 Skills and self-authored tools
 
 - `SKILL.md` markdown with frontmatter (`name`, `summary`, `read_when`) — same convention OpenClaw
   uses. Loaded on demand into context; workspace `skills/` overrides bundled.
 - Bundle ~5 starter skills (e.g. `help`, `daily-journal`, `web-digest`, `device-status`).
+- **Self-tools (Task 58):** `toolsmith` writes `~/.suparclaw/tools/<name>.mjs` and a JSON manifest
+  derived from the module's exported `{ name, description, parameters, run }`. The manifest supplies
+  the normal model tool schema; the model can call a tool it just created on its next call in the
+  same turn, and it is rediscovered after restart. `skills/self-tools/SKILL.md` teaches create →
+  test with real inputs → inspect → update → reuse.
+- Each invocation runs in a worker thread with a configured timeout. Throws, worker exit, and
+  infinite loops become visible tool errors without ending the daemon. This is crash/timeout
+  isolation, **not a security sandbox**: a self-authored tool has the daemon's filesystem and
+  network permissions. `tools.selfTools.enabled` is the feature switch; max tools and timeout are
+  configurable. The built-in `exec` policy in `deny` mode hides/refuses these code tools.
 
 ### 4.6 Memory
 
@@ -167,7 +255,8 @@ meta(key TEXT PRIMARY KEY, value TEXT);
 sessions(id TEXT PK, key TEXT UNIQUE, agent_id TEXT, name TEXT,
          created_at INT, last_msg_at INT, meta JSON);
 messages(id INTEGER PK AUTOINCREMENT, session_id TEXT, run_id TEXT,
-         role TEXT, content JSON, created_at INT);
+         role TEXT, content JSON, created_at INT,
+         usage TEXT);  -- assistant rows: {usage, model, label} for footer replay
 runs(id TEXT PK, session_id TEXT, status TEXT, started_at INT,
      ended_at INT, error TEXT, usage JSON);
 jobs(id TEXT PK, kind TEXT, schedule TEXT, payload JSON, enabled INT,
@@ -218,8 +307,8 @@ Backups: `VACUUM INTO 'backups/state-<date>.sqlite'` (safe while running).
 
 ### Explicitly *not* ported (v1)
 
-Nodes/device commands, voice/meetings, sandboxing (advisory only), embeddings/vector search,
-multi-agent rosters, desktop/mobile apps, plugin marketplace, canvas/A2UI.
+Nodes/device commands, voice/meetings, embeddings/vector search, multi-agent rosters,
+desktop/mobile apps, plugin marketplace, canvas/A2UI.
 
 ---
 
@@ -260,10 +349,13 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 
 ## 8. Install & distribution (Termux-first)
 
-- **Primary:** `npm i -g suparclaw` — engine `>=24.16` + runtime probe (no <25/≥26.1 hard gate;
-  probe instead). **No preinstall/postinstall side effects beyond a version print.**
-- **Fallback (no npm):** `curl -fsSL …/install.sh | bash` — Termux-aware: detects `$PREFIX`, downloads
-  the single-file bundle (~5–10 MB), writes `sc` launcher to `$PREFIX/bin`, runs `sc doctor`.
+- **Primary:** `curl -fsSL …/install.sh | bash` — Termux-aware: detects `$PREFIX`, fetches the
+  runtime files only (sparse clone, ~2 MB; the codeload tarball is the fallback), writes the `sc`
+  launcher to `$PREFIX/bin`, records the ref in `current/.suparclaw-ref`, runs `sc doctor`.
+  `--ref <branch|tag>` installs something other than `main`, and `sc update` then follows it.
+- **From source:** `npm i -g github:onelitonbd/SuparClaw` — engine `>=24.16` + runtime probe
+  (no <25/≥26.1 hard gate; probe instead). **No preinstall/postinstall side effects beyond a
+  version print.** The package is not published to the npm registry, so the bare name would 404.
 - **Service:** `sc service install` writes a **termux-services** run script
   (`$PREFIX/var/service/suparclaw/run`) and prints `termux-wake-lock` guidance; `sc service status`.
   No systemd assumptions, ever.
@@ -279,8 +371,8 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | **M0** | Scaffold + build + `sc doctor` + config load | Single-file bundle builds; `sc --version` < 400 ms target on device; doctor probes pass/fail cleanly |
 | **M1** | Gateway daemon (WS protocol, state DB, logs, service) | Daemon survives 24 h on phone; reconnect works; idle RSS < 120 MB |
 | **M2** | Agent core + `sc chat` | Streaming reply in terminal; transcript persisted; turn overhead < 150 ms; compaction at threshold |
-| **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn |
-| **M4** | Tools + skills + memory | fs/web/memory tools work; exec off by default + approval flow; 5 bundled skills; FTS recall |
+| **M3** | Telegram channel | DM → reply < provider latency + 150 ms; allowlist + mention gating; steer mid-turn; answers only (no status/tool lines), multi-block answers posted as they are written |
+| **M4** | Tools + skills + memory | fs/web/memory/cron tools work; exec on by default (mode full), governed by a policy with no interactive approvals and a shell fallback ladder; GitHub repo management via the API; 5 bundled skills; FTS recall |
 | **M5** | Cron + hooks + polish | Scheduled job fires after reboot-era restarts; hot config reload; backup command; all §6 targets met |
 
 ---
@@ -323,7 +415,7 @@ workspace, skills, doctor, cron, hooks, `agent`/`agent.wait`, `NO_REPLY`, queue 
 | M0 scaffold + doctor + config | done | `sc init`, `sc doctor` (11 checks), strict JSON5 schema, 19 tests green |
 | M1 gateway daemon | done | http+ws on one port, token auth (bad token → close 4401), `/health`, static Control UI |
 | M2 agent core + `sc chat` | done | streaming SSE client, tool loop, SQLite transcripts, pure-JS TUI (local + remote) |
-| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, status-draft previews — needs a bot token to exercise |
+| M3 Telegram | code done | grammY long polling, 300 ms batching, pairing/allowlists, answers-only delivery (no status draft), and the four pickers — `/model` (provider → model, pinned to this chat), `/sessions` (enter an earlier conversation), `/think` (effort buttons), `/new` → Code (account → repository → branch) — all ten rows a page, all command-requested cards edited in place; `/status` and `/whoami` name the answering model's wire ref and the build stamp; needs a bot token to exercise |
 | M4 tools + skills + memory | done | 11 built-in tools, 5 bundled skills, workspace files, FTS search |
 | M5 cron + hooks | partial | croner scheduler + `sc cron` CLI; hooks not yet implemented |
 

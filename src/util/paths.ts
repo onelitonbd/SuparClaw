@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 
 export const APP = "suparclaw";
 export const DEFAULT_PORT = 18790;
@@ -27,18 +27,31 @@ export function workspaceDir(): string {
 export function skillsDir(): string {
   return join(stateDir(), "skills");
 }
+/**
+ * Tools the agent wrote for itself (Task 58).
+ *
+ * State, not workspace: a self-tool is a capability of the daemon, so it must
+ * work in every session — including a code session whose workspace is a git
+ * worktree somewhere else entirely.
+ */
+export function toolsDir(): string {
+  return join(stateDir(), "tools");
+}
+/** Encrypted values + public names for the Settings-only vault (Task 59). */
+export function vaultPath(): string {
+  return join(stateDir(), "vault.json");
+}
 export function logsDir(): string {
   return join(stateDir(), "logs");
-}
-export function mediaDir(): string {
-  return join(stateDir(), "media");
 }
 export function pidPath(): string {
   return join(stateDir(), "gateway.pid");
 }
 
 export function ensureDirs(): void {
-  for (const dir of [stateDir(), workspaceDir(), skillsDir(), logsDir(), mediaDir()]) {
+  // Attachments live under workspace/media (Task 30); there is no separate
+  // top-level media dir — it only ever held an empty folder.
+  for (const dir of [stateDir(), workspaceDir(), skillsDir(), toolsDir(), logsDir()]) {
     mkdirSync(dir, { recursive: true });
   }
 }
@@ -88,4 +101,12 @@ export function webUiRoot(): string {
 
 export function prefixDir(): string {
   return process.env.PREFIX ?? "";
+}
+/** Read a UTF-8 text file, or null when it is missing/unreadable. */
+export function readTextSafe(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
 }

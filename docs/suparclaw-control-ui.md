@@ -24,6 +24,25 @@ Overlays (all with a scrim, all dismissable with Esc or a tap outside):
 - `#sheet-overlay` — model picker, slides up from the bottom
 - `#modal-overlay` — confirmations, token entry, provider forms
 
+New chat asks nothing: it opens an empty `main:<timestamp>` session immediately,
+and the session names itself from its first exchange (the second refines it —
+see "Naming new chats" in the README). Until a name exists the row and the
+`#session-title` header read "New chat" (or "Main chat" for `main:main`), never
+the raw key; the key stays on the row's tooltip and accessible name. Every
+writer of the header goes through `setHeaderTitle()`, and `refresh()` re-reads
+the row so a name that arrives mid-conversation appears without a reload.
+
+### Attachments in the transcript
+
+A message's files are stored as `<media:…>` tags (that is the model's syntax).
+`Chat.user()` splits them with `ui/src/media-refs.ts` and draws a chip —
+`📎 report.pdf · 512 KB` — instead of the XML, on the live path and on every
+reload/replay alike. Clicking a chip fetches `GET /media/<workspace path>` with
+the gateway token and downloads the file; the route is confined to
+`workspace/media`, refuses symlinks, and answers 404 when the file was pruned
+(the chip then says "file removed"). Rejections and omitted files stay visible
+as a muted chip, never as a silently missing message.
+
 ## Design tokens
 
 `ui/styles.css` holds the whole system. Light is the default; the dark set is
@@ -91,6 +110,37 @@ scripts/build.mjs     bundles the app, minifies the stylesheet, copies fonts
 The build concatenates `ui/fonts/fonts.css` with `ui/styles.css`, minifies
 with esbuild and writes `dist/ui/styles.css`; the woff2 files are copied to
 `dist/ui/fonts/`. The gateway serves them with `font/woff2`.
+
+## Mobile layout rules
+
+The app is one fixed viewport (`100dvh`), never a scrolling page, so the
+platform chrome has to be handled explicitly:
+
+- `index.html` sets `viewport-fit=cover` and `interactive-widget=resizes-content`
+  — the keyboard resizes the viewport instead of pushing the composer off it.
+- `.rail` (top) and `.settings__topbar` add `env(safe-area-inset-top)` to their
+  height and padding; `.dock` (composer) adds `env(safe-area-inset-bottom)` to
+  its bottom padding; `.drawer` pads both. A notched phone therefore never
+  slides a control under the notch or the home indicator.
+- Text inputs are ≥16 px so iOS does not zoom on focus; touch targets grow
+  under `@media (pointer: coarse)`.
+- Below 880 px the settings rail and the chat drawer become overlays
+  (`min(84vw, 320px)`) instead of columns.
+- Wide tables live inside a scrolling wrapper (`.settings .usage-tablewrap`),
+  never inside the page body.
+
+`test/ui-mobile.test.mjs` pins each of these against `index.html` and the
+stylesheet.
+
+## The gateway's method list
+
+The gateway answers `hello-ok` with `methods: string[]` — every RPC it can
+handle. `ui/src/rpc.ts` keeps that list and logs a one-time
+`[gateway] this server does not advertise <method>` warning if the app asks
+for something the running server does not have (an old build, a stale
+`dist/ui`, a removed handler). `test/ui-backend-contract.test.mjs` enforces
+the three-way contract: every method the UI calls is both advertised and
+handled, and nothing is advertised twice.
 
 ## Adding a feature
 

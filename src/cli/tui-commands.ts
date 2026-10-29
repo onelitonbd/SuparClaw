@@ -14,17 +14,25 @@ import {
 
 export async function tuiLocal(): Promise<number> {
   const service = new Service();
+  // The local terminal is an always-connected approval surface.
+  service.setApprovalSurface(() => true);
   service.bootstrap();
   let sessionKey = "main:main";
   let modelOverride: string | undefined;
 
   const deps: TuiDeps = {
-    header: () => ({
-      agent: service.config.agents.defaults.id,
-      session: sessionKey,
-      model: modelOverride ?? service.config.agents.defaults.model ?? "(unset)",
-      target: "local",
-    }),
+    header: () => {
+      // Task 35: the footer answers "where is my code?" — derived from the open
+      // session's binding, so switching sessions switches the line.
+      const binding = service.store.getSessionRepo(sessionKey);
+      return {
+        agent: service.config.agents.defaults.id,
+        session: sessionKey,
+        model: modelOverride ?? service.config.agents.defaults.model ?? "(unset)",
+        target: "local",
+        ...(binding ? { repo: binding.repo, branch: binding.branch } : {}),
+      };
+    },
     onSubmit: (text) => {
       // Every visual update flows through the service subscription below, so a
       // reply is never rendered twice.
@@ -40,18 +48,17 @@ export async function tuiLocal(): Promise<number> {
         onApproval: () => {},
       });
     },
-    onAbort: () => service.loop.abort(sessionKey),
-    onApproval: (callId, ok) => {
-      service.resolveApproval(callId, ok);
+    onAbort: () => {
+      service.denyApprovalsFor(sessionKey);
+      return service.loop.abort(sessionKey);
+    },
+    onApproval: (callId, decision) => {
+      service.resolveApproval(callId, decision);
     },
     onCommand: async (name, args) => {
       switch (name) {
         case "help":
           return tuiHelp;
-        case "status":
-          return `model ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"} · busy: ${
-            service.loop.isBusy(sessionKey) ? "yes" : "no"
-          }`;
         case "model": {
           const raw = args.trim();
           if (!raw) return `model: ${modelOverride ?? service.config.agents.defaults.model ?? "(unset)"}`;
@@ -60,6 +67,9 @@ export async function tuiLocal(): Promise<number> {
           // a bare model id ("kilo/nvidia/x") becomes "<provider>/<id>"
           const ref = save ? (canonicalModelRef(service.config, typed) ?? typed) : typed;
           if (save) {
+            const { validateModelRef } = await import("../config/providers.js");
+            const invalid = validateModelRef(service.config, ref);
+            if (invalid) return `invalid model reference: ${invalid}`;
             const result = service.configSvc.setPath("agents.defaults.model", ref);
             if (!result.ok) return result.errors.join("; ");
             service.applyConfig();
@@ -96,12 +106,6 @@ export async function tuiLocal(): Promise<number> {
               return `unknown /provider ${sub} — try: list, add, remove, test`;
           }
         }
-        case "tools":
-          return `tools: ${service.loop.tools.map((t) => t.name).join(", ")}`;
-        case "skills":
-          return service.loop.skills
-            .map((s) => `${s.eligible ? "•" : "○"} ${s.name} — ${s.description || "(no description)"}${s.reason ? ` [${s.reason}]` : ""}`)
-            .join("\n") || "(no skills)";
         case "session": {
           if (!args) return `session: ${sessionKey}`;
           sessionKey = args.trim();
@@ -113,15 +117,29 @@ export async function tuiLocal(): Promise<number> {
         case "clear":
           if (app) app.items = [];
           return "transcript cleared";
-        case "abort":
-          service.loop.abort(sessionKey);
-          return "aborted";
         case "quit":
         case "exit":
           app?.quit();
           return "";
-        default:
-          return `unknown command /${name} — try /help`;
+        default: {
+          // Unified surface (Partial #10): every command the TUI doesn't own
+          // goes through the shared router in service.send, so web chat and
+          // Telegram resolve the exact same text to the exact same reply. The
+          // reply arrives via the service subscription below as the usual
+          // chat events (final/idle), never double-rendered here.
+          void service.send({
+            sessionKey,
+            text: `/${name}${args ? ` ${args}` : ""}`,
+            isMainSession: true,
+            source: "tui",
+            model: modelOverride,
+            reply: async () => {},
+            onDelta: () => {},
+            onTool: () => {},
+            onApproval: () => {},
+          });
+          return null;
+        }
       }
     },
     listSessions: async () => service.store.listSessions(50).map((s) => s.key),
@@ -136,6 +154,41 @@ export async function tuiLocal(): Promise<number> {
     setModel: async (model) => {
       modelOverride = model;
       return `model override for this session: ${model}`;
+    },
+    repos: async () => {
+      try {
+        const rows = await service.githubRepos({ page: 1 });
+        return rows.map((r) => `${r.fullName}  ${r.private ? "private" : "public"} · ${r.defaultBranch}`);
+      } catch (err) {
+        app?.push({ kind: "system", text: (err as Error).message });
+        return [];
+      }
+    },
+    branches: async (repo) => {
+      try {
+        const rows = await service.githubBranches({ repo });
+        return rows.map((b) => `${b.default ? "●" : " "} ${b.name}${b.protected ? "  (protected)" : ""}`);
+      } catch (err) {
+        app?.push({ kind: "system", text: (err as Error).message });
+        return [];
+      }
+    },
+    newSession: (spec) => {
+      sessionKey = `main:${Date.now().toString(36)}`;
+      app?.push({ kind: "system", text: `new session: ${sessionKey}` });
+      if (spec.kind === "code" && spec.repo) {
+        void service.bindRepo({ sessionKey, repo: spec.repo, branch: spec.branch }).then((res) => {
+          app?.push({
+            kind: "system",
+            text: res.ok ? `working in ${res.repo} · ${res.branch}${res.branch === res.base ? " (the default branch)" : ` (from ${res.base})`}` : res.error,
+          });
+          if (res.ok) void app?.loadHistory();
+        });
+      }
+      // The transcript belongs to the new key now, and nothing else on screen
+      // should keep showing the previous session's messages.
+      if (app) app.items = [];
+      void app?.loadHistory();
     },
     quit: () => app?.quit(),
   };
@@ -159,10 +212,14 @@ export async function tuiLocal(): Promise<number> {
         app.push({ kind: "tool", name: e.name, status: e.status, detail: e.detail });
         break;
       case "approval":
-        app.approvals.push({ callId: e.callId, tool: e.tool, args: e.args });
+        app.approvals.push({ callId: e.callId, tool: e.tool, args: e.args, exec: e.exec });
+        app.setStatus("waiting for approval…");
+        app.markDirty();
         break;
       case "final":
-        app.completeAssistant(e.text);
+        // The usage line rides `footer`, not the text (Task 23) — the web chat
+        // draws it in its own element, the TUI keeps it inline.
+        app.completeAssistant(e.footer ? `${e.text}\n\n${e.footer}` : e.text);
         app.tokenHint = e.usage ? `${e.usage["total_tokens"] ?? 0}` : app.tokenHint;
         app.busy = false;
         app.setStatus("idle");
@@ -195,31 +252,83 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
   const client = await GatewayClient.connect(url, token);
   const health = (await client.request("health")) as { ok: boolean };
   let sessionKey = "main:main";
+  // Remote mode has no local store, so the footer's repo line is whatever this
+  // client bound in this run — never a guess about the gateway's state.
+  const repoBindings = new Map<string, { repo: string; branch: string }>();
   const { TuiApp } = await import("../tui/app.js");
   let app: InstanceType<typeof TuiApp> | null = null;
 
   client.onEvent((event, payload) => {
-    const data = payload as { sessionKey?: string; delta?: string; text?: string; event?: { type: string; name?: string; status?: string; detail?: string; callId?: string; tool?: string; args?: Record<string, unknown> } };
-    if (event === "chat.delta" && data.delta) {
-      app?.push({ kind: "assistant", text: data.delta, streaming: true });
-    } else if (event === "chat.reply" && data.text) {
-      app?.completeAssistant(data.text);
-      if (app) app.busy = false;
-    } else if (event === "chat.tool" && data.event) {
-      app?.push({ kind: "tool", name: data.event.name ?? "?", status: (data.event.status as "running") ?? "done", detail: data.event.detail });
-    } else if (event === "chat.approval" && data.event) {
-      app?.approvals.push({ callId: data.event.callId ?? "", tool: data.event.tool ?? "", args: data.event.args ?? {} });
+    // One stream: "chat" envelopes carry every run event (the gateway no
+    // longer emits per-event chat.delta/chat.reply/… frames).
+    if (event !== "chat") return;
+    const data = payload as {
+      sessionKey?: string;
+      event?: {
+        type: string;
+        text?: string;
+        message?: string;
+        name?: string;
+        status?: string;
+        detail?: string;
+        callId?: string;
+        tool?: string;
+        args?: Record<string, unknown>;
+        exec?: { mode: string; mintable: boolean; reason: string };
+        /** /usage line for the final reply (a field, not text — Task 23). */
+        footer?: string;
+      };
+    };
+    if (data.sessionKey && data.sessionKey !== sessionKey) return;
+    const e = data.event ?? ({} as NonNullable<typeof data.event>);
+    switch (e.type) {
+      case "start":
+        if (app) app.busy = true;
+        break;
+      case "delta":
+        app?.push({ kind: "assistant", text: String(e.text ?? ""), streaming: true });
+        break;
+      case "tool":
+        app?.push({ kind: "tool", name: e.name ?? "?", status: (e.status as "running") ?? "done", detail: e.detail });
+        break;
+      case "approval":
+        app?.approvals.push({ callId: e.callId ?? "", tool: e.tool ?? "", args: e.args ?? {}, exec: e.exec });
+        app?.setStatus("waiting for approval…");
+        app?.markDirty();
+        break;
+      case "final":
+        app?.completeAssistant(
+          e?.footer ? `${String(e.text ?? "")}\n\n${String(e.footer)}` : String(e.text ?? ""),
+        );
+        if (app) app.busy = false;
+        break;
+      case "error":
+        app?.completeAssistant(`⚠ ${String(e.message ?? "error")}`);
+        if (app) app.busy = false;
+        break;
+      case "idle":
+        if (app) app.busy = false;
+        break;
     }
   });
 
   const deps: TuiDeps = {
-    header: () => ({ agent: "main", session: sessionKey, model: "-", target: url }),
+    header: () => {
+      const binding = repoBindings.get(sessionKey);
+      return {
+        agent: "main",
+        session: sessionKey,
+        model: "-",
+        target: url,
+        ...(binding ? { repo: binding.repo, branch: binding.branch } : {}),
+      };
+    },
     onSubmit: (text) => {
       void client.request("chat.send", { sessionKey, text, isMainSession: true, key: crypto.randomUUID() });
     },
     onAbort: () => void client.request("chat.abort", { sessionKey }),
-    onApproval: (callId, ok) => {
-      void client.request("chat.approval", { callId, approve: ok });
+    onApproval: (callId, decision) => {
+      void client.request("chat.approval", { callId, decision });
     },
     onCommand: async (name, args) => {
       if (name === "help") return tuiHelp;
@@ -227,10 +336,24 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
         sessionKey = args.trim();
         return `session: ${sessionKey}`;
       }
+      if (name === "new") {
+        sessionKey = `main:${Date.now().toString(36)}`;
+        void app?.loadHistory();
+        return `new session: ${sessionKey}`;
+      }
       if (name === "quit" || name === "exit") {
         app?.quit();
         return "";
       }
+      // Unified surface (Partial #10): forward every other command to the
+      // gateway — it runs the shared router and the reply arrives over the
+      // chat envelope as a normal final event.
+      void client.request("chat.send", {
+        sessionKey,
+        text: `/${name}${args ? ` ${args}` : ""}`,
+        isMainSession: true,
+        key: crypto.randomUUID(),
+      });
       return null;
     },
     listSessions: async () => {
@@ -251,6 +374,37 @@ export async function tuiRemote(url: string, token: string): Promise<number> {
       return res.models;
     },
     setModel: async () => "model is configured on the gateway (sc config set agents.defaults.model)",
+    repos: async () => {
+      try {
+        const res = (await client.request("github.repos", { page: 1 })) as { repos?: { fullName: string; private: boolean; defaultBranch: string }[] };
+        return (res.repos ?? []).map((r) => `${r.fullName}  ${r.private ? "private" : "public"} · ${r.defaultBranch}`);
+      } catch (err) {
+        return [];
+      }
+    },
+    branches: async (repo) => {
+      try {
+        const res = (await client.request("github.branches", { repo })) as { branches?: { name: string; default?: boolean; protected?: boolean }[] };
+        return (res.branches ?? []).map((b) => `${b.default ? "●" : " "} ${b.name}${b.protected ? "  (protected)" : ""}`);
+      } catch {
+        return [];
+      }
+    },
+    newSession: (spec) => {
+      sessionKey = `main:${Date.now().toString(36)}`;
+      if (spec.kind === "code" && spec.repo) {
+        void client
+          .request("repo.bind", { sessionKey, repo: spec.repo, ...(spec.branch ? { branch: spec.branch } : {}) })
+          .then((res) => {
+            const bound = res as { repo?: string; branch?: string; base?: string };
+            if (bound.repo) repoBindings.set(sessionKey, { repo: bound.repo, branch: bound.branch ?? "?" });
+            app?.push({ kind: "system", text: `working in ${bound.repo ?? spec.repo} · ${bound.branch ?? "?"}` });
+          })
+          .catch((err: Error) => app?.push({ kind: "system", text: err.message }));
+      }
+      if (app) app.items = [];
+      void app?.loadHistory();
+    },
     quit: () => {
       app?.quit();
       client.close();

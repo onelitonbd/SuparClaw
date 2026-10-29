@@ -1,6 +1,10 @@
 {
   "name": "suparclaw",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/onelitonbd/SuparClaw.git"
+  },
   "description": "Termux-first personal AI gateway: one daemon, channels, tools, skills, sessions",
   "type": "module",
   "license": "MIT",
@@ -20,18 +24,22 @@
     "build": "node scripts/build.mjs",
     "dev": "node scripts/build.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "croner": "^10.0.1",
     "grammy": "^1.46.0",
     "json5": "^2.2.3",
+    "undici": "^8.12.3",
     "ws": "^8.22.0"
   },
   "devDependencies": {
+    "@fontsource/archivo": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
     "@types/node": "^24.3.0",
     "@types/ws": "^8.5.13",
     "esbuild": "^0.28.2",
+    "linkedom": "^0.18.13",
     "typescript": "^5.9.2"
   }
 }

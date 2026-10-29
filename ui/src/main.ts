@@ -1,56 +1,243 @@
 // SuparClaw Control UI — app shell: rail, drawer, sheet, routing, wiring.
 
 import { Chat } from "./chat.js";
-import { el, esc, fmtTime, modal, toast } from "./dom.js";
-import { pickModel } from "./picker.js";
+import { el, esc, fmtTime, modal, toast, fuzzy } from "./dom.js";
+import { initRepo, mountRepoBar, setRepoSession, handleRepoEvent, noteTurnEnded, openSessionSheet, bindRepoSession } from "./repo.js";
+import { friendlyModelName } from "./model-name.js";
+import { groupSessions, sessionRow, searchView, rowTitle, placeholderTitle, type SessionRow } from "./sessions.js";
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
+import { TerminalPanel } from "./terminal.js";
+import { onGatewayEvent } from "./notifications.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
-let sessionKey = localStorage.getItem("sc.session") || "main:main";
+function getSessionFromHash(): string | null {
+  const h = location.hash || "";
+  // match #/chat/sessionKey or #/c/sessionKey
+  const m = h.match(/#\/(?:chat|c)\/(.+)$/);
+  if (m && m[1]) {
+    try {
+      return decodeURIComponent(m[1]);
+    } catch {
+      return m[1];
+    }
+  }
+  return null;
+}
+
+let sessionKey = getSessionFromHash() || localStorage.getItem("sc.session") || "main:main";
+if (!localStorage.getItem("sc.session") || getSessionFromHash()) {
+  localStorage.setItem("sc.session", sessionKey);
+}
 let currentModel = "";
 let busy = false;
-let models: string[] = [];
+let models: { value: string; label: string; group: string }[] = [];
 let toolCount = 0;
 let settings: Settings | null = null;
+let settingsInteriorLoaded = false;
+
+async function loadSettingsInterior(): Promise<void> {
+  if (settingsInteriorLoaded) return;
+  const res = await fetch("./interior/settings.html");
+  if (!res.ok) throw new Error(`settings interior: ${res.status}`);
+  $("settings-view").innerHTML = await res.text();
+  settingsInteriorLoaded = true;
+  // The interior DOM is injected now; bind the one delegated handler that
+  // lives in main.ts rather than in Settings.
+  $("settings-back").onclick = () => {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); }
+    catch { location.hash = "#/chat/" + sessionKey; }
+  };
+}
 
 /* ---------------- chat ---------------- */
 
 const chat = new Chat(document.body, {
-  send: (text) => {
-    chat.user(text);
+  send: (text, attachments) => {
+    chat.user(text, attachments);
     busy = true;
     chat.setBusy(true);
-    gateway.request("chat.send", { sessionKey, text, isMainSession: true }).catch((err) => {
-      busy = false;
-      chat.setBusy(false);
-      chat.notice(`not sent: ${err.message}`);
-      toast((err as Error).message, "err");
+    const payload: Record<string, unknown> = { sessionKey, text, isMainSession: true };
+    if (attachments && attachments.length > 0) {
+      payload["attachments"] = attachments.map((a) => ({ name: a.name, mime: a.mime, data: a.dataUrl }));
+    }
+    gateway.request("chat.send", payload)
+      .then((ack) => {
+        // Partial attachment rejections ride the ack as warnings (their
+        // "failures stay visible" rule) — toast them, the rest was sent.
+        const warnings = (ack as { warnings?: string[] }).warnings ?? [];
+        for (const w of warnings) toast(`skipped: ${w}`, "err");
+      })
+      .catch((err) => {
+        busy = false;
+        chat.setBusy(false);
+        chat.notice(`not sent: ${err.message}`);
+        toast((err as Error).message, "err");
+      });
+  },
+  // Regenerate the newest answer (Task 23): the SERVER drops the turn's rows
+  // and re-runs the prompt — a client-side re-send would append a second answer
+  // and the model would read both next turn. After the ack, reload so the old
+  // answer disappears before the new one streams in.
+  regenerate: () => {
+    // Destructive: the current answer is deleted before the re-run. Their rule
+    // for deletes is the app's own dialog, never a silent drop.
+    modal({
+      title: "Regenerate this answer?",
+      body: el("div", {}, [
+        el("p", {}, ["The current answer is removed and the prompt is run again."]),
+        el("p", { class: "hint" }, ["Anything the answer did with tools may happen again."]),
+      ]),
+      confirmLabel: "Regenerate",
+      danger: true,
+      onConfirm: async () => {
+        busy = true;
+        chat.setBusy(true);
+        try {
+          await gateway.request("chat.regenerate", { sessionKey });
+          // Reload so the old answer disappears before the new one streams in.
+          await loadHistory();
+        } catch (err) {
+          busy = false;
+          chat.setBusy(false);
+          toast((err as Error).message, "err");
+          chat.notice(`regenerate failed: ${(err as Error).message}`, "notice--error");
+        }
+      },
     });
   },
+  // Rewind/Edit (Task 24) — OpenClaw's "Rewind to here". The clicked prompt and
+  // everything after it are deleted server-side, then its text returns to the
+  // composer. Destructive, and the point is an EDIT, so it asks first and never
+  // re-sends on its own.
+  rewind: (messageId: number) => {
+    modal({
+      title: "Edit this prompt?",
+      body: el("div", {}, [
+        el("p", {}, ["This prompt and everything after it are removed. Its text goes back into the composer, ready to edit."]),
+        el("p", { class: "hint" }, ["Anything the conversation already did with tools is not undone."]),
+      ]),
+      confirmLabel: "Edit prompt",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const res = (await gateway.request("chat.rewind", { sessionKey, messageId })) as { text?: string };
+          // Reload first: the deleted turn must disappear before the composer
+          // can make it look like nothing happened.
+          await loadHistory();
+          chat.setDraft(String(res.text ?? ""));
+          toast("prompt restored — edit and send", "info");
+        } catch (err) {
+          toast((err as Error).message, "err");
+          chat.notice(`rewind failed: ${(err as Error).message}`, "notice--error");
+        }
+      },
+    });
+  },
+  // Fork from here (Task 25) — OpenClaw's "Fork from here": a new session holds
+  // everything before this prompt; the original keeps running untouched. It
+  // adds rather than deletes, so there is nothing to confirm: it opens the fork
+  // and leaves the prompt in the composer.
+  fork: (messageId: number) => {
+    void (async () => {
+      try {
+        const res = (await gateway.request("chat.fork", { sessionKey, messageId })) as {
+          sessionKey?: string;
+          text?: string;
+        };
+        if (!res.sessionKey) throw new Error("the gateway did not return the fork");
+        await switchSession(res.sessionKey);
+        chat.setDraft(String(res.text ?? ""));
+        toast(`forked to ${res.sessionKey} — edit and send`, "ok");
+      } catch (err) {
+        toast((err as Error).message, "err");
+        chat.notice(`fork failed: ${(err as Error).message}`, "notice--error");
+      }
+    })();
+  },
   abort: () => { void gateway.request("chat.abort", { sessionKey }); },
-  approve: (callId, approve) => { void gateway.request("chat.approval", { callId, approve }); },
+  approve: (callId, decision) => { void gateway.request("chat.approval", { callId, decision }); },
+  // Remove just that queued message (their chat.abort runId parity).
+  cancelQueued: (runId) => { void gateway.request("chat.abort", { sessionKey, runId }); },
+  // ask_user card answers (P2 #8) ride their own RPC (session-scoped).
+  questionAnswer: (_id, answers) => { void gateway.request("chat.questionAnswer", { sessionKey, answers }); },
+  // A transcript chip (Task 30): fetch the saved file with the gateway token and
+  // hand it to the browser. The token never goes in the URL — the route accepts
+  // it as a bearer header, exactly like the WebSocket does.
+  openMedia: (path: string, name: string) => {
+    void (async () => {
+      try {
+        const url = `${location.origin}/media/${path.split("/").map(encodeURIComponent).join("/")}`;
+        const res = await fetch(url, {
+          headers: gateway.token ? { authorization: `Bearer ${gateway.token}` } : {},
+        });
+        if (res.status === 404) {
+          toast("file removed — pruned or deleted", "err");
+          return;
+        }
+        if (res.status === 403) {
+          toast("not allowed — that path is outside the media folder", "err");
+          return;
+        }
+        if (res.status === 401) {
+          toast("gateway refused the download — run: sc token", "err");
+          return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = href;
+        a.download = name || path.split("/").pop() || "file";
+        document.body.append(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(href), 10_000);
+      } catch (err) {
+        toast((err as Error).message, "err");
+      }
+    })();
+  },
 });
 
 /* ---------------- events ---------------- */
 
 gateway.on((event, payload) => {
-  if (event === "tick") { void health(); return; }
+  if (event === "tick") return;
+  // Settings → Alerts (their Settings → Notifications): approvals default-on,
+  // replies opt-in, quiet-hours filtered, generic lock-screen text only.
+  try { onGatewayEvent(event, payload); } catch { /* notification quirks are non-fatal */ }
+  if (event === "session.updated") {
+    // Auto-title landed on a session row — re-render the list so the name
+    // shows up (in any open UI) without a reload.
+    void refresh();
+    return;
+  }
+  if (event === "terminal") {
+    // Output deltas, create/remove and state changes for every shell. Routed even
+    // when the panel is closed so its rail dot stays honest.
+    terminalPanel.handleEvent((payload ?? {}) as Record<string, unknown>);
+    return;
+  }
+  if (event === "approvals.updated") {
+    // An allow-always grant was minted or a policy entry changed — an open
+    // Tools tab re-reads the ledger live.
+    if (settings && !$("settings-view").hidden) void settings.render();
+    return;
+  }
   if (event === "chat") {
     const p = payload ?? {};
     if (p.sessionKey && p.sessionKey !== sessionKey) return;
     handleChatEvent(p.event ?? {});
     return;
   }
-  // individual frames from older gateways
-  if (event === "chat.delta") { chat.assistantStart(); chat.delta(String(payload?.delta ?? "")); }
-  if (event === "chat.reply") { chat.finish(String(payload?.text ?? "")); }
-  if (event === "chat.tool") {
-    const t = payload?.event ?? {};
-    chat.tool(String(t.name ?? "tool"), t.status ?? "running", t.detail);
-  }
+  // One stream only. The gateway used to also emit per-event chat.delta /
+  // chat.reply / chat.tool frames; applying both copies doubled the streaming
+  // text and rendered every reply twice. Those frames are gone server-side.
 });
+
+const finalizedRuns = new Set<string>();
 
 function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
   switch (e.type) {
@@ -62,22 +249,81 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
     case "delta":
       chat.delta(String(e.text ?? ""));
       break;
-    case "tool":
-      chat.tool(String(e.name ?? "tool"), (e.status as "running" | "done" | "error") ?? "running", e.detail as string | undefined);
+    case "repo":
+      // Clone/worktree progress and publishes (Task 35) share the chat stream,
+      // so the bar updates even when the turn that started them was a command.
+      handleRepoEvent(e);
       break;
-    case "approval":
-      chat.approval(String(e.callId), String(e.tool), e.args);
+    case "reasoning":
+      chat.reasoningDelta(String(e.text ?? ""));
+      break;
+    case "tool":
+      chat.tool(
+        String(e.name ?? "tool"),
+        (e.status as "running" | "done" | "error" | "pending" | "skipped") ?? "running",
+        e.detail as string | undefined,
+        e.ms as number | undefined,
+        e.callId as string | undefined,
+      );
+      break;
+    case "queued":
+      // Waiting input keeps its identity — the ✕ row cancels just that one.
+      chat.queued(String(e.runId ?? crypto.randomUUID()), String(e.text ?? ""));
+      if (String(e.mode ?? "") === "steer") chat.notice("steering into the active turn…");
+      break;
+    case "dequeued":
+      chat.dequeued(String(e.runId ?? ""), String(e.reason ?? ""));
+      break;
+    case "steered":
+      chat.dequeued(String(e.runId ?? ""));
+      break;
+    case "collect": {
+      for (const rid of (e.runIds as string[] | undefined) ?? []) chat.dequeued(rid);
+      break;
+    }
+    case "retry": {
+      // Always visible (no collapse): show what failed and that a retry is
+      // running - "error ... retrying (attempt N/7)".
+      const error = String(e.error ?? "provider error");
+      const attempt = Number(e.attempt ?? 1);
+      const max = Number(e.max ?? 7);
+      chat.notice(`error: ${error} — retrying (attempt ${attempt}/${max})...`, "notice--error");
+      break;
+    }
+    case "approval": {
+      const exec = e.exec && typeof e.exec === "object"
+        ? (e.exec as { mode: string; mintable: boolean; reason: string })
+        : undefined;
+      chat.approval(String(e.callId), String(e.tool), e.args, exec);
+      break;
+    }
+    case "question": {
+      chat.question(String(e.id), (e.questions as { id: string; question: string; options: string[]; multi: boolean }[]) ?? []);
+      break;
+    }
       break;
     case "final": {
+      // A final for an already-rendered run must never append a second copy
+      // (late replay after history reload — the OpenClaw #167052 class).
+      const runId = String(e.runId ?? crypto.randomUUID());
+      if (finalizedRuns.has(runId)) return;
+      finalizedRuns.add(runId);
+      if (finalizedRuns.size > 32) {
+        finalizedRuns.delete(finalizedRuns.values().next().value as string);
+      }
       const usage = e.usage as Record<string, number> | undefined;
       if (usage?.["total_tokens"]) chat.setTokenHint(`${usage["total_tokens"]} tokens`);
-      chat.finish(String(e.text ?? ""));
+      // The footer is a field now, not text inside the reply — it draws in its
+      // own element and survives the next reload the same way.
+      chat.finish(String(e.text ?? ""), typeof e.footer === "string" && e.footer ? e.footer : undefined);
       busy = false;
+      // A finished turn in a code session probably wrote files: re-derive the
+      // bar from the worktree instead of trusting a stale count.
+      noteTurnEnded();
       break;
     }
     case "error":
-      chat.finish();
-      chat.notice(`error: ${e.message}`);
+      chat.fail(String(e.message ?? "error"));
       busy = false;
       chat.setBusy(false);
       toast(String(e.message ?? "error"), "err");
@@ -85,6 +331,7 @@ function handleChatEvent(e: { type: string; [k: string]: unknown }): void {
     case "idle":
       busy = false;
       chat.setBusy(false);
+      noteTurnEnded();
       break;
   }
 }
@@ -132,79 +379,558 @@ function askToken(): void {
 
 /* ---------------- refresh ---------------- */
 
+/** Last observed agents.defaults.reasoningView (null = not observed yet, so the
+ *  first reading only seeds it and never triggers a redundant reload). */
+let showReasoning: boolean | null = null;
+
 async function refresh(): Promise<void> {
   try {
     const [statusRes, modelRes, sessionRes] = await Promise.all([
       gateway.request("status"),
       gateway.request("models.list"),
-      gateway.request("sessions.list", { limit: 30 }),
+      gateway.request("sessions.list", { limit: 30, includeArchived: true }),
     ]);
     const status = statusRes as any;
     toolCount = (status.tools ?? []).length;
-    models = (modelRes as any).models ?? [];
-    currentModel = status.model || models[0] || "";
-    $("model-name").textContent = currentModel || "model…";
+    // Strict filter: only models selected in Settings → Models appear
+    // anywhere in the system. Nothing selected = empty picker with a hint.
+    const configured = (((modelRes as any).configured ?? []) as any[]).filter((m) => m.enabled);
+    models = configured.map((m) => ({
+      value: String(m.id),
+      label: String(m.label || m.ref || m.id),
+      group: String(m.ref ?? "").split("/")[0] || "default",
+    }));
+    currentModel = status.model || models[0]?.value || "";
+    const current = models.find((m) => m.value === currentModel);
+    const modelLabel = current?.label || currentModel || "no model";
+    $("model-name").textContent = friendlyModelName(modelLabel, current?.group);
+    $("model-btn").setAttribute("title", `Model: ${modelLabel}`);
+    $("model-btn").setAttribute("aria-label", `Choose model (${modelLabel})`);
     renderSessions((sessionRes as any).sessions ?? []);
+    // Settings → Run limits → Show thinking blocks. Already on the status wire;
+    // apply it here so the chat and the settings card agree without a reload.
+    const reasoningVisible = String(status?.reasoningView ?? "on") !== "off";
+    const firstLook = showReasoning === null;
+    if (reasoningVisible !== showReasoning) {
+      showReasoning = reasoningVisible;
+      chat.setReasoningVisible(reasoningVisible);
+      // Re-render the stored transcript so switching it back on reveals the
+      // thinking blocks immediately instead of on the next session switch.
+      if (!firstLook) void loadHistory();
+    }
+    syncThinking(status, (sessionRes as any).sessions ?? []);
+    syncQueue((sessionRes as any).sessions ?? []);
+    void refreshQueueDepth();
+    // Archived current session: read-only transcript + Unarchive banner
+    // (their composer-disabled contract).
+    const curRow = ((sessionRes as any).sessions ?? []).find((r: SessionListRow) => r.key === sessionKey);
+    // The header follows the row: a session that just named itself (or was
+    // renamed) shows the name without switching chats or reloading.
+    setHeaderTitle(sessionKey, curRow ? rowTitle(curRow) : undefined);
+    chat.setArchived(Number(curRow?.archived ?? 0) === 1, () => void setSessionArchived(sessionKey, false));
   } catch { /* gateway reconnecting */ }
 }
 
-async function health(): Promise<void> {
+// Drawer prune action (P4 #33): dry-run first, confirm with the real counts,
+// then enforce — their two-step destructive-action pattern.
+$("sessions-prune").addEventListener("click", async () => {
   try {
-    const h = await fetch("/health").then((r) => r.json());
-    $("tok").textContent = `${h.sessions} session${h.sessions === 1 ? "" : "s"}`;
-  } catch { /* ignore */ }
+    const report = (await gateway.request("sessions.cleanup", { dryRun: true })) as any;
+    const archive = Number(report.archivedAge ?? 0) + Number(report.archivedCap ?? 0);
+    const del = Number(report.deletedCapArchives ?? 0);
+    if (archive + del === 0) { toast("nothing to prune", "info"); return; }
+    modal({
+      title: "Prune sessions?",
+      body: el("div", {}, [
+        el("p", {}, [
+          `The retention policy would archive ${archive} ${archive === 1 ? "session" : "sessions"} and delete ${del} archived ${del === 1 ? "session" : "sessions"}.`,
+        ]),
+        el("p", { class: "hint" }, ["Archived sessions stay readable; deleted ones are gone for good."]),
+      ]),
+      confirmLabel: "Prune",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const done = (await gateway.request("sessions.cleanup", { enforce: true })) as any;
+          toast(`pruned: ${done.archivedAge + done.archivedCap} archived, ${done.deletedCapArchives} deleted`, "ok");
+          await refresh();
+        } catch (err) {
+          toast(`prune failed: ${(err as Error).message}`, "err");
+        }
+      },
+    });
+  } catch (err) {
+    toast(`prune failed: ${(err as Error).message}`, "err");
+  }
+});
+
+/* ---------------- thinking level + preview ---------------- */
+
+function syncThinking(status: any, sessions: { key: string; thinking?: string | null }[]): void {
+  const select = $("think") as HTMLSelectElement;
+  const levels: string[] =
+    status?.thinkingLevels ?? ["inherit", "off", "low", "medium", "high", "xhigh", "max"];
+  const current = select.querySelectorAll("option");
+  if (current.length !== levels.length) {
+    select.innerHTML = "";
+    for (const level of levels) {
+      const opt = document.createElement("option");
+      opt.value = level;
+      opt.textContent = level === "inherit" ? "auto" : level;
+      select.append(opt);
+    }
+  }
+  const row = (sessions ?? []).find((s) => s.key === sessionKey);
+  const desired = row?.thinking ?? "inherit";
+  for (const opt of Array.from(select.querySelectorAll("option"))) {
+    if (opt.getAttribute("value") === desired) opt.setAttribute("selected", "");
+    else opt.removeAttribute("selected");
+  }
+  try {
+    select.value = desired;
+  } catch { /* getter-only DOM */ }
+
+  // Custom dropdown mirror (not the native browser select).
+  const menu = $("think-menu");
+  const valueEl = $("think-value") as HTMLElement;
+  const btn = $("think-btn") as HTMLButtonElement;
+  if (menu) {
+    menu.innerHTML = "";
+    for (const level of levels) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "think__option" + (level === desired ? " is-active" : "");
+      item.textContent = level === "inherit" ? "auto" : level;
+      item.dataset.value = level;
+      item.onclick = (e) => {
+        e.stopPropagation();
+        select.value = level;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        valueEl.textContent = level === "inherit" ? "auto" : level;
+        menu.hidden = true;
+        btn.setAttribute("aria-expanded", "false");
+      };
+      menu.append(item);
+    }
+  }
+  if (valueEl) valueEl.textContent = desired === "inherit" ? "auto" : desired;
 }
 
-function renderSessions(list: { key: string; last_msg_at?: number; title?: string }[]): void {
-  const host = $("sessions");
-  host.innerHTML = "";
-  if (list.length === 0) list = [{ key: sessionKey }];
-  const seen = new Set<string>();
-  for (const s of list) {
-    if (seen.has(s.key)) continue;
-    seen.add(s.key);
-    const btn = el("button", {
-      class: `session${s.key === sessionKey ? " is-active" : ""}`,
-      type: "button",
-    }, [
-      el("span", { class: "session__text" }, [
-        el("span", { class: "session__title" }, [s.title || s.key]),
-        el("span", { class: "session__meta" }, [
-          s.last_msg_at ? fmtTime(s.last_msg_at) : "no messages",
-        ]),
-      ]),
-      busy && s.key === sessionKey ? el("span", { class: "dot dot--live" }) : null,
-    ].filter(Boolean) as Node[]);
-    btn.onclick = () => void switchSession(s.key);
-    btn.oncontextmenu = (e) => { e.preventDefault(); renameSession(s.key); };
-    host.append(btn);
+$("think").addEventListener("change", async () => {
+  const select = $("think") as HTMLSelectElement;
+  const value = select.value === "inherit" ? null : select.value;
+  try {
+    await gateway.request("sessions.patch", { sessionKey, thinking: value });
+    toast(value ? `thinking: ${value}` : "thinking: inherited", "ok");
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+});
+
+/* ---------------- per-session queue mode (P4 #37 — their /queue) ----------- */
+
+/** Mirror of syncThinking: the header select reflects the session's durable
+ *  queue override (config default shown as "queue" when no override). */
+function syncQueue(sessions: { key: string; queue_mode?: string | null }[]): void {
+  const select = $("queue-select") as HTMLSelectElement;
+  const row = (sessions ?? []).find((s) => s.key === sessionKey);
+  const desired = row?.queue_mode ?? "inherit";
+  for (const opt of Array.from(select.querySelectorAll("option"))) {
+    if (opt.getAttribute("value") === desired) opt.setAttribute("selected", "");
+    else opt.removeAttribute("selected");
+  }
+  try {
+    select.value = desired;
+  } catch { /* getter-only DOM */ }
+
+  const labels: Record<string, string> = {
+    inherit: "queue",
+    steer: "steer",
+    followup: "followup",
+    collect: "collect",
+    interrupt: "interrupt",
+  };
+  const menu = $("queue-menu");
+  const valueEl = $("queue-value") as HTMLElement;
+  const btn = $("queue-btn") as HTMLButtonElement;
+  if (menu) {
+    menu.innerHTML = "";
+    for (const v of ["inherit", "steer", "followup", "collect", "interrupt"]) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "think__option" + (v === desired ? " is-active" : "");
+      item.textContent = labels[v] ?? v;
+      item.dataset.value = v;
+      item.onclick = (e) => {
+        e.stopPropagation();
+        select.value = v;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        if (valueEl) valueEl.textContent = labels[v] ?? v;
+        menu.hidden = true;
+        btn.setAttribute("aria-expanded", "false");
+      };
+      menu.append(item);
+    }
+  }
+  if (valueEl) valueEl.textContent = labels[desired] ?? desired;
+}
+
+$("queue-select").addEventListener("change", async () => {
+  const select = $("queue-select") as HTMLSelectElement;
+  const value = select.value;
+  if (value && !["inherit", "steer", "followup", "collect", "interrupt"].includes(value)) {
+    select.value = "inherit";
+    return;
+  }
+  try {
+    if (value === "inherit") {
+      await gateway.request("queue.set", { sessionKey, reset: true });
+      toast("queue mode: config default", "ok");
+    } else {
+      await gateway.request("queue.set", { sessionKey, mode: value });
+      toast(`queue mode: ${value}`, "ok");
+    }
+    void refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+});
+
+/* ---------------- custom dropdown toggles for think / queue ---------------- */
+
+function closeCustomMenus(): void {
+  for (const id of ["think-menu", "queue-menu"]) {
+    const m = document.getElementById(id);
+    if (m) m.hidden = true;
+  }
+  document.getElementById("think-btn")?.setAttribute("aria-expanded", "false");
+  document.getElementById("queue-btn")?.setAttribute("aria-expanded", "false");
+}
+
+function wireCustomSelect(btnId: string, menuId: string): void {
+  const btn = document.getElementById(btnId) as HTMLButtonElement | null;
+  const menu = document.getElementById(menuId);
+  if (!btn || !menu) return;
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = menu.hidden;
+    closeCustomMenus();
+    if (open) {
+      menu.hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+    }
+  };
+}
+
+wireCustomSelect("think-btn", "think-menu");
+wireCustomSelect("queue-btn", "queue-menu");
+
+document.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest("#think-wrap") || t.closest("#queue-wrap")) return;
+  closeCustomMenus();
+});
+
+/** Queued-input depth from queue.status (their queued-count chip). */
+async function refreshQueueDepth(): Promise<void> {
+  const chip = $("queue-depth");
+  try {
+    const status = (await gateway.request("queue.status", { sessionKey })) as {
+      mode?: string; queued?: unknown[]; queuedCount?: number; steering?: number;
+    };
+    const n = typeof status.queuedCount === "number" ? status.queuedCount : Array.isArray(status.queued) ? status.queued.length : 0;
+    chip.hidden = n === 0;
+    chip.textContent = n > 0 ? String(n) : "";
+    chip.title = n > 0 ? `${n} input(s) queued for this session` : "";
+  } catch {
+    chip.hidden = true;
   }
 }
 
+
+
+/* ---------------- sessions drawer ---------------- */
+
+// Cache of the plain drawer list so session search can restore it (Esc /
+// clear) without another round trip.
+type SessionListRow = SessionRow;
+let lastSessionList: SessionListRow[] = [];
+
+/** Session row menu (P4 #33 — their session menu): rename, export, archive,
+ *  delete. One floating menu, closed by Esc / outside click / action. */
+let sessionMenu: HTMLElement | null = null;
+function closeSessionMenu(): void {
+  sessionMenu?.remove();
+  sessionMenu = null;
+  document.removeEventListener("click", closeSessionMenuOnOutside, true);
+}
+function closeSessionMenuOnOutside(e: Event): void {
+  if (sessionMenu && !sessionMenu.contains(e.target as Node)) closeSessionMenu();
+}
+
+function openSessionMenu(row: SessionListRow, x: number, y: number): void {
+  closeSessionMenu();
+  const archived = Number(row.archived ?? 0) === 1;
+  const item = (label: string, fn: () => void | Promise<void>, danger = false) => {
+    const b = el("button", { class: `menu__item${danger ? " menu__item--danger" : ""}`, type: "button" }, [label]);
+    b.onclick = async () => { closeSessionMenu(); await fn(); };
+    return b;
+  };
+  const menu = el("div", { class: "menu", id: "session-menu", role: "menu" });
+  menu.style.left = `${Math.min(x, window.innerWidth - 190)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 190)}px`;
+  menu.append(
+    item("Rename…", () => renameSession(row.key)),
+    item("Export transcript (.md)", () => exportSession(row.key)),
+    item(archived ? "Unarchive" : "Archive", () => setSessionArchived(row.key, !archived)),
+    item("Delete…", () => deleteSession(row.key), true),
+  );
+  document.body.append(menu);
+  sessionMenu = menu;
+  setTimeout(() => document.addEventListener("click", closeSessionMenuOnOutside, true), 0);
+  document.addEventListener("keydown", function esc(e) {
+    if (e.key === "Escape") { closeSessionMenu(); document.removeEventListener("keydown", esc); }
+  });
+}
+
+async function exportSession(key: string): Promise<void> {
+  try {
+    const res = (await gateway.request("sessions.export", { sessionKey: key })) as {
+      filename: string; content: string; dir: string; messageCount: number;
+    };
+    const blob = new Blob([res.content], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = el("a", { href: url, download: res.filename }) as HTMLAnchorElement;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast(`exported ${res.messageCount} message(s) — also saved under ${res.dir}`, "ok");
+  } catch (err) {
+    toast(`export failed: ${(err as Error).message}`, "err");
+  }
+}
+
+async function setSessionArchived(key: string, archived: boolean): Promise<void> {
+  try {
+    await gateway.request("sessions.patch", { sessionKey: key, archived });
+    toast(archived ? "session archived" : "session unarchived", "ok");
+    await refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+}
+
+function deleteSession(key: string): void {
+  modal({
+    title: "Delete session?",
+    body: el("div", {}, [
+      el("p", {}, [`${key} and its messages are removed from this device.`]),
+      el("p", { class: "hint" }, ["This cannot be undone."]),
+    ]),
+    confirmLabel: "Delete",
+    danger: true,
+    onConfirm: () => removeSession(key),
+  });
+}
+
+async function removeSession(key: string): Promise<void> {
+  try {
+    const res = (await gateway.request("sessions.delete", { sessionKey: key })) as { deleted: boolean; messages: number };
+    toast(res.deleted ? `deleted session + ${res.messages} message(s)` : "session not found", res.deleted ? "ok" : "err");
+    if (key === sessionKey) {
+      sessionKey = "main:main";
+      localStorage.setItem("sc.session", sessionKey);
+      setHeaderTitle(sessionKey);
+      try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+      await loadHistory();
+    }
+    await refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+}
+
+/** The count in the head and the summary in the footer — both read from the
+ *  same list that was just drawn, so they cannot disagree with it. */
+function syncSidebarCounts(rows: SessionRow[]): void {
+  const archived = rows.filter((r) => Number(r.archived ?? 0) === 1).length;
+  $("sessions-count").textContent = rows.length > 0 ? String(rows.length) : "";
+  $("sessions-foot").textContent = rows.length === 0
+    ? "No sessions yet"
+    : `${rows.length} ${rows.length === 1 ? "session" : "sessions"}${archived > 0 ? ` · ${archived} archived` : ""}`;
+}
+
+function renderSessions(list: SessionListRow[]): void {
+  lastSessionList = list;
+  closeSessionMenu();
+  const host = $("sessions");
+  host.innerHTML = "";
+  // A gateway that has not answered yet still has the session on screen.
+  const rows = list.length === 0 ? [{ key: sessionKey }] : list;
+  for (const group of groupSessions(rows)) {
+    host.append(el("div", { class: "sessions__group" }, [group.label]));
+    for (const s of group.rows) {
+      host.append(sessionRow(s, {
+        active: s.key === sessionKey,
+        busy: busy && s.key === sessionKey,
+        onOpen: () => void switchSession(s.key),
+        onMenu: (x, y) => openSessionMenu(s, x, y),
+      }));
+    }
+  }
+  syncSidebarCounts(rows);
+}
+
 async function switchSession(key: string): Promise<void> {
-  if (key === sessionKey) return;
+  if (key === sessionKey) {
+    // Still update URL to be canonical
+    try { location.hash = "#/chat/" + encodeURIComponent(key); } catch { location.hash = "#/chat/" + key; }
+    return;
+  }
   sessionKey = key;
+  setRepoSession(key);
   localStorage.setItem("sc.session", key);
-  $("session-title").textContent = key;
-  closeDrawer();
+  setHeaderTitle(key);
+  try { location.hash = "#/chat/" + encodeURIComponent(key); } catch { location.hash = "#/chat/" + key; }
+  if (!sideQuery?.matches) closeDrawer();
   await loadHistory();
   void refresh();
 }
 
-async function loadHistory(): Promise<void> {
-  chat.clear();
-  try {
-    const res = await gateway.request("chat.history", { sessionKey, limit: 60 });
-    const messages = (res as any).messages ?? [];
-    for (const m of messages) {
-      if (m.role === "user") chat.user(String(m.content ?? ""));
-      else if (m.role === "assistant" && m.content) chat.assistant(String(m.content));
+async function loadHistory(anchorMid?: number): Promise<void> {
+  // Fetch first, replace after: a failed request must never wipe the visible
+  // transcript (clear-before-fetch silently blanked the chat whenever the
+  // gateway was briefly unreachable). One retry for a gateway that is still
+  // settling after a reconnect.
+  let lastError: Error | null = null;
+  // Task 38: a slow transcript must not land in the chat that replaced it.
+  // Switching sessions twice quickly used to paint the first session's history
+  // into the second one.
+  const forSession = sessionKey;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await gateway.request("chat.history", {
+        sessionKey: forSession,
+        limit: anchorMid ? 40 : 60,
+        ...(anchorMid ? { messageId: anchorMid } : {}),
+      });
+      if (forSession !== sessionKey) return;
+      const messages = (res as any).messages ?? [];
+      const rendered = chat.replaceThread(
+        messages.map((m: any) => ({
+          id: typeof m.id === "number" ? m.id : undefined,
+          role: String(m.role ?? ""),
+          content: String(m.content ?? ""),
+          // Real per-message clock: history traces replay on it so a turn
+          // shows an honest "Worked for …" instead of epoch-minus-zero.
+          ts: typeof m.createdAt === "number" && m.createdAt > 0 ? m.createdAt : undefined,
+          // The /usage line rebuilt from the row's stored numbers (Task 23).
+          footer: typeof m.footer === "string" && m.footer ? m.footer : undefined,
+        })),
+      );
+      if (anchorMid !== undefined) {
+        // Reopen parity: land on the search hit's own row with a brief pulse.
+        const node = chat.anchorMap.get(anchorMid);
+        if (node) {
+          node.scrollIntoView({ block: "center" });
+          node.classList.add("msg--anchor");
+          setTimeout(() => node.classList.remove("msg--anchor"), 2400);
+        }
+      }
+      if (rendered === 0) {
+        chat.notice(`Session started · ${statusTools()} tools enabled`);
+      }
+      // Waiting inputs survive reconnects (they stay queued until consumed).
+      try {
+        const q = await gateway.request("queue.status", { sessionKey });
+        chat.queueReplace(((q as any).queued ?? []) as { runId: string; text: string; at: number }[]);
+      } catch { /* older gateway: no queue surface yet */ }
+      return;
+    } catch (err) {
+      lastError = err as Error;
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
     }
-    if (messages.length === 0) {
-      chat.notice(`Session started · ${statusTools()} tools enabled`);
-    }
-  } catch { /* ignore */ }
+  }
+  chat.notice(`could not load history: ${lastError?.message ?? "gateway unavailable"}`);
 }
+
+/* ---------------- session search (Partial #3) ---------------- */
+
+// Live search inside the sessions drawer (their palette/Threads parity in our
+// list shape): Sessions group = title/identifier matches, Messages group =
+// exact-word transcript hits (last word stays a prefix). Server-side search —
+// the drawer never downloads a roster to search.
+let searchSeq = 0;
+
+async function openSearchHit(sessionKeyHit: string, messageId?: number): Promise<void> {
+  if (sessionKeyHit !== sessionKey) {
+    sessionKey = sessionKeyHit;
+    localStorage.setItem("sc.session", sessionKeyHit);
+    setHeaderTitle(sessionKeyHit);
+  }
+  // A column on a laptop stays open across a session switch; the phone overlay
+  // gets out of the way.
+  if (!sideQuery?.matches) closeDrawer();
+  await loadHistory(messageId);
+  void refresh();
+}
+
+function renderSessionSearch(q: string, result: { titleHits?: any[]; messageHits?: any[] }): void {
+  const host = $("sessions");
+  host.innerHTML = "";
+  const clear = (): void => {
+    const input = $("sessions-search") as HTMLInputElement;
+    input.value = "";
+    input.dispatchEvent(new Event("input"));
+    input.focus();
+  };
+  host.append(...searchView(q, result, {
+    openSession: (key) => void openSearchHit(key),
+    openHit: (key, mid) => void openSearchHit(key, mid),
+    clear,
+  }));
+}
+
+function initSessionSearch(): void {
+  const input = $("sessions-search") as HTMLInputElement | null;
+  if (!input) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const run = async (): Promise<void> => {
+    const q = input.value.trim();
+    if (q.length < 2) { searchSeq++; renderSessions(lastSessionList); return; }
+    const seq = ++searchSeq;
+    try {
+      const res = await gateway.request("sessions.search", { query: q, limit: 25 });
+      if (seq !== searchSeq) return; // a newer keystroke already answered
+      renderSessionSearch(q, res as { titleHits?: any[]; messageHits?: any[] });
+    } catch {
+      // Search must never blank the drawer: keep whatever is on screen.
+    }
+  };
+  input.oninput = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => void run(), 150);
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Escape") {
+      if (input.value !== "") {
+        // Clear first; the drawer stays. With the field already empty the
+        // document handler closes the panel.
+        input.value = "";
+        input.dispatchEvent(new Event("input"));
+        e.stopPropagation();
+      }
+      input.blur();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const first = document.querySelector("#sessions .searchrow") as HTMLButtonElement | null;
+      first?.click();
+    }
+  };
+}
+
+initSessionSearch();
 
 function statusTools(): number {
   return toolCount;
@@ -221,7 +947,7 @@ function renameSession(key: string): void {
       const next = `${prefix}:${v.name}`;
       try {
         await gateway.request("sessions.rename", { sessionKey: key, newKey: next });
-        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); $("session-title").textContent = next; }
+        if (key === sessionKey) { sessionKey = next; localStorage.setItem("sc.session", next); setHeaderTitle(next); try { location.hash = "#/chat/" + encodeURIComponent(next); } catch { location.hash = "#/chat/" + next; } }
         toast("session renamed", "ok");
         void refresh();
       } catch (err) { toast((err as Error).message, "err"); }
@@ -229,65 +955,213 @@ function renameSession(key: string): void {
   });
 }
 
+/** The chat header: the session's name when we know it, else a placeholder —
+ *  never the raw key. Every writer of #session-title goes through here. */
+function setHeaderTitle(key: string, name?: string): void {
+  const title = name?.trim() || placeholderTitle(key);
+  $("session-title").textContent = title;
+  $("session-title").setAttribute("title", key);
+}
+
+/**
+ * Task 35 stage one: a new session is a *kind* before it is a chat. The `+`
+ * opens a sheet asking chat-or-code; "Chat" falls straight through to the
+ * instant path below, "Code" picks a repository first. Telemetry of the sheet
+ * lives in repo.ts — this file only knows how to start each kind.
+ */
+async function startCodeSession(repo: string, branch?: string): Promise<void> {
+  const key = `main:${Date.now().toString(36)}`;
+  await switchSession(key);
+  await bindRepoSession(key, repo, branch ? { branch } : {});
+}
+
+/**
+ * A new chat starts empty and names itself (Task 29). Asking for a title before
+ * the first message was the wrong order — you cannot name a conversation that
+ * has not happened yet. The row is created by loadHistory; the name arrives from
+ * the first reply and is refined once the second one lands.
+ */
 function newSession(): void {
-  modal({
-    title: "New session",
-    fields: [{ name: "name", label: "Session name", placeholder: "fix-bug" }],
-    confirmLabel: "Create",
-    onConfirm: async (v) => {
-      const name = (v.name || `s${Date.now().toString(36)}`).replace(/\s+/g, "-");
-      const key = `main:${name}`;
-      try {
-        await gateway.request("sessions.rename", { sessionKey: key, newKey: key }); // ensure row exists
-      } catch { /* ignore */ }
-      await switchSession(key);
-      chat.notice(`session ${key}`);
-    },
-  });
+  const key = `main:${Date.now().toString(36)}`;
+  void switchSession(key);
 }
 
 /* ---------------- drawer ---------------- */
 
 const drawerOverlay = $("drawer-overlay");
+// The app's one wide breakpoint (styles.css turns the Settings drawer into a
+// column there too). Above it this sidebar is a column, below it an overlay.
+const sideQuery = typeof window.matchMedia === "function" ? window.matchMedia("(min-width: 881px)") : null;
 
-function openDrawer(): void {
-  drawerOverlay.hidden = false;
-  $("drawer-btn").classList.add("is-on");
-  $("drawer-btn").setAttribute("aria-expanded", "true");
+/** A column the user closed stays closed: only "closed" is stored, so the
+ *  default on a first visit is open. */
+function sidebarPref(): boolean {
+  return localStorage.getItem("sc.sidebar") !== "closed";
 }
 
-function closeDrawer(): void {
+function openDrawer(persist = false): void {
+  drawerOverlay.hidden = false;
+  document.documentElement.dataset.side = "open";
+  $("drawer-btn").classList.add("is-on");
+  $("drawer-btn").setAttribute("aria-expanded", "true");
+  if (persist) localStorage.setItem("sc.sidebar", "open");
+}
+
+function closeDrawer(persist = false): void {
+  const wasOpen = !drawerOverlay.hidden;
+  const active = document.activeElement as Node | null;
+  const hadFocus = Boolean(active && drawerOverlay.contains?.(active));
   drawerOverlay.hidden = true;
   $("drawer-btn").classList.remove("is-on");
   $("drawer-btn").setAttribute("aria-expanded", "false");
+  if (persist) {
+    localStorage.setItem("sc.sidebar", "closed");
+    document.documentElement.dataset.side = "closed";
+  }
+  // Focus goes back to the control that owns the panel — never out of a dialog
+  // that opened on top of it.
+  if (wasOpen && hadFocus && !document.querySelector?.(".overlay:not([hidden]) .modal")) $("drawer-btn").focus();
 }
 
+/** Apply the preference to this width: a column on wide screens, a closed
+ *  overlay on phones. Runs at boot, when the breakpoint is crossed, and when
+ *  chat comes back from Settings. */
+function applySidebar(): void {
+  // `data-side` records the preference (not the current width), so the head
+  // script's first paint and this function always agree.
+  const open = sidebarPref();
+  document.documentElement.dataset.side = open ? "open" : "closed";
+  if (sideQuery?.matches && open) openDrawer();
+  else closeDrawer();
+}
+sideQuery?.addEventListener?.("change", applySidebar);
+
 $("drawer-btn").onclick = () => {
-  if (drawerOverlay.hidden) openDrawer(); else closeDrawer();
+  if (drawerOverlay.hidden) {
+    openDrawer(true);
+    // On a phone the panel covers the thread: move focus into it so Esc and Tab
+    // work without a detour through the rail.
+    if (!sideQuery?.matches) $("drawer").focus();
+  } else {
+    closeDrawer(true);
+  }
 };
-$("drawer-close").onclick = closeDrawer;
-$("drawer-scrim").onclick = closeDrawer;
-$("new-session").onclick = newSession;
+$("drawer-close").onclick = () => closeDrawer(true);
+$("drawer-scrim").onclick = () => closeDrawer(true);
+// Task 35: both `+` affordances ask chat-or-code. The row still starts a chat
+// on Enter, so the common case costs one keystroke more, not a dialog.
+$("new-session").onclick = openSessionSheet;
+$("new-chat-btn").onclick = openSessionSheet;
 
 /* ---------------- model sheet ---------------- */
 
-$("model-btn").onclick = () => {
-  pickModel({
-    current: currentModel,
-    models,
-    onPick: async (ref) => {
-      $("model-name").textContent = ref;
-      try {
-        await gateway.request("config.set", { path: "agents.defaults.model", value: ref });
-        currentModel = ref;
-        toast(`model → ${ref}`, "ok");
-        void refresh();
-      } catch (err) {
-        toast((err as Error).message, "err");
-      }
-    },
-  });
+$("model-btn").onclick = (e) => {
+  e.stopPropagation();
+  const menu = $("model-menu");
+  const open = menu.hidden;
+  // close think/queue menus
+  document.getElementById("think-menu")!.hidden = true;
+  document.getElementById("queue-menu")!.hidden = true;
+  if (open) {
+    renderModelMenu();
+    menu.hidden = false;
+    $("model-btn").setAttribute("aria-expanded", "true");
+    setTimeout(() => $("model-filter").focus(), 30);
+  } else {
+    menu.hidden = true;
+    $("model-btn").setAttribute("aria-expanded", "false");
+  }
 };
+
+function renderModelMenu(): void {
+  const list = $("model-list");
+  const filter = $("model-filter") as HTMLInputElement;
+  const q = (filter?.value ?? "").trim();
+  const rows = models.map((m) => ({
+    value: m.value,
+    label: m.label,
+    provider: m.group || "default",
+  }));
+  const scored = rows
+    .map((r) => ({ ...r, score: Math.max(fuzzy(q, r.label), fuzzy(q, r.value), fuzzy(q, r.provider)) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+  list.innerHTML = "";
+  if (rows.length === 0) {
+    list.append(el("div", { class: "model-menu__empty" }, ["No models selected — enable them in Settings → Models"]));
+    return;
+  }
+  if (scored.length === 0) {
+    list.append(el("div", { class: "model-menu__empty" }, ["No models match"]));
+    return;
+  }
+  let group = "";
+  for (const r of scored) {
+    if (r.provider !== group) {
+      group = r.provider;
+      list.append(el("div", { class: "model-menu__group" }, [group === "default" ? "default" : group]));
+    }
+    // The group header already names the provider, and the row reads best as
+    // a plain sentence-case name rather than the raw id.
+    const friendly = friendlyModelName(r.label, r.provider);
+    const row = el("button", { class: "model-menu__row" + (r.value === currentModel ? " is-current" : ""), type: "button" }, []);
+    row.append(el("span", { class: "model-menu__label" }, [friendly]));
+    row.title = r.label;
+    if (r.value === currentModel) {
+      row.append(el("span", { class: "model-menu__check" }, ["✓"]));
+    }
+    row.onclick = (ev) => {
+      ev.stopPropagation();
+      void pickModelValue(r.value);
+    };
+    list.append(row);
+  }
+}
+
+async function pickModelValue(value: string): Promise<void> {
+  const found = models.find((m) => m.value === value);
+  const label = found?.label || value;
+  $("model-name").textContent = friendlyModelName(label, found?.group);
+  $("model-btn").setAttribute("title", `Model: ${label}`);
+  $("model-btn").setAttribute("aria-label", `Choose model (${label})`);
+  $("model-menu").hidden = true;
+  $("model-btn").setAttribute("aria-expanded", "false");
+  try {
+    await gateway.request("config.set", { path: "agents.defaults.model", value });
+    currentModel = value;
+    toast(`model → ${label}`, "ok");
+    void refresh();
+  } catch (err) {
+    toast((err as Error).message, "err");
+  }
+}
+
+$("model-filter").addEventListener("input", () => renderModelMenu());
+$("model-filter").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    $("model-menu").hidden = true;
+    $("model-btn").setAttribute("aria-expanded", "false");
+  }
+});
+
+$("model-add").onclick = (e) => {
+  e.stopPropagation();
+  $("model-menu").hidden = true;
+  $("model-btn").setAttribute("aria-expanded", "false");
+  location.hash = "#/settings";
+  setTimeout(() => document.getElementById("tab-providers")?.click(), 80);
+};
+
+document.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.closest("#model-wrap")) return;
+  const m = $("model-menu");
+  if (m && !m.hidden) {
+    m.hidden = true;
+    $("model-btn").setAttribute("aria-expanded", "false");
+  }
+});
 
 /* ---------------- chrome ---------------- */
 
@@ -301,22 +1175,144 @@ $("theme-btn").onclick = () => {
 };
 
 $("settings-btn").onclick = () => {
-  location.hash = location.hash === "#/settings" ? "" : "#/settings";
+  if ((location.hash || "").startsWith("#/settings")) {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+  } else {
+    location.hash = "#/settings";
+  }
 };
-$("settings-back").onclick = () => { location.hash = ""; };
+
+/* ---------------- sub-agents panel (their Subagents view, compact) ---------------- */
+
+function openSubagentsPanel(): void {
+  type Row = {
+    child_session_key: string; run_id: string; label: string; task_name: string;
+    status: string; result_stats: string | null; outcome: string | null;
+  };
+  const renderRows = async (box: HTMLElement, refill: () => Promise<Row[]>) => {
+    box.innerHTML = "";
+    let rows: Row[] = [];
+    try {
+      rows = await refill();
+    } catch {
+      box.append(el("div", { class: "sgalist__empty" }, ["could not load sub-agents"]));
+      return;
+    }
+    if (rows.length === 0) {
+      box.append(el("div", { class: "sgalist__empty" }, ["No sub-agents for this session yet."]));
+      return;
+    }
+    const running = rows.filter((r) => r.status === "running");
+    const finished = rows.filter((r) => r.status !== "running");
+    const list = el("div", { class: "sgalist" });
+    if (running.length > 0) list.append(el("div", { class: "qrow__label" }, ["Running"]));
+    for (const r of running) {
+      const stop = el("button", { class: "btn sm row__stop", type: "button" }, ["Stop"]);
+      stop.onclick = async () => {
+        try {
+          await gateway.request("subagents.cancel", { sessionKey, target: r.run_id });
+          toast("sub-agent stopping…", "ok");
+        } catch (err) {
+          toast((err as Error).message, "err");
+        }
+      };
+      list.append(el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, [r.label || r.task_name || r.child_session_key]),
+        el("span", { class: "row__meta row__meta--run" }, ["running…"]),
+        stop,
+      ]));
+    }
+    if (finished.length > 0) list.append(el("div", { class: "qrow__label" }, ["Finished"]));
+    for (const r of finished) {
+      const open = el("button", { class: "btn sm row__stop", type: "button" }, ["Open"]);
+      open.onclick = () => void switchSession(r.child_session_key);
+      list.append(el("div", { class: "row" }, [
+        el("span", { class: "row__label" }, [r.label || r.task_name || r.child_session_key]),
+        el("span", { class: "row__meta" }, [`${r.status}${r.result_stats ? ` · ${r.result_stats}` : ""}`]),
+        open,
+      ]));
+    }
+    box.append(list);
+  };
+  const fetchRows = async (): Promise<Row[]> => ((await gateway.request("subagents.list", { sessionKey })) as any).children ?? [];
+  modal({
+    title: "Sub-agents",
+    cancelLabel: "Close",
+    render: (box) => {
+      const rerender = () => void renderRows(box, fetchRows);
+      rerender();
+      const refreshBtn = el("button", { class: "btn sm", type: "button" }, ["↻ Refresh"]);
+      refreshBtn.style.marginTop = "10px";
+      refreshBtn.onclick = rerender;
+      box.append(refreshBtn);
+    },
+  });
+}
+
+$("subagents-btn").onclick = () => openSubagentsPanel();
+
+/* ---------------- terminals (Task 52) ---------------- */
+// The shells live in the daemon; this panel is the operator's window. Events
+// arrive on the gateway stream whether or not the panel is open, so the rail
+// dot can show "something is running" without opening anything.
+const terminalPanel = new TerminalPanel($("terminal-panel"), {
+  transport: { request: <T,>(method: string, params?: Record<string, unknown>) => gateway.request(method, params) as Promise<T> },
+  sessionKey: () => sessionKey,
+  toast: (text, tone) => toast(text, tone),
+});
+terminalPanel.onStatus = (st) => {
+  const btn = $("terminal-btn");
+  btn.classList.toggle("ibtn--live", st.busy > 0);
+  btn.title =
+    st.open === 0
+      ? "Watch the agent's terminal"
+      : st.busy > 0
+        ? `${st.busy} of ${st.open} terminal${st.open === 1 ? "" : "s"} running`
+        : `${st.open} terminal${st.open === 1 ? "" : "s"} open`;
+  btn.setAttribute("aria-label", `Terminals — ${st.open} open${st.busy > 0 ? `, ${st.busy} running` : ""}`);
+};
+$("terminal-btn").onclick = () => void terminalPanel.toggle();
 $("session-btn").onclick = () => { void loadHistory(); };
 
 /* ---------------- routing ---------------- */
 
-function route(): void {
-  const settingsOpen = location.hash === "#/settings";
+async function route(): Promise<void> {
+  const h = location.hash || "";
+  const settingsOpen = h.startsWith("#/settings");
+  const chatHash = getSessionFromHash();
+  if (chatHash && chatHash !== sessionKey) {
+    sessionKey = chatHash;
+    localStorage.setItem("sc.session", sessionKey);
+    setHeaderTitle(sessionKey);
+    void loadHistory();
+    void refresh();
+  } else if (!settingsOpen && h && h !== "#/" && !h.startsWith("#/chat") && !h.startsWith("#/c")) {
+    // default to current session
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+    return;
+  } else if (!settingsOpen && (h === "" || h === "#/")) {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+    return;
+  }
   $("chat-view").hidden = settingsOpen;
   $("settings-view").hidden = !settingsOpen;
+  // The top rail is chat-only chrome (session title, new chat, subagents,
+  // gear, theme). Settings is a dedicated page with its own sidebar — drop
+  // the rail so it doesn't bleed into Settings.
+  $("rail").hidden = settingsOpen;
   $("settings-btn").classList.toggle("is-on", settingsOpen);
   if (settingsOpen) {
+    await loadSettingsInterior();
     settings = new Settings($("settings-body"), () => { void refresh(); });
+    // pass hash for section
+    (settings as any).setHash?.(h);
     void settings.render();
     closeDrawer();
+  } else {
+    if (chatHash) {
+      setHeaderTitle(sessionKey);
+    }
+    applySidebar();
   }
 }
 window.addEventListener("hashchange", route);
@@ -326,15 +1322,33 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     $("model-btn").click();
   }
-  if (e.key === "Escape" && busy) void gateway.request("chat.abort", { sessionKey });
+  if (e.key !== "Escape") return;
+  // Closest layer first: an open sidebar closes and the run keeps going. Only a
+  // second Escape (sidebar gone) stops a turn.
+  if (!drawerOverlay.hidden) { closeDrawer(true); return; }
+  if (busy) void gateway.request("chat.abort", { sessionKey });
 });
 
 /* ---------------- boot ---------------- */
 
 const savedTheme = localStorage.getItem("sc.theme");
 if (savedTheme) document.documentElement.dataset.themeMode = savedTheme;
-$("session-title").textContent = sessionKey;
+setHeaderTitle(sessionKey);
+if (!(location.hash || "").startsWith("#/settings")) {
+  if (!getSessionFromHash()) {
+    try { location.hash = "#/chat/" + encodeURIComponent(sessionKey); } catch { location.hash = "#/chat/" + sessionKey; }
+  }
+}
 route();
+applySidebar();
+// Task 35: the repo bar is per-session state, so it is initialised with the
+// session that boot restores — not with whatever the server last cloned.
+mountRepoBar();
+initRepo({
+  chat: () => newSession(),
+  code: (repo, branch) => void startCodeSession(repo, branch),
+  composer: chat,
+});
+setRepoSession(sessionKey);
 gateway.connect();
-void health();
 void refresh();

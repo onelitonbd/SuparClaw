@@ -1,0 +1,903 @@
+/* Agent Trace — timeline rail.
+   Tokens live on `.agent-trace` so the component is self-contained (and does
+   not repaint the host app). Override any token on `.agent-trace` to theme;
+   the dark block below maps to the host's `data-theme-mode="dark"`. */
+
+.agent-trace {
+  /* surfaces */
+  --page: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f6f7f9;
+  --hover: #f1f3f6;
+  --border: #e3e6eb;
+  --rail: #dde0e6;
+  /* ink */
+  --ink: #14161a;
+  --muted: #5b6270;
+  /* accent + status */
+  --accent: #2f5bea;
+  --on-accent: #ffffff;
+  --success: #0f7b4f;
+  --success-bg: #e4f4ec;
+  --warning: #7a4e00;
+  --warning-bg: #fff1cc;
+  --error: #b42318;
+  --error-bg: #fee4e2;
+  --info-bg: #eef2ff;
+  /* type + radii */
+  --font-ui: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --radius-card: 14px;
+  --radius-box: 10px;
+  --radius-pill: 999px;
+
+  font-family: var(--font-ui);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 12px 0;
+  width: 100%;
+}
+
+html[data-theme-mode="dark"] .agent-trace {
+  --page: #0e0e11;
+  --surface: #19191d;
+  --surface-2: #131316;
+  --hover: #222228;
+  --border: #2a2a31;
+  --rail: #33333c;
+  --ink: #ededf0;
+  --muted: #a9a9b2;
+  --accent: #8ea0ff;
+  --on-accent: #0b1030;
+  --success: #4cc38a;
+  --success-bg: #14301f;
+  --warning: #e5a93d;
+  --warning-bg: #2e2410;
+  --error: #f2766a;
+  --error-bg: #3a1a17;
+  --info-bg: #1f2550;
+}
+
+.agent-trace *,
+.agent-trace *::before,
+.agent-trace *::after {
+  box-sizing: border-box;
+}
+
+.agent-trace [hidden] {
+  display: none !important;
+}
+
+.agent-trace :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.agent-trace__header:focus-visible {
+  /* the card clips outside outlines, so inset the header ring */
+  outline-offset: -3px;
+  border-radius: 0;
+}
+
+/* ------------------------------------------------------------------ card */
+
+.agent-trace__card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.agent-trace__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 14px;
+  margin: 0;
+  border: 0;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.agent-trace:not(.agent-trace--running):not(.agent-trace--waiting) .agent-trace__header {
+  cursor: pointer;
+}
+
+.agent-trace:not(.agent-trace--running):not(.agent-trace--waiting) .agent-trace__header:hover {
+  background: var(--hover);
+}
+
+.agent-trace__status-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.agent-trace__spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-top-color: var(--accent);
+  animation: agent-trace-spin 0.8s linear infinite;
+}
+
+@keyframes agent-trace-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-trace__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-trace__title {
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* State without a badge: the title colour does the work the old tick/cross
+   circle used to do. */
+.agent-trace__title--error { color: var(--error); }
+.agent-trace__title--warning { color: var(--warning); }
+
+.agent-trace__shimmer {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--ink) 0%,
+    color-mix(in srgb, var(--ink) 35%, transparent) 50%,
+    var(--ink) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agent-trace-shimmer 1.9s linear infinite;
+}
+
+@keyframes agent-trace-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.agent-trace__sub {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-trace__sub:empty { display: none; }
+
+.agent-trace__tail {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.agent-trace__timer {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.agent-trace__chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-trace__chip {
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-trace__chip--more {
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.agent-trace__chev {
+  display: inline-flex;
+  color: var(--muted);
+}
+
+.agent-trace__chev svg {
+  transition: transform 150ms ease;
+}
+
+.agent-trace--expanded .agent-trace__chev svg {
+  transform: rotate(90deg);
+}
+
+/* ------------------------------------------------------------------ body */
+
+.agent-trace__body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 150ms ease;
+  border-top: 0;
+}
+
+.agent-trace--expanded .agent-trace__body {
+  border-top: 1px solid var(--border);
+}
+
+.agent-trace__body-clip {
+  min-height: 0;
+}
+
+.agent-trace__scroller {
+  max-height: min(60vh, 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.agent-trace__steps {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0 8px;
+}
+
+/* ------------------------------------------------------------------ items */
+
+.agent-trace__item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  padding: 0 14px;
+}
+
+.agent-trace__item--subagent {
+  padding-left: 38px;
+}
+
+.agent-trace__item--subagent .agent-trace__rail-line {
+  background: transparent;
+}
+
+.agent-trace__item--new {
+  animation: agent-trace-in 180ms ease-out both;
+}
+
+@keyframes agent-trace-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+.agent-trace__rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  align-self: stretch;
+}
+
+.agent-trace__rail-cell {
+  width: 24px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.agent-trace__rail-line {
+  width: 1px;
+  flex: 1 1 auto;
+  background: var(--rail);
+}
+
+.agent-trace__steps > .agent-trace__item:last-child .agent-trace__rail-line {
+  background: transparent;
+}
+
+.agent-trace__content {
+  min-width: 0;
+  padding: 5px 0;
+}
+
+.agent-trace__circle {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--hover);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.agent-trace__circle--spinner {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-top-color: var(--accent);
+  animation: agent-trace-spin 0.8s linear infinite;
+}
+
+.agent-trace__circle--error {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 30%, var(--border));
+  background: var(--error-bg);
+}
+
+.agent-trace__circle--nested {
+  background: var(--info-bg);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.agent-trace__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  flex: none;
+}
+
+.agent-trace__dot--accent {
+  width: 9px;
+  height: 9px;
+  background: var(--accent);
+}
+
+.agent-trace__dot--warn {
+  width: 8px;
+  height: 8px;
+  background: var(--warning);
+}
+
+.agent-trace__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% + 16px);
+  min-height: 32px;
+  margin: 0 -8px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-trace__row:hover {
+  background: var(--hover);
+}
+
+.agent-trace__row--thinking {
+  color: var(--muted);
+}
+
+.agent-trace__row--subagent {
+  cursor: default;
+}
+
+.agent-trace__row--subagent:hover {
+  background: transparent;
+}
+
+.agent-trace__label {
+  font-size: 14px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-trace__label--muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.agent-trace__meta-inline {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-trace__duration {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agent-trace__chev-sm {
+  display: inline-flex;
+  color: var(--muted);
+  flex: none;
+}
+
+.agent-trace__chev-sm svg {
+  transition: transform 150ms ease;
+}
+
+.agent-trace__row[aria-expanded="true"] .agent-trace__chev-sm svg {
+  transform: rotate(90deg);
+}
+
+.agent-trace__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex: none;
+}
+
+/* ---------------------------------------------------------------- details */
+
+.agent-trace__detail {
+  margin: 4px 0 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+}
+
+.agent-trace__detail--thought {
+  background: var(--surface-2);
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.agent-trace__detail-section + .agent-trace__detail-section {
+  margin-top: 10px;
+}
+
+.agent-trace__detail-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.agent-trace__pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.agent-trace__retry-note {
+  margin: 0 0 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 12.5px;
+}
+
+.agent-trace__call-error {
+  margin: 0 0 10px;
+  color: var(--error);
+  font-size: 12.5px;
+}
+
+.agent-trace__raw-toggle {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ----------------------------------------------------------------- groups */
+
+.agent-trace__subrows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 4px 2px;
+  padding-left: 8px;
+  border-left: 1px solid var(--rail);
+}
+
+.agent-trace__subrow {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-trace__subrow:hover {
+  background: var(--hover);
+}
+
+.agent-trace__subrow-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-trace__subrow-state--ok {
+  color: var(--success);
+}
+
+.agent-trace__subrow-state--error {
+  color: var(--error);
+}
+
+.agent-trace__subrow-state--unknown {
+  color: var(--muted);
+}
+
+.agent-trace__subrow-label {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-trace__mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.agent-trace__subrow-meta {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.agent-trace__subrow-wrap .agent-trace__detail {
+  margin-left: 24px;
+}
+
+.agent-trace__mini-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-top-color: var(--accent);
+  animation: agent-trace-spin 0.8s linear infinite;
+  flex: none;
+}
+
+/* --------------------------------------------------------------- messages */
+
+.agent-trace__message {
+  margin: 2px 0;
+  color: var(--ink);
+  font-size: 14.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------- approval */
+
+.agent-trace__approval {
+  margin: 4px 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: var(--radius-box);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.agent-trace__approval-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.agent-trace__approval-desc {
+  margin: 0 0 10px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.agent-trace__approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-trace__approval-done {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.agent-trace__btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.agent-trace__btn:hover {
+  background: var(--hover);
+}
+
+.agent-trace__btn--primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+
+.agent-trace__btn--primary:hover {
+  background: color-mix(in srgb, var(--accent) 88%, black);
+}
+
+/* ----------------------------------------------------------------- errors */
+
+.agent-trace__errorbox {
+  margin: 4px 14px 12px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--error) 28%, var(--border));
+  border-radius: var(--radius-box);
+  background: color-mix(in srgb, var(--error) 4%, var(--surface));
+}
+
+.agent-trace__error-title {
+  margin: 0 0 4px;
+  color: var(--error);
+  font-weight: 600;
+}
+
+.agent-trace__error-copy {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ final answer */
+
+.agent-trace__final {
+  margin-top: 10px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+
+.agent-trace__final p {
+  margin: 0 0 10px;
+}
+
+.agent-trace__final p:last-child {
+  margin-bottom: 0;
+}
+
+.agent-trace__final ul,
+.agent-trace__final ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.agent-trace__table {
+  width: 100%;
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-box);
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-trace__table th {
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 500;
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-trace__table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-trace__table tr:last-child td {
+  border-bottom: 0;
+}
+
+.agent-trace__table .agent-trace__num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.agent-trace__pos {
+  color: var(--success);
+}
+
+.agent-trace__neg {
+  color: var(--error);
+}
+
+.agent-trace__zero {
+  color: var(--muted);
+}
+
+.agent-trace__file {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 8px 6px 0;
+  padding: 8px 12px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-box);
+  background: var(--surface);
+  color: inherit;
+  text-decoration: none;
+}
+
+.agent-trace__file:hover {
+  background: var(--hover);
+}
+
+.agent-trace__file-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--info-bg);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.agent-trace__file-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.agent-trace__file-name {
+  font-weight: 500;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-trace__file-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------- jump/sr-only */
+
+.agent-trace__jump {
+  position: sticky;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px auto 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  box-shadow: 0 4px 20px rgba(20, 22, 26, 0.1);
+  cursor: pointer;
+}
+
+.agent-trace__jump-icon {
+  display: inline-flex;
+}
+
+.agent-trace__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------------------------------------ reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-trace__spinner,
+  .agent-trace__circle--spinner,
+  .agent-trace__mini-spinner,
+  .agent-trace__shimmer,
+  .agent-trace__item--new {
+    animation: none;
+  }
+
+  .agent-trace__shimmer {
+    background: none;
+    color: var(--ink);
+  }
+
+  .agent-trace__body,
+  .agent-trace__chev svg,
+  .agent-trace__chev-sm svg {
+    transition: none;
+  }
+}

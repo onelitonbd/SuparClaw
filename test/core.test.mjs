@@ -46,7 +46,8 @@ test("config defaults are applied and unknown keys rejected", () => {
   assert.equal(errors.length, 0);
   assert.equal(config.gateway.port, 19999);
   assert.equal(config.gateway.bind, "loopback");
-  assert.equal(config.agents.defaults.maxToolIterations, 12);
+  // Task 38: 0 means no ceiling — the old default of 12 cut real work short.
+  assert.equal(config.agents.defaults.maxToolIterations, 0);
 
   const bad = parseConfig({ gateway: { prot: 1 } });
   assert.ok(bad.errors.some((e) => e.includes("unknown key")));
@@ -140,11 +141,13 @@ test("tool registry respects config policy", () => {
   const names = buildRegistry(config).map((t) => t.name);
   assert.ok(names.includes("fs_read"));
   assert.ok(names.includes("memory_append"));
-  assert.ok(!names.includes("exec"), "exec stays off until explicitly enabled");
-
-  config.tools.exec.enabled = true;
+  assert.ok(names.includes("exec"), "exec ships enabled — the agent acts on its own");
   const execTool = buildRegistry(config).find((t) => t.name === "exec");
-  assert.ok(execTool?.needsApproval, "exec requires approval");
+  assert.ok(execTool?.needsApproval, "the gate is still there for stricter modes");
+
+  config.tools.exec.enabled = false;
+  assert.ok(!buildRegistry(config).some((t) => t.name === "exec"), "the switch still disables it");
+  config.tools.exec.enabled = true;
 
   config.tools.fs = false;
   assert.ok(!buildRegistry(config).some((t) => t.name === "fs_read"));
@@ -272,4 +275,30 @@ test("a run's model override reaches the LLM (so /model really changes the model
 
   assert.ok(events.includes("start") && events.includes("final"), `run lifecycle events: ${events}`);
   store.close();
+});
+
+test("agents.defaults.queueMode is carried into messages.queue.mode when it was never written", () => {
+  // The legacy control is gone from Settings, so an old config must not quietly
+  // start behaving differently: the value it holds still decides the new key,
+  // which is the only one the loop reads (loop.ts resolveQueueMode).
+  const legacy = parseConfig({ agents: { defaults: { queueMode: "steer" } } });
+  assert.deepEqual(legacy.errors, []);
+  assert.equal(legacy.config.messages.queue.mode, "steer");
+
+  const fresh = parseConfig({});
+  assert.deepEqual(fresh.errors, []);
+  assert.equal(fresh.config.messages.queue.mode, "steer", "no legacy value leaves the schema default alone");
+
+  // Both present: the section the user can still edit wins.
+  const both = parseConfig({
+    agents: { defaults: { queueMode: "followup" } },
+    messages: { queue: { mode: "interrupt" } },
+  });
+  assert.deepEqual(both.errors, []);
+  assert.equal(both.config.messages.queue.mode, "interrupt");
+
+  // A legacy value with no counterpart in the new enum is not smuggled through.
+  const unknown = parseConfig({ agents: { defaults: { queueMode: "nonsense" } } });
+  assert.deepEqual(unknown.errors, []);
+  assert.equal(unknown.config.messages.queue.mode, "steer");
 });

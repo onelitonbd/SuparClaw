@@ -79,7 +79,12 @@ class El {
 }
 
 async function boot() {
-  const html = await readFile(join(root, "ui/index.html"), "utf8");
+  const indexHtml = await readFile(join(root, "ui/index.html"), "utf8");
+  let interiorHtml = "";
+  try {
+    interiorHtml = await readFile(join(root, "ui/interior/settings.html"), "utf8");
+  } catch {}
+  const html = indexHtml + "\n" + interiorHtml;
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
 
   const make = (tag) => new El(tag);
@@ -141,12 +146,18 @@ async function boot() {
     WebSocket: globalThis.WebSocket,
     requestAnimationFrame: globalThis.requestAnimationFrame,
     matchMedia: globalThis.matchMedia,
+    fetch: globalThis.fetch,
   };
 
   globalThis.window = win;
   globalThis.location = win.location;
   globalThis.document = document;
   globalThis.localStorage = localStorage;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => interiorHtml,
+  });
   Object.defineProperty(globalThis, "navigator", {
     value: { clipboard: { writeText: async () => {} } },
     configurable: true,
@@ -182,9 +193,14 @@ test("the Control UI bundle boots and every element it looks up exists", async (
     "approval-deny", "approval-allow", "drawer-btn", "drawer-close", "drawer-scrim", "drawer",
     "sessions", "new-session", "sheet-overlay", "sheet-scrim", "sheet", "model-filter",
     "model-list", "sheet-add-provider", "modal-overlay", "modal-scrim", "modal", "modal-title",
-    "modal-body", "modal-foot", "toasts", "settings-view", "settings-tabs", "settings-body",
+    "modal-body", "modal-foot", "toasts", "settings-view", "settings-body",
     "settings-back", "settings-btn", "theme-btn", "session-btn", "session-title", "conn-dot",
     "conn-label",
+    // Task 52 — the rail button and the panel node. The panel's inner ids are
+    // built at boot by ui/src/terminal.ts (so they are not in index.html); this
+    // boot importing app.js is what proves the panel constructs. Its contents
+    // are asserted in test/ui-terminal-panel.test.mjs.
+    "terminal-btn", "terminal-panel",
   ];
   const missing = required.filter((id) => !ids.has(id));
   assert.deepEqual(missing, [], `index.html is missing: ${missing.join(", ")}`);

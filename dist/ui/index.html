@@ -7,7 +7,23 @@
 <meta name="theme-color" content="#F4F3EF" />
 <title>SuparClaw</title>
 <link rel="stylesheet" href="./styles.css" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232B50F0'/%3E%3Cpath d='M8 20l4-10 4 6 4-6 4 10' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<meta name="application-name" content="SuparClaw" />
+<meta name="apple-mobile-web-app-title" content="SuparClaw" />
+<meta name="description" content="Your phone is the machine — a personal AI gateway that runs natively on Termux." />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="SuparClaw" />
+<meta property="og:title" content="SuparClaw" />
+<meta property="og:description" content="Your phone is the machine." />
+<meta property="og:image" content="./og-image.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="SuparClaw" />
+<meta name="twitter:description" content="Your phone is the machine." />
+<meta name="twitter:image" content="./og-image.png" />
 <style>
   /* First paint before styles.css arrives: never flash the wrong theme. */
   html { background: #F4F3EF; }
@@ -15,12 +31,20 @@
   html, body { height: 100%; }
   body { margin: 0; }
 </style>
+<script>
+  // The chat sidebar is a column on wide screens. Apply the remembered choice
+  // before the first paint, so an open-or-collapsed column never flashes the
+  // wrong way while app.js is still loading. The CSS fallback is "open".
+  try {
+    document.documentElement.dataset.side = localStorage.getItem("sc.sidebar") === "closed" ? "closed" : "open";
+  } catch { /* storage blocked: the CSS default stands */ }
+</script>
 </head>
 <body>
 <div class="app" id="app">
 
-  <!-- Top rail: sessions, connection, settings, theme -->
-  <header class="rail">
+  <!-- Top rail: sessions, connection, settings, theme (chat chrome — hidden on Settings) -->
+  <header class="rail" id="rail">
     <button class="ibtn" id="drawer-btn" type="button" aria-label="Sessions" aria-expanded="false">
       <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
     </button>
@@ -30,6 +54,17 @@
         <span class="dot" id="conn-dot" aria-hidden="true"></span>
         <span id="conn-label">connecting…</span>
       </span>
+    </button>
+    <button class="ibtn" id="new-chat-btn" type="button" aria-label="New chat">
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="ibtn" id="subagents-btn" type="button" aria-label="Sub-agents">
+      <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+    </button>
+    <!-- The live dot (ibtn--live) is added by main.ts only while a shell is
+         actually running: a permanent green pulse would be a lie. -->
+    <button class="ibtn" id="terminal-btn" type="button" aria-label="Terminals" title="Watch the agent's terminal">
+      <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M7 9.5l3 2.5-3 2.5"/><path d="M13 14.5h4"/></svg>
     </button>
     <button class="ibtn" id="settings-btn" type="button" aria-label="Settings">
       <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg>
@@ -41,16 +76,21 @@
 
   <!-- Chat -->
   <section class="view view--chat" id="chat-view">
+    <!-- Task 35: the repo bar. Present in the DOM always, `hidden` outside a code
+         session — a bar that appears and disappears must still be a stable node
+         so its state survives re-renders. -->
+    <div class="repo-bar" id="repo-bar" role="status" aria-live="polite" hidden></div>
     <div class="scroll" id="thread">
       <div class="stack" id="stack"></div>
     </div>
 
     <div class="dock">
       <div class="dock__fade" aria-hidden="true"></div>
-      <button class="jump" id="jump" type="button" hidden>
-        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
-        Jump to latest
+      <button class="jump" id="jump" type="button" hidden aria-label="Jump to latest" title="Jump to latest">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
       </button>
+
+      <div class="qrow" id="qrow" hidden></div>
 
       <div class="approval" id="approval" role="alert" hidden>
         <div class="approval__head">
@@ -58,66 +98,119 @@
           <span><b id="approval-tool">run_command</b> <span class="approval__what">wants to run</span></span>
         </div>
         <code class="mono approval__args" id="approval-args"></code>
+        <div class="approval__why" id="approval-why"></div>
         <div class="approval__row">
           <button class="btn" id="approval-deny" type="button">Deny</button>
-          <button class="btn pri" id="approval-allow" type="button">Approve</button>
+          <button class="btn" id="approval-always" type="button">Always allow</button>
+          <button class="btn pri" id="approval-allow" type="button">Approve once</button>
+        </div>
+      </div>
+
+      <div class="approval" id="question" role="alert" hidden>
+        <div class="approval__head">
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .3c0 1.7-2.5 2-2.5 3.7"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span><b>The agent is asking</b> <span class="approval__what">— one question at a time</span></span>
+          <span class="question__progress" id="question-progress" aria-live="polite"></span>
+        </div>
+        <div id="question-body"></div>
+        <div class="approval__row question__actions">
+          <button class="btn" id="question-skip" type="button">Skip all</button>
+          <button class="btn" id="question-skip-one" type="button">Skip this question</button>
+          <button class="btn pri" id="question-answer" type="button" disabled>Next question</button>
         </div>
       </div>
 
       <div class="composer" id="composer">
+        <div class="attach-strip" id="attach-strip" hidden></div>
         <textarea id="input" rows="1" placeholder="Message the agent…" aria-label="Message"></textarea>
         <div class="composer__row">
-          <button class="model-btn" id="model-btn" type="button" aria-haspopup="dialog" aria-label="Choose model">
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>
-            <span class="mono" id="model-name">model…</span>
-            <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
-          </button>
-          <span class="mono composer__tokens" id="tok"></span>
-          <button class="sendbtn sendbtn--stop" id="stop-btn" type="button" aria-label="Stop" hidden>
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>
-          </button>
-          <button class="sendbtn sendbtn--go" id="send-btn" type="button" aria-label="Send message" disabled>
-            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-          </button>
+          <div class="composer__tools">
+            <button class="attach-btn" id="attach-btn" type="button" aria-label="Attach files" title="Attach files (or drop / paste)">
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <input id="attach-input" type="file" multiple hidden />
+            <div class="model-wrap" id="model-wrap">
+              <button class="model-btn" id="model-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Choose model" title="Choose model">
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z"/></svg>
+                <span class="model-btn__name" id="model-name">model…</span>
+              </button>
+              <div class="model-menu" id="model-menu" hidden>
+                <input class="model-menu__filter" id="model-filter" type="search" placeholder="Search models…" aria-label="Search models" />
+                <div class="model-menu__list" id="model-list"></div>
+                <button class="model-menu__add" id="model-add" type="button">+ Add provider…</button>
+              </div>
+            </div>
+            <div class="think" id="think-wrap" title="Thinking effort (session)">
+              <button class="think__btn" id="think-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Thinking effort">
+                <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a5 5 0 0 1 5 5c0 1.5-.7 2.6-1.5 3.5-.6.7-1 1.3-1 2.5v1a3 3 0 0 1-3 3h-1"/><path d="M12 3a5 5 0 0 0-5 5c0 1.5.7 2.6 1.5 3.5.6.7 1 1.3 1 2.5v1a3 3 0 0 0 3 3h1"/><path d="M9 21h6"/></svg>
+                <span class="think__value mono" id="think-value">auto</span>
+              </button>
+              <div class="think__menu" id="think-menu" role="listbox" hidden></div>
+              <select id="think" class="think__select" aria-label="Thinking effort" hidden>
+                <option value="inherit">auto</option>
+              </select>
+            </div>
+            <div class="think" id="queue-wrap" title="Queue mode (session): what a new message does while this session is busy">
+              <button class="think__btn" id="queue-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-label="Queue mode">
+                <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+                <span class="think__value mono" id="queue-value">queue</span>
+              </button>
+              <div class="think__menu" id="queue-menu" role="listbox" hidden></div>
+              <select id="queue-select" class="think__select" aria-label="Queue mode" hidden>
+                <option value="inherit">queue</option>
+                <option value="steer">steer</option>
+                <option value="followup">followup</option>
+                <option value="collect">collect</option>
+                <option value="interrupt">interrupt</option>
+              </select>
+              <span class="queue-depth" id="queue-depth" hidden></span>
+            </div>
+          </div>
+          <div class="composer__side">
+            <span class="mono composer__tokens" id="tok"></span>
+            <button class="sendbtn sendbtn--stop" id="stop-btn" type="button" aria-label="Stop" hidden>
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></svg>
+            </button>
+            <button class="sendbtn sendbtn--go" id="send-btn" type="button" aria-label="Send message" disabled>
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Settings -->
-  <section class="view view--settings" id="settings-view" hidden>
-    <div class="scroll">
-      <div class="settings">
-        <div class="settings__head">
-          <button class="btn" id="settings-back" type="button">
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-            Chat
-          </button>
-          <h1>Settings</h1>
-        </div>
-        <nav class="tabs" id="settings-tabs" aria-label="Settings sections"></nav>
-        <div class="settings__body" id="settings-body"></div>
-      </div>
-    </div>
-  </section>
+  <!-- Settings: interior lives in ui/interior/settings.html, loaded lazily by main.ts -->
+  <section class="view view--settings" id="settings-view" hidden></section>
 
   <!-- Sessions drawer -->
   <div class="overlay" id="drawer-overlay" hidden>
     <button class="overlay__scrim" id="drawer-scrim" type="button" aria-label="Close sessions"></button>
-    <aside class="drawer" id="drawer" aria-label="Sessions">
+    <aside class="drawer" id="drawer" aria-label="Sessions" tabindex="-1">
       <div class="drawer__head">
-        <span>Sessions</span>
-        <button class="ibtn" id="drawer-close" type="button" aria-label="Close sessions">
+        <span class="drawer__mark" aria-hidden="true"><svg aria-hidden="true" width="21" height="21" viewBox="0 0 1024 1024" fill="currentColor"><g transform="translate(539.03 556.16) scale(0.83531)"><g transform="rotate(-8 -80 0)"><g transform="rotate(-34 -330 40)"><rect x="-486" y="-160" width="300" height="330" rx="44" fill="currentColor"/></g><path d="M -330 -46 C -322 -156 -248 -240 -136 -286 C -26 -322 86 -306 150 -262 C 188 -228 178 -120 150 -14 C 120 76 60 130 -8 160 C -150 216 -284 186 -330 118 Z" fill="currentColor"/><path d="M 544 -222 C 334 -406 110 -330 -30 -206 L -8 -169 L 14 -132 C 344 -248 298 -212 544 -222 Z" fill="currentColor"/><path d="M 466 266 C 288 220 240 112 -42 0 L -59 80 L -76 160 C 66 280 286 340 466 266 Z" fill="currentColor"/></g></g></svg></span>
+        <span class="drawer__title">Sessions</span>
+        <span class="drawer__count" id="sessions-count" aria-live="polite"></span>
+        <button class="ibtn drawer__close" id="drawer-close" type="button" aria-label="Close sessions">
           <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
-      <div class="drawer__sub">
-        <span class="cap">Recent</span>
-        <button class="ibtn" id="new-session" type="button" aria-label="New session">
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      <div class="drawer__new">
+        <button class="side-new" id="new-session" type="button">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span>New chat</span>
         </button>
       </div>
+      <div class="drawer__search">
+        <input id="sessions-search" type="search" placeholder="Search sessions…" aria-label="Search sessions and messages" autocomplete="off" spellcheck="false" />
+      </div>
       <nav class="drawer__list" id="sessions" aria-label="Session list"></nav>
+      <div class="drawer__foot">
+        <span class="drawer__foot-note" id="sessions-foot"></span>
+        <button class="ibtn drawer__prune" id="sessions-prune" type="button" aria-label="Prune old sessions" title="Prune sessions (archive/delete per retention policy)">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        </button>
+      </div>
     </aside>
   </div>
 
@@ -148,6 +241,24 @@
       <div class="modal__foot" id="modal-foot"></div>
     </div>
   </div>
+
+  <!-- Task 35: the new-session sheet (chat or code → repo picker). Its own
+       overlay rather than the model sheet: a required decision needs a focus
+       trap, which the picker sheet does not have. -->
+  <div class="overlay" id="new-session-overlay" hidden>
+    <button class="overlay__scrim" id="new-session-scrim" type="button" aria-label="Close"></button>
+    <div class="sheet" id="new-session-sheet" role="dialog" aria-modal="true" aria-label="New session">
+      <div class="sheet__grab" aria-hidden="true"></div>
+      <div class="sheet__head"><h2 class="sheet__title" id="new-session-title">New session</h2></div>
+      <div class="sheet__list" id="new-session-list"></div>
+      <div class="sheet__foot" id="new-session-foot"></div>
+    </div>
+  </div>
+
+  <!-- Task 52: the agent's terminals. Full-screen on a phone, docked to the
+       right from 900px up (see .term in styles.css). Its contents are built by
+       ui/src/terminal.ts, so this stays one stable node. -->
+  <section class="term" id="terminal-panel" aria-label="Terminals" hidden></section>
 
   <!-- Toasts -->
   <div class="toasts" id="toasts" aria-live="polite"></div>
