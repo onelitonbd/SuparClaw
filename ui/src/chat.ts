@@ -75,6 +75,8 @@ export interface ChatHandlers {
   questionAnswer(id: string, answers: Record<string, string[]>): void;
   /** Open/download one saved attachment by its workspace path (Task 30). */
   openMedia?(path: string, name: string): void;
+  /** Search the active session workspace for @path completion. */
+  searchWorkspace?(query: string): Promise<{ path: string; name: string; size: number }[]>;
 }
 
 type ToolStatus = "running" | "done" | "error" | "pending" | "skipped";
@@ -261,6 +263,13 @@ export class Chat {
   #jump: HTMLElement;
   #tok: HTMLElement;
   #handlers: ChatHandlers;
+  #mentionBox: HTMLElement;
+  #mentionList: HTMLElement;
+  #mentionMatches: { path: string; name: string; size: number }[] = [];
+  #mentionStart = -1;
+  #mentionEnd = -1;
+  #mentionIndex = 0;
+  #mentionGeneration = 0;
 
   #live: Live | null = null;
   #liveBody: LiveBody | null = null;
@@ -304,18 +313,40 @@ export class Chat {
     this.#qrow = root.querySelector("#qrow") as HTMLElement;
     this.#jump = root.querySelector("#jump") as HTMLElement;
     this.#tok = root.querySelector("#tok") as HTMLElement;
+    this.#mentionBox = document.createElement("div");
+    this.#mentionBox.className = "mention-menu";
+    this.#mentionBox.id = "workspace-mention-menu";
+    this.#mentionBox.hidden = true;
+    this.#mentionBox.setAttribute("role", "listbox");
+    this.#mentionBox.setAttribute("aria-label", "Workspace files");
+    this.#input.setAttribute("aria-controls", this.#mentionBox.id);
+    this.#input.setAttribute("aria-autocomplete", "list");
+    this.#mentionList = document.createElement("div");
+    this.#mentionList.className = "mention-menu__list";
+    this.#mentionBox.append(this.#mentionList);
+    this.#composer.insertBefore(this.#mentionBox, this.#input);
 
     this.#renderEmpty();
 
     this.#input.addEventListener("input", () => {
       this.#autosize();
       this.#sendBtn.disabled = this.#input.value.trim().length === 0 && this.#staged.every((a) => a.error !== undefined);
+      void this.#updateMentions();
     });
     this.#input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-        e.preventDefault();
-        this.submit();
+      if (!this.#mentionBox.hidden) {
+        if (e.key === "ArrowDown" && this.#mentionMatches.length) {
+          e.preventDefault(); this.#mentionIndex = (this.#mentionIndex + 1) % this.#mentionMatches.length; this.#renderMentionRows(); return;
+        }
+        if (e.key === "ArrowUp" && this.#mentionMatches.length) {
+          e.preventDefault(); this.#mentionIndex = (this.#mentionIndex - 1 + this.#mentionMatches.length) % this.#mentionMatches.length; this.#renderMentionRows(); return;
+        }
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing && this.#mentionMatches.length) {
+          e.preventDefault(); this.#chooseMention(this.#mentionMatches[this.#mentionIndex]!); return;
+        }
+        if (e.key === "Escape") { e.preventDefault(); this.#hideMentions(); return; }
       }
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.submit(); }
     });
     this.#sendBtn.onclick = () => this.submit();
     this.#stopBtn.onclick = () => this.#handlers.abort();
@@ -411,7 +442,92 @@ export class Chat {
     });
   }
 
+  /** Insert a workspace-relative @path at the current composer selection. */
+  insertMention(path: string): void {
+    const start = this.#input.selectionStart ?? this.#input.value.length;
+    const end = this.#input.selectionEnd ?? start;
+    const before = this.#input.value.slice(0, start);
+    const after = this.#input.value.slice(end);
+    const lead = before.length > 0 && !/\s$/.test(before) ? " " : "";
+    const trail = after.length > 0 && !/^\s/.test(after) ? " " : "";
+    const inserted = `${lead}@${path}${trail}`;
+    this.#input.value = `${before}${inserted}${after}`;
+    const caret = before.length + inserted.length;
+    this.#input.setSelectionRange(caret, caret);
+    this.#autosize();
+    this.#sendBtn.disabled = false;
+    this.#input.focus();
+  }
+
+  async #updateMentions(): Promise<void> {
+    const search = this.#handlers.searchWorkspace;
+    const caret = this.#input.selectionStart ?? this.#input.value.length;
+    const before = this.#input.value.slice(0, caret);
+    const match = /(?:^|\s)@([^\s]*)$/.exec(before);
+    if (!search || !match) { this.#hideMentions(); return; }
+    const query = match[1] ?? "";
+    this.#mentionStart = before.length - query.length - 1;
+    this.#mentionEnd = caret;
+    this.#mentionIndex = 0;
+    const generation = ++this.#mentionGeneration;
+    this.#mentionMatches = [];
+    this.#mentionBox.hidden = false;
+    this.#input.setAttribute("aria-expanded", "true");
+    this.#mentionList.replaceChildren();
+    if (!query) {
+      const hint = document.createElement("div"); hint.className = "mention-menu__hint";
+      hint.textContent = "Type a workspace file or folder name…"; this.#mentionList.append(hint); return;
+    }
+    const loading = document.createElement("div"); loading.className = "mention-menu__hint";
+    loading.textContent = "Searching workspace…"; this.#mentionList.append(loading);
+    try {
+      const matches = await search(query);
+      if (generation !== this.#mentionGeneration) return;
+      this.#mentionMatches = matches; this.#renderMentionRows();
+    } catch {
+      if (generation !== this.#mentionGeneration) return;
+      this.#mentionList.replaceChildren(); const hint = document.createElement("div"); hint.className = "mention-menu__hint";
+      hint.textContent = "Workspace search is unavailable right now."; this.#mentionList.append(hint);
+    }
+  }
+
+  #renderMentionRows(): void {
+    this.#mentionList.replaceChildren();
+    if (!this.#mentionMatches.length) {
+      this.#input.removeAttribute("aria-activedescendant");
+      const hint = document.createElement("div"); hint.className = "mention-menu__hint";
+      hint.textContent = "No matching files in this workspace."; this.#mentionList.append(hint); return;
+    }
+    this.#input.setAttribute("aria-activedescendant", `workspace-mention-option-${this.#mentionIndex}`);
+    this.#mentionMatches.forEach((match, index) => {
+      const row = document.createElement("button"); row.type = "button"; row.id = `workspace-mention-option-${index}`;
+      row.className = `mention-option${index === this.#mentionIndex ? " is-active" : ""}`;
+      row.setAttribute("role", "option"); row.setAttribute("aria-selected", index === this.#mentionIndex ? "true" : "false");
+      const path = document.createElement("span"); path.className = "mention-option__path"; path.textContent = match.path;
+      const size = document.createElement("span"); size.className = "mention-option__size";
+      size.textContent = match.size < 1048576 ? `${Math.max(1, Math.round(match.size / 1024))} KB` : `${(match.size / 1048576).toFixed(1)} MB`;
+      row.append(path, size); row.onmousedown = (event) => event.preventDefault(); row.onclick = () => this.#chooseMention(match);
+      this.#mentionList.append(row);
+    });
+  }
+
+  #chooseMention(match: { path: string }): void {
+    if (this.#mentionStart < 0) return;
+    const before = this.#input.value.slice(0, this.#mentionStart);
+    const after = this.#input.value.slice(this.#mentionEnd);
+    const inserted = `@${match.path} `;
+    this.#input.value = `${before}${inserted}${after}`;
+    const caret = before.length + inserted.length;
+    this.#input.setSelectionRange(caret, caret);
+    this.#hideMentions(); this.#autosize(); this.#sendBtn.disabled = false; this.#input.focus();
+  }
+  #hideMentions(): void {
+    this.#mentionGeneration++; this.#mentionMatches = []; this.#mentionBox.hidden = true;
+    this.#input.setAttribute("aria-expanded", "false"); this.#input.removeAttribute("aria-activedescendant");
+  }
+
   submit(): void {
+    this.#hideMentions();
     const text = this.#input.value.trim();
     const ready = this.#staged.filter((a) => a.error === undefined);
     if (!text && ready.length === 0) return;

@@ -1388,6 +1388,7 @@ export class AgentLoop {
         : "",
       `Current date: ${new Date().toString()}`,
       `Session: ${sessionKey} (${channelLabel(sessionKey)})`,
+      "## Workspace file mentions\nIn a user message, `@relative/path` refers to a file in this session’s active workspace. Treat it as a path reference, not an attachment or web link. If needed, read it on demand with the appropriate filesystem tool; never assume its contents were included.",
       `Where this message came from: ${channelLabel(sessionKey)}. A direct message can be answered privately; in a group or topic chat others can read your reply, so keep it on-topic and mention people by name when needed.`,
       surfacesPromptLine(surfaces, sessionKey),
       repo ? repoPromptBlock(repo) : "",

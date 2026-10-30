@@ -18,6 +18,7 @@ import { CONFIG_SCHEMA, modelProfile, modelProfiles, parseConfig } from "../conf
 import { readSkillBody, skillSlug, writeSkill } from "../agent/skills.js";
 import { workspaceDir } from "../util/paths.js";
 import { mediaFileOnDisk, resolveMediaPath } from "../agent/media-store.js";
+import { listWorkspace, previewWorkspaceFile, searchWorkspace, workspaceFileOnDisk } from "../agent/workspace-files.js";
 import { hostAllowed, originAllowed, type TrustPolicy } from "./trust.js";
 import { handleHooksRequest, type HookService } from "./webhooks.js";
 import { publishBranchFor } from "../repo/manager.js";
@@ -259,6 +260,9 @@ export class Gateway {
       "chat.questionAnswer",
       "codeMode.get",
       "media.get",
+      "workspace.list",
+      "workspace.search",
+      "workspace.read",
       "web.search.get",
       "web.search.test",
       "queue.set",
@@ -688,6 +692,28 @@ export class Gateway {
                 : Boolean(m.provider || m.model),
             })),
           }));
+          return;
+        }
+        case "workspace.list":
+        case "workspace.search":
+        case "workspace.read": {
+          const sessionKey = String(params["sessionKey"] ?? "main:main");
+          if (sessionKey !== "main:main" && !service.store.getSessionByKey(sessionKey)) {
+            send(errFrame(id, "not_found", "session not found"));
+            return;
+          }
+          const workspace = service.loop.workspaceFor(sessionKey);
+          try {
+            const path = String(params["path"] ?? "");
+            const payload = method === "workspace.list"
+              ? listWorkspace(workspace, path)
+              : method === "workspace.search"
+                ? { results: searchWorkspace(workspace, String(params["query"] ?? "")) }
+                : previewWorkspaceFile(workspace, path);
+            send(okFrame(id, payload));
+          } catch (error) {
+            send(errFrame(id, "bad_request", error instanceof Error ? error.message : String(error)));
+          }
           return;
         }
         case "web.search.get": {
@@ -2001,6 +2027,12 @@ case "sessions.rename": {
       return;
     }
 
+    // Workspace browsing is session-scoped: code sessions resolve to their repo worktree.
+    if (url === "/workspace-file") {
+      this.#serveWorkspaceFile(req, res);
+      return;
+    }
+
     // Attachments (Task 30): the files a message carried, served from
     // <workspace>/media only. This is what makes a transcript chip clickable
     // after a reload; it is deliberately NOT part of the UI's static tree.
@@ -2038,6 +2070,57 @@ case "sessions.rename": {
     const type = MIME[extname(file)] ?? "application/octet-stream";
     res.writeHead(200, { "content-type": type, "cache-control": "no-cache" });
     res.end(readFileSync(file));
+  }
+
+  /** Session-scoped, read-only file response for image previews and downloads. */
+  #serveWorkspaceFile(req: IncomingMessage, res: ServerResponse): void {
+    const method = (req.method ?? "GET").toUpperCase();
+    const text = (code: number, body: string): void => {
+      res.writeHead(code, { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" });
+      res.end(body);
+    };
+    if (method !== "GET" && method !== "HEAD") { text(405, "method not allowed\n"); return; }
+    const auth = this.service.config.gateway.auth;
+    const token = auth.token;
+    const remote = req.socket.remoteAddress ?? "";
+    const loopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+    const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "").trim();
+    const authorized = auth.mode === "none" || (loopback && auth.loopbackBypass) || (Boolean(token) && bearer === token);
+    if (!authorized) { text(401, "unauthorized — pass the gateway token as a bearer token (sc token)\n"); return; }
+
+    let sessionKey = "";
+    let path = "";
+    try {
+      const url = new URL(req.url ?? "/workspace-file", "http://gateway.local");
+      sessionKey = url.searchParams.get("sessionKey") ?? "";
+      path = url.searchParams.get("path") ?? "";
+    } catch { text(400, "bad request\n"); return; }
+    if (!sessionKey || (sessionKey !== "main:main" && !this.service.store.getSessionByKey(sessionKey))) {
+      text(404, "session not found\n");
+      return;
+    }
+    try {
+      const file = workspaceFileOnDisk(this.service.loop.workspaceFor(sessionKey), path);
+      const ascii = file.name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+      const disposition = file.inline
+        ? `inline; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`
+        : `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`;
+      res.writeHead(200, {
+        "content-type": file.mime,
+        "content-length": String(file.size),
+        "content-disposition": disposition,
+        "cache-control": "private, max-age=60",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "sandbox",
+      });
+      if (method === "HEAD") { res.end(); return; }
+      const stream = createReadStream(file.full);
+      stream.on("error", () => res.destroy());
+      stream.pipe(res);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      text(code === "ENOENT" ? 404 : 403, code === "ENOENT" ? "file not found\n" : "workspace file is not available\n");
+    }
   }
 
   /**

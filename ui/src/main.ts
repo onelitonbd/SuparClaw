@@ -8,6 +8,7 @@ import { groupSessions, sessionRow, searchView, rowTitle, placeholderTitle, type
 import { gateway, type ConnState } from "./rpc.js";
 import { Settings } from "./settings.js";
 import { TerminalPanel } from "./terminal.js";
+import { WorkspacePanel } from "./workspace.js";
 import { onGatewayEvent } from "./notifications.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -53,6 +54,7 @@ async function loadSettingsInterior(): Promise<void> {
 
 /* ---------------- chat ---------------- */
 
+let workspacePanel!: WorkspacePanel;
 const chat = new Chat(document.body, {
   send: (text, attachments) => {
     chat.user(text, attachments);
@@ -198,7 +200,15 @@ const chat = new Chat(document.body, {
       }
     })();
   },
+  searchWorkspace: (query) => workspacePanel.search(query),
 });
+
+workspacePanel = new WorkspacePanel(document.body, {
+  transport: gateway,
+  sessionKey: () => sessionKey,
+  onMention: (path) => chat.insertMention(path),
+});
+$("workspace-btn").onclick = () => void workspacePanel.open($("workspace-btn"));
 
 /* ---------------- events ---------------- */
 
@@ -774,6 +784,7 @@ async function switchSession(key: string): Promise<void> {
     return;
   }
   sessionKey = key;
+  void workspacePanel.sessionChanged();
   setRepoSession(key);
   localStorage.setItem("sc.session", key);
   setHeaderTitle(key);
@@ -1264,9 +1275,11 @@ $("session-btn").onclick = () => { void loadHistory(); };
 async function route(): Promise<void> {
   const h = location.hash || "";
   const settingsOpen = h.startsWith("#/settings");
+  if (settingsOpen && workspacePanel.isOpen) workspacePanel.close(false);
   const chatHash = getSessionFromHash();
   if (chatHash && chatHash !== sessionKey) {
     sessionKey = chatHash;
+    void workspacePanel.sessionChanged();
     localStorage.setItem("sc.session", sessionKey);
     setHeaderTitle(sessionKey);
     void loadHistory();
