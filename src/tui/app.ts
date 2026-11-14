@@ -8,22 +8,34 @@ import { width } from "../util/ansi.js";
 export type Item =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; streaming?: boolean }
-  | { kind: "tool"; name: string; status: "running" | "done" | "error"; detail?: string }
+  | { kind: "tool"; name: string; status: "running" | "done" | "error" | "skipped"; detail?: string }
   | { kind: "system"; text: string };
 
-export type Approval = { callId: string; tool: string; args: Record<string, unknown> };
-
 export interface TuiDeps {
-  header(): { agent: string; session: string; model: string; target: string };
+  /** `repo`/`branch`/`changes` appear only in a code session (Task 35). */
+  header(): {
+    agent: string;
+    session: string;
+    model: string;
+    target: string;
+    repo?: string;
+    branch?: string;
+    changes?: number;
+  };
   onSubmit(text: string): void;
   onAbort(): void;
-  onApproval(callId: string, ok: boolean): void;
   onCommand(name: string, args: string): Promise<string | null>;
   listSessions(): Promise<string[]>;
   pickSession(key: string): void;
   history(): Promise<{ role: string; content: string }[]>;
   models(): Promise<string[]>;
   setModel(model: string): Promise<string | null>;
+  /** Repositories available to connect, `owner/name` first (Task 35). */
+  repos?(): Promise<string[]>;
+  /** Branches of one repository, default first (Task 36). */
+  branches?(repo: string): Promise<string[]>;
+  /** Start a new session — chat, or code bound to `repo` + `branch`. */
+  newSession?(spec: { kind: "chat" | "code"; repo?: string; branch?: string }): void;
   quit(): void;
 }
 
@@ -37,7 +49,6 @@ interface Overlay {
 export class TuiApp {
   items: Item[] = [];
   status = "idle";
-  approvals: Approval[] = [];
   busy = false;
   expandedTools = false;
   showThinking = false;
@@ -138,7 +149,13 @@ export class TuiApp {
     );
 
     // 2) footer — dim, pipe-joined metadata (OpenClaw's formatTuiFooter)
+    // A code session's repository is part of the footer, not a separate line:
+    // "where is my code" must be answerable from the same strip as the model.
+    const repoBit = head.repo
+      ? `repo:${head.repo}@${head.branch ?? "?"}${head.changes ? ` +${head.changes}` : ""}`
+      : "";
     const footer = [
+      ...(repoBit ? [repoBit] : []),
       `agent ${head.agent}`,
       `session ${head.session}`,
       head.model && head.model !== "(unset)" ? head.model : "unknown",
@@ -306,18 +323,6 @@ export class TuiApp {
       return;
     }
 
-    // Approvals first: they are modal.
-    if (this.approvals.length > 0 && (key.name === "char" && (key.ch === "y" || key.ch === "Y"))) {
-      const pending = this.approvals.shift();
-      if (pending) this.deps.onApproval(pending.callId, true);
-      return;
-    }
-    if (this.approvals.length > 0 && (key.name === "char" && (key.ch === "n" || key.ch === "N") || key.name === "escape" || key.name === "ctrl-c")) {
-      const pending = this.approvals.shift();
-      if (pending) this.deps.onApproval(pending.callId, false);
-      return;
-    }
-
     switch (key.name) {
       case "enter": {
         const text = this.#editor.commit();
@@ -379,6 +384,10 @@ export class TuiApp {
           void this.loadHistory();
         });
         return;
+      case "ctrl-g":
+        // New session, in two steps: what kind, then (for code) which repo.
+        this.#newSessionOverlay();
+        return;
       case "ctrl-o":
         this.expandedTools = !this.expandedTools;
         return;
@@ -427,6 +436,52 @@ export class TuiApp {
     }
   }
 
+  /**
+   * `ctrl-g` — the same question the web sheet asks (Task 35, extended in 36):
+   * chat, or a repository *and a branch*. Chat is one keystroke away (`enter` on
+   * the first row); code asks for a repo from the connected account, then which
+   * of its branches to continue, so the overlay is never a dead end even on a
+   * fresh machine (it says how to connect instead).
+   */
+  #newSessionOverlay(): void {
+    void this.#pick("new session", ["chat — talk, research, files", "code — pick a repository, work on a branch, open a PR"], (option) => {
+      if (!this.deps.newSession) {
+        this.push({ kind: "system", text: "this TUI cannot start sessions" });
+        return;
+      }
+      if (option.startsWith("chat")) {
+        this.deps.newSession({ kind: "chat" });
+        return;
+      }
+      void (async () => {
+        const repos = (await this.deps.repos?.()) ?? [];
+        if (repos.length === 0) {
+          this.push({
+            kind: "system",
+            text: "no repositories yet — run `sc github adopt-gh` (or `sc github connect`) first",
+          });
+          return;
+        }
+        void this.#pick("repository", repos, (repo) => {
+          const name = repo.split(/\s+/)[0] ?? repo;
+          // Task 36: the branch is the second half of the decision — the session
+          // continues it rather than creating one.
+          void (async () => {
+            const branches = (await this.deps.branches?.(name)) ?? [];
+            if (branches.length === 0) {
+              this.deps.newSession?.({ kind: "code", repo: name });
+              return;
+            }
+            void this.#pick("branch", branches, (line) => {
+              const branch = line.replace(/^[●*]\s*/, "").split(/\s+/)[0];
+              this.deps.newSession?.({ kind: "code", repo: name, branch: branch || undefined });
+            });
+          })();
+        });
+      })();
+    });
+  }
+
   async #pick(title: string, options: string[], onPick: (option: string) => void): Promise<void> {
     if (options.length === 0) {
       this.push({ kind: "system", text: `no ${title}s available` });
@@ -454,11 +509,12 @@ export async function runTui(deps: TuiDeps, stdin: NodeJS.ReadStream = process.s
   await app.start();
 }
 
-const HINTS = "\u23ce send \u00b7 ^L model \u00b7 ^P session \u00b7 ^O tools \u00b7 ^D quit";
+const HINTS = "\u23ce send \u00b7 ^G new \u00b7 ^L model \u00b7 ^P session \u00b7 ^O tools \u00b7 ^D quit";
 
 export const tuiHelp = [
-  "Commands: /help /status /model <id> [--save] /provider <list|add|remove|test> /tools /skills /session <key> /new /clear /abort /quit",
-  "Keys: ⏎ send · ⇧⏎ newline · ^L model · ^P session · ^O tool output · ^T thinking · ^C stop · ^C^C quit",
+  "TUI-local: /help /model <id> [--save] /provider <list|add|remove|test> /session <key> /new /clear /quit",
+  "Everywhere (web chat resolves the same): /status /stop /queue /steer /followup /dream [on|off|status|run|log] /title <text> /export-session /tools /skills — full list: /commands",
+  "Keys: ⏎ send · ⇧⏎ newline · ^G new session · ^L model · ^P session · ^O tool output · ^T thinking · ^C stop · ^C^C quit",
 ].join("\n");
 
 export const terminalWidth = width;

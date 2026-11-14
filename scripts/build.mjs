@@ -12,6 +12,38 @@ const dev = watch || process.argv.includes("--dev");
 await rm(join(root, "dist"), { recursive: true, force: true });
 await mkdir(join(root, "dist"), { recursive: true });
 
+/**
+ * What this bundle IS, baked in at build time.
+ *
+ * "Did the fix reach my phone?" was unanswerable: the daemon reported a
+ * hardcoded "0.1.0" no matter which code it was built from, so a report like
+ * "the model switch still doesn't work" could not be checked against the build
+ * that was actually running (`/whoami` now prints this).
+ *
+ * It is a hash of the SOURCE, not a commit sha: a build artifact that stamped
+ * its own commit would have to know the sha of the commit that contains it,
+ * which cannot exist. Two builds of the same files produce the same stamp, and
+ * the build is derived from `src/` + `package.json` only — so `dist/` churn
+ * never changes it.
+ */
+async function buildStamp() {
+  const { createHash } = await import("node:crypto");
+  const hash = createHash("sha256");
+  const version = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;
+  hash.update(`version:${version}\n`);
+  const walk = async (dir) => {
+    for (const name of (await readdir(dir)).sort()) {
+      const full = join(dir, name);
+      const info = await stat(full);
+      if (info.isDirectory()) await walk(full);
+      else hash.update(`${full.slice(root.length)}\n${await readFile(full)}\n`);
+    }
+  };
+  await walk(join(root, "src"));
+  return `${version}+${hash.digest("hex").slice(0, 7)}`;
+}
+const stamp = await buildStamp();
+
 /** @type {import("esbuild").BuildOptions} */
 const common = {
   bundle: true,
@@ -21,11 +53,18 @@ const common = {
   target: "node24",
   sourcemap: dev ? "inline" : false,
   minify: !dev,
+  // Preserve function/class .name under minification. node-fetch v2 (grammY's
+  // default fetch) validates the abort signal with
+  // `Object.getPrototypeOf(signal).constructor.name === "AbortSignal"`; without
+  // this, esbuild renames AbortSignal and every getMe() dies with
+  // "Expected signal to be an instanceof AbortSignal" in the production bundle.
+  keepNames: true,
   legalComments: "none",
   logLevel: "info",
   outdir: join(root, "dist"),
   chunkNames: "chunks/[name]-[hash]",
   banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" },
+  define: { __BUILD_STAMP__: JSON.stringify(stamp) },
 };
 
 const entries = {
@@ -53,6 +92,15 @@ if (watch) {
 }
 
 // --- Control UI: browser bundle + static assets, committed to dist/ui -------
+/** Static files served next to index.html (icons, share card, manifest). */
+const UI_ASSETS = [
+  "favicon.svg",
+  "apple-touch-icon.png",
+  "icon-192.png",
+  "icon-512.png",
+  "og-image.png",
+  "manifest.webmanifest",
+];
 const uiOut = join(root, "dist/ui");
 await mkdir(uiOut, { recursive: true });
 {
@@ -73,6 +121,29 @@ await mkdir(uiOut, { recursive: true });
     metafile: true,
   });
   await copyFile(join(root, "ui/index.html"), join(uiOut, "index.html"));
+  // Brand assets the page links to: the favicon, the home-screen icons, the
+  // share card and the web app manifest. They live in ui/ and are copied by
+  // name — a missing one is a 404 in the browser, so brand-mark.test.mjs checks
+  // that every href/src in the built index.html resolves.
+  for (const asset of UI_ASSETS) {
+    await copyFile(join(root, "ui", asset), join(uiOut, asset));
+  }
+  // Settings interior: a separate light file loaded lazily by the app shell.
+  await mkdir(join(uiOut, "interior"), { recursive: true });
+  await copyFile(join(root, "ui/interior/settings.html"), join(uiOut, "interior", "settings.html"));
+  // Agent Trace demo: a self-contained playground that needs no bundler.
+  // The component ships as source next to the demo; the HTML is rewritten so
+  // the same page works from ui/trace-demo/ and from dist/ui/trace-demo/.
+  const demoOut = join(uiOut, "trace-demo");
+  await mkdir(demoOut, { recursive: true });
+  await copyFile(join(root, "ui/src/trace/agent-trace.js"), join(demoOut, "agent-trace.js"));
+  await copyFile(join(root, "ui/src/trace/agent-trace.css"), join(demoOut, "agent-trace.css"));
+  const mockPlayer = (await readFile(join(root, "ui/trace-demo/mock-player.js"), "utf8"))
+    .replaceAll("../src/trace/", "./");
+  await writeFile(join(demoOut, "mock-player.js"), mockPlayer, "utf8");
+  const demoHtml = (await readFile(join(root, "ui/trace-demo/index.html"), "utf8"))
+    .replaceAll("../src/trace/", "./");
+  await writeFile(join(demoOut, "index.html"), demoHtml, "utf8");
   // Stylesheet = the SuparClaw design system + the vendored webfonts.
   // The font faces live in ui/fonts/, but the sheet ships as dist/ui/styles.css,
   // so the URLs have to be re-pointed at dist/ui/fonts/.
@@ -81,7 +152,11 @@ await mkdir(uiOut, { recursive: true });
   const appCss = await readFile(join(root, "ui/styles.css"), "utf8");
   const css = `${fontCss}\n${appCss}`;
   const min = await esbuild.transform(css, { loader: "css", minify: !dev });
-  await writeFile(join(uiOut, "styles.css"), min.code, "utf8");
+  // Bundle the Agent Trace component styles into the app stylesheet (all
+  // classes are .agent-trace-scoped, so they cannot collide with the design
+  // system). The standalone trace-demo keeps its own copy of the file.
+  const traceCss = await readFile(join(root, "ui/src/trace/agent-trace.css"), "utf8");
+  await writeFile(join(uiOut, "styles.css"), `${min.code}\n/* Agent Trace component */\n${traceCss}`, "utf8");
   // fonts next to the stylesheet
   const fontOut = join(uiOut, "fonts");
   await mkdir(fontOut, { recursive: true });

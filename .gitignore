@@ -2,4 +2,4 @@ node_modules/
 # dist/ is committed so `curl | bash` install works without a build step
 *.log
 .env
-.DS_Store
+.DS_Store.arena/

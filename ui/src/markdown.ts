@@ -110,6 +110,13 @@ export function renderMarkdown(src: string): string {
       para.push(lines[i] as string);
       i++;
     }
+    // No-progress guard: a line the paragraph loop refuses to consume (a lone
+    // "|x|", an unterminated ``` fence …) is taken as its own paragraph —
+    // otherwise this outer loop never advances and the render hangs forever.
+    if (para.length === 0) {
+      para.push(line);
+      i++;
+    }
     out.push(`<p>${inline(para.join("<br>"))}</p>`);
   }
 

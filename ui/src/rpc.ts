@@ -9,6 +9,9 @@ export class Gateway {
   #ws: WebSocket | null = null;
   #pending = new Map<string, Pending>();
   #handlers = new Set<EventHandler>();
+  /** What this gateway said it can answer (`hello-ok.methods`). */
+  #methods: Set<string> | null = null;
+  #warned = new Set<string>();
   #state: ConnState = "connecting";
   #token = localStorage.getItem("sc.token") || "";
   #attempt = 0;
@@ -58,6 +61,7 @@ export class Gateway {
       try { frame = JSON.parse(ev.data as string); } catch { return; }
       if (frame.type === "hello-ok") {
         this.#attempt = 0;
+        if (Array.isArray(frame.methods)) this.#methods = new Set(frame.methods.map(String));
         this.#setState("online");
         return;
       }
@@ -81,6 +85,13 @@ export class Gateway {
       if (!this.#ws || this.#ws.readyState !== WebSocket.OPEN) {
         reject(new Error("not connected to gateway"));
         return;
+      }
+      // Task 26 (audit 1): the gateway ships its method list in `hello-ok`.
+      // Nothing used to read it, so a build/test/prod mismatch was invisible
+      // until a click silently failed. Warn once per method, then keep going.
+      if (this.#methods && !this.#methods.has(method) && !this.#warned.has(method)) {
+        this.#warned.add(method);
+        console.warn(`[gateway] this server does not advertise ${method}`);
       }
       const id = "r" + Math.random().toString(36).slice(2) + Date.now().toString(36);
       this.#pending.set(id, { resolve, reject });

@@ -110,6 +110,27 @@ async function askHidden(rl: ReturnType<typeof createInterface>, prompt: string)
 }
 
 /** `sc setup`: walk a first-time user from nothing to a working model. */
+/** `sc models [--refresh] [--json]` — the model inventory (OpenClaw's `models list`). */
+export async function modelsCmd(args: string[]): Promise<number> {
+  const cfg = openConfig();
+  const { discoverModels } = await import("../config/providers.js");
+  const result = await discoverModels(cfg, { refresh: args.includes("--refresh") });
+  if (args.includes("--json")) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    if (result.models.length === 0) {
+      console.log("(no models) — add a provider first: sc setup");
+    } else {
+      for (const m of result.models) console.log(m);
+    }
+    if (result.warning) console.error(result.warning);
+    if (result.refreshing && !args.includes("--refresh")) {
+      console.error("some providers have not been fetched recently — run: sc models --refresh");
+    }
+  }
+  return 0;
+}
+
 export async function setupCmd(): Promise<number> {
   const cfg = openConfig();
   const rl = createInterface({ input: stdin, output: stdout });

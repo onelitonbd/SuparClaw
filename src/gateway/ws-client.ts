@@ -78,5 +78,16 @@ export class GatewayClient {
     } catch {
       /* ignore */
     }
+    // close() waits on the peer's close-frame reply; a silent or half-dead
+    // peer would pin the caller's event loop forever (one-shot CLI commands
+    // never exit). Force the socket down shortly after — unref'd, so it costs
+    // nothing when the handshake completes normally.
+    setTimeout(() => {
+      try {
+        this.#ws.terminate();
+      } catch {
+        /* already gone */
+      }
+    }, 250).unref?.();
   }
 }

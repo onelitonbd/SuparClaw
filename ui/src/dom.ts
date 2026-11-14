@@ -29,6 +29,18 @@ export function el(
 export const esc = (s: string): string =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
 
+/**
+ * Trusted icon markup → real DOM nodes. Strings passed to el() stay TEXT (so
+ * message content can never become HTML); icon() is the ONLY place module
+ * constants like SPARKLE may be parsed as markup — before this existed, the
+ * raw "<svg …>" strings rendered as visible text in every message head.
+ */
+export function icon(html: string, cls?: string): HTMLElement {
+  const node = el("span", cls ? { class: cls } : {});
+  node.innerHTML = html;
+  return node;
+}
+
 export type Tone = "ok" | "err" | "info";
 
 /** Toast: a dot + message, stacked under the rail. */

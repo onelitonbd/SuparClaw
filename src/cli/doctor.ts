@@ -10,12 +10,14 @@ import { configPath } from "../util/paths.js";
 import { STARTER_CONFIG, writeConfigFile } from "../config/load.js";
 import { readConfigFile } from "../config/load.js";
 
-interface Check {
+export interface DoctorCheck {
   name: string;
   status: "ok" | "warn" | "fail";
   detail: string;
   fix?: string;
 }
+
+type Check = DoctorCheck;
 
 const C = {
   ok: "\x1b[32m✔\x1b[39m",
@@ -25,7 +27,60 @@ const C = {
   bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
 };
 
-export async function doctor(): Promise<number> {
+/** Structured checks (P4 #41, System tab): the same probes the CLI prints,
+ *  without the printing. insideGateway skips the free-port probe — from the
+ *  running daemon the port is ours, so "in use" would be a false alarm. */
+/**
+ * Run one command through the real exec path and report the result.
+ *
+ * This exists because "every command fails" used to be undiagnosable: the
+ * policy was healthy, the tool was enabled, and the failure was invisible until
+ * an agent tried to work. One `echo` here answers it.
+ *
+ * Task 57 removed the sandbox, so there is no wrapper to blame any more — the
+ * probe runs exactly what the tool runs, in the operator's own shell, and a
+ * failure names the binary that would not start.
+ */
+export async function execSelfTest(
+  exec: { timeoutMs: number },
+): Promise<DoctorCheck> {
+  const { findShell, runPlan } = await import("../agent/tools.js");
+  const { execFile } = await import("node:child_process");
+  const ws = workspaceDir();
+  const shell = findShell();
+  const argv = [shell, "-lc", "echo sc-exec-ok"];
+  const started = Date.now();
+  try {
+    const run = await runPlan(execFile as never, argv, process.env, {
+      cwd: ws,
+      timeoutMs: Math.min(exec.timeoutMs || 10_000, 10_000),
+      cmdline: "echo sc-exec-ok",
+    });
+    const ms = Date.now() - started;
+    if (run.output.includes("sc-exec-ok") && !run.failedPath) {
+      return { name: "exec run", status: "ok", detail: `echo round-trip in ${ms} ms · shell ${shell}` };
+    }
+    if (run.failedPath) {
+      return {
+        name: "exec run",
+        status: "fail",
+        detail: `binary ${run.failedPath} cannot be started (${run.failedCode}) — every command fails`,
+        fix: "check the path exists and is executable, or reinstall the package that provides it",
+      };
+    }
+    return {
+      name: "exec run",
+      status: "fail",
+      detail: run.output.split("\n").slice(0, 3).join(" · "),
+      fix: "run the same command in your own shell to compare; if it works there, the child env is the difference (sc config get tools.exec)",
+    };
+  } catch (err) {
+    return { name: "exec run", status: "fail", detail: `could not start the probe: ${(err as Error).message}`, fix: "report this with the output of: sc doctor" };
+  }
+}
+
+export async function runDoctorChecks(opts: { insideGateway?: boolean } = {}): Promise<Check[]> {
+  const insideGateway = opts.insideGateway === true;
   const checks: Check[] = [];
 
   // Node
@@ -124,6 +179,127 @@ export async function doctor(): Promise<number> {
     checks.push({ name: "config", status: "ok", detail: cfgPath });
   }
 
+  // auth profiles (Partial #6 — their doctor-auth analog): stored credentials
+  // with expiry/cooldown problems, and providers whose default model is bound
+  // to an ineligible profile.
+  {
+    const { Store } = await import("../state/db.js");
+    const { dbPath } = await import("../util/paths.js");
+    const { profileCheck, resolveAuthProfileOrder, boundProfileIds } = await import("../agent/auth.js");
+    try {
+      const aStore = Store.open(dbPath());
+      try {
+        for (const row of aStore.authProfiles()) {
+          const check = profileCheck(row);
+          const { excluded } = resolveAuthProfileOrder(aStore, load.config, row.provider);
+          if (excluded.includes(row)) {
+            checks.push({
+              name: "auth",
+              status: "warn",
+              detail: `profile ${row.id} is excluded from the resolved auth order`,
+              fix: `sc models auth order get --provider ${row.provider} (or: sc models auth order clear --provider ${row.provider})`,
+            });
+          } else if (!check.ok) {
+            checks.push({
+              name: "auth",
+              status: check.reason === "cooldown" ? "warn" : "fail",
+              detail: `profile ${row.id}: ${check.reason}`,
+              fix: `sc models auth login --provider ${row.provider} --force (--profile-id ${row.id})`,
+            });
+          }
+        }
+        if (load.config.agents.defaults.model) {
+          const ref = load.config.agents.defaults.model;
+          const head = ref.includes("/") ? ref.slice(0, ref.indexOf("/")) : Object.keys(load.config.providers)[0];
+          const pcfg = head ? load.config.providers[head] : undefined;
+          if (pcfg) {
+            const { single, list } = boundProfileIds(pcfg as unknown as Record<string, unknown>, head ?? "");
+            const ids = list.length ? list : single ? [single] : [];
+            for (const pid of ids) {
+              const row = aStore.authProfile(pid);
+              if (!row) {
+                checks.push({
+                  name: "auth",
+                  status: "fail",
+                  detail: `providers.${head}.apiKey binds missing profile ${pid} — the default model has no credential`,
+                  fix: `sc models auth login --provider ${head} --profile-id ${pid}`,
+                });
+              }
+            }
+          }
+        }
+        if (checks.every((c) => c.name !== "auth")) {
+          checks.push({ name: "auth", status: "ok", detail: `${aStore.authProfiles().length} profile(s) healthy` });
+        }
+      } finally {
+        aStore.close();
+      }
+    } catch {
+      checks.push({ name: "auth", status: "warn", detail: "auth store unreadable — profiles skipped" });
+    }
+  }
+
+  // local services (Partial #7 — their local autodetect): what is running vs
+  // what's configured, including the "configured but daemon is down" case.
+  {
+    try {
+      const { scanLocalServices } = await import("../agent/local-services.js");
+      const results = await scanLocalServices();
+      const up = results.filter((r) => r.running);
+      const cfgNames = Object.keys(load.config.providers ?? {});
+      const broken = results.filter((r) => !r.running && cfgNames.includes(r.id));
+      if (broken.length) {
+        checks.push({
+          name: "local",
+          status: "warn",
+          detail: `${broken.map((r) => r.id).join(", ")} configured but not running (${broken[0]?.error ?? "down"})`,
+          fix: `start the service, or fix providers.${broken[0]?.id}.baseUrl — replies against it currently fail fast with the provider error`,
+        });
+      } else if (up.length) {
+        const unconfigured = up.filter((r) => !cfgNames.includes(r.id));
+        checks.push({
+          name: "local",
+          status: "ok",
+          detail: `${up.map((r) => `${r.id} (${r.models.length})`).join(", ")} running` + (unconfigured.length ? ` · unconfigured: ${unconfigured.map((r) => r.id).join(", ")}` : ""),
+          fix: unconfigured.length ? `sc models local --add ${unconfigured[0]?.id}` : undefined,
+        });
+      } else {
+        checks.push({ name: "local", status: "ok", detail: "no local services running (sc models local scans after installing one)" });
+      }
+    } catch {
+      checks.push({ name: "local", status: "warn", detail: "local scan failed" });
+    }
+  }
+
+  // Exec availability is a runtime capability; command execution is checked
+  // with one short echo rather than a retired policy/allowlist evaluator.
+  if (load.config.tools.exec.enabled) checks.push(await execSelfTest(load.config.tools.exec));
+  else checks.push({ name: "exec", status: "ok", detail: "tool disabled" });
+
+  // web search (Partial #9): enabled/provider readiness, no liveness probing.
+  {
+    const { WEB_SEARCH_BACKENDS, resolveProvider } = await import("../agent/web-search.js");
+    const wsCfg = load.config.tools.web.search;
+    if (!wsCfg.enabled) {
+      checks.push({ name: "web search", status: "warn", detail: "disabled — the agent cannot search the web", fix: "tools.web.search.enabled=true (or sc config set tools.web.search.enabled true)" });
+    } else {
+      const explicit = wsCfg.provider.trim();
+      const { provider, candidates } = resolveProvider(load.config);
+      if (explicit && !provider) {
+        checks.push({ name: "web search", status: "warn", detail: `provider "${explicit}" unknown`, fix: `providers: ${WEB_SEARCH_BACKENDS.map((b) => b.id).join(", ")}` });
+      } else if (!provider) {
+        checks.push({
+          name: "web search",
+          status: "warn",
+          detail: "no provider ready — no API keys and no SearXNG baseUrl configured",
+          fix: "export BRAVE_API_KEY=… (or TAVILY/PERPLEXITY/KIMI) or set tools.web.search.searxng.baseUrl",
+        });
+      } else {
+        checks.push({ name: "web search", status: "ok", detail: `provider ${provider.id}${explicit ? " (explicit)" : " (auto)"}${candidates.length > 1 && !explicit ? ` · fallbacks: ${candidates.slice(1).map((b) => b.id).join(", ")}` : ""}` });
+      }
+    }
+  }
+
   // model
   const model = load.config.agents.defaults.model;
   const providers = Object.keys(load.config.providers);
@@ -182,15 +358,38 @@ export async function doctor(): Promise<number> {
     ...(tg.enabled && !tg.token ? { fix: "sc config set channels.telegram.token <bot-token>" } : {}),
   });
 
-  // port
-  const port = load.config.gateway.port ?? DEFAULT_PORT;
-  const free = await portFree(port);
-  checks.push({
-    name: `port ${port}`,
-    status: free ? "ok" : "warn",
-    detail: free ? "available" : "in use (daemon may already be running)",
-    ...(free ? {} : { fix: "sc status" }),
-  });
+  // port — skipped inside the daemon (the configured port is ours by then)
+  if (!insideGateway) {
+    const port = load.config.gateway.port ?? DEFAULT_PORT;
+    const free = await portFree(port);
+    checks.push({
+      name: `port ${port}`,
+      status: free ? "ok" : "warn",
+      detail: free ? "available" : "in use (daemon may already be running)",
+      ...(free ? {} : { fix: "sc status" }),
+    });
+  } else {
+    checks.push({ name: "gateway", status: "ok", detail: "serving (this daemon answered the request)" });
+  }
+
+  // attachments (Task 30) — the size is otherwise invisible until the phone is
+  // full. Warns past 500 MB, and says how to get rid of them.
+  try {
+    const { mediaStats } = await import("../agent/media-store.js");
+    const stats = mediaStats(workspaceDir());
+    const mb = stats.bytes / 1048576;
+    checks.push({
+      name: "attachments",
+      status: mb > 500 ? "warn" : "ok",
+      detail:
+        stats.files === 0
+          ? "none yet"
+          : `${stats.files} file(s), ${mb.toFixed(mb < 10 ? 1 : 0)} MB, oldest ${stats.oldestDays}d`,
+      ...(mb > 500 ? { fix: "sc media prune --days 30 (or set media.retentionDays)" } : {}),
+    });
+  } catch {
+    /* media tree unreadable — the disk check below still reports the volume */
+  }
 
   // disk
   try {
@@ -205,6 +404,11 @@ export async function doctor(): Promise<number> {
     /* statfs unavailable */
   }
 
+  return checks;
+}
+
+export async function doctor(): Promise<number> {
+  const checks = await runDoctorChecks();
   console.log(C.bold("\n  suparclaw doctor\n"));
   for (const check of checks) {
     const mark = check.status === "ok" ? C.ok : check.status === "warn" ? C.warn : C.fail;

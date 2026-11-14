@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { findBundledDir } from "../util/paths.js";
 
@@ -238,6 +238,55 @@ export function readSkillBody(skill: SkillMeta): string {
   } catch {
     return "";
   }
+}
+
+/**
+ * Normalize a skill name to the portable slug form: 1-64 lowercase letters,
+ * numbers, or hyphens (Agent Skills / ClawHub convention).
+ */
+export function skillSlug(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+export interface WriteSkillResult {
+  ok: boolean;
+  name: string;
+  path?: string;
+  error?: string;
+}
+
+/**
+ * Write a skill into `<workspace>/skills/<name>/SKILL.md` with frontmatter —
+ * the shared save path for the Settings "+" button and the `skill_save` tool.
+ * Returns the normalized slug on success.
+ */
+export function writeSkill(
+  workspace: string,
+  name: string,
+  description: string,
+  body: string,
+): WriteSkillResult {
+  const slug = skillSlug(name);
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(slug)) {
+    return {
+      ok: false,
+      name,
+      error: "name must be 1-64 lowercase letters, numbers, or hyphens",
+    };
+  }
+  const desc = description.replace(/\s+/g, " ").trim();
+  const text = body.replace(/^\n+/, "").replace(/\s+$/, "");
+  const dir = join(workspace, "skills", slug);
+  const file = join(dir, "SKILL.md");
+  const fm = ["---", `name: ${slug}`, `description: ${desc || slug}`, "---", ""].join("\n");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, `${fm}${text}\n`, "utf8");
+  return { ok: true, name: slug, path: file };
 }
 
 /** Prompt-injected catalog: name + when to use, body stays out until matched. */
